@@ -269,17 +269,34 @@ class CardRepositoryTest {
     }
 
     /**
-     * Forces statement resolution and returns the composed statements.
+     * Forces resolution of the base cluster's statements and returns them.
      *
      * @param target the repository
-     * @return its resolved statements
+     * @return its resolved base-cluster statements
      */
-    private CardRepository.Statements statementsOf(CardRepository target) {
+    private CardRepository.BaseStatements statementsOf(CardRepository target) {
         stubDescribe(target);
         when(jdbcTemplate.query(any(PreparedStatementCreator.class),
                 CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
         target.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
-        return target.resolvedStatements();
+        return target.resolvedBaseStatements();
+    }
+
+    /**
+     * Forces resolution of the alternate-index path's statements and returns them.
+     *
+     * <p>Through a read of the path, because that is the only operation that resolves it: the base
+     * cluster and the path are described separately, by whichever operation needs one.
+     *
+     * @param target the repository
+     * @return its resolved alternate-index statements
+     */
+    private CardRepository.AlternateStatements alternateStatementsOf(CardRepository target) {
+        stubDescribe(target);
+        when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
+        target.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
+        return target.resolvedAlternateStatements();
     }
 
     // =============================================================================================
@@ -559,7 +576,8 @@ class CardRepositoryTest {
             assertThat(repository.describeAlternateIndexStatement())
                     .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.AIX.PATH\" WHERE 1 = 0");
 
-            CardRepository.Statements sql = statementsOf(repository);
+            CardRepository.BaseStatements sql = statementsOf(repository);
+            CardRepository.AlternateStatements pathSql = alternateStatementsOf(repository);
             String base = "\"CARDDEMO.CARDDATA.KSDS\"";
             String path = "\"CARDDEMO.CARDDATA.AIX.PATH\"";
             String image = "\"" + DESCRIBED_COLUMN + "\"";
@@ -568,7 +586,7 @@ class CardRepositoryTest {
                             + " LIKE ? ESCAPE '\\' ORDER BY " + image + " ASC");
             assertThat(sql.selectForUpdateByCardNumber())
                     .isEqualTo(sql.selectByCardNumber() + " FOR UPDATE");
-            assertThat(sql.selectByAccountId())
+            assertThat(pathSql.selectByAccountId())
                     .isEqualTo("SELECT * FROM " + path + " WHERE " + image
                             + " LIKE ? ESCAPE '\\' ORDER BY " + image + " ASC");
             // Each positioning read carries "OR <image> IS NULL" as well, because a comparison against a
@@ -583,9 +601,9 @@ class CardRepositoryTest {
             assertThat(sql.browseBackward())
                     .isEqualTo("SELECT * FROM " + base + " WHERE (" + image + " < ? OR " + image
                             + " IS NULL) ORDER BY " + image + " DESC");
-            assertThat(sql.probeUnreadableBaseRows())
+            assertThat(sql.probeUnreadableRows())
                     .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " IS NULL");
-            assertThat(sql.probeUnreadableAlternateRows())
+            assertThat(pathSql.probeUnreadableRows())
                     .isEqualTo("SELECT * FROM " + path + " WHERE " + image + " IS NULL");
             assertThat(sql.rewrite())
                     .isEqualTo("UPDATE " + base + " SET " + image + " = ? WHERE " + image
@@ -595,15 +613,16 @@ class CardRepositoryTest {
         @Test
         @DisplayName("no statement names a copybook field as though it were a SQL column")
         void noStatementNamesACopybookFieldAsAColumn() {
-            CardRepository.Statements sql = statementsOf(repository);
+            CardRepository.BaseStatements sql = statementsOf(repository);
+            CardRepository.AlternateStatements pathSql = alternateStatementsOf(repository);
 
             // CARD-NUM and CARD-ACCT-ID name spans of app/cpy/CVACT02Y.cpy. Asking a backend for columns
             // so named would assert a relational schema nothing here describes - while this same class
             // reads the whole record image out of column one, so both cannot be true of one backend.
             assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
-                            sql.selectByAccountId(), sql.browseAnchor(), sql.browseForward(),
-                            sql.browseBackward(), sql.rewrite(), sql.probeUnreadableBaseRows(),
-                            sql.probeUnreadableAlternateRows()))
+                            pathSql.selectByAccountId(), sql.browseAnchor(), sql.browseForward(),
+                            sql.browseBackward(), sql.rewrite(), sql.probeUnreadableRows(),
+                            pathSql.probeUnreadableRows()))
                     .allSatisfy(statement -> assertThat(statement)
                             .doesNotContain("CARD-NUM")
                             .doesNotContain("CARD-ACCT-ID")
@@ -614,14 +633,20 @@ class CardRepositoryTest {
         @Test
         @DisplayName("the statements are resolved once and then reused")
         void statementsAreResolvedOnceAndReused() {
-            assertThat(repository.resolvedStatements())
+            assertThat(repository.resolvedBaseStatements())
                     .as("nothing is asked of the backend until an operation needs it")
                     .isNull();
+            assertThat(repository.resolvedAlternateStatements())
+                    .as("and the path is not described by an operation that does not read it")
+                    .isNull();
 
-            CardRepository.Statements first = statementsOf(repository);
+            CardRepository.BaseStatements first = statementsOf(repository);
             repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
 
-            assertThat(repository.resolvedStatements()).isSameAs(first);
+            assertThat(repository.resolvedBaseStatements()).isSameAs(first);
+            assertThat(repository.resolvedAlternateStatements())
+                    .as("gate G45: two reads of the base cluster still describe the base cluster only")
+                    .isNull();
             verify(jdbcTemplate, times(1)).query(eq(repository.describeBaseStatement()),
                     CardRepositoryTest.<String>anyExtractor());
         }
@@ -645,7 +670,7 @@ class CardRepositoryTest {
                             cardAixBinding()),
                     codec, RecordImageForm.CHARACTER);
 
-            CardRepository.Statements sql = statementsOf(rebound);
+            CardRepository.BaseStatements sql = statementsOf(rebound);
             assertThat(sql.selectByCardNumber()).contains("OTHER.PLACE.ENTIRELY");
             assertThat(sql.rewrite()).contains("OTHER.PLACE.ENTIRELY");
             assertThat(sql.selectByCardNumber()).doesNotContain("CARDDATA.KSDS");
@@ -916,7 +941,7 @@ class CardRepositoryTest {
             assertThat(result.batchStatus()).isEmpty();
             assertThat(preparedStatements(2).get(1))
                     .as("the second read is the unreadable-row probe over the base cluster")
-                    .isEqualTo(repository.resolvedStatements().probeUnreadableBaseRows());
+                    .isEqualTo(repository.resolvedBaseStatements().probeUnreadableRows());
         }
 
         @Test
@@ -1206,7 +1231,7 @@ class CardRepositoryTest {
             when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
             captor.getValue().createPreparedStatement(connection);
             verify(connection).prepareStatement(
-                    repository.resolvedStatements().selectForUpdateByCardNumber());
+                    repository.resolvedBaseStatements().selectForUpdateByCardNumber());
         }
 
         @Test
@@ -1347,7 +1372,7 @@ class CardRepositoryTest {
             Connection connection = mock(Connection.class);
             when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
             captor.getAllValues().get(0).createPreparedStatement(connection);
-            String pathStatement = repository.resolvedStatements().selectByAccountId();
+            String pathStatement = repository.resolvedAlternateStatements().selectByAccountId();
             verify(connection).prepareStatement(pathStatement);
             assertThat(pathStatement)
                     .contains(repository.alternateIndexDatasetName())
@@ -1399,7 +1424,7 @@ class CardRepositoryTest {
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
             assertThat(preparedStatements(2).get(1))
                     .as("the probe addresses the path that was read, not the base cluster")
-                    .isEqualTo(repository.resolvedStatements().probeUnreadableAlternateRows());
+                    .isEqualTo(repository.resolvedAlternateStatements().probeUnreadableRows());
         }
 
         @Test
@@ -1608,7 +1633,7 @@ class CardRepositoryTest {
         private PreparedStatement bindRewrite() throws SQLException {
             ArgumentCaptor<PreparedStatementSetter> captor =
                     ArgumentCaptor.forClass(PreparedStatementSetter.class);
-            verify(jdbcTemplate).update(eq(repository.resolvedStatements().rewrite()),
+            verify(jdbcTemplate).update(eq(repository.resolvedBaseStatements().rewrite()),
                     captor.capture());
             PreparedStatement prepared = mock(PreparedStatement.class);
             captor.getValue().setValues(prepared);
@@ -1744,7 +1769,7 @@ class CardRepositoryTest {
             assertThat(inUnitOfWork(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)))
                     .isNormal()).isTrue();
             assertThat(statementPreparedByTheCount())
-                    .isEqualTo(repository.resolvedStatements().selectForUpdateByCardNumber())
+                    .isEqualTo(repository.resolvedBaseStatements().selectForUpdateByCardNumber())
                     .endsWith("FOR UPDATE");
         }
 
@@ -1996,6 +2021,68 @@ class CardRepositoryTest {
         }
 
         @Test
+        @DisplayName("finding DB-04: openBrowse describes the base cluster ONLY, never the AIX path")
+        void openBrowseDescribesTheBaseClusterOnly() {
+            // OPEN INPUT CARDFILE (app/cbl/CBACT02C.cbl:120) establishes CARDFILE. CARDAIX is a second DD
+            // name over the same cluster (gate G45) that this operation never reads, so describing it here
+            // paid a metadata round trip for nothing and - the real defect - reported
+            // 'ERROR OPENING CARDFILE' when only the PATH was unavailable.
+            repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            verify(jdbcTemplate).query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor());
+            verify(jdbcTemplate, never()).query(eq(repository.describeAlternateIndexStatement()),
+                    CardRepositoryTest.<String>anyExtractor());
+        }
+
+        @Test
+        @DisplayName("finding DB-04: openBrowse succeeds while the AIX path is unavailable")
+        void openBrowseSucceedsWhileThePathIsUnavailable() {
+            when(jdbcTemplate.query(eq(repository.describeAlternateIndexStatement()),
+                    CardRepositoryTest.<String>anyExtractor()))
+                    .thenThrow(new DataAccessResourceFailureException("the path is not there"));
+
+            CardBrowse browse = repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            assertThat(browse.openResp())
+                    .as("the availability of a path this pass does not read is not a precondition of it")
+                    .isEqualTo(FileStatus.NORMAL);
+            assertThat(browse.isOpen()).isTrue();
+        }
+
+        @Test
+        @DisplayName("finding DB-04: a keyed read of the base cluster survives an unavailable AIX path")
+        void aBaseKeyedReadSurvivesAnUnavailablePath() {
+            when(jdbcTemplate.query(eq(repository.describeAlternateIndexStatement()),
+                    CardRepositoryTest.<String>anyExtractor()))
+                    .thenThrow(new DataAccessResourceFailureException("the path is not there"));
+            stubFetch(new FetchedRows(cardRecord(FIRST_FIXTURE_CARD_NUM)
+                    .encode(codec.charset()), 1));
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.isRecordReturned()).isTrue();
+            verify(jdbcTemplate, never()).query(eq(repository.describeAlternateIndexStatement()),
+                    CardRepositoryTest.<String>anyExtractor());
+        }
+
+        @Test
+        @DisplayName("finding DB-04: a read through the AIX path survives an unavailable base cluster")
+        void anAlternateReadSurvivesAnUnavailableBaseCluster() {
+            when(jdbcTemplate.query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor()))
+                    .thenThrow(new DataAccessResourceFailureException("the base cluster is not there"));
+            stubFetch(new FetchedRows(cardRecord(FIRST_FIXTURE_CARD_NUM)
+                    .encode(codec.charset()), 1));
+
+            CardReadResult result = repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
+
+            assertThat(result.isRecordReturned())
+                    .as("CARDAIX answered, and CARDDAT was never asked")
+                    .isTrue();
+        }
+
+        @Test
         @DisplayName("an OPEN after the statements are memoised still detects a dataset that has gone away")
         void openBrowseDetectsAnAbsentDatasetAfterTheStatementsAreMemoised() {
             // The QA reproduction, at the seam: a successful pass first, which memoises the statements,
@@ -2003,7 +2090,7 @@ class CardRepositoryTest {
             when(jdbcTemplate.query(any(PreparedStatementCreator.class),
                     CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
             repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
-            assertThat(repository.resolvedStatements())
+            assertThat(repository.resolvedBaseStatements())
                     .as("the read has resolved and memoised the statement text")
                     .isNotNull();
 
@@ -2026,11 +2113,11 @@ class CardRepositoryTest {
             when(jdbcTemplate.query(any(PreparedStatementCreator.class),
                     CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
             repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
-            CardRepository.Statements beforeTheOpen = repository.resolvedStatements();
+            CardRepository.BaseStatements beforeTheOpen = repository.resolvedBaseStatements();
 
             repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
 
-            CardRepository.Statements afterTheOpen = repository.resolvedStatements();
+            CardRepository.BaseStatements afterTheOpen = repository.resolvedBaseStatements();
             assertThat(afterTheOpen)
                     .as("the open composed afresh rather than trusting the memo")
                     .isNotSameAs(beforeTheOpen);
@@ -2057,8 +2144,8 @@ class CardRepositoryTest {
 
             assertThat(statementsSent(2))
                     .as("the first read anchors with GTEQ; every read after it advances")
-                    .containsExactly(repository.resolvedStatements().browseAnchor(),
-                            repository.resolvedStatements().browseForward());
+                    .containsExactly(repository.resolvedBaseStatements().browseAnchor(),
+                            repository.resolvedBaseStatements().browseForward());
         }
 
         @Test
@@ -2102,8 +2189,8 @@ class CardRepositoryTest {
                             .map(row -> row.substring(0, CardRecord.CARD_NUM_LENGTH)).toList());
             assertThat(statementsSent(walked))
                     .as("one anchoring read, then seven advancing ones - no limit anywhere in between")
-                    .startsWith(repository.resolvedStatements().browseAnchor())
-                    .endsWith(repository.resolvedStatements().browseForward());
+                    .startsWith(repository.resolvedBaseStatements().browseAnchor())
+                    .endsWith(repository.resolvedBaseStatements().browseForward());
         }
 
         @Test
@@ -2139,11 +2226,11 @@ class CardRepositoryTest {
             // The statement sent is the anchoring one, whose predicate is >= the key - not the advancing
             // one, and not the keyed read that would have demanded equality.
             assertThat(statementsSent(1))
-                    .containsExactly(repository.resolvedStatements().browseAnchor());
-            assertThat(repository.resolvedStatements().browseAnchor())
+                    .containsExactly(repository.resolvedBaseStatements().browseAnchor());
+            assertThat(repository.resolvedBaseStatements().browseAnchor())
                     .as("GTEQ in SQL is a >= predicate on the record image")
                     .contains(">=")
-                    .isNotEqualTo(repository.resolvedStatements().selectByCardNumber());
+                    .isNotEqualTo(repository.resolvedBaseStatements().selectByCardNumber());
         }
 
         @Test
@@ -2249,9 +2336,9 @@ class CardRepositoryTest {
 
             assertThat(statementsSent(3))
                     .as("GTEQ anchors both directions; only the advance differs")
-                    .containsExactly(repository.resolvedStatements().browseAnchor(),
-                            repository.resolvedStatements().browseBackward(),
-                            repository.resolvedStatements().browseBackward());
+                    .containsExactly(repository.resolvedBaseStatements().browseAnchor(),
+                            repository.resolvedBaseStatements().browseBackward(),
+                            repository.resolvedBaseStatements().browseBackward());
         }
 
         @Test
@@ -3207,10 +3294,11 @@ class CardRepositoryTest {
         @Test
         @DisplayName("no statement this repository composes is DDL, and none creates or alters anything")
         void noStatementIsDdl() {
-            CardRepository.Statements sql = statementsOf(repository);
+            CardRepository.BaseStatements sql = statementsOf(repository);
+            CardRepository.AlternateStatements pathSql = alternateStatementsOf(repository);
 
             assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
-                    sql.selectByAccountId(), sql.rewrite(), sql.browseAnchor(), sql.browseForward(),
+                    pathSql.selectByAccountId(), sql.rewrite(), sql.browseAnchor(), sql.browseForward(),
                     sql.browseBackward()))
                     .allSatisfy(statement -> assertThat(statement.toUpperCase(Locale.ROOT))
                             .doesNotContain("CREATE ").doesNotContain("ALTER ")
@@ -3232,10 +3320,11 @@ class CardRepositoryTest {
             // record and compares it field by field. That check is preserved - in the update service,
             // where the business logic belongs - and it is emphatically NOT replaced by a version column,
             // because adding a column is a schema change and the brief forbids one.
-            CardRepository.Statements sql = statementsOf(repository);
+            CardRepository.BaseStatements sql = statementsOf(repository);
+            CardRepository.AlternateStatements pathSql = alternateStatementsOf(repository);
 
             assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
-                    sql.selectByAccountId(), sql.rewrite(), sql.browseAnchor(), sql.browseForward(),
+                    pathSql.selectByAccountId(), sql.rewrite(), sql.browseAnchor(), sql.browseForward(),
                     sql.browseBackward()))
                     .allSatisfy(statement -> assertThat(statement.toUpperCase(Locale.ROOT))
                             .doesNotContain("VERSION").doesNotContain("OPTLOCK")

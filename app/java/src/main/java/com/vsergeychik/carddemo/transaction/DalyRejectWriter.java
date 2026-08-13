@@ -288,7 +288,14 @@ import java.util.Objects;
  * <strong>three</strong> dispositions rather than two, and a caller has to honour all three:
  * <ul>
  *   <li>{@code NEW} - {@link #openOutput()} clears the destination, so a run writes into an empty
- *       generation. Nothing further is required of the caller.</li>
+ *       generation. Like the {@code DELETE} below, it must be applied in a boundary of its own
+ *       ({@code DatasetUnitOfWork.persistDisposition}) by any caller whose open runs outside a
+ *       transaction - which is every chunk-oriented step, because Spring Batch invokes the
+ *       {@link org.springframework.batch.item.ItemStream} open callback outside the chunk transaction and
+ *       the pool hands out connections with {@code auto-commit} disabled. Without one the clear is
+ *       reported and then rolled back, and the run appends to the previous run's rejects while its open
+ *       reports {@code '00'}. {@code TransactionValidationJob} applies it; a tasklet step, whose whole
+ *       body already runs in one transaction, needs nothing extra.</li>
  *   <li>{@code CATLG} - the <em>normal</em> disposition. {@link RejectsFile#closeOutput()} leaves the
  *       rejects catalogued, which is what a run that reached {@code GOBACK} must do.</li>
  *   <li>{@code DELETE} - the <em>abnormal</em> disposition, and the one a caller can forget.
@@ -1383,9 +1390,12 @@ public final class DalyRejectWriter {
             // is the DALYREJS-STATUS = '00' arm, for a rejected customer transaction that was never
             // recorded anywhere. A lost reject is the one outcome worse than an abend, because nothing
             // downstream can detect it, so the missing boundary is reported as the wiring defect it is.
-            // The reject writes CBTRN02C performs run inside the step's own chunk transaction; note that
-            // open() and discard() deliberately carry no such requirement, because Spring Batch runs the
-            // ItemStream open and close callbacks outside that transaction.
+            // The reject writes CBTRN02C performs run inside the step's own chunk transaction. open() and
+            // discard() deliberately carry no such requirement - not because they need no boundary, but
+            // because they cannot demand the STEP's: Spring Batch runs the ItemStream open and close
+            // callbacks outside it. They need one of their own, and it is the caller that opens it, since
+            // only the caller knows whether its step already provides one; TransactionValidationJob wraps
+            // both in DatasetUnitOfWork.persistDisposition for exactly that reason.
             DatasetUnitOfWork.requireActiveToPersist("A write of a " + DD_NAME + " record, which "
                     + "WRITE FD-REJS-RECORD FROM REJECT-RECORD issues at app/cbl/CBTRN02C.cbl:L451",
                     datasetName);

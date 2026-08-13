@@ -326,6 +326,37 @@ carddemo:
     dataset: IBM037
 
   # -------------------------------------------------------------------------------------------
+  # THE CICS REGION IDENTITY - the two EXEC CICS ASSIGN values the sign-on screen displays.
+  # Consumed by user/SignOnController.java.
+  #
+  # app/cbl/COSGN00C.cbl:198-200 fills APPLIDO from EXEC CICS ASSIGN APPLID(...) and :202-204 fills
+  # SYSIDO from EXEC CICS ASSIGN SYSID(...). Both are properties of the CICS region - the very thing
+  # this module replaces - so neither can be computed in Java. Practice B12 keeps the two fields and
+  # binds them from configuration rather than dropping them: they are 2 of the 11 named DFHMDF fields
+  # of app/bms/COSGN00.bms, this is the only screen in the application that carries them, and every
+  # COSGN00C parity case compares them byte for byte at PIC X(8).
+  #
+  # BOTH KEYS ARE REQUIRED AND CARRY NO DEFAULT, exactly as the three charset keys above do.
+  # SignOnController binds each with a bare ${...} placeholder and additionally refuses a value that
+  # holds no text, so a deployment that states no region fails at startup naming the key instead of
+  # painting eight spaces into a compared field. A blank there is indistinguishable on the wire from
+  # a region that answered nothing, and an invented literal such as "CICSPROD" would be fabricated
+  # data inside a field-for-field diff - so there is nothing safe to default to.
+  #
+  # SET THEM TO WHAT THE REGION WOULD HAVE REPORTED. The APPLID is the VTAM application name of the
+  # CICS region (up to 8 characters); the SYSID is its 4-character system identifier. A value shorter
+  # than the map's PIC X(8) field is padded on the right and a longer one is truncated on the right,
+  # which is what a COBOL MOVE into PIC X(8) does.
+  #
+  # application-test.yml pins both to the constants the 20 COSGN00C parity cases expect.
+  # -------------------------------------------------------------------------------------------
+  cics:
+    # EXEC CICS ASSIGN APPLID - the region's application identifier, PIC X(8).
+    applid: ${CARDDEMO_CICS_APPLID}
+    # EXEC CICS ASSIGN SYSID - the region's system identifier, 4 characters in a PIC X(8) field.
+    sysid: ${CARDDEMO_CICS_SYSID}
+
+  # -------------------------------------------------------------------------------------------
   # RECORD-IMAGE REPRESENTATION - how the deployment's driver presents a record image over JDBC.
   #
   # A dataset is a relation whose FIRST column carries the whole record image; common/DatasetRelation
@@ -568,6 +599,9 @@ carddemo:
       copybook: CVTRA05Y
       # key-length / key-offset: TRAN-ID PIC X(16) - CVTRA05Y.cpy
       key-length: 16
+      # app/catlg/LISTCAT.txt:3595 records this cluster as NOREUSE. Stated explicitly rather than
+      # left to the default, because it is what decides the outcome of CBTRN02C's OPEN OUTPUT.
+      reusable: false
 
     # CSD L88-L89. Security user file. SEC-USR-PWD PIC X(08) is compared in PLAINTEXT by
     # COSGN00C, and that is preserved: hashing would change behaviour and Spring Security is out
@@ -581,6 +615,11 @@ carddemo:
       copybook: CSUSR01Y
       # key-length / key-offset: SEC-USR-ID PIC X(08) - CSUSR01Y.cpy
       key-length: 8
+      # THE ONE REUSE CLUSTER IN THE ESTATE - app/catlg/LISTCAT.txt:3885. Every other cluster is
+      # NOREUSE. No program opens this one for output, so the attribute changes nothing today; it
+      # is transcribed because LISTCAT is the authority for it and a silent default would make
+      # this entry claim something the catalogue contradicts.
+      reusable: true
 
     # --- Batch DD aliases of the datasets above ----------------------------------------------
 
@@ -662,6 +701,14 @@ carddemo:
       copybook: CVTRA05Y
       # key-length / key-offset: TRAN-ID PIC X(16) - CVTRA05Y.cpy
       key-length: 16
+      # THE ATTRIBUTE THAT DECIDES CBTRN02C's SECOND OPEN. app/cbl/CBTRN02C.cbl:256 issues
+      # OPEN OUTPUT over this DD, and the SELECT at :34-38 declares ORGANIZATION IS INDEXED - so
+      # that open is VSAM load mode, which requires an empty base cluster. POSTTRAN.jcl:L28-L29
+      # binds it to the EXISTING master with DISP=SHR, and app/catlg/LISTCAT.txt:3595-3597 records
+      # that cluster as NOREUSE holding REC-TOTAL 311. A NOREUSE cluster is not reset by the open,
+      # so load mode cannot begin and the open reports file status 37 - which is why the job
+      # abends at :262-268 before reading a single DALYTRAN record.
+      reusable: false
 
     # --- Batch-only datasets -----------------------------------------------------------------
 

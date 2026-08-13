@@ -219,6 +219,28 @@ carddemo:
     dataset: US-ASCII
 
   # -------------------------------------------------------------------------------------------
+  # carddemo.cics.* - the two EXEC CICS ASSIGN values, pinned to the parity constants.
+  #
+  # app/cbl/COSGN00C.cbl:198-204 obtains APPLIDO and SYSIDO from the CICS region, which no test has.
+  # So this profile states the pair every one of the 20 COSGN00C parity cases expects - CICSAWS1 and
+  # AWS1 - and states them HERE rather than only inside the parity class, so a context started under
+  # this profile paints the same screen the harness compares. Before they were pinned, neither
+  # document declared the keys at all and a wired SignOnController painted eight spaces into both
+  # fields while every case file expected a region name: the same screen, answered two different ways
+  # depending on whether the controller was constructed by Spring or by a test.
+  #
+  # PINNED LITERALS, not placeholders. These are parity constants rather than environment inputs: a
+  # variable exported by whoever happens to run the suite would make a compared field depend on the
+  # machine. application.yml carries the placeholders for a real deployment, and requires them.
+  #
+  # SYSID is four characters in a PIC X(8) field; SignOnController's MOVE rule pads it on the right,
+  # so the painted value is "AWS1    " - which is exactly what the case files carry.
+  # -------------------------------------------------------------------------------------------
+  cics:
+    applid: CICSAWS1
+    sysid: AWS1
+
+  # -------------------------------------------------------------------------------------------
   # carddemo.record-image.form - how a record image crosses JDBC in this profile.
   #
   # CHARACTER, because this profile's relations are in-memory ones created with a character

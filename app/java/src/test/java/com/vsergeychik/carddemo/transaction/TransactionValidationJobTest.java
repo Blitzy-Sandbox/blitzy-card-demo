@@ -17,6 +17,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TransactionValidationJob.ChunkDelegate;
 import com.vsergeychik.carddemo.transaction.TransactionValidationJob.CobolTimestamp;
 import com.vsergeychik.carddemo.transaction.TransactionValidationJob.PostingResult;
@@ -45,7 +46,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 
 import org.junit.jupiter.api.AfterEach;
@@ -68,10 +68,15 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -120,10 +125,10 @@ class TransactionValidationJobTest {
 
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** H2's own row-identifier pseudo-column: a physical-sequential read follows insertion order. */
+    /** The row-identifier pseudo-column the test profile names: a physical-sequential read follows
+     * insertion order, which is the order the record-image store behind this suite holds rows in. */
     private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
-    private static final AtomicInteger SEQ = new AtomicInteger();
 
     private static final String DALYTRAN_DS = "TEST.DALYTRAN.PS";
     private static final String TRANSACT_DS = "TEST.TRANSACT.KSDS";
@@ -220,6 +225,26 @@ class TransactionValidationJobTest {
     }
 
     /**
+     * A real unit of work over the same database a template addresses.
+     *
+     * <p>Real rather than mocked, and it has to be: the two {@value DalyRejectWriter#DD_NAME} dispositions
+     * are applied through {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)}
+     * because the {@link org.springframework.batch.item.ItemStream} callbacks they run in sit outside the
+     * chunk transaction, and only a real manager over a real data source can commit them independently -
+     * which is precisely the property those tests assert. It is equally what makes each of
+     * {@code CBTRN02C}'s WRITE and REWRITE verbs durable on its own ({@code app/cbl/CBTRN02C.cbl:440-442}
+     * under {@code RECOVERY(NONE)}, with no syncpoint anywhere): a mock would commit nothing and let a
+     * chunk rollback look correct.
+     *
+     * @param t the template whose data source the boundary is bound to
+     * @return a unit of work over that data source
+     */
+    private static DatasetUnitOfWork unitOfWork(JdbcTemplate t) {
+        return new DatasetUnitOfWork(new JdbcTransactionManager(
+                Objects.requireNonNull(t.getDataSource(), "the test template always carries its source")));
+    }
+
+    /**
      * The one job-scoped override {@code application.yml} declares: in {@code POSTTRAN.jcl} the DD name
      * {@code TRANFILE} is the transaction master, stated explicitly as an alias of {@code TRANSACT} because
      * {@code app/jcl/TRANREPT.jcl} binds the same eight characters to a different dataset.
@@ -253,21 +278,56 @@ class TransactionValidationJobTest {
     }
 
     /**
-     * A database holding only the named relations, so a missing one makes the corresponding
-     * {@code OPEN} report a permanent error and reach its own {@code 'ERROR OPENING ...'} arm.
+     * A store holding only the named relations, so a missing one makes the corresponding {@code OPEN}
+     * report a permanent error and reach its own {@code 'ERROR OPENING ...'} arm.
      *
-     * @param datasets the relations to create
-     * @return a template over a private in-memory database
+     * <p><strong>No DDL.</strong> A relation is declared to a {@link RecordImageDataSource}, which is a map
+     * from dataset name to a list of record images and has no schema, so gate <strong>G44</strong> - no DDL,
+     * no schema migration, no entity annotation and no generated table definition anywhere in this module -
+     * holds with nothing to reinterpret. Only the storage engine is replaced: the real {@code JdbcTemplate},
+     * the real repositories and writers, {@code DatasetRelation}'s real composed statements, the real
+     * {@code DatasetUnitOfWork} and a real {@code JdbcTransactionManager} all stay in the path, which is
+     * what keeps this suite's per-verb durability assertions meaningful.
+     *
+     * <p>Each call makes a store of its own, so nothing is shared between tests and no sequence number is
+     * needed to keep them apart.
+     *
+     * @param datasets the relations to declare
+     * @return a template over a private record-image store
      */
     private static JdbcTemplate database(String... datasets) {
-        DriverManagerDataSource ds = new DriverManagerDataSource("jdbc:h2:mem:posttran"
-                + SEQ.incrementAndGet() + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        ds.setDriverClassName("org.h2.Driver");
-        JdbcTemplate t = new JdbcTemplate(ds);
+        RecordImageDataSource backend = new RecordImageDataSource();
         for (String dsname : datasets) {
-            t.execute("CREATE TABLE \"" + dsname + "\" (" + COL + " VARCHAR(" + widthOf(dsname) + "))");
+            backend.define(dsname, COL, ColumnForm.CHARACTER, widthOf(dsname));
         }
-        return t;
+        return new JdbcTemplate(backend);
+    }
+
+    /**
+     * The store behind one of this suite's templates.
+     *
+     * @param t the template
+     * @return the relations it serves
+     */
+    private static RecordImageStore store(JdbcTemplate t) {
+        return ((RecordImageDataSource) Objects.requireNonNull(t.getDataSource(),
+                "A template built by database(...) always has its store behind it")).store();
+    }
+
+    /**
+     * Withdraws a relation, so every statement naming it fails as an absent dataset would.
+     *
+     * <p>The {@code DROP TABLE} this suite used to issue. Withdrawing the declaration is what drives the
+     * {@code MOVE 12 TO APPL-RESULT} arm of a paragraph whose other arms are unreachable through data
+     * alone: the failure carries the class-42 {@code SQLSTATE} an absent relation reports, which is the
+     * class {@code BackendDiagnostic} sorts on, so the arm is reached for the same reason and by the same
+     * route as before.
+     *
+     * @param t      the template
+     * @param dsname the relation to withdraw
+     */
+    private static void drop(JdbcTemplate t, String dsname) {
+        store(t).undefine(dsname);
     }
 
     /**
@@ -324,17 +384,16 @@ class TransactionValidationJobTest {
     /**
      * Puts a relation back after a test dropped it to force a permanent I/O error.
      *
-     * <p>Dropping a relation is the only reliable way to drive the {@code MOVE 12 TO APPL-RESULT} arm of a
-     * paragraph whose other arms are unreachable through data alone. Restoring it before the run is
+     * <p>Withdrawing a relation is the only reliable way to drive the {@code MOVE 12 TO APPL-RESULT} arm of
+     * a paragraph whose other arms are unreachable through data alone. Restoring it before the run is
      * released keeps {@link PostingRun#release()} exercising its real cleanup rather than tripping over
      * the deliberate breakage, so the release path stays honestly covered.
      *
      * @param t      the template
-     * @param dsname the relation to recreate, empty
+     * @param dsname the relation to redeclare, empty
      */
     private static void recreate(JdbcTemplate t, String dsname) {
-        t.execute("CREATE TABLE IF NOT EXISTS \"" + dsname + "\" (" + COL + " VARCHAR("
-                + widthOf(dsname) + "))");
+        store(t).define(dsname, COL, ColumnForm.CHARACTER, widthOf(dsname));
     }
 
     private static int widthOf(String dsname) {
@@ -351,11 +410,11 @@ class TransactionValidationJobTest {
     }
 
     private static void seed(JdbcTemplate t, String dsname, String image) {
-        t.update("INSERT INTO \"" + dsname + "\" VALUES (?)", image);
+        store(t).seed(dsname, image);
     }
 
     private static List<String> rows(JdbcTemplate t, String dsname) {
-        return t.queryForList("SELECT " + COL + " FROM \"" + dsname + "\"", String.class);
+        return store(t).rows(dsname);
     }
 
     // ------------------------------------------------------------------------------ the step's boundary
@@ -375,9 +434,19 @@ class TransactionValidationJobTest {
      * against mocked JDBC chains that cannot begin a transaction at all, and what the repositories inspect
      * is exactly this thread state. {@link #withoutUnitOfWork(Runnable)} takes it away again for the tests
      * that are about its absence.
+     *
+     * <p><strong>Synchronization is declared too, not only the transaction</strong>, because a real step
+     * transaction activates both and the two {@value DalyRejectWriter#DD_NAME} dispositions open a
+     * {@code REQUIRES_NEW} boundary inside this one. Without an active synchronization that nested
+     * boundary is the one that initialised it, so committing tears the thread state down and takes this
+     * declaration with it - and every posting verb after the open would be refused for want of a unit of
+     * work the launcher would still have had.
      */
     @BeforeEach
     void declareTheStepsUnitOfWork() {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.initSynchronization();
+        }
         TransactionSynchronizationManager.setActualTransactionActive(true);
     }
 
@@ -385,6 +454,28 @@ class TransactionValidationJobTest {
     @AfterEach
     void endTheStepsUnitOfWork() {
         TransactionSynchronizationManager.setActualTransactionActive(false);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    /**
+     * Re-declares the step's unit of work, immediately before a run that persists.
+     *
+     * <p><strong>Why a run needs this and not just the {@code @BeforeEach}.</strong> Each of
+     * {@code CBTRN02C}'s WRITE and REWRITE verbs now commits in its own {@code REQUIRES_NEW} transaction,
+     * which is what makes it durable the moment it completes. Spring suspends the enclosing transaction to
+     * do that and restores it afterwards from the suspended-resources holder it recorded - and there is no
+     * holder to record here, because {@code declareTheStepsUnitOfWork} sets the thread flag directly rather
+     * than beginning a real transaction. So the first committed verb leaves the flag clear, and a second
+     * run in the same test would be refused. Re-declaring before each run removes the ordering dependency
+     * without giving the mocked-JDBC tests a transaction they cannot begin.
+     *
+     * @return the same declaration the {@code @BeforeEach} makes, reasserted
+     */
+    private static boolean stepUnitOfWork() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        return true;
     }
 
     /**
@@ -431,8 +522,10 @@ class TransactionValidationJobTest {
                 new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                 new DalyRejectWriter(t, ASCII, b, RecordImageForm.CHARACTER),
+                unitOfWork(t),
                 sysoutSink, clock);
     }
+
 
     // -------------------------------------------------------------------------------- abend assertions
 
@@ -527,6 +620,7 @@ class TransactionValidationJobTest {
                     new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                     accounts, balances, this.master,
                     new DalyRejectWriter(t, ASCII, b, RecordImageForm.CHARACTER),
+                    unitOfWork(t),
                     new PresentBean<SysoutSink>(sysout), FIXED);
         }
 
@@ -618,6 +712,30 @@ class TransactionValidationJobTest {
         a.setAcctAddrZip("12345");
         a.setAcctGroupId("A000000000");
         return a;
+    }
+
+    /**
+     * One 350-byte {@code CVTRA05Y} master record under a given key.
+     *
+     * <p>Only the key matters to the callers below - what they need is a master that is not empty, because
+     * that is what {@code OPEN OUTPUT}'s load mode refuses - but the record is built complete rather than
+     * key-only, because a short row would misplace every span after the first.
+     *
+     * @param tranId the sixteen-byte {@code TRAN-ID} the row is stored under
+     * @return the record; never {@code null}
+     */
+    private static TranRecord postedTranRecord(String tranId) {
+        TranRecord r = new TranRecord(ASCII);
+        r.moveTranId(tranId);
+        r.moveTranTypeCd(TYPE_CD);
+        r.moveTranCatCd(String.format("%04d", CAT_CD));
+        r.moveTranSource("POS TERM");
+        r.moveTranDesc("Seeded by a previous run");
+        r.moveTranAmt(new BigDecimal("1.00"));
+        r.moveTranCardNum(CARD);
+        r.moveTranOrigTs("2022-06-10 19:27:53.000000");
+        r.moveTranProcTs("2022-07-18-22.01.02.000000");
+        return r;
     }
 
     private static String tcatbalImage(long acctId, String typeCd, int catCd, String balance) {
@@ -787,6 +905,7 @@ class TransactionValidationJobTest {
                     new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                     new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                     new DalyRejectWriter(t, ASCII, b, RecordImageForm.CHARACTER),
+                    unitOfWork(t),
                     new PresentBean<>(sysout), FIXED);
             assertThat(configured.sysoutSink()).isSameAs(sysout);
             assertThat(configured.clock()).isSameAs(FIXED);
@@ -1188,6 +1307,51 @@ class TransactionValidationJobTest {
             run.release();
         }
 
+        @Test
+        @DisplayName("0100 over a NON-EMPTY master: load mode cannot begin, so '37' and an abend")
+        void tranfileOpenOutputRefusesANonEmptyCluster() {
+            // :256 OPEN OUTPUT TRANSACT-FILE over the ORGANIZATION IS INDEXED SELECT at :34-38 is VSAM
+            // load mode, and load mode requires an empty base cluster. POSTTRAN.jcl:28-29 binds TRANFILE
+            // to the existing master with DISP=SHR and LISTCAT.txt:3595-3597 records it NOREUSE, so a
+            // cluster that already holds records cannot be reset by the open.
+            JdbcTemplate t = database();
+            seed(t, TRANSACT_DS, new String(
+                    postedTranRecord("T000000000000009").encode(ASCII), ASCII));
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = job(t, bindings()).newRun(sysout);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .describedAs(":262-268 displays and abends on any status but '00'")
+                    .isThrownBy(run::openFiles)
+                    .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
+
+            // The paragraph's own two lines, and nothing from the four opens after it.
+            assertThat(sysout.lines()).containsExactly(
+                    TransactionValidationJob.ERROR_OPENING_TRANFILE,
+                    FileStatus.toDisplayLine(FileStatus.OPEN_MODE_CONFLICT),
+                    AbendException.ABEND_DISPLAY_TEXT);
+            assertThat(run.workingStorage().tranfileStatus())
+                    .isEqualTo(FileStatus.OPEN_MODE_CONFLICT);
+            assertThat(run.workingStorage().applAok()).isFalse();
+            run.release();
+        }
+
+        @Test
+        @DisplayName("0100 over an EMPTY master opens cleanly, so the refusal is derived and not fixed")
+        void tranfileOpenOutputAcceptsAnEmptyCluster() {
+            // The same code path, the same dataset, one row fewer - and it opens. That is what makes the
+            // arm above a derived outcome rather than a hard-coded refusal.
+            JdbcTemplate t = database();
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = job(t, bindings()).newRun(sysout);
+
+            assertThatCode(run::openFiles).doesNotThrowAnyException();
+
+            assertThat(run.workingStorage().tranfileStatus()).isEqualTo(FileStatus.OK);
+            assertThat(sysout.lines()).isEmpty();
+            run.release();
+        }
+
         /**
          * Drops one relation so that DD's open reports a permanent error, and asserts the paragraph's own
          * three-line failure tail plus the abend's {@code CEE3ABD} arguments.
@@ -1243,6 +1407,44 @@ class TransactionValidationJobTest {
         }
 
         @Test
+        @DisplayName("finding DB-03: the NEW-generation clear survives a rolled-back enclosing boundary")
+        void theDalyrejsGenerationClearIsDurable() {
+            JdbcTemplate t = database();
+            // A record from a previous run's generation. DISP=(NEW,...) on DALYREJS(+1) means this run
+            // writes into an EMPTY generation, so 0300-DALYREJS-OPEN must remove it - durably.
+            seed(t, DALYREJS_DS, "X".repeat(DalyRejectWriter.RECORD_LENGTH));
+            TransactionValidationJob job = job(t, bindings());
+
+            // The enclosing boundary is rolled back, which is what a failed step does. The clear is applied
+            // through DatasetUnitOfWork.persistDisposition, so it commits on its own and the rollback
+            // cannot take it back. Before this fix the clear ran with no boundary at all: the pool hands
+            // out connections with auto-commit disabled, so it was reported and then discarded.
+            TransactionTemplate enclosing =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+            assertThatCode(() -> enclosing.execute(status -> {
+                job.newRun(job.sysoutSink()).dalyrejsOpen();
+                status.setRollbackOnly();
+                return null;
+            })).doesNotThrowAnyException();
+
+            assertThat(rows(t, DALYREJS_DS))
+                    .as("the previous generation's reject must be gone: DISP=(NEW,CATLG,DELETE) at "
+                            + "app/jcl/POSTTRAN.jcl:34 allocates a new generation, and a run appending to "
+                            + "the old one would report a reject set that is not its own")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("finding DB-03: a refused generation clear still reports the open failure")
+        void aRefusedDalyrejsClearStillAbends() {
+            // The boundary changes where the clear commits, never whether a failure is reported: the
+            // relation is absent, so the describe inside the boundary refuses and 0300-DALYREJS-OPEN must
+            // still reach its own 'ERROR OPENING DALY REJECTS FILE' arm and abend.
+            assertOpenFailureReports(List.of(DALYTRAN_DS, TRANSACT_DS, XREF_DS, XREF_AIX_DS, ACCT_DS,
+                    TCATBAL_DS, SYSTRAN_DS), TransactionValidationJob.ERROR_OPENING_DALYREJS);
+        }
+
+        @Test
         @DisplayName("0400-ACCTFILE-OPEN reports 'ERROR OPENING ACCOUNT MASTER FILE' and abends")
         void theAcctfileOpenFailure() {
             assertOpenFailureReports(List.of(DALYTRAN_DS, TRANSACT_DS, XREF_DS, XREF_AIX_DS, DALYREJS_DS,
@@ -1273,6 +1475,37 @@ class TransactionValidationJobTest {
                     .isEqualTo("ERROR OPENING TRANSACTION BALANCE FILE");
             assertThat(TransactionValidationJob.ERROR_CLOSING_TCATBALF)
                     .isEqualTo("ERROR CLOSING TRANSACTION BALANCE FILE");
+        }
+
+        @Test
+        @DisplayName("finding DB-03: the abnormal discard survives a rolled-back enclosing boundary")
+        void theDalyrejsAbnormalDiscardIsDurable() {
+            JdbcTemplate t = database();
+            seed(t, DALYTRAN_DS, dalyTranImage(dalyTran("T0000000000000001", CARD, "10.00",
+                    "2022-06-10 19:27:53.000000")));
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = openedRun(job(t, bindings()), sysout);
+            // One reject written, then released WITHOUT closeFiles - which is what an abending run does, and
+            // what DISP=(NEW,CATLG,DELETE) at app/jcl/POSTTRAN.jcl:34 says must leave no generation behind.
+            run.writeRejectRec(dalyTran("T0000000000000001", CARD, "10.00",
+                    "2022-06-10 19:27:53.000000"));
+            assertThat(rows(t, DALYREJS_DS)).hasSize(1);
+
+            // The enclosing boundary is rolled back, as a failed step's is. The discard is applied through
+            // persistDisposition, so it commits on its own: without that it would be reported as applied
+            // and then undone, leaving an abended run's rejects catalogued where the mainframe leaves none.
+            TransactionTemplate enclosing =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+            assertThatCode(() -> enclosing.execute(status -> {
+                run.release();
+                status.setRollbackOnly();
+                return null;
+            })).doesNotThrowAnyException();
+
+            assertThat(run.closedNormally()).isFalse();
+            assertThat(rows(t, DALYREJS_DS))
+                    .as("an abended run leaves no reject generation at all")
+                    .isEmpty();
         }
 
         @Test
@@ -1343,6 +1576,65 @@ class TransactionValidationJobTest {
             assertThat(sysout.lines().get(0))
                     .isEqualTo(TransactionValidationJob.ERROR_READING_DALYTRAN);
             assertThat(sysout.lines().get(2)).isEqualTo(AbendException.ABEND_DISPLAY_TEXT);
+        }
+        @Test
+        @DisplayName("a completed verb survives the enclosing transaction rolling back - :440-442")
+        void everyVerbIsDurableOnItsOwn() {
+            // THE F23 PROOF. CBTRN02C issues no syncpoint and every dataset POSTTRAN opens is defined
+            // RECOVERY(NONE) (app/csd/CARDDEMO.CSD:9 and its siblings), so a WRITE or REWRITE is durable
+            // the moment it completes and CALL 'CEE3ABD' does not take it back. 2000-POST-TRANSACTION
+            // performs its three verbs unconditionally and in one order at :440-442 - 2700, then 2800,
+            // then 2900 - so a failure in the third leaves the first two standing.
+            //
+            // The collision is created BY THE RUN, which is the only way the source can reach it: a master
+            // that already held the key would be a non-empty master, and :256's load-mode OPEN OUTPUT
+            // refuses one of those before the loop starts (see tranfileOpenOutputRefusesANonEmptyCluster).
+            // Two daily records sharing a TRAN-ID over an EMPTY master is the reachable path: the first
+            // posts and adds the key, the second re-updates the balances and then collides at :564.
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            String daily = dalyTranImage(
+                    dalyTran("T000000000000001", CARD, "1.00", "2022-06-10 19:27:53.000000"));
+            seed(t, DALYTRAN_DS, daily);
+            seed(t, DALYTRAN_DS, daily);
+
+            // A REAL enclosing transaction, which the propagating AbendException rolls back. Without
+            // persistVerb every write below would be undone with it, and this test is what says so.
+            TransactionTemplate enclosing =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+            enclosing.afterPropertiesSet();
+            CapturedSysout sysout = new CapturedSysout();
+            TransactionValidationJob posting = job(t, bindings());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .describedAs(":566 accepts '00' and nothing else, so the duplicate '22' is fatal")
+                    .isThrownBy(() -> enclosing.execute(status -> posting.postTransactions(sysout)))
+                    .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
+
+            assertThat(sysout.lines()).containsExactly(
+                    TransactionValidationJob.START_OF_EXECUTION,
+                    TransactionValidationJob.ERROR_WRITING_TRANFILE,
+                    FileStatus.toDisplayLine(FileStatus.DUPLICATE),
+                    AbendException.ABEND_DISPLAY_TEXT);
+
+            // Both records ran 2700 and 2800, so both increments stand: 1000.00 + 1.00 + 1.00 on the
+            // category balance, 250.00 + 1.00 + 1.00 on the account, 100.00 + 1.00 + 1.00 on the cycle
+            // credit. The debit is untouched because :548 sends a non-negative amount to :549.
+            TranCatBalRecord balance = TranCatBalRecord.decode(
+                    rows(t, TCATBAL_DS).get(0).getBytes(ASCII), ASCII);
+            assertThat(balance.tranCatBal())
+                    .describedAs("2700-B rewrote twice and neither rewrite was rolled back")
+                    .isEqualByComparingTo("1002.00");
+
+            AccountRecord stored = AccountRecord.decode(rows(t, ACCT_DS).get(0).getBytes(ASCII), ASCII);
+            assertThat(stored.getAcctCurrBal()).isEqualByComparingTo("252.00");
+            assertThat(stored.getAcctCurrCycCredit()).isEqualByComparingTo("102.00");
+            assertThat(stored.getAcctCurrCycDebit()).isEqualByComparingTo("50.00");
+
+            // And the first record's own 2900 stands too: one row, not zero and not two.
+            assertThat(rows(t, TRANSACT_DS))
+                    .describedAs("the first add committed; the second never stored anything")
+                    .hasSize(1);
         }
     }
 
@@ -1736,7 +2028,7 @@ class TransactionValidationJobTest {
                     "2022-06-10 19:27:53.000000");
             // 1500-B-LOOKUP-ACCT has only the two READ phrases and no status guard, so a permanent
             // error takes neither: the reason stays 0 and the record area is left as it was.
-            t.execute("DROP TABLE \"" + ACCT_DS + "\"");
+            drop(t, ACCT_DS);
             try {
                 run.validateTran(item);
             } finally {
@@ -2108,6 +2400,94 @@ class TransactionValidationJobTest {
         }
 
         @Test
+        @DisplayName("finding DB-02: each verb stands after a later verb abends, as RECOVERY(NONE) requires")
+        void everyVerbBeforeTheFailingOneStaysDurable() {
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = openedRun(job(t, bindings()), sysout);
+            DalyTranRecord item = dalyTran("T000000000000001", CARD, "25.55",
+                    "2022-06-10 19:27:53.000000");
+
+            // The whole posting sequence for one record, in source order, with the LAST verb failing: the
+            // TRAN-ID is written once and then written again, and :566-570 accepts only '00', so the
+            // duplicate '22' abends at :707. On the mainframe the category balance and the account rewrite
+            // that preceded it are already on their datasets - CBTRN02C issues no syncpoint and every one
+            // of these datasets is RECOVERY(NONE), so CALL 'CEE3ABD' takes nothing back.
+            //
+            // The enclosing boundary is then rolled back, which is what a failed chunk does. Each verb was
+            // persisted through DatasetUnitOfWork.persistVerb at its own source position, so the rollback
+            // cannot reach them. Grouped in one chunk transaction they would all three vanish, and a re-run
+            // over the same input would apply this transaction's amount to an account it had in fact
+            // already updated.
+            TransactionTemplate enclosing =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+            assertThatCode(() -> enclosing.execute(status -> {
+                run.validateTran(item);
+                // 2000-POST-TRANSACTION performs all three verbs in the source's order - :440 the balance,
+                // :441 the account, :442 the transaction - so one call is the whole posting.
+                run.postTransaction(item);
+                assertThatExceptionOfType(AbendException.class)
+                        .isThrownBy(run::writeTransactionFile)               // the duplicate, :564 again
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
+                status.setRollbackOnly();
+                return null;
+            })).doesNotThrowAnyException();
+            run.release();
+
+            // 2700-B's rewrite: 1000.00 + 25.55, byte for byte as the record encodes it.
+            assertThat(rows(t, TCATBAL_DS))
+                    .as("the category balance rewritten at :528 stands")
+                    .containsExactly(tcatbalImage(ACCOUNT, TYPE_CD, CAT_CD, "1025.55"));
+            // 2800's rewrite: 250.00 + 25.55 into ACCT-CURR-BAL and 100.00 + 25.55 into the cycle credit,
+            // because the amount is positive (:548).
+            assertThat(rows(t, ACCT_DS))
+                    .as("the account rewritten at :554 stands, cycle credit included")
+                    .containsExactly(account(ACCOUNT, "5000.00", "2026-01-01", "125.55", "50.00",
+                            "275.55").toFixedWidthString());
+            // 2900's first write: the record that succeeded before the duplicate.
+            assertThat(rows(t, TRANSACT_DS))
+                    .as("the transaction added at :564 stands")
+                    .hasSize(1);
+            assertThat(sysout.lines()).contains(TransactionValidationJob.ERROR_WRITING_TRANFILE,
+                    AbendException.ABEND_DISPLAY_TEXT);
+        }
+
+        @Test
+        @DisplayName("finding DB-02: a reject stands after a later record abends")
+        void aRejectStaysDurableAfterALaterFailure() {
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = openedRun(job(t, bindings()), sysout);
+            DalyTranRecord rejected = dalyTran("T000000000000009", "9999999999999999", "1.00",
+                    "2022-06-10 19:27:53.000000");
+
+            // A reject, then a failure. The run continues past a reject - :215 writes it and the loop reads
+            // the next record - so a reject discarded by a later rollback would leave that transaction
+            // neither posted nor rejected, which is the one outcome nothing downstream can detect.
+            TransactionTemplate enclosing =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+            assertThatCode(() -> enclosing.execute(status -> {
+                run.validateTran(rejected);
+                run.writeRejectRec(rejected);                                // 2500 WRITE :451
+                status.setRollbackOnly();
+                return null;
+            })).doesNotThrowAnyException();
+
+            // Asserted before the release, deliberately: the release applies POSTTRAN's
+            // DISP=(NEW,CATLG,DELETE) abnormal disposition, which deletes the whole generation on purpose
+            // and would mask what this test is about. What is being proved here is that the enclosing
+            // rollback did not reach the reject - which is a different thing from whether the step's own
+            // disposition later removes it.
+            assertThat(rows(t, DALYREJS_DS))
+                    .as("the reject written at :451 survives the enclosing rollback: DALYREJS is "
+                            + "RECOVERY(NONE) and the run continues past a reject")
+                    .hasSize(1);
+            run.release();
+        }
+
+        @Test
         @DisplayName("a TCATBAL read that is neither '00' nor '23' abends with its own message")
         void aFatalBalanceReadAbends() {
             JdbcTemplate t = database();
@@ -2117,7 +2497,7 @@ class TransactionValidationJobTest {
             DalyTranRecord item = dalyTran("T000000000000001", CARD, "1.00",
                     "2022-06-10 19:27:53.000000");
             run.validateTran(item);
-            t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
+            drop(t, TCATBAL_DS);
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(() -> run.updateTcatbal(item))
@@ -2143,7 +2523,7 @@ class TransactionValidationJobTest {
                     "2022-06-10 19:27:53.000000");
             run.validateTran(item);
             // The read reports '23', so the create path is taken; the relation then disappears.
-            t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
+            drop(t, TCATBAL_DS);
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(() -> run.createTcatbalRec(item))
@@ -2167,7 +2547,7 @@ class TransactionValidationJobTest {
                     "2022-06-10 19:27:53.000000");
             run.validateTran(item);
             run.updateTcatbal(item);
-            t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
+            drop(t, TCATBAL_DS);
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(() -> run.updateTcatbalRec(item))
@@ -2531,7 +2911,7 @@ class TransactionValidationJobTest {
             PostingRun run = openedRun(job(t, bindings()), sysout);
             DalyTranRecord item = run.dalytranGetNext();
             run.validateTran(item);
-            t.execute("DROP TABLE \"" + DALYREJS_DS + "\"");
+            drop(t, DALYREJS_DS);
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(() -> run.writeRejectRec(item))
@@ -2587,7 +2967,7 @@ class TransactionValidationJobTest {
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = job(t, bindings()).newRun(sysout);
             run.dalytranOpen();
-            t.execute("DROP TABLE \"" + TRANSACT_DS + "\"");
+            drop(t, TRANSACT_DS);
             assertThatExceptionOfType(AbendException.class).isThrownBy(run::tranfileOpen);
             recreate(t, TRANSACT_DS);
             sysout.lines().clear();
@@ -2613,7 +2993,7 @@ class TransactionValidationJobTest {
             PostingRun run = job(t, bindings()).newRun(sysout);
             run.dalytranOpen();
             run.tranfileOpen();
-            t.execute("DROP TABLE \"" + XREF_DS + "\"");
+            drop(t, XREF_DS);
             assertThatExceptionOfType(AbendException.class).isThrownBy(run::xreffileOpen);
             recreate(t, XREF_DS);
             sysout.lines().clear();
@@ -2683,7 +3063,7 @@ class TransactionValidationJobTest {
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
-            t.execute("DROP TABLE \"" + ACCT_DS + "\"");
+            drop(t, ACCT_DS);
             try {
                 AbendException abend = org.assertj.core.api.Assertions
                         .catchThrowableOfType(AbendException.class, run::acctfileClose);
@@ -2705,7 +3085,7 @@ class TransactionValidationJobTest {
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
-            t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
+            drop(t, TCATBAL_DS);
             try {
                 assertThatExceptionOfType(AbendException.class).isThrownBy(run::tcatbalfClose);
             } finally {
@@ -2721,7 +3101,7 @@ class TransactionValidationJobTest {
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
-            t.execute("DROP TABLE \"" + ACCT_DS + "\"");
+            drop(t, ACCT_DS);
             try {
                 assertThatExceptionOfType(AbendException.class).isThrownBy(run::acctfileClose);
             } finally {
@@ -2742,7 +3122,7 @@ class TransactionValidationJobTest {
             // Give XREFFILE-STATUS a value that is neither the reject file's nor the default, so the
             // operand actually rendered is unambiguous. '10' is what a real XREFFILE EOF would leave.
             run.workingStorage().moveXreffileStatus(FileStatus.END_OF_FILE);
-            t.execute("DROP TABLE \"" + DALYREJS_DS + "\"");
+            drop(t, DALYREJS_DS);
             try {
                 assertThatExceptionOfType(AbendException.class).isThrownBy(run::dalyrejsClose);
             } finally {
@@ -2810,7 +3190,8 @@ class TransactionValidationJobTest {
             seedResolvableAccount(clean);
             seed(clean, DALYTRAN_DS, dalyTranImage(dalyTran("T000000000000001", CARD, "1.00",
                     "2022-06-10 19:27:53.000000")));
-            RunOutcome cleanRun = job(clean, bindings()).postTransactions(new CapturedSysout());
+            RunOutcome cleanRun = stepUnitOfWork()
+                    ? job(clean, bindings()).postTransactions(new CapturedSysout()) : null;
             assertThat(cleanRun.returnCode()).isEqualTo(TransactionValidationJob.RETURN_CODE_CLEAN);
             assertThat(cleanRun.returnCode()).isZero();
 
@@ -2818,8 +3199,8 @@ class TransactionValidationJobTest {
             seedResolvableAccount(rejecting);
             seed(rejecting, DALYTRAN_DS, dalyTranImage(dalyTran("T000000000000001", OTHER_CARD, "1.00",
                     "2022-06-10 19:27:53.000000")));
-            RunOutcome rejectingRun =
-                    job(rejecting, bindings()).postTransactions(new CapturedSysout());
+            RunOutcome rejectingRun = stepUnitOfWork()
+                    ? job(rejecting, bindings()).postTransactions(new CapturedSysout()) : null;
             assertThat(rejectingRun.returnCode())
                     .isEqualTo(TransactionValidationJob.RETURN_CODE_REJECTS_PRESENT);
             assertThat(rejectingRun.returnCode()).isEqualTo(4);
@@ -3208,7 +3589,7 @@ class TransactionValidationJobTest {
             ChunkDelegate delegate = jobWithSink(t, sysout).newChunkDelegate();
             delegate.beforeStep(stepExecution());
             delegate.open(new ExecutionContext());
-            t.execute("DROP TABLE \"" + ACCT_DS + "\"");
+            drop(t, ACCT_DS);
             try {
                 // The read reaches end of file, performs the epilogue, and 9400-ACCTFILE-CLOSE fails.
                 assertThatExceptionOfType(AbendException.class).isThrownBy(delegate::read);

@@ -205,6 +205,10 @@ class BillPaymentServiceTest {
         browse = mock(TransactionRepository.Browse.class);
         when(accountRepository.datasetCharset()).thenReturn(CHARSET);
         when(transactionRepository.startBrowse(BrowseDirection.BACKWARD)).thenReturn(browse);
+        // The STARTBR positions successfully by default, which is the arm every sequence test needs. A
+        // test that wants the NOTFND or the WHEN OTHER arm re-stubs this - see StartbrOutcomes - and the
+        // payment sequence then carries that outcome into the EVALUATE at :451-467.
+        when(browse.positioningOutcome()).thenReturn(BillPaymentService.STARTBR_SUCCESSFUL_OUTCOME);
         service = new BillPaymentService(accountRepository, cardXrefRepository, transactionRepository,
                 Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC), newUnitOfWork());
     }
@@ -1144,6 +1148,114 @@ class BillPaymentServiceTest {
         }
 
         @Test
+        @DisplayName("THE F29 PIN - a NOTFND position reaches :454-459 through the production path")
+        void aFailedPositionReachesItsOwnArmInProduction() {
+            // The outcome comes from the browse the repository handed back, so the arm at :454-459 is
+            // reachable in production and not only from a hand-built outcome. An implementation that
+            // assumed NORMAL would report success here and go on to build a transaction identifier out of
+            // the HIGH-VALUES of :212.
+            // The whole chain, as CICS produces it. A STARTBR that reports NOTFND starts no browse, so the
+            // READPREV that :214 performs unconditionally addresses a browse that does not exist and
+            // reports INVREQ - which is exactly what TransactionRepository.Browse.read does for a handle
+            // whose positioning failed, and is stubbed here to match.
+            stubHappyPath("100.00", "0000000000000041");
+            when(browse.positioningOutcome()).thenReturn(Outcome.NOT_FOUND);
+            when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.other(
+                    TransactionRepository.CICS_FILE_NAME,
+                    TransactionRepository.PERMANENT_ERROR_STATUS,
+                    CicsResponse.of(FileStatus.INVREQ)));
+
+            // :216 then moves the untouched HIGH-VALUES of :212 into a PIC 9(16) receiver, which is the
+            // data exception the source reaches - so the sequence does not merely continue, it continues
+            // all the way to the abend the mainframe takes.
+            Assertions.assertThatThrownBy(
+                            () -> service.processEnterKey(ACCT_KEY, "Y", NavigationContext.empty()))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            // And nothing was written, because :233 and :235 sit beyond :216.
+            verify(transactionRepository, never()).write(any());
+            verify(accountRepository, never()).rewrite(any());
+        }
+
+        @Test
+        @DisplayName("THE F29 ARM PIN - the NOTFND arm's own message and send, before :214 overwrites it")
+        void theFailedPositionArmSetsItsOwnMessageAndSends() {
+            // The arm in isolation, because the caller's next statement overwrites WS-MESSAGE: :458 sends
+            // the screen carrying 'Transaction ID NOT found...', and only then does READPREV's WHEN OTHER
+            // replace it with its own text and send again. Both sends happen; the message a caller sees
+            // last is the second one.
+            PaymentState state = stateWithAccount("100.00");
+
+            service.startbrTransactFile(state, Outcome.NOT_FOUND);
+
+            Assertions.assertThat(state.isErrFlagOn()).isTrue();
+            Assertions.assertThat(state.message())
+                    .as(":456-457 moves 'Transaction ID NOT found...' into WS-MESSAGE")
+                    .startsWith(BillPaymentService.MSG_TRANSACTION_ID_NOT_FOUND);
+            Assertions.assertThat(state.browseStarted())
+                    .as("no browse was established, so the sequence reads from nothing")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("THE F29 CONTINUATION PIN - :214 and :215 still run after a rejected position")
+        void aFailedPositionDoesNotEndTheSequence() {
+            // SEND-BILLPAY-SCREEN at :289-301 is a SEND with NO EXEC CICS RETURN, so PERFORM
+            // SEND-BILLPAY-SCREEN inside the NOTFND arm returns to STARTBR-TRANSACT-FILE, which ends, and
+            // the caller's next statements at :214 and :215 run regardless. Contrast COTRN02C, whose
+            // SEND-TRNADD-SCREEN does carry a RETURN and so genuinely ends the task.
+            stubHappyPath("100.00", "0000000000000041");
+            when(browse.positioningOutcome()).thenReturn(Outcome.NOT_FOUND);
+            when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.other(
+                    TransactionRepository.CICS_FILE_NAME,
+                    TransactionRepository.PERMANENT_ERROR_STATUS,
+                    CicsResponse.of(FileStatus.INVREQ)));
+
+            Assertions.assertThatThrownBy(
+                            () -> service.processEnterKey(ACCT_KEY, "Y", NavigationContext.empty()))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            InOrder sequence = Mockito.inOrder(transactionRepository, browse);
+            sequence.verify(transactionRepository).startBrowse(BrowseDirection.BACKWARD);
+            sequence.verify(browse).readPrev();
+            sequence.verify(browse).endBrowse();
+        }
+
+        @Test
+        @DisplayName("THE F29 PIN - a refused position reaches :460-466 and displays RESP and REAS")
+        void aRefusedPositionReachesTheWhenOtherArmInProduction() {
+            stubHappyPath("100.00", "0000000000000041");
+            when(browse.positioningOutcome()).thenReturn(Outcome.OTHER);
+            when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.other(
+                    TransactionRepository.CICS_FILE_NAME,
+                    TransactionRepository.PERMANENT_ERROR_STATUS,
+                    CicsResponse.of(FileStatus.INVREQ)));
+
+            Assertions.assertThatThrownBy(
+                            () -> service.processEnterKey(ACCT_KEY, "Y", NavigationContext.empty()))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            verify(transactionRepository, never()).write(any());
+            verify(accountRepository, never()).rewrite(any());
+        }
+
+        @Test
+        @DisplayName("THE F29 ARM PIN - the WHEN OTHER arm displays RESP and REAS and sets its message")
+        void theRefusedPositionArmDisplaysAndSetsItsOwnMessage() {
+            PaymentState state = stateWithAccount("100.00");
+
+            service.startbrTransactFile(state, Outcome.OTHER);
+
+            Assertions.assertThat(state.isErrFlagOn()).isTrue();
+            Assertions.assertThat(state.message())
+                    .as(":462-465 moves 'Unable to lookup Transaction...' into WS-MESSAGE")
+                    .startsWith(BillPaymentService.MSG_UNABLE_TO_LOOKUP_TRANSACTION);
+            Assertions.assertThat(state.displays())
+                    .as(":461 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD")
+                    .isNotEmpty();
+        }
+
+        @Test
         @DisplayName("the browse is a BACKWARD boundary browse and is ended")
         void browseShape() {
             stubHappyPath("100.00", "0000000000000041");
@@ -1306,9 +1418,9 @@ class BillPaymentServiceTest {
         void startbrNormal() {
             PaymentState state = stateWithAccount("10.00");
 
-            service.startbrTransactFile(state, BillPaymentService.STARTBR_POSITIONING_OUTCOME);
+            service.startbrTransactFile(state, BillPaymentService.STARTBR_SUCCESSFUL_OUTCOME);
 
-            Assertions.assertThat(BillPaymentService.STARTBR_POSITIONING_OUTCOME)
+            Assertions.assertThat(BillPaymentService.STARTBR_SUCCESSFUL_OUTCOME)
                     .isEqualTo(Outcome.OK);
             Assertions.assertThat(state.browseStarted()).isTrue();
             Assertions.assertThat(state.isErrFlagOn()).isFalse();

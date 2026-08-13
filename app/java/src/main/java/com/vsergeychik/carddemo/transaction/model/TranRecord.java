@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Objects;
@@ -882,6 +883,49 @@ public final class TranRecord {
      */
     public String filler() {
         return area.readSpan(FILLER);
+    }
+
+    /**
+     * {@code INITIALIZE TRAN-RECORD} - the statement, with its {@code FILLER} rule intact.
+     *
+     * <p>{@code INITIALIZE} without the {@code WITH FILLER} phrase touches only the record's
+     * <strong>addressable, named</strong> elementary items: every alphanumeric one is set to
+     * {@code SPACES} and every numeric one to {@code ZERO}. <strong>{@code FILLER} is explicitly left
+     * alone.</strong> An implicit {@code FILLER} item has no name to reference, so the statement has no
+     * way to address it, and the ISO rule is that it is skipped rather than cleared - which is exactly
+     * why the {@code WITH FILLER} phrase exists at all.
+     *
+     * <p>This therefore resets the thirteen named items <em>in place, over the existing backing
+     * span</em>, rather than replacing the area with a fresh one. Replacing it would blank the trailing
+     * twenty-byte {@code FILLER} as a side effect, and that span is observable: it is written to disk as
+     * part of the record's 350 bytes, so whatever a preceding read left there must travel forward
+     * unchanged into the record this area goes on to write (gates G19, G21).
+     *
+     * <p>The thirteen items are reset through the same {@code MOVE} entry points every other caller uses,
+     * so each one pads and truncates to its own declared width by the receiver's own rule rather than by
+     * a second, parallel set of assignments written against the span directly.
+     */
+    public void initialize() {
+        // Alphanumeric items - INITIALIZE sets a PIC X item to SPACES, and movePicX space-pads an empty
+        // sending value to the receiver's declared width.
+        moveTranId("");
+        moveTranTypeCd("");
+        moveTranSource("");
+        moveTranDesc("");
+        moveTranMerchantName("");
+        moveTranMerchantCity("");
+        moveTranMerchantZip("");
+        moveTranCardNum("");
+        moveTranOrigTs("");
+        moveTranProcTs("");
+
+        // Numeric items - INITIALIZE sets a PIC 9 item to ZERO. TRAN-AMT is S9(09)V99, so its zero
+        // carries the declared scale of two rather than a bare integer zero.
+        moveTranCatCd(0);
+        moveTranMerchantId(0L);
+        moveTranAmt(BigDecimal.ZERO.setScale(TRAN_AMT_SCALE, RoundingMode.DOWN));
+
+        // FILLER (span 14 of 14, offset 330, twenty bytes) is deliberately absent from both lists above.
     }
 
     // =================================================================================================

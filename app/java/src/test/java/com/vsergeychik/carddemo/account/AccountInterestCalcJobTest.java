@@ -83,7 +83,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Statement;
+import javax.sql.DataSource;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -97,6 +105,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import com.vsergeychik.carddemo.testsupport.ConcurrentTasks;
+import java.util.concurrent.Callable;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Verifies {@link AccountInterestCalcJob} against {@code app/cbl/CBACT04C.cbl} and
@@ -1424,6 +1435,36 @@ class AccountInterestCalcJobTest {
         // Nothing was computed: the abend is at the open, which is the fifth of the five opens, so no
         // interest line and no closing banner was ever emitted.
         assertThat(sysout.lines()).doesNotContain(AccountInterestCalcJob.END_OF_EXECUTION);
+    }
+
+    @Test
+    void theSystranGenerationClearIsDurable() {
+        // finding DB-03. 0400-TRANFILE-OPEN is an OPEN OUTPUT over SYSTRAN(+1), whose
+        // DISP=(NEW,CATLG,DELETE) at app/jcl/INTCALC.jcl:L37-L41 means the step allocates a NEW
+        // generation - so the open clears the destination and this run writes into an empty one.
+        //
+        // That clear is DML, and it runs in the ItemStream open callback, which Spring Batch invokes
+        // OUTSIDE the chunk transaction. The pool hands out connections with auto-commit disabled, so
+        // without a boundary of its own the clear would be reported and then rolled back: the open would
+        // answer '00' over a generation still holding the previous run's transactions, and this run's
+        // records would be appended to them. Applied through persistDisposition, it commits independently,
+        // which is what a rolled-back enclosing boundary proves here.
+        JdbcTemplate t = database();
+        seed(t, SYSTRAN_DS, "X".repeat(350));
+        AccountInterestCalcJob job = job(t, bindings(), new CapturedSysout());
+
+        TransactionTemplate enclosing =
+                new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+        assertThatCode(() -> enclosing.execute(status -> {
+            job.newRun(PARM, new CapturedSysout()).tranfileOpen();
+            status.setRollbackOnly();
+            return null;
+        })).doesNotThrowAnyException();
+
+        assertThat(rows(t, SYSTRAN_DS))
+                .as("the previous generation's record must be gone: a run that appended to it would emit "
+                        + "a transaction set that is not its own")
+                .isEmpty();
     }
 
     @Test
@@ -3278,42 +3319,46 @@ class AccountInterestCalcJobTest {
 
         @Test
         @DisplayName("two concurrent executions get two delegates, each with its own PARM")
-        void twoConcurrentExecutionsGetTwoDelegates() throws Exception {
+        @Timeout(value = 60, unit = TimeUnit.SECONDS)
+        void twoConcurrentExecutionsGetTwoDelegates() {
             AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
             CyclicBarrier bothScoped = new CyclicBarrier(2);
             Map<String, ChunkDelegate> byParm = new ConcurrentHashMap<>();
-            Map<String, String> observedParm = new ConcurrentHashMap<>();
 
-            // Each thread establishes its scope, waits until the other has established its own, and only
-            // then reads back what it is holding. A shared delegate would hand both threads whichever
-            // PARM arrived second.
-            Runnable execution = () -> {
-                String parm = "202207" + Thread.currentThread().getName();
+            // Each execution establishes its scope, waits until the other has established its own, and
+            // only then reads back what it is holding. A shared delegate would hand both whichever PARM
+            // arrived second. The PARM is derived from the task's own suffix rather than from the thread
+            // name, because a pooled thread's name is the pool's business and this test needs the two
+            // executions to be distinguishable by something it controls.
+            java.util.function.Function<String, Callable<String>> execution = suffix -> () -> {
+                String parm = "202207" + suffix;
                 subject.beforeStep(stepExecution(parm.hashCode(), parm));
                 byParm.put(parm, subject.scopedDelegate().orElseThrow());
-                try {
-                    bothScoped.await(10, TimeUnit.SECONDS);
-                } catch (Exception interrupted) {
-                    throw new IllegalStateException(interrupted);
-                }
-                observedParm.put(parm, subject.scopedDelegate().orElseThrow().parmDate());
+                bothScoped.await(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                String observed = subject.scopedDelegate().orElseThrow().parmDate();
                 subject.close();
+                return observed;
             };
 
-            Thread first = new Thread(execution, "1800");
-            Thread second = new Thread(execution, "1900");
-            first.start();
-            second.start();
-            first.join(20_000L);
-            second.join(20_000L);
+            // Two things the old shape got wrong. join(20_000) returns whether or not the thread
+            // finished, so a task still at the barrier let the assertions run over half-written state and
+            // report a missing map entry. And a throwable inside the Runnable killed its thread and went
+            // to the default handler, so the real cause was printed above a failure that named something
+            // else. Future.get bounds the wait, distinguishes "not finished" from "finished", and rethrows
+            // the task's own throwable here.
+            List<String> observed = ConcurrentTasks.runBoth(
+                    execution.apply("1800"), execution.apply("1900"));
 
-            assertThat(observedParm).containsEntry("2022071800", "2022071800")
-                    .containsEntry("2022071900", "2022071900");
+            assertThat(observed)
+                    .as("each execution reads back its own PARM after the other has bound its own - so "
+                            + "neither can be seeing a delegate the other established")
+                    .containsExactly("2022071800", "2022071900");
             assertThat(byParm).hasSize(2);
             assertThat(byParm.get("2022071800"))
                     .as("two executions must not share one WORKING-STORAGE")
                     .isNotSameAs(byParm.get("2022071900"));
-            assertThat(subject.scopedDelegate()).isEmpty();
+            assertThat(subject.scopedDelegate())
+                    .as("and the calling thread never had a scope of its own to begin with").isEmpty();
         }
 
         @Test
@@ -3622,19 +3667,25 @@ class AccountInterestCalcJobTest {
         }
 
         /**
-         * A row whose record-image column is SQL {@code NULL} does not reach the malformed-row
-         * diagnostic: it is {@code NOT FOUND}, because the key predicate is a pattern over the same
-         * column and {@code NULL LIKE <pattern>} is never true.
+         * A row whose record-image column is SQL {@code NULL} is <strong>not</strong> reported as absent.
          *
-         * <p>Asserted rather than assumed, because the distinction decides whether such a row sends
-         * the caller to the {@code 'DEFAULT   '} group or abends it. {@code app/cbl/CBACT04C.cbl:436}
-         * retries on {@code '23'} and only on {@code '23'}, so this row behaves exactly as an absent
-         * one - which is the safe outcome, and is the reason the guard behind it is documented above as
-         * unreachable rather than tested through a fabricated driver.
+         * <p>The key predicate is a pattern over that same column and {@code NULL LIKE <pattern>} is
+         * never true, so such a row is invisible to the keyed read and the read comes back with nothing
+         * matched. Reporting {@code '23'} from there is what finding DB-05 is about, and on this dataset
+         * it is a money difference rather than a diagnostic one: {@code app/cbl/CBACT04C.cbl:417-419}
+         * takes {@code '23'} as "this account group has no rate for this category" and retries under the
+         * {@code 'DEFAULT   '} group at {@code :421-430}, so an unreadable row silently charges the
+         * default rate against an account whose own group may define another - and the run reports
+         * success.
+         *
+         * <p>The absence is therefore proved before it is reported. Here it cannot be, so the read takes
+         * the permanent-error arm, which {@code :412} turns into {@code 'ERROR READING DISCLOSURE GROUP'}
+         * and an abend - loud, and correct, because nothing can establish what rate this account group
+         * carries.
          */
         @Test
-        @DisplayName("a row with a null record image reads as NOT FOUND, not as a malformed row")
-        void aRowWithANullRecordImageReadsAsNotFound() {
+        @DisplayName("a row with a null record image is NOT reported as absent: DB-05, and it is money")
+        void aRowWithANullRecordImageIsNotReportedAsAbsent() {
             JdbcTemplate t = database();
             t.execute("INSERT INTO \"" + DISCGRP_DS + "\" VALUES (NULL)");
             DisclosureGroupAccess access = AccountInterestCalcJob.carddemoDisclosureGroupAccess(
@@ -3642,8 +3693,68 @@ class AccountInterestCalcJobTest {
 
             try (AccountInterestCalcJob.DisclosureGroupFile file = access.open()) {
                 AccountInterestCalcJob.DisclosureGroupRead read = file.readByKey("A000000000010001");
-                assertThat(read.isNotFound()).isTrue();
+                assertThat(read.isNotFound())
+                        .as("'23' here would send the account to the DEFAULT group")
+                        .isFalse();
                 assertThat(read.isFound()).isFalse();
+                assertThat(read.status()).isNotEqualTo(FileStatus.NOT_FOUND);
+                assertThat(read.record()).isEmpty();
+            }
+        }
+
+        /**
+         * The other half of the DB-05 contract on this dataset: a genuinely absent key still reports
+         * {@code '23'}, so the {@code DEFAULT}-group retry at {@code app/cbl/CBACT04C.cbl:421-430} is
+         * reached exactly as it was.
+         */
+        @Test
+        @DisplayName("a probe the backend refuses reports the permanent error, never the DEFAULT retry")
+        void aRefusedProbeDoesNotBecomeTheDefaultRetry() throws SQLException {
+            // The one arm no seeded relation can produce: the absence proof itself is refused, so nothing
+            // about the rate table has been established. Falling back to '23' there would charge the
+            // DEFAULT rate on the strength of a failed probe.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Statement describe = Mockito.mock(Statement.class);
+            ResultSet described = Mockito.mock(ResultSet.class);
+            ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(describe);
+            Mockito.when(describe.executeQuery(Mockito.anyString())).thenReturn(described);
+            Mockito.when(described.getMetaData()).thenReturn(metaData);
+            Mockito.when(metaData.getColumnCount()).thenReturn(1);
+            Mockito.when(metaData.getColumnName(1)).thenReturn(COL);
+            PreparedStatement keyedRead = Mockito.mock(PreparedStatement.class);
+            ResultSet noRows = Mockito.mock(ResultSet.class);
+            Mockito.when(noRows.next()).thenReturn(false);
+            Mockito.when(keyedRead.executeQuery()).thenReturn(noRows);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenAnswer(invocation -> {
+                if (invocation.<String>getArgument(0).endsWith("IS NULL")) {
+                    throw new SQLException("the unreadable-row probe is refused");
+                }
+                return keyedRead;
+            });
+            DisclosureGroupAccess access = AccountInterestCalcJob.carddemoDisclosureGroupAccess(
+                    new JdbcTemplate(dataSource), bindings(), ASCII, RecordImageForm.CHARACTER);
+
+            try (AccountInterestCalcJob.DisclosureGroupFile file = access.open()) {
+                AccountInterestCalcJob.DisclosureGroupRead read = file.readByKey("A000000000010001");
+                assertThat(read.isNotFound()).isFalse();
+                assertThat(read.status()).isNotEqualTo(FileStatus.NOT_FOUND);
+                assertThat(read.record()).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("a genuinely absent key still reports '23', so the DEFAULT retry is unchanged")
+        void aGenuinelyAbsentKeyStillReportsNotFound() {
+            JdbcTemplate t = database();
+            DisclosureGroupAccess access = AccountInterestCalcJob.carddemoDisclosureGroupAccess(
+                    t, bindings(), ASCII, RecordImageForm.CHARACTER);
+
+            try (AccountInterestCalcJob.DisclosureGroupFile file = access.open()) {
+                AccountInterestCalcJob.DisclosureGroupRead read = file.readByKey("A000000000010001");
+                assertThat(read.isNotFound()).isTrue();
                 assertThat(read.status()).isEqualTo(FileStatus.NOT_FOUND);
                 assertThat(read.record()).isEmpty();
             }
@@ -4374,13 +4485,14 @@ class AccountInterestCalcJobTest {
         }
 
         @Test
-        @DisplayName("all three disclosure-group failure logs sanitize the key")
-        void allThreeFailureLogsSanitize() throws IOException {
+        @DisplayName("every disclosure-group failure log sanitizes the key")
+        void everyFailureLogSanitizes() throws IOException {
             String source = subjectSource();
 
             assertThat(source.split("keyForDiagnostics\\(keyImage\\)", -1).length - 1)
-                    .as("the read failure, the absent image and the malformed width")
-                    .isEqualTo(3);
+                    .as("the read failure, the absent image, the malformed width, and the two lines the "
+                            + "absence proof emits - a refused probe and a proved-present unreadable row")
+                    .isEqualTo(5);
         }
 
         @Test

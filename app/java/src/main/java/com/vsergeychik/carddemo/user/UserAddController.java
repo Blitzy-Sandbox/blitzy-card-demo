@@ -18,12 +18,8 @@ import com.vsergeychik.carddemo.user.dto.UserAddRequest;
 import com.vsergeychik.carddemo.user.dto.UserAddResponse;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 import jakarta.validation.Valid;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -221,11 +217,13 @@ public class UserAddController {
     /**
      * Query parameter carrying the raw {@code EIBAID} byte that {@code COUSR01C:90} evaluates.
      *
-     * <p>Optional. When absent the attention identifier is taken from
-     * {@link UserAddRequest#aid()}, and when that is absent too it defaults to
+     * <p>Optional, and authoritative when present: it is the raw byte {@code :90}'s
+     * {@code EVALUATE EIBAID} compares. When absent the attention identifier defaults to
      * {@link CicsAid#DFHENTER} - a CICS terminal always presents some attention identifier, and
      * {@code ENTER} is the only default that cannot reach a branch the operator could not have
-     * reached.
+     * reached. {@link UserAddRequest#aid()} is not consulted: the {@code CCARD-AID} token it carries
+     * folds {@code DFHPF13}-{@code DFHPF24} onto {@code DFHPF1}-{@code DFHPF12}, so it cannot say which
+     * of PF3 and PF15 was pressed, and this program's arms distinguish them.
      *
      * <p>The name is {@link AidRequestParameter#CANONICAL_NAME}, shared with every other online route
      * rather than spelled here. This route is one of the two that used to declare
@@ -254,14 +252,15 @@ public class UserAddController {
     public static final String EIBCALEN_PARAM = "eibcalen";
 
     // =================================================================================================
-    // Code page. WORKING-STORAGE here is screen and message text, never dataset bytes, so the value is
-    // US-ASCII rather than the EBCDIC code page the datasets use. It is stated explicitly and is never
-    // the platform default (practice B8); the overloaded constructor exists so a parity case can pin a
-    // different one.
+    // Code page. It comes from SecUserRepository.datasetCharset() and from nowhere else, because the
+    // five values this program moves into SEC-USER-DATA are persistence-bound: :154-158 moves them into
+    // the record and :240-248 writes that record to USRSEC. A page named here instead would be this
+    // class's opinion of how the dataset is stored, and an earlier revision held exactly that opinion -
+    // a hard-coded US-ASCII - while application.yml binds IBM037 in production. One source for the page
+    // means the controller cannot state one page while the dataset uses another. It is never the
+    // platform default (practice B8), and a test pins it by stubbing the repository, which is also what
+    // COUSR03C's controller does.
     // =================================================================================================
-
-    /** The code page applied to {@code WORKING-STORAGE} text. Never the platform default. */
-    public static final Charset DEFAULT_WORKING_STORAGE_CHARSET = StandardCharsets.US_ASCII;
 
     // =================================================================================================
     // Declared widths, transcribed from the source rather than inferred.
@@ -399,6 +398,17 @@ public class UserAddController {
     private static final int AID_MAX = 255;
 
     /**
+     * The width of the raw {@code EIBAID} form of {@link UserAddRequest#aid()}: one character.
+     *
+     * <p>{@link UserAddRequest#AID_LENGTH} is five, the width of the {@code CCARD-AID} token this
+     * module's responses publish; this is the width of the byte {@code :90} evaluates.
+     */
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
+
+    /**
      * The response code recorded when the repository reports no CICS {@code RESP} at all - a permanent
      * error, where {@code CicsResponse.none()} carries an empty response. Chosen so it can never be
      * mistaken for {@link FileStatus#NORMAL}, {@link FileStatus#DUPKEY} or {@link FileStatus#DUPREC},
@@ -442,38 +452,32 @@ public class UserAddController {
     // =================================================================================================
 
     /**
-     * The bean constructor, applying {@link #DEFAULT_WORKING_STORAGE_CHARSET}.
+     * Constructs the controller.
      *
-     * @param secUserRepository the {@code USRSEC} dataset; must not be {@code null}
+     * <p>The code page comes from {@link SecUserRepository#datasetCharset()} rather than from a second
+     * injection point or a constant, so this class cannot render a field in one encoding while the
+     * dataset it is written to uses another. The five values {@code PROCESS-ENTER-KEY} moves into
+     * {@code SEC-USER-DATA} at {@code :154-158} are the record {@code :240-248} writes, which is what
+     * makes the page a persistence question rather than a screen one.
+     *
+     * @param secUserRepository the {@code USRSEC} dataset, and the source of the active code page; must
+     *                          not be {@code null}
      * @param clock             the source of {@code FUNCTION CURRENT-DATE}; must not be {@code null}
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if either argument is {@code null}, or if the repository reports no
+     *                              code page
      */
     @Autowired
     public UserAddController(SecUserRepository secUserRepository, Clock clock) {
-        this(secUserRepository, clock, DEFAULT_WORKING_STORAGE_CHARSET);
-    }
-
-    /**
-     * The full constructor, taking the {@code WORKING-STORAGE} code page explicitly.
-     *
-     * @param secUserRepository     the {@code USRSEC} dataset; must not be {@code null}
-     * @param clock                 the source of {@code FUNCTION CURRENT-DATE}; must not be {@code null}
-     * @param workingStorageCharset the code page applied to screen and message text; must not be
-     *                              {@code null}, and is never defaulted from the platform
-     * @throws NullPointerException if any argument is {@code null}
-     */
-    public UserAddController(SecUserRepository secUserRepository,
-                             Clock clock,
-                             Charset workingStorageCharset) {
         this.secUserRepository = Objects.requireNonNull(secUserRepository, "A SecUserRepository is "
                 + "required: app/cbl/COUSR01C.cbl:240-248 issues EXEC CICS WRITE against the USRSEC "
                 + "dataset, and the dataset is reached only through the repository");
         this.clock = Objects.requireNonNull(clock, "A Clock is required: FUNCTION CURRENT-DATE is read "
                 + "from it at app/cbl/COUSR01C.cbl:216, never from the wall clock, so a parity case can "
                 + "pin the instant and compare the header bytes");
-        Objects.requireNonNull(workingStorageCharset, "A code page is required for the PIC X move "
-                + "rule; it is never the platform default");
-        this.codec = new FixedWidthCodec(workingStorageCharset);
+        this.codec = new FixedWidthCodec(Objects.requireNonNull(
+                secUserRepository.datasetCharset(), "The USRSEC repository must report the code page it "
+                        + "stores records in: the five values moved into SEC-USER-DATA are written to "
+                        + "that dataset, and a page is never assumed"));
     }
 
     // =================================================================================================
@@ -518,9 +522,8 @@ public class UserAddController {
      * @return the {@code xxxO} projection of the map the program painted, or of the screen it
      *         transferred to
      * @throws IllegalArgumentException if the AID is outside {@code 0}-{@code 255}, if the two AID
-     *                                  spellings disagree, or if {@code eibcalen} is neither {@code 0}
-     *                                  nor {@value NavigationContext#COMMAREA_LENGTH} or disagrees with
-     *                                  what the payload carried
+     *                                  spellings disagree, or if {@code eibcalen} is negative or
+     *                                  disagrees with what the payload carried
      */
     // The canonical AID spelling is appended last rather than placed beside its alternate: Spring binds
     // a query parameter by the name in its annotation and never by position, so appending leaves the
@@ -619,16 +622,15 @@ public class UserAddController {
                     + "as a reference-modification length, so a negative value has no meaning.");
         }
 
-        // Ahead of the flow, and outside it: a character the screen code page cannot represent is a
-        // value no RECEIVE MAP at :89 could have delivered, so there is no COBOL behaviour to
-        // reproduce for it and the caller is told which member carries it. Judging here rather than
-        // where the record is encoded is what makes the answer name a field: by the time the value
-        // reaches WRITE-USER-SEC-FILE at :238-274 it is one span of an eighty-byte image and the
-        // member it came from is no longer known. Sweeping before any state exists also means the
-        // refusal precedes every read and every write, so nothing partial is left behind - the same
-        // placement, and the same reason, as the account and card update routes.
-        ScreenInputRejectedException.requireRepresentable(receivedMapValues(request), codec);
-
+        // No code-page sweep stands here. A character the screen code page cannot represent is a value
+        // no RECEIVE MAP at :89 could have delivered, but that is a transport judgement rather than a
+        // step of this program, and COUSR01C decides for itself whether it receives a map at all: the
+        // EIBCALEN = 0 arm at :79-80 and the first-entry arm at :84-87 both reach SEND without ever
+        // reading the input area. Sweeping here ran ahead of that decision and could refuse a field the
+        // program was about to ignore. The judgement is made once, for every string of every body, by
+        // config.WebConfig.ScreenTextDeserializer at the JSON boundary - against the active dataset code page, not
+        // a hard-coded one - so by the time this method is entered the payload is already known to be
+        // one a 3270 could have sent.
         ProgramState state = new ProgramState(codec, eibAid, eibcalen);
 
         // L73: SET ERR-FLG-OFF TO TRUE. The flag starts explicitly off on every entry.
@@ -663,20 +665,26 @@ public class UserAddController {
             receiveUsraddScreen(state, request);
 
             // L90-103: EVALUATE EIBAID. The arms are tested in source order and WHEN OTHER is last, so
-            // a key matching nothing - including an attention identifier the resolver does not
-            // recognise at all - falls through to the invalid-key answer.
-            Optional<PfKeyResolver.AidKey> aidKey = PfKeyResolver.resolve(eibAid);
-            state.setAidKey(aidKey);
+            // a key matching nothing falls through to the invalid-key answer.
+            //
+            // Each arm compares the RAW attention-identifier byte, because that is what the COBOL
+            // compares: WHEN DFHPF3 is an equality test against X'F3', and DFHPF15's byte is X'C3',
+            // a different value that reaches WHEN OTHER. Dispatching on PfKeyResolver.resolve's
+            // AidKey instead would take the PF3 arm for PF15 and the PF4 arm for PF16, because
+            // CSSTRPFY deliberately folds PF13-PF24 onto PF1-PF12 - a fold this program never
+            // performs, since it does not copy CSSTRPFY at all. The folded token is still reported,
+            // as derived metadata, so a client can see how CSSTRPFY would have named the key.
+            state.setAidKey(PfKeyResolver.resolve(eibAid));
 
-            if (aidKey.isPresent() && aidKey.get() == PfKeyResolver.AidKey.ENTER) {
+            if (PfKeyResolver.isEnter(eibAid)) {
                 // L91-92: WHEN DFHENTER.
                 processEnterKey(state);
-            } else if (aidKey.isPresent() && aidKey.get() == PfKeyResolver.AidKey.PFK03) {
+            } else if (PfKeyResolver.isPf3(eibAid)) {
                 // L93-95: WHEN DFHPF3. Back to the administrative menu, by transfer.
                 state.setCommarea(state.commarea().withToProgram(ADMIN_MENU_PROGRAM));
                 returnToPrevScreen(state);
                 return state;
-            } else if (aidKey.isPresent() && aidKey.get() == PfKeyResolver.AidKey.PFK04) {
+            } else if (PfKeyResolver.isPf4(eibAid)) {
                 // L96-97: WHEN DFHPF4. Clear what was typed and repaint.
                 clearCurrentScreen(state);
             } else {
@@ -895,51 +903,6 @@ public class UserAddController {
 
         // L190-196: EXEC CICS SEND ... ERASE CURSOR.
         state.recordSend();
-    }
-
-    /**
-     * The five operator-typed values of the received map, keyed by {@code DFHMDF} label, for the code
-     * page judgement {@link #mainPara(UserAddRequest, byte, int)} makes before the flow begins.
-     *
-     * <p>Exactly the five fields {@code RECEIVE-USRADD-SCREEN} at {@code :201-209} takes from the
-     * terminal and {@code WRITE-USER-SEC-FILE} at {@code :238-274} then stores, in copybook declaration
-     * order. The six header fields are not judged: the program overwrites every one of them in
-     * {@code POPULATE-HEADER-INFO} at {@code :214-233} before the next send, so nothing a caller puts
-     * there survives to reach a record, and {@code ERRMSG} is output-only.
-     *
-     * <p>A {@code null} payload yields an empty map rather than an entry per field: a cold start has no
-     * received map at all, and a {@code null} value carries no character to judge.
-     *
-     * @param request the received map; may be {@code null}
-     * @return the values to judge, keyed by label; never {@code null}
-     */
-    private static Map<String, String> receivedMapValues(UserAddRequest request) {
-        if (request == null) {
-            return Map.of();
-        }
-        Map<String, String> values = new LinkedHashMap<>();
-        values.put(label(UserAddRequest.FNAME_FIELD), request.fName());
-        values.put(label(UserAddRequest.LNAME_FIELD), request.lName());
-        values.put(label(UserAddRequest.USERID_FIELD), request.userId());
-        values.put(label(UserAddRequest.PASSWD_FIELD), request.passwd());
-        values.put(label(UserAddRequest.USRTYPE_FIELD), request.usrType());
-        return values;
-    }
-
-    /**
-     * The {@code DFHMDF} label of a symbolic-map input item, which is the item name without its
-     * trailing {@code I}.
-     *
-     * <p>Derived from the item name rather than declared a second time, so the label and the item can
-     * never drift apart: {@code app/cpy-bms/COUSR01.CPY} names the input item {@code FNAMEI} and
-     * {@code app/bms/COUSR01.bms} names the field {@code FNAME}, and that relation holds for every
-     * field of all seventeen mapsets.
-     *
-     * @param itemName the {@code xxxI} item name, ending in {@code I}; must not be {@code null}
-     * @return the {@code DFHMDF} label
-     */
-    private static String label(String itemName) {
-        return itemName.substring(0, itemName.length() - 1);
     }
 
     /**
@@ -1405,23 +1368,38 @@ public class UserAddController {
     /**
      * Resolves the {@code EIBAID} byte that {@code COUSR01C:90} evaluates.
      *
-     * <p>Three sources, in precedence order:
+     * <p>Two sources, in precedence order:
      *
      * <ol>
-     *   <li>The {@value #EIBAID_PARAM} query parameter, as an unsigned {@code 0}-{@code 255} value.</li>
-     *   <li>{@link UserAddRequest#aid()}, the five-character token {@link PfKeyResolver.AidKey}
-     *       publishes. The inbound token is brought to its declared width by the codec's {@code PIC X}
-     *       rule first, so both {@code "PA1"} and {@code "PA1  "} resolve. A token naming no known key
-     *       maps to {@link CicsAid#DFHNULL}, which {@link PfKeyResolver#resolve(byte)} reports as no
-     *       match and which therefore reaches {@code WHEN OTHER} - the same answer the program gives
-     *       any key it does not handle.</li>
+     *   <li>The {@value #EIBAID_PARAM} query parameter, as an unsigned {@code 0}-{@code 255} value.
+     *       This is the authoritative form, because it is the form the program compares: {@code :90}'s
+     *       {@code EVALUATE EIBAID} tests {@code WHEN DFHPF3}, an equality against one byte.</li>
      *   <li>{@link CicsAid#DFHENTER}. A CICS terminal always presents some attention identifier, and
      *       {@code ENTER} is the only default that cannot reach a branch the operator could not have
      *       reached.</li>
      * </ol>
      *
+     * <h4>What {@link UserAddRequest#aid()} carries, and why it is no longer a token</h4>
+     * It carries the byte itself: the one character whose code point <em>is</em> {@code EIBAID}, which is
+     * what {@link PfKeyResolver#aidImage(byte)} renders. It used to carry the five-character
+     * {@code CCARD-AID} token, and a token cannot state the key faithfully - {@code app/cpy/CSSTRPFY.cpy}
+     * folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so {@code 'PFK03'}
+     * stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}; reverse-mapping it had to pick one, and
+     * picking {@code DFHPF3} sent a PF15 press down the {@code WHEN DFHPF3} arm that transfers to the
+     * administrative menu, where the source takes {@code WHEN OTHER} and answers the invalid-key message.
+     * {@code COUSR01C} does not copy {@code CSSTRPFY} at all, so it never sees a token: the token exists
+     * in this translation only as derived metadata on the way out, reported through
+     * {@link ProgramState#aidKey()}. A value of any other width therefore names no key this program can
+     * identify and is {@link CicsAid#DFHNULL}, which is {@code WHEN OTHER}.
+     *
+     * <p>An absent member, a blank one and a {@code LOW-VALUES} one all state no key at all, and take the
+     * {@link CicsAid#DFHENTER} default above. Neither {@code U+0020} nor {@code U+0000} is an attention
+     * identifier - every {@code DFHAID} constant lies at {@code X'40'} or above - so no key becomes
+     * unreachable by defaulting them.
+     *
      * @param eibAid  the query parameter value, or {@code null} if absent
-     * @param request the payload; may be {@code null}
+     * @param request the payload, whose one-character {@code aid} image is the second source; may be
+     *                {@code null}
      * @return the {@code EIBAID} byte to evaluate
      * @throws IllegalArgumentException if {@code eibAid} is outside {@code 0}-{@code 255}
      */
@@ -1434,75 +1412,34 @@ public class UserAddController {
             }
             return (byte) value;
         }
-        if (request != null && request.aid() != null && !request.aid().isEmpty()) {
-            return aidByteOfToken(request.aid());
-        }
-        return CicsAid.DFHENTER;
+        return eibAidOf(request == null ? null : request.aid());
     }
 
     /**
-     * Maps a {@link PfKeyResolver.AidKey} token back to the {@code EIBAID} byte it stands for.
+     * Reads the raw {@code EIBAID} byte out of the payload's {@code aid} member.
      *
-     * <p>Written as an exhaustive comparison against the tokens the enum itself publishes, so the two
-     * cannot drift apart, and routed through the codec's {@code PIC X} rule so an unpadded spelling
-     * matches the padded token. An unrecognised token yields {@link CicsAid#DFHNULL}, which is not an
-     * attention identifier the resolver knows.
+     * <p>One character is the byte; a blank, {@code LOW-VALUES} or absent value states no key and yields
+     * {@link CicsAid#DFHENTER}, the arm {@code app/cbl/COUSR01C.cbl:91} handles first; any other width, and
+     * any character above {@link #MAX_AID_CODE_POINT}, is {@link CicsAid#DFHNULL} and therefore
+     * {@code WHEN OTHER} at {@code :100-103}. See {@link #resolveEibAid(Integer, UserAddRequest)} for why
+     * a {@code CCARD-AID} token is not decoded back into a byte.
      *
-     * @param token the token as received
-     * @return the corresponding {@code EIBAID} byte, or {@link CicsAid#DFHNULL} if the token names no
-     *         known key
+     * @param aidImage the {@code aid} member as it arrived, or {@code null}
+     * @return the raw attention-identifier byte
      */
-    private byte aidByteOfToken(String token) {
-        String image = codec.movePicX(token, PfKeyResolver.AID_TOKEN_LENGTH);
-        if (image.equals(PfKeyResolver.AidKey.ENTER.token())) {
+    static byte eibAidOf(String aidImage) {
+        if (aidImage == null || aidImage.isBlank()
+                || aidImage.chars().allMatch(character -> character == 0)) {
             return CicsAid.DFHENTER;
         }
-        if (image.equals(PfKeyResolver.AidKey.CLEAR.token())) {
-            return CicsAid.DFHCLEAR;
+        if (aidImage.length() != RAW_AID_LENGTH) {
+            return CicsAid.DFHNULL;
         }
-        if (image.equals(PfKeyResolver.AidKey.PA1.token())) {
-            return CicsAid.DFHPA1;
+        char stated = aidImage.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return CicsAid.DFHNULL;
         }
-        if (image.equals(PfKeyResolver.AidKey.PA2.token())) {
-            return CicsAid.DFHPA2;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK01.token())) {
-            return CicsAid.DFHPF1;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK02.token())) {
-            return CicsAid.DFHPF2;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK03.token())) {
-            return CicsAid.DFHPF3;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK04.token())) {
-            return CicsAid.DFHPF4;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK05.token())) {
-            return CicsAid.DFHPF5;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK06.token())) {
-            return CicsAid.DFHPF6;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK07.token())) {
-            return CicsAid.DFHPF7;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK08.token())) {
-            return CicsAid.DFHPF8;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK09.token())) {
-            return CicsAid.DFHPF9;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK10.token())) {
-            return CicsAid.DFHPF10;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK11.token())) {
-            return CicsAid.DFHPF11;
-        }
-        if (image.equals(PfKeyResolver.AidKey.PFK12.token())) {
-            return CicsAid.DFHPF12;
-        }
-        return CicsAid.DFHNULL;
+        return (byte) stated;
     }
 
     /**
@@ -1522,45 +1459,46 @@ public class UserAddController {
     }
 
     /**
-     * Resolves {@code EIBCALEN}, the length of the communication area passed in, and refuses any
-     * statement the carrier does not support.
+     * Resolves {@code EIBCALEN} - the length of the area that arrived, tested for zero and nothing else.
      *
-     * <h4>Why a caller may not simply declare it</h4>
-     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
-     * actually passed. {@code app/cbl/COUSR01C.cbl:78} tests it against zero to decide whether the
-     * conversation had any state at all - and its zero arm transfers straight to the sign-on program -
-     * so a caller free to state it could discard state that was sent, or claim state that was not.
+     * <h4>Zero versus non-zero is the whole of what the source asks</h4>
+     * {@code app/cbl/COUSR01C.cbl:78} tests {@code EIBCALEN} against zero and against no other value:
+     * its zero arm transfers straight to the sign-on program, and its non-zero arm performs
+     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} at line 82. So the length that arrived
+     * is carried through unchanged and only the zero test is acted on.
      *
-     * <h4>Why the two accepted values are 0 and {@value NavigationContext#COMMAREA_LENGTH}</h4>
-     * Line 78 compares against zero and nothing else, and line 82's
-     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} reads the copybook's own
-     * {@value NavigationContext#COMMAREA_LENGTH} bytes. {@code COUSR01C} copies only
-     * {@code app/cpy/COCOM01Y.cpy} - it declares no extension group of its own, unlike its {@code CU02}
-     * and {@code CU03} siblings - so the area it is passed is exactly the copybook, and the request is
-     * in one of two states: absent, or complete at {@value NavigationContext#COMMAREA_LENGTH} bytes.
+     * <h4>Why no set of accepted lengths is enumerated</h4>
+     * {@code COUSR01C} copies only {@code app/cpy/COCOM01Y.cpy} - it declares no extension group of its
+     * own, unlike its {@code CU02} and {@code CU03} siblings - and its one caller, {@code COADM01C}, is
+     * the same shape [{@code app/cpy/COADM02Y.cpy:32}], so the length a real flow produces here is
+     * {@value NavigationContext#COMMAREA_LENGTH}. An acceptance set of exactly that value and zero
+     * therefore refused nothing real; it is still not written, because it is a rule the source does not
+     * have, and one EIB field answered by two different rules across the seventeen screens is how the
+     * sibling controllers came to refuse lengths their own callers really send.
+     *
+     * <p>A stated value must still agree with what actually arrived: {@code EIBCALEN} describes the area
+     * CICS passed, so a payload carrying a communication area cannot report zero and a payload carrying
+     * none cannot report a length. That is the one relation the parameter has to the body, and line 78
+     * branches on it.
      *
      * @param eibcalen the query parameter value, or {@code null} if absent
      * @param request  the payload; may be {@code null}
-     * @return {@code 0} or {@value NavigationContext#COMMAREA_LENGTH}
-     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
+     * @return zero when no communication area arrived, otherwise the length that arrived
+     * @throws IllegalArgumentException if the stated value is negative, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, UserAddRequest request) {
-        int carried = request == null || request.navigationContext() == null
-                ? 0
-                : NavigationContext.COMMAREA_LENGTH;
+        boolean carried = request != null && request.navigationContext() != null;
         if (eibcalen == null) {
-            return carried;
+            return carried ? NavigationContext.COMMAREA_LENGTH : 0;
         }
         int stated = eibcalen;
-        if (stated != 0 && stated != NavigationContext.COMMAREA_LENGTH) {
+        if (stated < 0) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
-                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
-                    + "program is either 0 or " + NavigationContext.COMMAREA_LENGTH
-                    + ", the whole of CARDDEMO-COMMAREA, since COUSR01C declares no extension of its own.");
+                    + ", and EIBCALEN is the length of the area CICS passed, which cannot be negative.");
         }
-        if (stated != carried) {
+        if ((stated == 0) == carried) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
-                    + " but the payload carries " + (carried == 0 ? "no" : "a")
+                    + " but the payload carries " + (carried ? "a" : "no")
                     + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
                     + "because app/cbl/COUSR01C.cbl:78 uses it to decide whether the conversation had any "
                     + "state at all.");

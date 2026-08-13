@@ -530,22 +530,21 @@ public class BillPaymentService {
     // =================================================================================================
 
     /**
-     * The outcome {@code STARTBR-TRANSACT-FILE} can observe, and therefore the one the payment sequence
-     * supplies to {@link #startbrTransactFile(PaymentState, Outcome)}.
+     * The outcome a successful {@code STARTBR} reports, named for the arm it selects.
      *
-     * <p>The COBOL captures {@code RESP} and {@code RESP2} on its {@code STARTBR} at lines 447-448 and
-     * evaluates them at 451-467. {@link TransactionRepository#startBrowse(BrowseDirection)} reports no
-     * status at all for a position - by design, and documented on that method: positioning performs no
-     * backend call, so there is nothing for it to report. The successful arm is consequently the only
-     * one a Java execution can reach.
+     * <p>Not a substitute for the real thing. The payment sequence passes
+     * {@link TransactionRepository.Browse#positioningOutcome()} - the outcome the {@code STARTBR}
+     * actually reported - to {@link #startbrTransactFile(PaymentState, Outcome)}, so all three arms of
+     * {@code app/cbl/COBIL00C.cbl:451-467} are reachable in production. This constant exists so a test
+     * asserting the successful arm names the value rather than the enum constant, and so the successful
+     * outcome has one spelling.
      *
-     * <p>The other two arms are <strong>kept</strong> rather than deleted, because deleting an arm of an
-     * ordered {@code EVALUATE} would change the guard chain, and they are reachable directly through
-     * {@link #startbrTransactFile(PaymentState, Outcome)} so that each is exercised and each stays
-     * provably correct. That method takes the outcome as an argument precisely so this remains true
-     * without inventing a status the repository never produces.
+     * <p>An earlier revision handed this value to the {@code EVALUATE} unconditionally, because
+     * positioning then performed no backend call and reported nothing. That made the {@code NOTFND} and
+     * {@code WHEN OTHER} arms unreachable outside a unit test - a payment against an empty or unreadable
+     * master reported success and went on to build a transaction identifier from {@code HIGH-VALUES}.
      */
-    public static final Outcome STARTBR_POSITIONING_OUTCOME = Outcome.OK;
+    public static final Outcome STARTBR_SUCCESSFUL_OUTCOME = Outcome.OK;
 
     /**
      * The single character COBOL {@code HIGH-VALUES} stands for: {@code X'FF'}, the highest byte value.
@@ -1105,7 +1104,10 @@ public class BillPaymentService {
         // and because :215 is a statement of the source that must be visible here.
         try (TransactionRepository.Browse browse =
                      transactionRepository.startBrowse(BrowseDirection.BACKWARD)) {
-            startbrTransactFile(state, STARTBR_POSITIONING_OUTCOME);
+            // The real STARTBR outcome, not an assumption: NOTFND and WHEN OTHER are both reachable, and
+            // both leave TRAN-ID holding the HIGH-VALUES of :212 - which is what makes :216 a data
+            // exception, exactly as it is on the mainframe.
+            startbrTransactFile(state, browse.positioningOutcome());
 
             // :214  PERFORM READPREV-TRANSACT-FILE
             readprevTransactFile(state, browse.readPrev());
@@ -1446,12 +1448,12 @@ public class BillPaymentService {
      * keyword. None is added here, and no inference is drawn about what a live CICS region "would" have
      * returned: the coded arms are reproduced and the reported outcome selects among them.
      *
-     * <p><strong>Why the outcome is a parameter.</strong>
-     * {@link TransactionRepository#startBrowse(BrowseDirection)} reports no status for a position,
-     * because positioning performs no backend call. The payment sequence therefore supplies
-     * {@link #STARTBR_POSITIONING_OUTCOME}, which is the only outcome a Java execution can observe. The
-     * other two arms are kept - deleting an arm of an ordered {@code EVALUATE} would change the guard
-     * chain - and are reachable through this method so that each one is exercised and stays correct.
+     * <p><strong>Why the outcome is a parameter.</strong> So that this method is the {@code EVALUATE} and
+     * nothing else, reachable from a plain unit test with a hand-built outcome and no browse in the path -
+     * the same separation every other paragraph on this class follows.
+     * {@link TransactionRepository#startBrowse(BrowseDirection)} issues the position as a real operation
+     * and reports what it found, so in production the argument is
+     * {@link TransactionRepository.Browse#positioningOutcome()} and all three arms are live.
      *
      * <p>Three arms: {@link Outcome#OK} continues, {@link Outcome#NOT_FOUND} rejects with
      * {@link #MSG_TRANSACTION_ID_NOT_FOUND}, and everything else writes the diagnostic and rejects with

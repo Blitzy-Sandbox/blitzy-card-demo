@@ -33,6 +33,7 @@ import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -122,6 +123,18 @@ import org.springframework.transaction.support.TransactionTemplate;
 @DisplayName("TransactionViewController - COTRN02C / CT02, which adds a transaction (risk R-B)")
 class TransactionViewControllerTest {
 
+
+    /**
+     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
+     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
+     *
+     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
+     * judges every value against the page in force rather than against a page of its own choosing: a
+     * mapper built for a test has to name the same one the profile does or it is not the production
+     * mapper.
+     */
+    private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
+
     /** A fixed instant, so every {@code FUNCTION CURRENT-DATE} read sees the same second. */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
@@ -171,7 +184,7 @@ class TransactionViewControllerTest {
     private static TransactionViewRequest enterRequest() {
         TransactionViewRequest request = new TransactionViewRequest();
         request.setNavigationContext(reenterCommarea());
-        request.setAid(PfKeyResolver.AidKey.ENTER.token());
+        request.setAid(PfKeyResolver.aidImage(CicsAid.DFHENTER));
         return request;
     }
 
@@ -217,7 +230,7 @@ class TransactionViewControllerTest {
      * @return the browse handle, so a caller can verify {@code ENDBR}
      */
     private TransactionRepository.Browse browseYielding(TransactionRepository.ReadResult result) {
-        TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+        TransactionRepository.Browse browse = positionedBrowse();
         when(browse.readPrev()).thenReturn(result);
         when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
                 .thenReturn(browse);
@@ -525,7 +538,7 @@ class TransactionViewControllerTest {
         @DisplayName("PF3 with no recorded caller goes to the main menu")
         void pf3WithoutACaller() {
             TransactionViewRequest request = enterRequest();
-            request.setAid(PfKeyResolver.AidKey.PFK03.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF3));
 
             ProgramState state = controller.mainPara(request);
 
@@ -537,7 +550,7 @@ class TransactionViewControllerTest {
         @DisplayName("PF3 with a recorded caller goes back to that caller")
         void pf3WithACaller() {
             TransactionViewRequest request = enterRequest();
-            request.setAid(PfKeyResolver.AidKey.PFK03.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF3));
             request.setNavigationContext(reenterCommarea().withFromProgram("COTRN00C"));
 
             ProgramState state = controller.mainPara(request);
@@ -549,7 +562,7 @@ class TransactionViewControllerTest {
         @DisplayName("PF4 blanks the form and repaints it")
         void pf4Clears() {
             TransactionViewRequest request = completeRequest();
-            request.setAid(PfKeyResolver.AidKey.PFK04.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF4));
 
             ProgramState state = controller.mainPara(request);
 
@@ -567,7 +580,7 @@ class TransactionViewControllerTest {
         @DisplayName("an unrecognised key reports CSMSG01Y's invalid-key text")
         void anyOtherKeyIsInvalid() {
             TransactionViewRequest request = enterRequest();
-            request.setAid(PfKeyResolver.AidKey.PFK12.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF12));
 
             ProgramState state = controller.mainPara(request);
 
@@ -575,6 +588,118 @@ class TransactionViewControllerTest {
             assertThat(state.message()).startsWith(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
             assertThat(state.screenSent()).isTrue();
             verifyNoInteractions(transactionRepository, cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("a raw PF15 byte is an invalid key, where the folded token took the PF3 exit")
+        void aRawUpperKeyIsNotItsFoldedPartner() {
+            // COTRN02C compares EIBAID inline at L133-152 against four DFHAID constants and names no
+            // DFHPF15, so on the terminal PF15 paints the invalid-key message. CSSTRPFY folds PF15 onto
+            // 'PFK03', so a request that could only send the token had to transfer instead.
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15)).contains(PfKeyResolver.AidKey.PFK03);
+
+            TransactionViewRequest request = enterRequest();
+            request.setAid(null);
+
+            ProgramState state = controller.mainPara(request, Byte.toUnsignedInt(CicsAid.DFHPF15));
+
+            assertThat(state.transferred())
+                    .as("L136 tests WHEN DFHPF3, and PF15 is not that byte")
+                    .isFalse();
+            assertThat(state.errFlagOn()).isTrue();
+            assertThat(state.message()).startsWith(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
+            verifyNoInteractions(transactionRepository, cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("a raw PF3 byte still transfers, so the lower key is unaffected")
+        void aRawLowerKeyStillTakesItsArm() {
+            TransactionViewRequest request = enterRequest();
+            request.setAid(null);
+
+            ProgramState state = controller.mainPara(request, Byte.toUnsignedInt(CicsAid.DFHPF3));
+
+            assertThat(state.transferred()).isTrue();
+            assertThat(state.response().getNextProgram()).isEqualTo("COMEN01C");
+        }
+
+        @ParameterizedTest(name = "a raw DFHPF{0} byte is an invalid key here")
+        @ValueSource(ints = {13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+        @DisplayName("all twelve upper function keys reach WHEN OTHER when stated as raw bytes")
+        void everyUpperKeyIsInvalidHere(int pfNumber) {
+            TransactionViewRequest request = enterRequest();
+            request.setAid(null);
+
+            ProgramState state =
+                    controller.mainPara(request, Byte.toUnsignedInt(functionKeyByte(pfNumber)));
+
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.errFlagOn()).isTrue();
+            verifyNoInteractions(transactionRepository, cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("the byte wins over the token, and a token restating it is accepted")
+        void theByteWinsAndAConsistentTokenIsAccepted() {
+            TransactionViewRequest request = enterRequest();
+            request.setAid(PfKeyResolver.AidKey.PFK03.token());
+
+            ProgramState state = controller.mainPara(request, Byte.toUnsignedInt(CicsAid.DFHPF15));
+
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.errFlagOn()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a token naming a different key is refused rather than discarded")
+        void aDisagreeingTokenIsRefused() {
+            TransactionViewRequest request = enterRequest();
+            request.setAid(PfKeyResolver.AidKey.PFK04.token());
+
+            assertThatThrownBy(
+                    () -> controller.mainPara(request, Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("aid");
+
+            verifyNoInteractions(transactionRepository, cardXrefRepository);
+        }
+
+        @ParameterizedTest(name = "a stated {0} is refused")
+        @ValueSource(ints = {-1, 256, 4096})
+        @DisplayName("a value that is not one byte is refused rather than narrowed")
+        void anImpossibleByteIsRefused(int stated) {
+            TransactionViewRequest request = enterRequest();
+            request.setAid(null);
+
+            assertThatThrownBy(() -> controller.mainPara(request, stated))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+
+            verifyNoInteractions(transactionRepository, cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("both spellings of the parameter reach the same byte through the route")
+        void bothSpellingsAreHonoured() {
+            TransactionViewRequest canonical = enterRequest();
+            canonical.setAid(null);
+            assertThat(controller.addTransaction(canonical,
+                    Byte.toUnsignedInt(CicsAid.DFHPF15), null).screen().getErrmsgo())
+                    .startsWith(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
+
+            TransactionViewRequest alternate = enterRequest();
+            alternate.setAid(null);
+            assertThat(controller.addTransaction(alternate, null,
+                    Byte.toUnsignedInt(CicsAid.DFHPF15)).screen().getErrmsgo())
+                    .startsWith(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
+        }
+
+        /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
+        private static byte functionKeyByte(int pfNumber) {
+            try {
+                return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
+            } catch (ReflectiveOperationException absent) {
+                throw new AssertionError("CicsAid does not declare DFHPF" + pfNumber, absent);
+            }
         }
 
         @Test
@@ -1184,7 +1309,7 @@ class TransactionViewControllerTest {
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> controller.addTransaction((ProgramState) null))
                     .isInstanceOf(NullPointerException.class);
-            assertThatThrownBy(() -> controller.addTransaction((TransactionViewRequest) null))
+            assertThatThrownBy(() -> controller.addTransaction((TransactionViewRequest) null, null, null))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> controller.copyLastTranData(null))
                     .isInstanceOf(NullPointerException.class);
@@ -1433,7 +1558,7 @@ class TransactionViewControllerTest {
             // L446's EVALUATE classifies a CICS response; it does not wrap the command, so a
             // driver-level refusal propagates and bypasses L447's ENDBR. Under CICS the unended browse
             // costs nothing because task termination releases it, and there is no implicit release here.
-            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenThrow(new IllegalStateException("the read was refused"));
             when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
                     .thenReturn(browse);
@@ -1454,7 +1579,7 @@ class TransactionViewControllerTest {
         void aRejectingStartbrStillReleasesTheBrowse() {
             // startbrOutcome's OTHER arm sends a map and ends the task, so L447's ENDBR is skipped by
             // the taskEnded guard rather than by an exception.
-            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.endOfFile(
                     TransactionRepository.CICS_FILE_NAME));
             when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
@@ -1477,7 +1602,7 @@ class TransactionViewControllerTest {
             state.setCommarea(reenterCommarea());
             state.setActidinI(ACCOUNT_ID);
             xrefByAccountFound();
-            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenThrow(new IllegalStateException("refused"));
             when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
                     .thenReturn(browse);
@@ -1734,7 +1859,7 @@ class TransactionViewControllerTest {
                     TransactionRepository.CICS_FILE_NAME, populatedRecord()));
             TransactionViewRequest request = enterRequest();
             request.setActidin(ACCOUNT_ID);
-            request.setAid(PfKeyResolver.AidKey.PFK05.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF5));
 
             ProgramState state = controller.mainPara(request);
 
@@ -1767,7 +1892,7 @@ class TransactionViewControllerTest {
             TransactionViewRequest request = enterRequest();
             request.setActidin(ACCOUNT_ID);
             request.setConfirm("Y");
-            request.setAid(PfKeyResolver.AidKey.PFK05.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF5));
 
             ProgramState state = controller.mainPara(request);
 
@@ -1780,7 +1905,7 @@ class TransactionViewControllerTest {
         void aKeyFailureStopsTheCopy() {
             TransactionViewRequest request = enterRequest();
             request.setActidin("NOTNUMERIC ");
-            request.setAid(PfKeyResolver.AidKey.PFK05.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF5));
 
             ProgramState state = controller.mainPara(request);
 
@@ -1797,7 +1922,7 @@ class TransactionViewControllerTest {
                     TransactionRepository.PERMANENT_ERROR_STATUS));
             TransactionViewRequest request = enterRequest();
             request.setActidin(ACCOUNT_ID);
-            request.setAid(PfKeyResolver.AidKey.PFK05.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF5));
 
             ProgramState state = controller.mainPara(request);
 
@@ -2095,7 +2220,11 @@ class TransactionViewControllerTest {
             assertThat(TransactionViewController.isSpacesOrLowValues("")).isTrue();
             assertThat(TransactionViewController.isSpacesOrLowValues("   ")).isTrue();
             assertThat(TransactionViewController.isSpacesOrLowValues("\u0000\u0000")).isTrue();
-            assertThat(TransactionViewController.isSpacesOrLowValues(" \u0000 ")).isTrue();
+            // = SPACES OR LOW-VALUES expands to two WHOLE-ITEM comparisons, so a mixture equals neither
+            // constant and the condition is false - the item holds a value as far as the source is
+            // concerned.
+            assertThat(TransactionViewController.isSpacesOrLowValues(" \u0000 ")).isFalse();
+            assertThat(TransactionViewController.isSpacesOrLowValues("\u0000 \u0000")).isFalse();
             assertThat(TransactionViewController.isSpacesOrLowValues(" x ")).isFalse();
 
             assertThat(TransactionViewController.isNumericClass(null)).isFalse();
@@ -2144,16 +2273,29 @@ class TransactionViewControllerTest {
         }
 
         @Test
-        @DisplayName("the AID reconstruction knows the four keys this program acts on, and nothing else")
+        @DisplayName("the one-character aid image IS the EIBAID byte, and nothing else is a byte")
         void theAidReconstruction() {
-            assertThat(TransactionViewController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHENTER);
-            assertThat(TransactionViewController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHPF3);
-            assertThat(TransactionViewController.eibAidOf("PFK04")).isEqualTo(CicsAid.DFHPF4);
-            assertThat(TransactionViewController.eibAidOf("PFK05")).isEqualTo(CicsAid.DFHPF5);
-            assertThat(TransactionViewController.eibAidOf("PFK12")).isEqualTo(CicsAid.DFHNULL);
-            assertThat(TransactionViewController.eibAidOf("CLEAR")).isEqualTo(CicsAid.DFHNULL);
+            // The payload carries the byte itself, so every AID round-trips - including the twelve high
+            // function keys the CCARD-AID token folds onto their low twins.
+            assertThat(TransactionViewController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHENTER)))
+                    .isEqualTo(CicsAid.DFHENTER);
+            assertThat(TransactionViewController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF3)))
+                    .isEqualTo(CicsAid.DFHPF3);
+            assertThat(TransactionViewController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF15)))
+                    .as("PF15 is not PF3: COTRN02C compares EIBAID and takes WHEN OTHER at :132")
+                    .isEqualTo(CicsAid.DFHPF15);
+            assertThat(TransactionViewController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPA3)))
+                    .as("a byte CSSTRPFY names in no branch is still a byte a terminal can send")
+                    .isEqualTo(CicsAid.DFHPA3);
+
+            // A five-character CCARD-AID token is not one byte, so it names no key: WHEN OTHER.
+            assertThat(TransactionViewController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionViewController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionViewController.eibAidOf("")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionViewController.eibAidOf(null)).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionViewController.eibAidOf(String.valueOf((char) 0x01F3)))
+                    .as("a character above the one-byte AID space is never narrowed onto DFHPF3")
+                    .isEqualTo(CicsAid.DFHNULL);
         }
 
         @Test
@@ -2443,7 +2585,7 @@ class TransactionViewControllerTest {
         @DisplayName("browseOpen reports a positioned browse as well as an absent one")
         void browseOpenReportsBothStates() {
             ProgramState state = new ProgramState(controller.codec());
-            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            TransactionRepository.Browse browse = positionedBrowse();
 
             assertThat(state.browseOpen()).isFalse();
             state.openBrowse(browse);
@@ -2594,7 +2736,7 @@ class TransactionViewControllerTest {
         /** @return the module's own JSON mapping, so the adapter is asserted through real converters */
         private ObjectMapper carddemoMapper() {
             Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
-            new WebConfig().carddemoJacksonCustomizer().customize(builder);
+            new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET).customize(builder);
             return builder.build();
         }
 
@@ -2672,7 +2814,7 @@ class TransactionViewControllerTest {
             writeSucceeds();
 
             ScreenResponse<TransactionViewResponse> answer =
-                    controller.addTransaction(completeRequest());
+                    controller.addTransaction(completeRequest(), null, null);
 
             TransactionViewResponse viaAdapter = answer.screen();
             assertThat(viaAdapter.getErrmsgo()).startsWith("Transaction added successfully.");
@@ -2741,8 +2883,28 @@ class TransactionViewControllerTest {
          */
         private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
-        /** The identifier an empty master yields: READPREV reports ENDFILE, zero, plus one. */
-        private static final String FIRST_TRAN_ID = "0000000000000001";
+        /**
+         * The identifier seeded into the master before each body runs, and therefore the high-water
+         * mark the add path's browse finds.
+         *
+         * <p>The master is seeded rather than left empty because the {@code STARTBR} is a real
+         * operation with a real outcome. {@code app/cbl/COTRN02C.cbl:444} moves {@code HIGH-VALUES}
+         * into {@code TRAN-ID} and {@code :445} positions on it; {@code GTEQ} positioning over an
+         * <em>empty</em> KSDS finds no record in either direction, so {@code :655-660} sets
+         * {@code WS-ERR-FLG}, paints 'Transaction ID NOT found...' and sends - and
+         * {@code SEND-TRNADD-SCREEN} carries {@code EXEC CICS RETURN}, so the task ends and nothing is
+         * added. That is the legacy program's own behaviour over an empty master, and it leaves
+         * {@code :689}'s {@code MOVE ZEROS TO TRAN-ID} unreachable on that path - preserved rather than
+         * repaired, per practice B5. CardDemo ships {@code TRANSACT} populated, so the add path this
+         * class exists to exercise is only reachable over a master that holds a record.
+         */
+        private static final String SEEDED_TRAN_ID = "0000000000000001";
+
+        /** What the add derives from the seeded mark: READPREV returns it, plus one. */
+        private static final String ADDED_TRAN_ID = "0000000000000002";
+
+        /** What a second add derives, once the first has committed and advanced the mark. */
+        private static final String SECOND_ADDED_TRAN_ID = "0000000000000003";
 
         @Test
         @DisplayName("the added transaction is still there after the request, on a pool that does not "
@@ -2755,20 +2917,22 @@ class TransactionViewControllerTest {
             // the truth about the statement it executed.
             withTransactionalContext(true, (controller, verifier) -> {
                 ScreenResponse<TransactionViewResponse> response =
-                        controller.addTransaction(completeRequest());
+                        controller.addTransaction(completeRequest(), null, null);
 
                 assertThat(response.screen().getErrmsgo())
                         .as("the screen the operator is shown")
                         .startsWith("Transaction added successfully.  Your Tran ID is "
-                                + FIRST_TRAN_ID + ".");
+                                + ADDED_TRAN_ID + ".");
                 assertThat(recordsIn(verifier))
-                        .as("and the record the screen promised, read back on another connection")
-                        .hasSize(1)
-                        .allSatisfy(image -> {
-                            assertThat(image).as("gate G19 - the copybook's 350 bytes")
-                                    .hasSize(TranRecord.RECORD_LENGTH);
-                            assertThat(image).startsWith(FIRST_TRAN_ID);
-                        });
+                        .as("the seeded mark and the record the screen promised, read back on another "
+                                + "connection")
+                        .hasSize(2)
+                        .allSatisfy(image -> assertThat(image)
+                                .as("gate G19 - the copybook's 350 bytes")
+                                .hasSize(TranRecord.RECORD_LENGTH))
+                        .satisfiesExactlyInAnyOrder(
+                                seeded -> assertThat(seeded).startsWith(SEEDED_TRAN_ID),
+                                added -> assertThat(added).startsWith(ADDED_TRAN_ID));
             });
         }
 
@@ -2787,13 +2951,14 @@ class TransactionViewControllerTest {
             // successful screen over an empty dataset.
             withTransactionalContext(false, (controller, verifier) -> {
                 assertThatIllegalStateException()
-                        .isThrownBy(() -> controller.addTransaction(completeRequest()))
+                        .isThrownBy(() -> controller.addTransaction(completeRequest(), null, null))
                         .withMessageContaining("no transaction is open on this thread")
                         .withMessageContaining("changes stored records");
 
                 assertThat(recordsIn(verifier))
-                        .as("and nothing was written, so there is nothing to have lost")
-                        .isEmpty();
+                        .as("and nothing was written, so only the seeded mark remains")
+                        .hasSize(1)
+                        .allSatisfy(image -> assertThat(image).startsWith(SEEDED_TRAN_ID));
             });
         }
 
@@ -2807,21 +2972,22 @@ class TransactionViewControllerTest {
             // probe and the write have to be on the same connection AND the first unit has to have
             // finished.
             withTransactionalContext(true, (controller, verifier) -> {
-                controller.addTransaction(completeRequest());
+                controller.addTransaction(completeRequest(), null, null);
 
                 ScreenResponse<TransactionViewResponse> second =
-                        controller.addTransaction(completeRequest());
+                        controller.addTransaction(completeRequest(), null, null);
 
                 assertThat(second.screen().getErrmsgo())
                         .as("the high-water mark advanced, so this is an add and not a duplicate")
                         .startsWith("Transaction added successfully.  Your Tran ID is "
-                                + "0000000000000002.");
+                                + SECOND_ADDED_TRAN_ID + ".");
                 assertThat(recordsIn(verifier))
-                        .as("both records are durable")
-                        .hasSize(2)
+                        .as("both added records are durable, on top of the seeded mark")
+                        .hasSize(3)
                         .satisfiesExactlyInAnyOrder(
-                                first -> assertThat(first).startsWith(FIRST_TRAN_ID),
-                                next -> assertThat(next).startsWith("0000000000000002"));
+                                seeded -> assertThat(seeded).startsWith(SEEDED_TRAN_ID),
+                                first -> assertThat(first).startsWith(ADDED_TRAN_ID),
+                                next -> assertThat(next).startsWith(SECOND_ADDED_TRAN_ID));
             });
         }
 
@@ -2840,7 +3006,7 @@ class TransactionViewControllerTest {
 
                 ScreenResponse<TransactionViewResponse> response = abandoned.execute(status -> {
                     ScreenResponse<TransactionViewResponse> answer =
-                            controller.addTransaction(completeRequest());
+                            controller.addTransaction(completeRequest(), null, null);
                     status.setRollbackOnly();
                     return answer;
                 });
@@ -2850,8 +3016,10 @@ class TransactionViewControllerTest {
                         .as("the program is unchanged - it still reports what it did")
                         .startsWith("Transaction added successfully.");
                 assertThat(recordsIn(verifier))
-                        .as("but the unit of work was abandoned, so the insert went with it")
-                        .isEmpty();
+                        .as("but the unit of work was abandoned, so the insert went with it and only "
+                                + "the seeded mark is left")
+                        .hasSize(1)
+                        .allSatisfy(image -> assertThat(image).startsWith(SEEDED_TRAN_ID));
             });
         }
 
@@ -2863,7 +3031,8 @@ class TransactionViewControllerTest {
             // instance and advise nothing at all - and it would also put a transaction in the path of
             // every parity test, which drive mainPara directly against a stubbed repository.
             assertThat(TransactionViewController.class
-                    .getMethod("addTransaction", TransactionViewRequest.class)
+                    .getMethod("addTransaction", TransactionViewRequest.class, Integer.class,
+                            Integer.class)
                     .isAnnotationPresent(Transactional.class))
                     .isTrue();
             assertThat(TransactionViewController.class
@@ -2879,7 +3048,8 @@ class TransactionViewControllerTest {
                     .as("a final class cannot be proxied by CGLIB, so the annotation would be inert")
                     .isFalse();
             assertThat(Modifier.isFinal(TransactionViewController.class
-                    .getMethod("addTransaction", TransactionViewRequest.class).getModifiers()))
+                    .getMethod("addTransaction", TransactionViewRequest.class, Integer.class,
+                            Integer.class).getModifiers()))
                     .as("nor can a final method be overridden by the proxy")
                     .isFalse();
         }
@@ -2919,6 +3089,9 @@ class TransactionViewControllerTest {
                                 schema.execute("CREATE TABLE \"" + dataset + "\" (\"" + IMAGE_COLUMN
                                         + "\" CHAR(" + TranRecord.RECORD_LENGTH + "))");
                             }
+                            // One record, so :445's HIGH-VALUES positioning has something to land on.
+                            schema.update("INSERT INTO \"" + MASTER_DS + "\" (\"" + IMAGE_COLUMN
+                                    + "\") VALUES (?)", seededImage());
                         });
 
                 AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
@@ -2939,6 +3112,11 @@ class TransactionViewControllerTest {
                             new JdbcTemplate(opened));
                 }
             }
+        }
+
+        /** @return the 350-byte image of the seeded high-water-mark record */
+        private static String seededImage() {
+            return new String(recordWithId(SEEDED_TRAN_ID).encode(CHARSET), CHARSET);
         }
 
         /**
@@ -3264,7 +3442,7 @@ class TransactionViewControllerTest {
         void theCopyWalksTheSameSequence() {
             TransactionViewRequest request = enterRequest();
             request.setActidin(ACCOUNT_ID);
-            request.setAid(PfKeyResolver.AidKey.PFK05.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF5));
             xrefByAccountFound();
             TransactionRepository.Browse browse = browseWithLastId();
 
@@ -3818,4 +3996,27 @@ class TransactionViewControllerTest {
     private static String xrefImageOf(CardXrefRecord record) {
         return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
     }
+
+    /**
+     * A mocked {@code TRANSACT} browse whose {@code STARTBR} positioned successfully.
+     *
+     * <p>{@link TransactionRepository#startBrowse(TransactionRepository.BrowseDirection)} issues the
+     * position as a real operation and reports what it found, so a handle carries a positioning outcome
+     * that its caller's {@code EVALUATE WS-RESP-CD} branches on. A bare mock reports {@code null} for it,
+     * which is not a state a real handle can be in - so every mock is built here with the successful arm
+     * stubbed, and a test that wants {@code NOTFND} or {@code WHEN OTHER} re-stubs it.
+     *
+     * @return the mock; never {@code null}
+     */
+    private static TransactionRepository.Browse positionedBrowse() {
+        TransactionRepository.Browse handle = mock(TransactionRepository.Browse.class);
+        when(handle.positioningResult()).thenReturn(
+                TransactionRepository.ReadResult.found(TransactionRepository.CICS_FILE_NAME,
+                        new com.vsergeychik.carddemo.transaction.model.TranRecord(
+                                java.nio.charset.StandardCharsets.US_ASCII)));
+        when(handle.positioningOutcome()).thenReturn(FileStatus.Outcome.OK);
+        when(handle.isStarted()).thenReturn(true);
+        return handle;
+    }
+
 }

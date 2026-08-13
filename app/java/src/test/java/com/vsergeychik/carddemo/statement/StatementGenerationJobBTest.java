@@ -1604,12 +1604,92 @@ class StatementGenerationJobBTest {
         void keyedRowWithoutARecordImageIsReported() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.CUSTFILE_DD;
-            backend(template).storing(CUST_DS, Arrays.asList((String) null));
+            // The driver is made to hand the matched row back despite its column holding nothing, which
+            // real SQL cannot do - that is the point: this is the subject's defensive guard for a driver
+            // that misbehaves, and it is reached deliberately rather than by an unfaithful stub.
+            backend(template).storing(CUST_DS, Arrays.asList((String) null))
+                    .presentingUnreadableRowsToKeyedReads(CUST_DS);
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
             subject.open(session, dd);
 
             assertThat(subject.readByKey(session, dd, "123456789", 9).rc())
+                    .isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: an unreadable row is not reported as an absent key")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.CUSTFILE_DD;
+            // The faithful shape: SQL evaluates NULL LIKE ? as UNKNOWN, so the keyed read matches nothing
+            // even though the dataset holds a row. FD-CUST-ID lives inside that row's image, so its key
+            // cannot be known and may be the very one asked for.
+            backend(template).storing(CUST_DS, Arrays.asList((String) null));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            Response response = subject.readByKey(session, dd, "123456789", 9);
+
+            assertThat(response.rc())
+                    .as("'23' would assert this dataset holds no such customer")
+                    .isNotEqualTo(FileStatus.NOT_FOUND)
+                    .isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
+            assertThat(response.fldt()).isEqualTo(StatementGenerationJobB.SPACES_FLDT);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key still reports '23'")
+        void aGenuinelyAbsentKeyStillReportsNotFound() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.CUSTFILE_DD;
+            backend(template).storing(CUST_DS,
+                    List.of(row("123456789", StatementGenerationJobB.CUSTFILE_RECORD_LENGTH)));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            // No row of the dataset is unreadable, so the absence is established and '23' stands.
+            assertThat(subject.readByKey(session, dd, "999999999", 9).rc())
+                    .isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a refused probe is reported rather than reported as absent")
+        void aRefusedProbeIsNotReportedAsAbsent() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.CUSTFILE_DD;
+            backend(template).storing(CUST_DS,
+                            List.of(row("123456789", StatementGenerationJobB.CUSTFILE_RECORD_LENGTH)))
+                    .failingOnProbe(CUST_DS);
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            // The probe established nothing, so the absence stays unproved and must not become '23'.
+            assertThat(subject.readByKey(session, dd, "999999999", 9).rc())
+                    .isNotEqualTo(FileStatus.NOT_FOUND)
+                    .isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a probe answering with no result object is reported, not absent")
+        void aProbeYieldingNoResultObjectIsNotReportedAsAbsent() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.CUSTFILE_DD;
+            // The read is answered for real - no row matches - and only the probe answers with no result
+            // object, which is the one way to reach the probe's own guard: were every query on the dataset
+            // to answer with nothing, the keyed read's identical guard would fire first.
+            backend(template).storing(CUST_DS,
+                            List.of(row("123456789", StatementGenerationJobB.CUSTFILE_RECORD_LENGTH)))
+                    .probeYieldingNothing(CUST_DS);
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            assertThat(subject.readByKey(session, dd, "999999999", 9).rc())
+                    .isNotEqualTo(FileStatus.NOT_FOUND)
                     .isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
         }
 
@@ -3198,6 +3278,28 @@ class StatementGenerationJobBTest {
         /** The datasets that describe no record-image column. */
         private final Set<String> describingNoColumn = new LinkedHashSet<>();
 
+        /** The datasets that refuse the unreadable-row probe, having answered the read itself. */
+        private final Set<String> failingOnProbe = new LinkedHashSet<>();
+
+        /**
+         * The datasets whose unreadable-row probe - and only the probe - answers with no result object.
+         *
+         * <p>Separate from {@link #yieldingNothing}, which applies to every query on the dataset: there the
+         * keyed read's own no-result-object guard fires first and the probe is never reached, so the
+         * probe's guard would stay unexercised.
+         */
+        private final Set<String> probeYieldingNothing = new LinkedHashSet<>();
+
+        /**
+         * The datasets whose keyed {@code LIKE} may return a seeded {@code null} row.
+         *
+         * <p>Off by default because real SQL cannot do it - every comparison against a null is
+         * {@code UNKNOWN}, so an unreadable row is invisible to a keyed predicate, and that is exactly
+         * why the not-found answer has to be proved. Switched on only to reach the subject's defensive
+         * guard for a driver that hands back a matched row carrying no value.
+         */
+        private final Set<String> unreadableRowsMatchKeyedReads = new LinkedHashSet<>();
+
         /** Every statement sent, in order. */
         private final List<String> statementsSent = new ArrayList<>();
 
@@ -3222,6 +3324,21 @@ class StatementGenerationJobBTest {
 
         Backend failing(String dataset) {
             failing.add(dataset);
+            return this;
+        }
+
+        Backend failingOnProbe(String dataset) {
+            failingOnProbe.add(dataset);
+            return this;
+        }
+
+        Backend probeYieldingNothing(String dataset) {
+            probeYieldingNothing.add(dataset);
+            return this;
+        }
+
+        Backend presentingUnreadableRowsToKeyedReads(String dataset) {
+            unreadableRowsMatchKeyedReads.add(dataset);
             return this;
         }
 
@@ -3290,6 +3407,18 @@ class StatementGenerationJobBTest {
                 return null;
             }
             ResultSetExtractor<?> extractor = invocation.getArgument(1);
+            if (isUnreadableRowProbe(statement)) {
+                // The probe binds no operand: its predicate is IS NULL and names no key. It is answered
+                // per dataset, because each DD owns its own relation and proves its own absence.
+                if (failingOnProbe.contains(datasetOf(statement))) {
+                    throw new DataAccessResourceFailureException(
+                            "the unreadable-row probe cannot be answered");
+                }
+                if (probeYieldingNothing.contains(datasetOf(statement))) {
+                    return null;
+                }
+                return extractor.extractData(rowsResultSet(unreadableRowsOf(statement)));
+            }
             if (statement.contains("LIKE")) {
                 String pattern = captured.get(0);
                 patternsBound.add(pattern);
@@ -3311,7 +3440,9 @@ class StatementGenerationJobBTest {
                 if (matches.size() == KEYED_LIMIT) {
                     break;
                 }
-                if (stored == null || matcher.matcher(stored).matches()) {
+                if (stored == null
+                        ? unreadableRowsMatchKeyedReads.contains(datasetOf(statement))
+                        : matcher.matcher(stored).matches()) {
                     matches.add(stored);
                 }
             }
@@ -3363,6 +3494,29 @@ class StatementGenerationJobBTest {
 
         private List<String> rowsOf(String sql) {
             return stored.getOrDefault(datasetOf(sql), List.of());
+        }
+
+        /**
+         * The rows a dataset holds and cannot present: what {@code ... IS NULL} selects, capped at the one
+         * row the probe asks for.
+         */
+        private List<String> unreadableRowsOf(String sql) {
+            for (String stored : rowsOf(sql)) {
+                if (stored == null) {
+                    return Arrays.asList((String) null);
+                }
+            }
+            return List.of();
+        }
+
+        /**
+         * Whether a statement is the unreadable-row probe rather than a read: recognised by the trailing
+         * {@code IS NULL} predicate, which is the whole of
+         * {@link com.vsergeychik.carddemo.common.DatasetRelation#selectUnreadableRows(String)} and which
+         * neither the keyed {@code LIKE} nor either browse form ends with.
+         */
+        private static boolean isUnreadableRowProbe(String sql) {
+            return sql.endsWith(" IS NULL");
         }
 
         /** Which seeded dataset a statement addresses, read from the delimited identifier it carries. */

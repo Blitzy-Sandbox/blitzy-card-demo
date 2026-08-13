@@ -35,7 +35,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -249,16 +248,11 @@ public final class UserMenuController {
      */
     static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
 
-    /**
-     * The {@code PIC X} move rule, applied to the inbound {@code CCARD-AID} token so that an unpadded
-     * spelling matches the copybook literal.
-     *
-     * <p>{@code static final} and immutable, and {@link FixedWidthCodec#movePicX(String, int)} is a pure
-     * {@link String} operation that never consults the charset, so the code page named here selects
-     * nothing (practice B9: static final and immutable is not shared mutable state).
-     */
-    private static final FixedWidthCodec AID_TOKEN_RULES =
-            new FixedWidthCodec(StandardCharsets.US_ASCII);
+    /** The width of the raw {@code EIBAID} form of the payload's {@code aid} member: one character. */
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
 
     /** The lowest value an unsigned {@code EIBAID} byte can carry. */
     private static final int AID_MIN = 0;
@@ -834,31 +828,41 @@ public final class UserMenuController {
     }
 
     /**
-     * Maps a {@code CCARD-AID} token back onto the {@code EIBAID} byte it stands for.
+     * Reads the raw {@code EIBAID} byte out of the payload's {@code aid} member.
      *
-     * <p>The inverse of {@link PfKeyResolver#resolve(byte)}, written against the tokens
-     * {@link AidKey} itself publishes so the two cannot drift apart, and matched on the token's declared
-     * {@code PIC X(5)} image so that both {@code "PA1"} and {@code "PA1  "} resolve - the copybook
-     * literal carries two trailing spaces and a client may send either form.
-     *
-     * <p>Three outcomes, and the distinction between the second and the third is the whole point:
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention
+     * identifier, so {@code DFHENTER} travels as {@code U+007D}, {@code DFHPF8} as {@code U+00F8} and
+     * {@code DFHPF20} as {@code U+00C8}, and the {@code EVALUATE EIBAID} at {@code :122-137} compares
+     * exactly that. Three outcomes, and the distinction between the second and the third is the whole
+     * point:
      *
      * <ul>
-     *   <li><strong>No carrier at all</strong> - {@code null}, or a token that is blank or
+     *   <li><strong>No carrier at all</strong> - {@code null}, or a value that is blank or
      *       {@code LOW-VALUES} - yields {@link OptionalInt#empty()}, and the caller falls back to
      *       {@link CicsAid#DFHENTER}. A CICS terminal always presents some AID and blank is not one, so
      *       a payload that states no key is a payload that has not said which key was pressed; ENTER is
      *       the arm this program handles first [{@code :123}] and the only default that cannot reach a
      *       branch the operator could not have reached.</li>
-     *   <li><strong>A recognised token</strong> yields the byte it stands for.</li>
-     *   <li><strong>A token matching none of the sixteen</strong> yields {@link CicsAid#DFHNULL}, which
+     *   <li><strong>One character</strong> yields its code point, folding nothing: {@code DFHPF20} stays
+     *       distinct from {@code DFHPF8}, which is what {@code EIBAID = DFHPF8} means on a terminal.</li>
+     *   <li><strong>Any other width</strong> yields {@link CicsAid#DFHNULL}, which
      *       {@link PfKeyResolver#resolve(byte)} matches to no condition name at all. That is the
-     *       faithful representation of "a key this program does not handle", and it lands on
+     *       faithful representation of "a key this program cannot identify", and it lands on
      *       {@code WHEN OTHER} at {@code :133-137} - error flag, cursor to {@code USRIDINL}, the
      *       invalid-key message, re-send - exactly as an unhandled key does on a terminal.</li>
      * </ul>
      *
-     * <p>The third outcome used to be folded into the first, so an unintelligible token was silently
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK07'} stands for {@code DFHPF7} <em>and</em> {@code DFHPF19} and
+     * {@code 'PFK08'} for {@code DFHPF8} <em>and</em> {@code DFHPF20}. Decoding it had to choose, and
+     * choosing the low key of each pair paged this screen backwards or forwards for a
+     * {@code PF19}/{@code PF20} press the source answers with {@code WHEN OTHER} at {@code :133-137}.
+     * {@code COUSR00C} does not copy {@code CSSTRPFY}: it compares {@code EIBAID} itself, so the fold is
+     * not its behaviour and there is nothing to invert. The token survives as derived metadata on the way
+     * out, where {@link PfKeyResolver#resolve(byte)} produces it.
+     *
+     * <p>The third outcome used to be folded into the first, so an unintelligible value was silently
      * executed as ENTER: {@code "PF8  "} - a plausible spelling of the token this screen's own paging
      * key would carry - ran {@code PROCESS-ENTER-KEY} and answered {@code 200} with no message, and
      * {@code WHEN OTHER} was unreachable over HTTP on this route while its sibling
@@ -867,55 +871,29 @@ public final class UserMenuController {
      * "invalid key" text is not a caller's mistake dressed up as an operator message - it is the answer
      * the source writes for precisely this input.
      *
-     * @param token the token as received, of any length, or {@code null}
-     * @return the byte the token stands for, {@link CicsAid#DFHNULL} when it names a key this program
-     *         does not handle, or {@link OptionalInt#empty()} when it states no key at all
+     * <p>A character above {@link #MAX_AID_CODE_POINT} is reported as {@code DFHNULL} rather than
+     * narrowed: {@code EIBAID} is one byte, so a cast of {@code U+01F8} would keep its low eight bits and
+     * land on {@code 0xF8}, which <em>is</em> {@code DFHPF8}, the key {@code :127} pages forward on.
+     *
+     * @param token the {@code aid} member as received, of any length, or {@code null}
+     * @return the byte it states, {@link CicsAid#DFHNULL} when it names a key this program cannot
+     *         identify, or {@link OptionalInt#empty()} when it states no key at all
      */
     static OptionalInt aidByteOfToken(String token) {
         if (token == null) {
             return OptionalInt.empty();
         }
-        String image = AID_TOKEN_RULES.movePicX(token, PfKeyResolver.AID_TOKEN_LENGTH);
-        if (image.isBlank() || image.chars().allMatch(character -> character == 0)) {
+        if (token.isBlank() || token.chars().allMatch(character -> character == 0)) {
             return OptionalInt.empty();
         }
-        for (AidKey candidate : AidKey.values()) {
-            if (candidate.token().equals(image)) {
-                return OptionalInt.of(canonicalByteOf(candidate) & 0xFF);
-            }
+        if (token.length() != RAW_AID_LENGTH) {
+            return OptionalInt.of(CicsAid.DFHNULL & 0xFF);
         }
-        return OptionalInt.of(CicsAid.DFHNULL & 0xFF);
-    }
-
-    /**
-     * The {@code EIBAID} byte {@link PfKeyResolver#resolve(byte)} maps onto each token.
-     *
-     * <p>{@code CSSTRPFY} folds {@code DFHPF13}-{@code DFHPF24} onto {@code PFK01}-{@code PFK12}, so a
-     * token has more than one possible origin; the low key of each pair is returned, which is the one the
-     * resolver and every {@code EVALUATE EIBAID} in this program treat identically to its high twin.
-     *
-     * @param key the token's key; must not be {@code null}
-     * @return the canonical raw AID byte
-     */
-    private static byte canonicalByteOf(AidKey key) {
-        return switch (key) {
-            case ENTER -> CicsAid.DFHENTER;
-            case CLEAR -> CicsAid.DFHCLEAR;
-            case PA1 -> CicsAid.DFHPA1;
-            case PA2 -> CicsAid.DFHPA2;
-            case PFK01 -> CicsAid.DFHPF1;
-            case PFK02 -> CicsAid.DFHPF2;
-            case PFK03 -> CicsAid.DFHPF3;
-            case PFK04 -> CicsAid.DFHPF4;
-            case PFK05 -> CicsAid.DFHPF5;
-            case PFK06 -> CicsAid.DFHPF6;
-            case PFK07 -> CicsAid.DFHPF7;
-            case PFK08 -> CicsAid.DFHPF8;
-            case PFK09 -> CicsAid.DFHPF9;
-            case PFK10 -> CicsAid.DFHPF10;
-            case PFK11 -> CicsAid.DFHPF11;
-            case PFK12 -> CicsAid.DFHPF12;
-        };
+        char stated = token.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return OptionalInt.of(CicsAid.DFHNULL & 0xFF);
+        }
+        return OptionalInt.of(stated);
     }
 
     // =================================================================================================

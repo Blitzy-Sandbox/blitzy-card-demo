@@ -124,7 +124,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       a cross-reference lookup - on the {@code DALYTRAN-CARD-NUM} the previous record left in the
  *       record area, because {@code READ ... INTO} does not disturb its receiving area {@code AT END}.
  *       A run therefore performs {@code recordsRead + 1} lookups, always, and never fewer.
- *       {@code case01} pins the repeat after one clean record, {@code case06} pins that the repeat uses
+ *       {@code case01} pins the repeat after one clean record, {@code case02} pins that the repeat uses
  *       the <em>last</em> record's card and not the first, and {@code case04} pins the degenerate form:
  *       over an empty dataset the lookup runs on the untouched record area, whose
  *       {@code DALYTRAN-CARD-NUM} is sixteen spaces. Hoisting those statements inside the guard makes
@@ -134,23 +134,26 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       {@code DALYTRAN-STATUS} - into {@code IO-STATUS} on the arm reached when closing the
  *       <em>daily transaction</em> file fails. So the operator is told the wrong file failed and is
  *       shown the wrong status: {@code 'FILE STATUS IS: NNNN0000'}, because the customer file's own
- *       open succeeded. {@code case17} pins both halves; correcting either makes it fail.</li>
+ *       open succeeded. {@code case20} pins both halves; correcting either makes it fail.</li>
  * </ol>
  * <p>Neither is fixed here. Fixing either would change what this program has always reported, which is
  * a behaviour change and a parity violation (practice B5).
  *
- * <h2>Why the cases are declared here rather than loaded from {@code parity/CBTRN01C/}</h2>
- * <p>The harness convention is that {@code CBTRN01CParityTest} reads
- * {@code src/test/resources/parity/CBTRN01C/}, and this class's stem matches that directory exactly -
- * {@link #resourceConventionIsHonoured()} asserts the agreement rather than stating it in a comment.
- * That directory is not present in this working tree, so the twenty cases are declared in Java through
- * {@link ParityCase}'s own canonical constructor: the identical constructor a JSON fixture is bound
- * through, with the identical validation of case identifiers, dataset binding keys, input shapes,
- * fixture names, record-expectation completeness, message channels and width normalisations. A
- * declaration that a fixture file would reject cannot be written here either. When the fixture set is
- * shipped, {@link #cases()} is the single seam that adopts it - {@code ParityHarness.casesOf("CBTRN01C")}
- * returns the same twenty {@link ParityCase} values this method builds - and no other line of this class
- * changes.
+ * <h2>Where the cases come from: {@code parity/CBTRN01C/}, and nowhere else</h2>
+ * <p>{@link #cases()} returns {@code ParityHarness.casesOf("CBTRN01C")} and builds nothing, so the twenty
+ * {@code caseNN.json} files under {@code src/test/resources/parity/CBTRN01C/} <em>are</em> the case set.
+ * This class once declared its own twenty in Java, because that directory was absent when it was
+ * written; those declarations have been deleted rather than kept alongside the fixtures, because two
+ * case sets for one program is worse than either alone - the shipped files were never executed, they
+ * numbered the failure paths differently, and each set silently vouched for the other.
+ *
+ * <p>What a case declares, it declares completely. Its seeds are its {@code inputs}; the arms no seeded
+ * row can reach - a refused open, a read reporting a status this program never names, a close that fails
+ * - are its {@code unitStimulus.callSiteOutcomes}, named by call site rather than selected here by case
+ * identifier; and the reads it must issue are its {@code expectedOperations}. Nothing about a run is
+ * decided by which ordinal the case happens to hold, which is what makes renumbering safe and a review
+ * of the file sufficient. {@link #resourceConventionIsHonoured()} asserts that this class's stem and that
+ * directory agree, rather than stating it in a comment.
  *
  * <h2>How the unit is reached: {@code BATCH_JOB}, and no launcher</h2>
  * <p>The unit is {@link TransactionPostingJob} constructed through its own constructor as a plain Java
@@ -220,6 +223,21 @@ class CBTRN01CParityTest {
      */
     private static final List<String> ALL_DDS =
             List.of(DALYTRAN, CUSTFILE, XREFFILE, CARDFILE, ACCTFILE, TRANFILE);
+
+    /**
+     * The three DDs this program actually reads: the daily file sequentially at {@code :167}, and the
+     * cross reference and account files by key at {@code :202-208} and {@code :226-232}. The other three
+     * are opened and closed and never touched in between, which is behaviour in its own right.
+     */
+    private static final List<String> READ_DDS = List.of(DALYTRAN, XREFFILE, ACCTFILE);
+
+    /**
+     * Renders an account key back into the eleven digits {@code XREF-ACCT-ID} carried, so a recorded
+     * operation names the key the COBOL moved rather than the {@code long} the repository takes. Immutable
+     * and therefore safe as a constant (practice B9).
+     */
+    private static final FixedWidthCodec ACCOUNT_KEY_CODEC =
+            new FixedWidthCodec(ParityHarness.FIXTURE_CHARSET);
 
     // =================================================================================================
     // Record widths, transcribed from the copybooks. Held here as literals so an expectation never
@@ -509,6 +527,14 @@ class CBTRN01CParityTest {
     /** The 50-row, 500-byte customer fixture - opened by this program and never read. */
     private static final String CUSTDATA_FIXTURE = "custdata.txt";
 
+    /**
+     * How many fixture rows the twenty cases seed between them, counted once so that
+     * {@link #theSeedRowsAreTheShippedFixtureRows()} cannot pass over a case set that seeds nothing. A
+     * case added or reshaped changes this number, which is the point: the count asserts that the baseline
+     * still has data in it rather than describing it.
+     */
+    private static final int SEEDED_FIXTURE_ROWS = 105;
+
     /** The verb a trace entry records for {@code OPEN INPUT}. */
     private static final String TRACE_OPEN = "OPEN ";
 
@@ -547,12 +573,61 @@ class CBTRN01CParityTest {
         assertThat(result.count())
                 .withFailMessage("%s", result.render())
                 .isZero();
-        assertThat(unit.trace())
-                .as("the file verbs %s issued, in order: CBTRN01C opens six files at :157-162, reads "
-                        + "DALYTRAN sequentially, reads XREFFILE and ACCTFILE by key, and closes six "
-                        + "files at :188-193. It issues no WRITE and no REWRITE anywhere, and it never "
-                        + "reads CUSTFILE or CARDFILE at all", scenario.caseId())
-                .containsExactlyElementsOf(scenario.expectedTrace());
+        assertThat(unit.operations())
+                .as("the reads %s issued, in order and with their keys, as the case declares them: "
+                        + "CBTRN01C reads DALYTRAN sequentially at :167 and XREFFILE and ACCTFILE by key "
+                        + "at :202-208 and :226-232, and reads CUSTFILE, CARDFILE and TRANFILE never",
+                        scenario.caseId())
+                .containsExactlyElementsOf(scenario.parityCase().expectedOperations());
+        assertThat(unit.openAndCloseTrace())
+                .as("the opens and closes %s issued, in order. The sequence is not declared per case "
+                        + "because it is not a property of the case: MAIN-PARA opens the six at "
+                        + ":157-162 and closes the six at :188-193 in one fixed order, and how far it "
+                        + "gets follows from which verb the case scripts a failure at. So the "
+                        + "expectation is derived from the declared stimulus and the transcribed source "
+                        + "order, while the observation is what the stubs were actually asked for - two "
+                        + "derivations that agree only if the translation issues the same verbs in the "
+                        + "same order", scenario.caseId())
+                .containsExactlyElementsOf(derivedOpenAndCloseTrace(scenario.parityCase()));
+    }
+
+    /**
+     * The {@code OPEN} and {@code CLOSE} sequence a case must produce, derived from what it declares.
+     *
+     * <p>Three rules, all transcribed from {@code MAIN-PARA}:
+     * <ul>
+     *   <li>The opens run in {@link #ALL_DDS} order and stop at the first one that fails, inclusive:
+     *       every open paragraph abends on a status other than {@code '00'}, so the opens after it never
+     *       happen.</li>
+     *   <li>A run whose opens all succeeded but whose sequential read failed abends inside the loop, so
+     *       none of the six closes is reached.</li>
+     *   <li>Otherwise the closes run in the same order and stop at the first one that fails, inclusive,
+     *       for the same reason.</li>
+     * </ul>
+     *
+     * @param parityCase the case, whose declared stimulus says which verb fails
+     * @return the entries the run must issue, in order
+     */
+    private static List<String> derivedOpenAndCloseTrace(ParityCase parityCase) {
+        Injection injection = injectionFrom(parityCase.unitStimulus());
+        List<String> entries = new ArrayList<>(ALL_DDS.size() * 2);
+        for (String dataset : ALL_DDS) {
+            entries.add(TRACE_OPEN + dataset);
+            if (!STATUS_OK.equals(effectiveOpenStatus(injection, dataset))) {
+                return List.copyOf(entries);
+            }
+        }
+        if (injection.readStatus() != null) {
+            return List.copyOf(entries);
+        }
+        for (String dataset : ALL_DDS) {
+            entries.add(TRACE_CLOSE + dataset);
+            boolean refused = CARDFILE.equals(dataset) && injection.cardCloseRefused();
+            if (refused || !STATUS_OK.equals(injection.closeStatusOf(dataset))) {
+                return List.copyOf(entries);
+            }
+        }
+        return List.copyOf(entries);
     }
 
     /**
@@ -566,11 +641,22 @@ class CBTRN01CParityTest {
      * @return the twenty scenarios; never {@code null}
      */
     private static List<ParityScenario> cases() {
-        List<ParityScenario> scenarios = List.of(case01(), case02(), case03(), case04(), case05(),
-                case06(), case07(), case08(), case09(), case10(), case11(), case12(), case13(),
-                case14(), case15(), case16(), case17(), case18(), case19(), case20());
+        List<ParityScenario> scenarios = ParityHarness.casesOf(PROGRAM).stream()
+                .map(ParityScenario::new)
+                .toList();
         requireCompleteCaseSet(scenarios);
         return scenarios;
+    }
+
+    /**
+     * One shipped case by ordinal, for the handful of assertions that need a specific run shape rather
+     * than the whole set.
+     *
+     * @param ordinal the case number, 1 through 20
+     * @return that case's scenario
+     */
+    private static ParityScenario scenarioOf(int ordinal) {
+        return cases().get(ordinal - 1);
     }
 
     /**
@@ -809,26 +895,63 @@ class CBTRN01CParityTest {
     }
 
     /**
-     * The rows these cases seed are the rows the shipped fixtures hold, byte for byte.
+     * Every row every case seeds is a row of the shipped fixture it claims to come from, byte for byte.
      *
-     * <p>The cases build their seed rows span by span from the copybook offsets rather than pasting 350
-     * characters into a literal, which keeps them readable - and would also let a transcription error
-     * hide, because a case that seeds a wrong row and expects that same wrong row still passes. So the
-     * composed rows are compared here against {@code app/data/ASCII}, read from the classpath under an
-     * explicitly named code page. Agreement proves three things at once: the offsets are right, the
-     * values are real production data, and the composer pads exactly as a COBOL {@code MOVE} into a
-     * fixed-width receiver does.
+     * <p>The cases hold their seed rows as literals - 350, 300, 150, 500 or 36 characters of production
+     * data - and a case that seeded a mistyped row and expected that same mistyped row back would pass
+     * without this. So every row of every case is looked up in {@code app/data/ASCII}, read from the
+     * classpath under an explicitly named code page, and the whole set has to be found there. Agreement
+     * proves the rows are real production records rather than plausible-looking ones, which is what makes
+     * the twenty cases a baseline derived from data the mainframe actually shipped.
+     *
+     * <p>The two composed rows below are a second, independent transcription of the same records, built
+     * span by span from the copybook offsets. They exist so that the offsets this class uses elsewhere -
+     * {@code DALYTRAN-CARD-NUM} at 262, the eleven-digit account key - are checked against the fixture
+     * too, and they are compared here rather than seeded anywhere.
      */
     @Test
-    @DisplayName("every composed seed row is byte-identical to its row in app/data/ASCII")
+    @DisplayName("every row every case seeds is byte-identical to a row of app/data/ASCII")
     void theSeedRowsAreTheShippedFixtureRows() {
-        List<String> daily = fixtureRows(DAILYTRAN_FIXTURE);
-        List<String> crossReference = fixtureRows(CARDXREF_FIXTURE);
-        List<String> accounts = fixtureRows(ACCTDATA_FIXTURE);
+        Map<String, List<String>> fixtures = Map.of(
+                DALYTRAN, fixtureRows(DAILYTRAN_FIXTURE),
+                XREFFILE, fixtureRows(CARDXREF_FIXTURE),
+                ACCTFILE, fixtureRows(ACCTDATA_FIXTURE),
+                CARDFILE, fixtureRows(CARDDATA_FIXTURE),
+                CUSTFILE, fixtureRows(CUSTDATA_FIXTURE));
+        List<String> daily = fixtures.get(DALYTRAN);
+        List<String> crossReference = fixtures.get(XREFFILE);
+        List<String> accounts = fixtures.get(ACCTFILE);
 
         assertThat(daily).hasSize(300).allMatch(row -> row.length() == DALYTRAN_WIDTH);
         assertThat(crossReference).hasSize(50).allMatch(row -> row.length() == XREF_FIXTURE_WIDTH);
         assertThat(accounts).hasSize(50).allMatch(row -> row.length() == ACCTFILE_WIDTH);
+
+        int seededRows = 0;
+        for (ParityScenario scenario : cases()) {
+            for (Map.Entry<String, ParityCase.DatasetInput> seeded
+                    : scenario.parityCase().inputs().entrySet()) {
+                List<String> fixture = fixtures.get(seeded.getKey());
+                if (fixture == null) {
+                    assertThat(seeded.getValue().rows())
+                            .as("%s seeds %s, for which app/data/ASCII ships no fixture, so the only "
+                                    + "honest content for it is none", scenario.caseId(),
+                                    seeded.getKey())
+                            .isEmpty();
+                    continue;
+                }
+                for (String row : seeded.getValue().rows()) {
+                    seededRows++;
+                    assertThat(fixture)
+                            .as("%s seeds a %s row of %d character(s) that app/data/ASCII does not hold",
+                                    scenario.caseId(), seeded.getKey(), row.length())
+                            .contains(row);
+                }
+            }
+        }
+        assertThat(seededRows)
+                .as("the twenty cases seed real rows rather than none: a set that seeded nothing would "
+                        + "satisfy the loop above vacuously")
+                .isEqualTo(SEEDED_FIXTURE_ROWS);
 
         assertThat(dailyTransactionRowOne()).isEqualTo(daily.get(0));
         assertThat(dailyTransactionRowTwo()).isEqualTo(daily.get(1));
@@ -927,7 +1050,7 @@ class CBTRN01CParityTest {
     @Test
     @DisplayName("Gate G13 - the orphan job, its step and its tasklet are all real and launchable")
     void theOrphanJobIsRunnable() {
-        PostingRun unit = new PostingRun(case04());
+        PostingRun unit = new PostingRun(scenarioOf(4));
         TransactionPostingJob job = unit.jobOverEmptyDatasets();
 
         assertThat(job.transactionPostingJob()).isNotNull();
@@ -990,8 +1113,8 @@ class CBTRN01CParityTest {
     void theRemainingTwoCloseArmsAbendWithTheirOwnLiterals() {
         for (Map.Entry<String, String> arm : Map.of(ACCTFILE, ERROR_CLOSING_ACCTFILE,
                 TRANFILE, ERROR_CLOSING_TRANFILE).entrySet()) {
-            PostingRun unit = new PostingRun(
-                    sameSeedsWith(case17(), Injection.closeFailure(arm.getKey(), STATUS_OPEN_FAILED)));
+            PostingRun unit = new PostingRun(scenarioOf(4),
+                    Injection.closeFailure(arm.getKey(), STATUS_OPEN_FAILED));
 
             AbendException abend = unit.runExpectingAbend();
 
@@ -1020,18 +1143,21 @@ class CBTRN01CParityTest {
      * verbs, and {@code 0300-CARDFILE-OPEN} and {@code 9300-CARDFILE-CLOSE} are two more, but no
      * paragraph anywhere reads either file. Proving that from the fingerprint alone is impossible - an
      * unused read produces no line - so it is proved from the collaborators: not one read method is
-     * invoked on either repository across a full 300-record pass, whose customer and card files are
-     * seeded with all fifty of their rows precisely so that "never read" is a statement about a
-     * non-empty file.
+     * invoked on either repository during {@code case11}, the one case that seeds <em>all six</em> of
+     * this program's datasets with real fixture rows, so that "never read" is a statement about files
+     * that hold records rather than about files that are empty.
      */
     @Test
-    @DisplayName("CUSTFILE and CARDFILE are opened and closed but never read, across a full 300-row pass")
+    @DisplayName("CUSTFILE and CARDFILE are opened and closed but never read, both of them non-empty")
     void theCustomerAndCardFilesAreNeverRead() {
-        PostingRun unit = new PostingRun(case05());
+        PostingRun unit = new PostingRun(scenarioOf(11));
 
         ExecutionSummary summary = unit.run();
 
-        assertThat(summary.recordsRead()).isEqualTo(300);
+        assertThat(summary.recordsRead())
+                .as("case11 is the case that seeds all six datasets, so 'never read' is a statement "
+                        + "about files that hold rows rather than about files that are empty")
+                .isEqualTo(2);
         assertThat(unit.customerFileVerbs())
                 .as("0100-CUSTFILE-OPEN and 9100-CUSTFILE-CLOSE are the only customer-file verbs")
                 .isNotEmpty()
@@ -1054,15 +1180,15 @@ class CBTRN01CParityTest {
     /**
      * A run performs one more cross-reference lookup than it reads records - always, and never fewer.
      *
-     * <p>The post-end-of-file lookup expressed as a number, over three run shapes at once: an empty
-     * dataset, a single record and a full 300-record pass. The summary's own constructor enforces the
-     * relation, so this asserts the numbers a real run reported rather than a relation a builder could
-     * have imposed.
+     * <p>The post-end-of-file lookup expressed as a number, over the three run shapes the shipped cases
+     * provide: {@code case04}'s empty dataset, {@code case01}'s single record and {@code case10}'s six.
+     * The summary's own constructor enforces the relation, so this asserts the numbers a real run
+     * reported rather than a relation a builder could have imposed.
      */
     @Test
     @DisplayName("xrefLookups is always recordsRead + 1: the stale lookup happens on every run")
     void everyRunPerformsOneLookupBeyondItsRecordCount() {
-        for (ParityScenario scenario : List.of(case04(), case01(), case05())) {
+        for (ParityScenario scenario : List.of(scenarioOf(4), scenarioOf(1), scenarioOf(10))) {
             PostingRun unit = new PostingRun(scenario);
 
             ExecutionSummary summary = unit.run();
@@ -1080,649 +1206,27 @@ class CBTRN01CParityTest {
     }
 
     // =================================================================================================
-    // THE TWENTY CASES.
-    //
-    // Cases 01 to 10 exercise the pass itself: what the program displays for a record that resolves, one
-    // whose card does not, one whose account does not, an empty file, all 300 fixture rows, and each of
-    // the three arms a keyed read can leave the mainline in. Cases 11 to 20 exercise the twelve file
-    // verbs that can fail, each of which displays its own literal, renders a status and abends with
-    // RETURN-CODE 12 - including the two whose reported file is not the file that failed.
+    // The case model: a shipped ParityCase, and the decoder that turns its declared stimulus into the
+    // backend conditions the adapter's stubs answer with.
     // =================================================================================================
 
     /**
-     * A single record that resolves cleanly, and the post-end-of-file lookup that follows it.
+     * One case, exactly as {@code src/test/resources/parity/CBTRN01C/} ships it.
      *
-     * @return the case
+     * <p>A wrapper rather than the {@link ParityCase} itself for one reason: a parameterized test's
+     * display name is the argument's {@code toString()}, and a whole case renders as several kilobytes of
+     * prose. Everything the adapter needs - the seeds, the stimulus, the expected operations - comes from
+     * the case, so there is nothing else to carry.
+     *
+     * @param parityCase the case the differ judges and the adapter reproduces
      */
-    private static ParityScenario case01() {
-        return scenario("case01",
-                "One daily transaction that resolves end to end, which is also the smallest case that "
-                        + "shows the post-end-of-file lookup. app/data/ASCII/dailytran.txt row 0 carries "
-                        + "card 4859452612877065, cardxref.txt resolves it to customer 7 and account 7, "
-                        + "and acctdata.txt carries account 7 - so :168 displays the 350-byte record, "
-                        + "2000-LOOKUP-XREF takes NOT INVALID KEY and displays its four lines, and "
-                        + "3000-READ-ACCOUNT displays its one. The loop then reads again, gets '10', "
-                        + "and the three statements at :170-172 - which sit outside the guard that "
-                        + "closed at :169 - look the SAME card up a second time on the stale record "
-                        + "area, so all five lines repeat before the six closes and the end banner. "
-                        + "Twelve file verbs, thirteen lines, no record written anywhere. The three "
-                        + "seeded datasets are pinned unchanged on the final-state channel at their "
-                        + "copybook widths - 350, 50 and 300 - which is what proves every FILLER span "
-                        + "was emitted (gates G19 and G21), and the cross-reference row is seeded at "
-                        + "the 36 bytes the fixture holds and asserted at the 50 CVACT03Y declares "
-                        + "(gate G16).",
-                seeds().with(DALYTRAN, rows(dailyTransactionRowOne()))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.none(),
-                List.of(bytes(DALYTRAN, 0, dailyTransactionRowOne()),
-                        xrefFields(0, CARD_ONE, CUST_ONE, ACCT_ONE),
-                        bytes(ACCTFILE, 0, accountRowOne())),
-                List.of(DALYTRAN, XREFFILE, ACCTFILE),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, dailyTransactionRowOne()),
-                        xrefFoundLines(CARD_ONE, CUST_ONE, ACCT_ONE),
-                        List.of(SUCCESSFUL_READ_OF_ACCOUNT_FILE),
-                        xrefFoundLines(CARD_ONE, CUST_ONE, ACCT_ONE),
-                        List.of(SUCCESSFUL_READ_OF_ACCOUNT_FILE, END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(true), recordTrace(true),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * A card the cross reference does not carry: the {@code INVALID KEY} arm and the skip message.
-     *
-     * @return the case
-     */
-    private static ParityScenario case02() {
-        return scenario("case02",
-                "A card number no cross-reference row carries, which is the '23' arm of the keyed read "
-                        + "at :229-233 (gate G47). The INVALID KEY phrase displays 'INVALID CARD NUMBER "
-                        + "FOR XREF' and moves 4 into WS-XREF-READ-STATUS, so the test at :173 fails and "
-                        + "the ELSE at :180-183 displays ONE line built from four operands with no "
-                        + "separator between them: 'CARD NUMBER ', the sixteen-byte card number, ' COULD "
-                        + "NOT BE VERIFIED. SKIPPING TRANSACTION ID-' and the sixteen-byte transaction "
-                        + "id. No account read is issued at all - which the trace asserts, because the "
-                        + "absence of a read cannot be seen in the output - and the stale lookup after "
-                        + "end of file repeats both lines for the same unresolvable card. The account "
-                        + "file is seeded and left completely unread.",
-                seeds().with(DALYTRAN, rows(dailyTransactionRow(CARD_ABSENT, TRAN_ID_ONE)))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.none(),
-                List.of(bytes(DALYTRAN, 0, dailyTransactionRow(CARD_ABSENT, TRAN_ID_ONE))),
-                List.of(DALYTRAN),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, dailyTransactionRow(CARD_ABSENT, TRAN_ID_ONE)),
-                        skipLines(CARD_ABSENT, TRAN_ID_ONE),
-                        skipLines(CARD_ABSENT, TRAN_ID_ONE),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false), recordTrace(false),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * A cross reference that resolves to an account the account file does not carry.
-     *
-     * @return the case
-     */
-    private static ParityScenario case03() {
-        return scenario("case03",
-                "The cross reference resolves and the account does not exist, which is the '23' arm of "
-                        + "3000-READ-ACCOUNT at :243-247. Two lines follow, from two different "
-                        + "paragraphs: 'INVALID ACCOUNT NUMBER FOUND' from the INVALID KEY phrase at "
-                        + ":246, then 'ACCOUNT 99999999999 NOT FOUND' from the mainline at :178. The "
-                        + "eleven digits in that second line are the cross reference's XREF-ACCT-ID and "
-                        + "not the account file's ACCT-ID, because a READ that took INVALID KEY left "
-                        + "ACCOUNT-RECORD untouched - so the value shown is the one :175 moved in. The "
-                        + "account file is seeded with a real account that is not the one being asked "
-                        + "for, so the read fails on a populated file rather than an empty one, and "
-                        + "both its row and the cross-reference row are pinned unchanged.",
-                seeds().with(DALYTRAN, rows(dailyTransactionRow(CARD_ONE, TRAN_ID_ONE)))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ABSENT, ACCT_ABSENT)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.none(),
-                List.of(xrefFields(0, CARD_ONE, CUST_ABSENT, ACCT_ABSENT),
-                        bytes(ACCTFILE, 0, accountRowOne())),
-                List.of(XREFFILE, ACCTFILE),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, dailyTransactionRow(CARD_ONE, TRAN_ID_ONE)),
-                        xrefFoundLines(CARD_ONE, CUST_ABSENT, ACCT_ABSENT),
-                        accountNotFoundLines(ACCT_ABSENT),
-                        xrefFoundLines(CARD_ONE, CUST_ABSENT, ACCT_ABSENT),
-                        accountNotFoundLines(ACCT_ABSENT),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(true), recordTrace(true),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * An empty daily transaction file: the first read ends the pass, and the stale lookup still runs.
-     *
-     * @return the case
-     */
-    private static ParityScenario case04() {
-        return scenario("case04",
-                "An empty daily transaction file, which is the degenerate form of the post-end-of-file "
-                        + "lookup. The first READ reports '10', :208 moves 16 into APPL-RESULT and :217 "
-                        + "moves 'Y' into END-OF-DAILY-TRANS-FILE, so no record line is displayed - and "
-                        + "then :170-172 run anyway, because they are outside the guard. The card number "
-                        + "they look up is the one the untouched DALYTRAN-RECORD area holds: sixteen "
-                        + "spaces, the declared value of a PIC X(16) item, which no cross-reference row "
-                        + "carries. So an empty input still produces four lines - the banner, the "
-                        + "INVALID CARD NUMBER line, a skip line whose card number and transaction id "
-                        + "are both blank, and the end banner - and the program still returns zero. The "
-                        + "daily file is seeded as a dataset that EXISTS and holds no row, which is a "
-                        + "different assertion from not seeding it, and it is asserted empty on the "
-                        + "final-state channel at its declared 350-byte width.",
-                seeds().with(DALYTRAN, emptyDataset(DALYTRAN_WIDTH, "CVTRA06Y"))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.none(),
-                List.of(),
-                List.of(DALYTRAN),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER),
-                        skipLines(blanks(CARD_NUMBER_WIDTH), blanks(TRANSACTION_ID_WIDTH)),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * All 300 rows of the shipped daily transaction fixture, against all 50 cross-reference and account
-     * rows, with the customer and card files seeded in full and never read.
-     *
-     * @return the case
-     */
-    private static ParityScenario case05() {
-        FullPass pass = fullPass();
-        return scenario("case05",
-                "The full pass: all 300 rows of app/data/ASCII/dailytran.txt against all 50 rows of "
-                        + "cardxref.txt and acctdata.txt, with custdata.txt and carddata.txt seeded in "
-                        + "full precisely so that 'opened and never read' is a statement about "
-                        + "non-empty files. Every one of the 300 cards resolves and every resolved "
-                        + "account exists, so the run is 300 x (one record image, four cross-reference "
-                        + "lines, one account line) plus the five lines of the stale lookup on row "
-                        + "299's card plus two banners: 1807 lines, in order, byte for byte. The "
-                        + "expectations are derived mechanically from the fixtures and the copybook "
-                        + "offsets rather than transcribed, which is what makes 300 rows tractable "
-                        + "without weakening them - each record image is asserted to be its fixture row "
-                        + "exactly once, so a translation that displayed a record twice, trimmed it, or "
-                        + "reordered the pass fails. All 300 rows are also pinned unchanged on the "
-                        + "final-state channel, and all six datasets are asserted to have been reached "
-                        + "and written to zero times: this is the case that proves, at scale, that the "
-                        + "program the prompt names TransactionPostingJob posts nothing.",
-                seeds().with(DALYTRAN, fixture(DAILYTRAN_FIXTURE))
-                        .with(CUSTFILE, fixture(CUSTDATA_FIXTURE))
-                        .with(XREFFILE, fixture(CARDXREF_FIXTURE))
-                        .with(CARDFILE, fixture(CARDDATA_FIXTURE))
-                        .with(ACCTFILE, fixture(ACCTDATA_FIXTURE))
-                        .build(),
-                Injection.none(),
-                pass.finalStateRows(),
-                List.of(DALYTRAN),
-                RETURN_CODE_OK,
-                pass.lines(),
-                pass.trace());
-    }
-
-    /**
-     * Two records, the second unresolvable: the stale lookup uses the last card and not the first.
-     *
-     * @return the case
-     */
-    private static ParityScenario case06() {
-        String rowOne = dailyTransactionRow(CARD_ONE, TRAN_ID_ONE);
-        String rowTwo = dailyTransactionRow(CARD_ABSENT, TRAN_ID_TWO);
-        return scenario("case06",
-                "Which card the post-end-of-file lookup uses. Two records are read: the first resolves, "
-                        + "the second carries a card no cross-reference row holds. A READ ... INTO "
-                        + "leaves its receiving area untouched AT END, so the area still holds the "
-                        + "SECOND record when :171 moves DALYTRAN-CARD-NUM into XREF-CARD-NUM for the "
-                        + "third lookup - which therefore repeats the second record's skip lines and "
-                        + "not the first record's four resolved ones. A translation that kept the last "
-                        + "SUCCESSFUL lookup's card, or the first record's, produces the same line "
-                        + "count and different text, which is exactly why the text is compared and not "
-                        + "the count. Both daily rows are pinned unchanged.",
-                seeds().with(DALYTRAN, rows(rowOne, rowTwo))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.none(),
-                List.of(bytes(DALYTRAN, 0, rowOne), bytes(DALYTRAN, 1, rowTwo)),
-                List.of(DALYTRAN),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, rowOne),
-                        xrefFoundLines(CARD_ONE, CUST_ONE, ACCT_ONE),
-                        List.of(SUCCESSFUL_READ_OF_ACCOUNT_FILE, rowTwo),
-                        skipLines(CARD_ABSENT, TRAN_ID_TWO),
-                        skipLines(CARD_ABSENT, TRAN_ID_TWO),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(true), recordTrace(false),
-                        recordTrace(false), closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * A cross-reference read that reports neither success nor an invalid key: neither phrase runs.
-     *
-     * @return the case
-     */
-    private static ParityScenario case07() {
-        String row = dailyTransactionRow(CARD_ONE, TRAN_ID_ONE);
-        return scenario("case07",
-                "The third outcome of the keyed read at :229 - neither '00' nor an invalid key - and the "
-                        + "arm nobody writes on purpose. A READ with a FILE STATUS clause and no USE "
-                        + "procedure reports an unreachable dataset through that clause and passes "
-                        + "control to the next statement with NEITHER conditional phrase executed. So "
-                        + "2000-LOOKUP-XREF displays nothing at all, WS-XREF-READ-STATUS keeps the zero "
-                        + ":170 put there, the test at :173 SUCCEEDS, and the mainline goes on to read "
-                        + "an account for whatever XREF-ACCT-ID the record area holds - which, no lookup "
-                        + "having ever succeeded, is the zero a PIC 9(11) item is initialised to. The "
-                        + "run therefore reads account 00000000000, does not find it, and displays "
-                        + "'ACCOUNT 00000000000 NOT FOUND'. Two lines per iteration and not four, no "
-                        + "abend, and RETURN-CODE 0: a keyed read has no abend path in this program "
-                        + "(gate G47).",
-                seeds().with(DALYTRAN, rows(row))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.xrefStatus(STATUS_PERMANENT_ERROR),
-                List.of(bytes(DALYTRAN, 0, row)),
-                List.of(DALYTRAN),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, row),
-                        accountNotFoundLines(0L),
-                        accountNotFoundLines(0L),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(true), recordTrace(true),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * An account read that reports neither success nor an invalid key: no line, and no 'NOT FOUND'.
-     *
-     * @return the case
-     */
-    private static ParityScenario case08() {
-        String row = dailyTransactionRow(CARD_ONE, TRAN_ID_ONE);
-        return scenario("case08",
-                "The same third outcome one paragraph later, at the account read of :243, where its "
-                        + "consequence is the opposite: silence. Neither phrase of the READ executes, so "
-                        + "'SUCCESSFUL READ OF ACCOUNT FILE' is not displayed - and WS-ACCT-READ-STATUS "
-                        + "keeps the zero :174 put there, so the test at :177 fails and 'ACCOUNT ... NOT "
-                        + "FOUND' is not displayed either. A dataset the program could not reach at all "
-                        + "is thus reported by four lines about the cross reference and nothing "
-                        + "whatsoever about the account, which is the least obvious behaviour in this "
-                        + "program and the reason this arm gets a case of its own. The account read IS "
-                        + "issued, which the trace asserts, so the difference between this and a skipped "
-                        + "read is visible somewhere.",
-                seeds().with(DALYTRAN, rows(row))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.accountStatus(STATUS_PERMANENT_ERROR),
-                List.of(xrefFields(0, CARD_ONE, CUST_ONE, ACCT_ONE)),
-                List.of(XREFFILE),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, row),
-                        xrefFoundLines(CARD_ONE, CUST_ONE, ACCT_ONE),
-                        xrefFoundLines(CARD_ONE, CUST_ONE, ACCT_ONE),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(true), recordTrace(true),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * A duplicate on the cross reference's base key, carrying the row whose amount is negative.
-     *
-     * @return the case
-     */
-    private static ParityScenario case09() {
-        String row = dailyTransactionRowTwo();
-        return scenario("case09",
-                "A '22' on the cross reference, which is the second status the INVALID KEY phrase runs "
-                        + "for (gate G47): a duplicate on the base key takes the same arm as an absent "
-                        + "record, so the run displays 'INVALID CARD NUMBER FOR XREF' and the skip line "
-                        + "even though a record WAS returned - and the record is not moved into "
-                        + "CARD-XREF-RECORD, because only the NOT INVALID KEY phrase does that. The "
-                        + "record seeded here is dailytran.txt row 1, whose DALYTRAN-AMT is 0000009190} "
-                        + "- a zoned PIC S9(09)V99 whose trailing overpunch is NEGATIVE, so the amount "
-                        + "is -919.00. The program neither reads nor writes that field, and the point "
-                        + "of the case is that it survives untouched: the 350-byte image is displayed "
-                        + "verbatim at :168 and pinned byte for byte on the final-state channel, "
-                        + "overpunch included. A codec that normalised '}' to '0' would change the "
-                        + "displayed line and the stored row at once (gates G19, G21, G22).",
-                seeds().with(DALYTRAN, rows(row))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_TWO, CUST_TWO, ACCT_TWO)))
-                        .with(ACCTFILE, rows(accountRowTwo()))
-                        .build(),
-                Injection.xrefStatus(STATUS_DUPLICATE),
-                List.of(bytes(DALYTRAN, 0, row), xrefFields(0, CARD_TWO, CUST_TWO, ACCT_TWO)),
-                List.of(DALYTRAN, XREFFILE),
-                RETURN_CODE_OK,
-                concat(List.of(
-                        List.of(START_BANNER, row),
-                        skipLines(CARD_TWO, TRAN_ID_TWO),
-                        skipLines(CARD_TWO, TRAN_ID_TWO),
-                        List.of(END_BANNER))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false), recordTrace(false),
-                        closeTrace(ALL_DDS.size()))));
-    }
-
-    /**
-     * A sequential read that reports {@code '23'}: the third arm of the read ladder abends.
-     *
-     * @return the case
-     */
-    private static ParityScenario case10() {
-        String row = dailyTransactionRow(CARD_ONE, TRAN_ID_ONE);
-        return scenario("case10",
-                "The third arm of 1000-DALYTRAN-GET-NEXT, reached mid-pass. The ladder at :204-212 names "
-                        + "only '00' and '10'; everything else - including a keyed status like '23', "
-                        + "which is what this case injects on the second read - moves 12 into "
-                        + "APPL-RESULT, and the guard at :213-224 then displays 'ERROR READING DAILY "
-                        + "TRANSACTION FILE', renders the status as 'FILE STATUS IS: NNNN0023' and "
-                        + "abends. The first record was already read, displayed and resolved, and its "
-                        + "six lines are asserted before the three failure lines: an abend does not "
-                        + "unwind what the pass had already emitted. No CLOSE paragraph is reached, so "
-                        + "the trace ends at the failing read - CALL 'CEE3ABD' terminates the task, and "
-                        + "the end banner at :195 is never displayed. RETURN-CODE 12 (gate G35).",
-                seeds().with(DALYTRAN, rows(row))
-                        .with(XREFFILE, rows(xrefFixtureRow(CARD_ONE, CUST_ONE, ACCT_ONE)))
-                        .with(ACCTFILE, rows(accountRowOne()))
-                        .build(),
-                Injection.readFailure(1, STATUS_NOT_FOUND),
-                List.of(),
-                List.of(),
-                RETURN_CODE_FATAL,
-                concat(List.of(
-                        List.of(START_BANNER, row),
-                        xrefFoundLines(CARD_ONE, CUST_ONE, ACCT_ONE),
-                        List.of(SUCCESSFUL_READ_OF_ACCOUNT_FILE),
-                        abendLines(ERROR_READING_DALYTRAN, STATUS_NOT_FOUND))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(true),
-                        List.of(TRACE_READ + DALYTRAN))));
-    }
-
-    /**
-     * {@code 0000-DALYTRAN-OPEN} fails: the run abends before anything else is opened.
-     *
-     * @return the case
-     */
-    private static ParityScenario case11() {
-        return openFailureCase("case11", DALYTRAN, ERROR_OPENING_DALYTRAN, STATUS_OPEN_FAILED,
-                "the first of the six opens, so nothing else is opened at all and the writes channel is "
-                        + "empty rather than merely zero-rowed");
-    }
-
-    /**
-     * {@code 0100-CUSTFILE-OPEN} fails: a file this program never reads still abends the run.
-     *
-     * @return the case
-     */
-    private static ParityScenario case12() {
-        return openFailureCase("case12", CUSTFILE, ERROR_OPENING_CUSTFILE, STATUS_OPEN_FAILED,
-                "the customer file, which no paragraph of this program ever reads - and which can "
-                        + "nonetheless end the run before a single daily transaction has been read, "
-                        + "because OPEN is a verb like any other and its failure is fatal");
-    }
-
-    /**
-     * {@code 0200-XREFFILE-OPEN} fails.
-     *
-     * @return the case
-     */
-    private static ParityScenario case13() {
-        return openFailureCase("case13", XREFFILE, ERROR_OPENING_XREFFILE, STATUS_OPEN_FAILED,
-                "the cross reference, whose literal reads 'CROSS REF FILE' where the DD is named "
-                        + "XREFFILE - the text is the paragraph's own and is asserted as written");
-    }
-
-    /**
-     * {@code 0300-CARDFILE-OPEN} fails, reported as a CICS response and translated to a batch status.
-     *
-     * @return the case
-     */
-    private static ParityScenario case14() {
-        return openFailureCase("case14", CARDFILE, ERROR_OPENING_CARDFILE, STATUS_NOT_FOUND,
-                "the card file, whose open is reported by CardRepository as a CICS response because its "
-                        + "other seventeen callers are online programs. DFHRESP(NOTFND) translates to "
-                        + "batch FILE STATUS '23', so the rendered line is 'FILE STATUS IS: NNNN0023' - "
-                        + "a status this program's open ladder treats like any other non-'00' value, "
-                        + "since :255 tests for '00' and nothing else");
-    }
-
-    /**
-     * {@code 0400-ACCTFILE-OPEN} fails.
-     *
-     * @return the case
-     */
-    private static ParityScenario case15() {
-        return openFailureCase("case15", ACCTFILE, ERROR_OPENING_ACCTFILE, STATUS_OPEN_FAILED,
-                "the account file, opened INPUT and never I-O: this program reads accounts and never "
-                        + "rewrites one, so a failure here costs the run its only keyed lookup target");
-    }
-
-    /**
-     * {@code 0500-TRANFILE-OPEN} fails: the file the class name promises to post to.
-     *
-     * @return the case
-     */
-    private static ParityScenario case16() {
-        return openFailureCase("case16", TRANFILE, ERROR_OPENING_TRANFILE, STATUS_OPEN_FAILED,
-                "the transaction file - the file the prompt-mandated name TransactionPostingJob promises "
-                        + "records will be posted to. It is opened INPUT at :345, closed at :453 and "
-                        + "never read or written in between, so this case abends on the open of a file "
-                        + "the program only ever holds. The five files opened before it are asserted to "
-                        + "have been reached and written to zero times");
-    }
-
-    /**
-     * {@code 9000-DALYTRAN-CLOSE} fails - and reports the customer file's literal and status.
-     *
-     * @return the case
-     */
-    private static ParityScenario case17() {
-        return scenario("case17",
-                "The second reproduced source property, in full. Closing the DAILY TRANSACTION file "
-                        + "fails, and :372-373 displays 'ERROR CLOSING CUSTOMER FILE' and moves "
-                        + "CUSTFILE-STATUS - not DALYTRAN-STATUS - into IO-STATUS. So the operator is "
-                        + "told the wrong file failed and is shown the wrong status: the daily file "
-                        + "reported '35', and the line rendered is 'FILE STATUS IS: NNNN0000', because "
-                        + "the customer file's own open succeeded and left '00' in its status field. "
-                        + "Correcting either half fails this case: a translation that displayed the "
-                        + "daily file's literal, or rendered '35', would be reporting something this "
-                        + "program has never reported. The five closes after it never happen, exactly as "
-                        + "CALL 'CEE3ABD' means they do not.",
-                emptyPassSeeds(),
-                Injection.closeFailure(DALYTRAN, STATUS_OPEN_FAILED),
-                List.of(),
-                List.of(),
-                RETURN_CODE_FATAL,
-                concat(List.of(
-                        List.of(START_BANNER),
-                        skipLines(blanks(CARD_NUMBER_WIDTH), blanks(TRANSACTION_ID_WIDTH)),
-                        abendLines(ERROR_CLOSING_CUSTFILE, STATUS_OK))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false), closeTrace(1))));
-    }
-
-    /**
-     * {@code 9100-CUSTFILE-CLOSE} fails - the same literal, and this time the right status.
-     *
-     * @return the case
-     */
-    private static ParityScenario case18() {
-        return scenario("case18",
-                "The companion to case17, and the reason both are needed. 9100-CUSTFILE-CLOSE displays "
-                        + "the SAME literal - 'ERROR CLOSING CUSTOMER FILE' at :390 - but moves the "
-                        + "customer file's own close status, so the rendered line is 'FILE STATUS IS: "
-                        + "NNNN0035'. The two cases therefore differ only in the four characters of the "
-                        + "IO-STATUS-04 image, which is precisely what distinguishes a paragraph "
-                        + "reporting its own file from one reporting another's. A translation that "
-                        + "collapsed the two paragraphs into one shared helper keyed on the literal "
-                        + "would pass one of these cases and fail the other.",
-                emptyPassSeeds(),
-                Injection.closeFailure(CUSTFILE, STATUS_OPEN_FAILED),
-                List.of(),
-                List.of(),
-                RETURN_CODE_FATAL,
-                concat(List.of(
-                        List.of(START_BANNER),
-                        skipLines(blanks(CARD_NUMBER_WIDTH), blanks(TRANSACTION_ID_WIDTH)),
-                        abendLines(ERROR_CLOSING_CUSTFILE, STATUS_OPEN_FAILED))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false), closeTrace(2))));
-    }
-
-    /**
-     * {@code 9200-XREFFILE-CLOSE} fails.
-     *
-     * @return the case
-     */
-    private static ParityScenario case19() {
-        return scenario("case19",
-                "9200-XREFFILE-CLOSE fails at :399, displays 'ERROR CLOSING CROSS REF FILE' at :408 and "
-                        + "renders the cross reference's own status. Two closes have already succeeded "
-                        + "and emitted nothing - a successful CLOSE displays no line - so the failure "
-                        + "lines follow the pass's own output directly, and the three closes after it "
-                        + "are never reached. The trace is what shows the ordering: the daily and "
-                        + "customer files were closed, the cross reference was closed, and the card, "
-                        + "account and transaction files were not.",
-                emptyPassSeeds(),
-                Injection.closeFailure(XREFFILE, STATUS_OPEN_FAILED),
-                List.of(),
-                List.of(),
-                RETURN_CODE_FATAL,
-                concat(List.of(
-                        List.of(START_BANNER),
-                        skipLines(blanks(CARD_NUMBER_WIDTH), blanks(TRANSACTION_ID_WIDTH)),
-                        abendLines(ERROR_CLOSING_XREFFILE, STATUS_OPEN_FAILED))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false), closeTrace(3))));
-    }
-
-    /**
-     * {@code 9300-CARDFILE-CLOSE} is refused by the backend: the permanent-error status renders as 9000.
-     *
-     * @return the case
-     */
-    private static ParityScenario case20() {
-        return scenario("case20",
-                "9300-CARDFILE-CLOSE fails, and it is the one close whose failure cannot be a file "
-                        + "status: ending a browse does not report one, so a refusal arrives as a thrown "
-                        + "backend failure and is reported as this module's permanent-error status - "
-                        + "IO-STAT1 '9' with a zero feedback code. Z-DISPLAY-IO-STATUS takes its "
-                        + "extended-status arm for that ('9' at :478), rendering the first byte verbatim "
-                        + "and the second byte's numeric value in three digits: 'FILE STATUS IS: "
-                        + "NNNN9000', not 'NNNN0090' and not 'NNNN9   '. Nothing is swallowed - the "
-                        + "refusal travels out as the abend's cause - and 'ERROR CLOSING CARD FILE' is "
-                        + "displayed before it, with RETURN-CODE 12.",
-                emptyPassSeeds(),
-                Injection.refusedCardClose(),
-                List.of(),
-                List.of(),
-                RETURN_CODE_FATAL,
-                concat(List.of(
-                        List.of(START_BANNER),
-                        skipLines(blanks(CARD_NUMBER_WIDTH), blanks(TRANSACTION_ID_WIDTH)),
-                        abendLines(ERROR_CLOSING_CARDFILE, STATUS_PERMANENT_ERROR))),
-                concat(List.of(openTrace(ALL_DDS.size()), recordTrace(false), closeTrace(4))));
-    }
-
-    /**
-     * The six open-failure cases, which differ only in which paragraph fails and what it displays.
-     *
-     * <p>Written once because the source writes them six times identically apart from the file, the
-     * status field and the literal: {@code MOVE 8 TO APPL-RESULT}, {@code OPEN INPUT}, the {@code '00'}
-     * test, then {@code DISPLAY}, {@code MOVE ... TO IO-STATUS}, {@code Z-DISPLAY-IO-STATUS} and
-     * {@code Z-ABEND-PROGRAM}. Every case still asserts its own literal, its own rendered status, its own
-     * trace and its own set of already-opened datasets.
-     *
-     * @param caseId      the case identifier
-     * @param dataset     the DD whose open fails
-     * @param errorText   the literal that paragraph displays
-     * @param status      the status it renders
-     * @param explanation what this particular open failure proves, appended to the shared description
-     * @return the case
-     */
-    private static ParityScenario openFailureCase(String caseId, String dataset, String errorText,
-            String status, String explanation) {
-        Injection injection = CARDFILE.equals(dataset)
-                ? Injection.cardOpenResp(CICS_RESP_NOTFND)
-                : Injection.openFailure(dataset, status);
-        int position = ALL_DDS.indexOf(dataset) + 1;
-        return scenario(caseId,
-                "OPEN INPUT of " + dataset + " fails, which is open " + position + " of the six at "
-                        + ":157-162. The paragraph displays its own literal, renders the failing file's "
-                        + "own status through Z-DISPLAY-IO-STATUS and abends with RETURN-CODE 12, so the "
-                        + "loop never runs, no record is read, no CLOSE paragraph is reached and the end "
-                        + "banner at :195 is never displayed - four lines in total. This one is "
-                        + explanation + ".",
-                seeds().with(DALYTRAN, rows(dailyTransactionRowOne())).build(),
-                injection,
-                List.of(),
-                List.of(),
-                RETURN_CODE_FATAL,
-                concat(List.of(List.of(START_BANNER), abendLines(errorText, status))),
-                openTrace(position));
-    }
-
-    // =================================================================================================
-    // The case model: a ParityCase, the backend conditions its run is driven under, the datasets whose
-    // final state it pins, and the file verbs it expects in order.
-    // =================================================================================================
-
-    /**
-     * One case, with everything the adapter needs to reproduce the run the case describes.
-     *
-     * @param parityCase     the case the differ judges, built through {@link ParityCase}'s own
-     *                       constructor
-     * @param injection      the backend conditions this run is driven under, for the arms no seeded row
-     *                       can reach
-     * @param finalStatePins the datasets whose final state the adapter reports, each of which the case
-     *                       must both seed and account for row by row
-     * @param expectedTrace  the file verbs the run must issue, in order
-     */
-    private record ParityScenario(ParityCase parityCase, Injection injection,
-                                  List<String> finalStatePins, List<String> expectedTrace) {
+    private record ParityScenario(ParityCase parityCase) {
 
         /**
-         * Refuses a scenario the adapter could not honour.
-         *
-         * @throws IllegalArgumentException if a pinned dataset is not one this program declares, or is
-         *                                  one the case never seeds - either of which would make the
-         *                                  adapter report a dataset it has no rows for
+         * @param parityCase the shipped case
          */
         private ParityScenario {
             Objects.requireNonNull(parityCase, "A ParityCase is required: it is the expectation side");
-            Objects.requireNonNull(injection, "An Injection is required; use Injection.none()");
-            Objects.requireNonNull(finalStatePins, "A pin list is required; use List.of() for none");
-            Objects.requireNonNull(expectedTrace, "An expected verb trace is required");
-            for (String dataset : finalStatePins) {
-                if (!ALL_DDS.contains(dataset)) {
-                    throw new IllegalArgumentException("Case " + parityCase.caseId() + " pins the final "
-                            + "state of " + dataset + ", which CBTRN01C declares no SELECT for. The six "
-                            + "it declares are " + ALL_DDS + '.');
-                }
-                if (!parityCase.inputs().containsKey(dataset)) {
-                    throw new IllegalArgumentException("Case " + parityCase.caseId() + " pins the final "
-                            + "state of " + dataset + " without seeding it, so there would be no rows "
-                            + "to report and the pin would assert an empty dataset by accident. Seed "
-                            + dataset + ", or drop the pin.");
-                }
-            }
-            finalStatePins = List.copyOf(finalStatePins);
-            expectedTrace = List.copyOf(expectedTrace);
         }
 
         /** @return {@code case01} through {@code case20} */
@@ -1740,67 +1244,149 @@ class CBTRN01CParityTest {
         }
     }
 
-    /**
-     * Builds one case and its scenario, deriving the writes-channel expectations from the open order.
-     *
-     * <p>The set of datasets a case expects to have been reached is <strong>not</strong> a parameter: it
-     * is computed from the injected open statuses and the order {@code MAIN-PARA} opens the six files
-     * in, because an open that fails abends and the opens after it never happen. The adapter observes
-     * the same set independently, from the statuses its stubs actually returned, so the two are derived
-     * separately and compared by the differ.
-     *
-     * @param caseId         the case identifier
-     * @param description    what the case exercises, in prose
-     * @param inputs         the datasets to seed
-     * @param injection      the backend conditions
-     * @param finalStateRows the rows pinned on the final-state channel, complete for every dataset named
-     * @param finalStatePins the datasets whose final state is reported
-     * @param returnCode     the expected {@code RETURN-CODE}
-     * @param lines          the expected {@code DISPLAY} lines, in emission order
-     * @param trace          the expected file verbs, in order
-     * @return the scenario
-     */
-    private static ParityScenario scenario(String caseId, String description,
-            Map<String, ParityCase.DatasetInput> inputs, Injection injection,
-            List<ParityCase.ExpectedRecord> finalStateRows, List<String> finalStatePins,
-            int returnCode, List<String> lines, List<String> trace) {
-
-        List<ParityCase.ExpectedDataset> datasets = new ArrayList<>();
-        for (String dataset : openedDatasets(injection)) {
-            datasets.add(new ParityCase.ExpectedDataset(dataset, ParityCase.DatasetChannel.WRITES, 0,
-                    widthOf(dataset)));
-        }
-        for (String dataset : finalStatePins) {
-            datasets.add(new ParityCase.ExpectedDataset(dataset, ParityCase.DatasetChannel.FINAL_STATE,
-                    rowsPinnedFor(finalStateRows, dataset), widthOf(dataset)));
-        }
-        ParityCase parityCase = new ParityCase(PROGRAM, caseId, description, UNIT_KIND, inputs,
-                Map.of(), null, null, List.of(), finalStateRows, returnCode, messages(lines),
-                normalisationsFor(inputs), List.copyOf(datasets));
-        return new ParityScenario(parityCase, injection, finalStatePins, trace);
-    }
-
-    /**
-     * The same seeds, expectations and trace as another scenario, driven under different backend
-     * conditions.
-     *
-     * <p>Used only by {@link #theRemainingTwoCloseArmsAbendWithTheirOwnLiterals()}, which asserts the
-     * emitted lines directly rather than through the differ: the borrowed case's own expectations are
-     * <em>not</em> judged there, and nothing in the twenty is affected.
-     *
-     * @param base      the scenario to borrow the seeds from
-     * @param injection the conditions to drive instead
-     * @return the derived scenario
-     */
-    private static ParityScenario sameSeedsWith(ParityScenario base, Injection injection) {
-        return new ParityScenario(base.parityCase(), injection, base.finalStatePins(),
-                base.expectedTrace());
-    }
-
     // =================================================================================================
     // The injected backend conditions. Every arm the seeded data cannot reach - a failing open, a
-    // failing close, a read that reports something the ladder does not name - is reached from here.
+    // failing close, a read that reports something the ladder does not name - is reached from here, and
+    // every one of them is DECLARED by the case rather than selected in Java by case identifier.
     // =================================================================================================
+
+    /**
+     * Decodes a case's declared stimulus into the backend conditions its stubs answer with.
+     *
+     * <p>The one place a call-site name becomes a stub's behaviour. Six DDs times three verbs is
+     * eighteen call sites, each named {@code <VERB>-<DD>} - {@code OPEN-CARDFILE},
+     * {@code READ-DALYTRAN}, {@code CLOSE-CUSTFILE} - so a case reads as the paragraph names it and this
+     * method is the only thing that has to know the correspondence. A name that matches no site is
+     * refused here rather than silently ignored, because a silently ignored control is a case asserting
+     * the opposite of what it says.
+     *
+     * <p>Two sites are irregular, and both irregularities are the module's rather than this method's.
+     * The card file reports its open as a CICS response because {@code CardRepository} exists mainly for
+     * seventeen online callers, so {@code OPEN-CARDFILE} may declare {@code resp} instead of
+     * {@code status}; and ending the card browse reports nothing at all, so {@code CLOSE-CARDFILE} can
+     * only be {@code refused}. A {@code refused} outcome anywhere else means the dataset was
+     * unreachable, which this module reports as its own permanent-error status - the {@code '9'} plus
+     * low-value pair that {@code Z-DISPLAY-IO-STATUS} renders as {@code 9000}, and the one status no
+     * JSON string can hold.
+     *
+     * @param stimulus the case's declared stimulus; {@link ParityCase.UnitStimulus#NONE} for the
+     *                 fourteen cases whose whole stimulus is their seed
+     * @return the conditions to drive
+     * @throws IllegalArgumentException if a declared call site is not one of this program's eighteen, if
+     *                                  a case declares an operation script, linkage, a step status or an
+     *                                  environment variant - none of which this program has - or if a
+     *                                  site declares an outcome shape that site cannot report
+     */
+    private static Injection injectionFrom(ParityCase.UnitStimulus stimulus) {
+        if (!stimulus.operationScript().isEmpty() || !stimulus.linkage().isEmpty()
+                || !stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
+            throw new IllegalArgumentException("CBTRN01C takes no linkage, calls no subprogram, follows "
+                    + "no job step and runs under no environment variant: it is an orphan with no JCL "
+                    + "at all, so its only stimulus is its seeded rows and the outcome of one of its "
+                    + "eighteen file call sites.");
+        }
+        Map<String, String> openStatus = new LinkedHashMap<>();
+        Map<String, String> closeStatus = new LinkedHashMap<>();
+        Integer cardOpenResp = null;
+        boolean cardCloseRefused = false;
+        String readStatus = null;
+        int goodReads = 0;
+        String xrefStatus = null;
+        String accountStatus = null;
+        for (Map.Entry<String, ParityCase.CallSiteOutcome> declared
+                : stimulus.callSiteOutcomes().entrySet()) {
+            String site = declared.getKey();
+            ParityCase.CallSiteOutcome outcome = declared.getValue();
+            String dataset = datasetOfCallSite(site);
+            if (site.equals(TRACE_OPEN.strip() + '-' + dataset)) {
+                if (CARDFILE.equals(dataset) && outcome.resp() != null) {
+                    cardOpenResp = outcome.resp();
+                } else {
+                    openStatus.put(dataset, statusOf(site, outcome));
+                }
+            } else if (site.equals(TRACE_CLOSE.strip() + '-' + dataset)) {
+                if (CARDFILE.equals(dataset)) {
+                    requireRefusal(site, outcome);
+                    cardCloseRefused = true;
+                } else {
+                    closeStatus.put(dataset, statusOf(site, outcome));
+                }
+            } else if (DALYTRAN.equals(dataset)) {
+                readStatus = statusOf(site, outcome);
+                goodReads = outcome.recordsBefore();
+            } else if (XREFFILE.equals(dataset)) {
+                xrefStatus = statusOf(site, outcome);
+            } else {
+                accountStatus = statusOf(site, outcome);
+            }
+        }
+        return new Injection(openStatus, closeStatus, cardOpenResp, cardCloseRefused, readStatus,
+                goodReads, xrefStatus, accountStatus);
+    }
+
+    /**
+     * @param site the declared call-site name
+     * @return the DD it addresses
+     * @throws IllegalArgumentException if the name is not {@code OPEN-}, {@code READ-} or {@code CLOSE-}
+     *                                  followed by one of the six DDs, or names a read of a file this
+     *                                  program never reads
+     */
+    private static String datasetOfCallSite(String site) {
+        for (String verb : List.of(TRACE_OPEN, TRACE_READ, TRACE_CLOSE)) {
+            String prefix = verb.strip() + '-';
+            if (!site.startsWith(prefix)) {
+                continue;
+            }
+            String dataset = site.substring(prefix.length());
+            if (!ALL_DDS.contains(dataset)) {
+                throw new IllegalArgumentException("Call site " + site + " names DD " + dataset
+                        + ", which CBTRN01C declares no SELECT for. The six it declares are "
+                        + ALL_DDS + '.');
+            }
+            if (TRACE_READ.equals(verb) && !READ_DDS.contains(dataset)) {
+                throw new IllegalArgumentException("Call site " + site + " scripts a read of " + dataset
+                        + ", which CBTRN01C opens and closes but never reads. The three it reads are "
+                        + READ_DDS + ", so an outcome here would be scripted for a call that is never "
+                        + "made and the case would assert nothing.");
+            }
+            return dataset;
+        }
+        throw new IllegalArgumentException("Call site " + site + " is not one of CBTRN01C's eighteen: "
+                + "each is OPEN-, READ- or CLOSE- followed by one of " + ALL_DDS + '.');
+    }
+
+    /**
+     * @param site    the call site, for the failure message
+     * @param outcome the declared outcome
+     * @return the {@code FILE STATUS} it reports, translating a refusal into this module's
+     *         permanent-error status
+     * @throws IllegalArgumentException if the site declares a CICS response, which only the card file's
+     *                                  open reports
+     */
+    private static String statusOf(String site, ParityCase.CallSiteOutcome outcome) {
+        if (outcome.resp() != null) {
+            throw new IllegalArgumentException("Call site " + site + " declares a CICS RESP, but the "
+                    + "only open this module reports as a response is OPEN-" + CARDFILE + "'s. Declare "
+                    + "a two-character FILE STATUS instead.");
+        }
+        if (outcome.status() != null) {
+            return outcome.status();
+        }
+        return STATUS_PERMANENT_ERROR;
+    }
+
+    /**
+     * @param site    the call site, for the failure message
+     * @param outcome the declared outcome
+     * @throws IllegalArgumentException if the outcome is anything other than a refusal
+     */
+    private static void requireRefusal(String site, ParityCase.CallSiteOutcome outcome) {
+        if (!outcome.isRefused() || outcome.status() != null) {
+            throw new IllegalArgumentException("Call site " + site + " reports no status at all: "
+                    + "9300-CARDFILE-CLOSE ends a browse, and ending a browse either succeeds or is "
+                    + "refused. Declare \"refused\": true.");
+        }
+    }
 
     /**
      * The backend conditions one run is driven under.
@@ -1953,27 +1539,6 @@ class CBTRN01CParityTest {
     }
 
     /**
-     * The datasets a run reaches, in open order, given the conditions it is driven under.
-     *
-     * <p>{@code MAIN-PARA} opens the six in a fixed order and each open abends on failure, so the set is
-     * a prefix of {@link #ALL_DDS} - which is why an open failure on the first DD leaves the writes
-     * channel empty rather than zero-rowed.
-     *
-     * @param injection the conditions
-     * @return the DDs whose {@code OPEN} reports {@code '00'}, in open order
-     */
-    private static List<String> openedDatasets(Injection injection) {
-        List<String> opened = new ArrayList<>(ALL_DDS.size());
-        for (String dataset : ALL_DDS) {
-            if (!STATUS_OK.equals(effectiveOpenStatus(injection, dataset))) {
-                break;
-            }
-            opened.add(dataset);
-        }
-        return List.copyOf(opened);
-    }
-
-    /**
      * @param injection the conditions
      * @param dataset   the DD
      * @return the batch {@code FILE STATUS} that DD's open reports, translating the card file's CICS
@@ -2039,6 +1604,12 @@ class CBTRN01CParityTest {
         /** Every file verb, in the order it was issued. */
         private final List<String> trace = new ArrayList<>();
 
+        /**
+         * Every read the run issued, in order, in the vocabulary the case declares them in: the daily
+         * file's sequential read carries no key, and the two keyed reads carry the key they were given.
+         */
+        private final List<ParityCase.ExpectedOperation> operations = new ArrayList<>();
+
         /** The DDs whose {@code OPEN} reported {@code '00'}, in open order. */
         private final Set<String> openedOk = new LinkedHashSet<>();
 
@@ -2072,11 +1643,28 @@ class CBTRN01CParityTest {
         private AbendException abend;
 
         /**
+         * Reproduces a shipped case under the stimulus that case declares.
+         *
          * @param scenario the case to reproduce
          */
         private PostingRun(ParityScenario scenario) {
-            this.scenario = scenario;
-            this.injection = scenario.injection();
+            this(scenario, injectionFrom(scenario.parityCase().unitStimulus()));
+        }
+
+        /**
+         * Reproduces a case's seeds under conditions supplied here instead of by the case.
+         *
+         * <p>Used only by the three assertions the twenty cases have no slot for - the two close arms and
+         * the refused browse end - which borrow a shipped case's seeds and drive a condition of their
+         * own. The gate never uses it: {@link #producesNoDifferences(ParityScenario)} always goes through
+         * the one-argument constructor, so a case's stimulus is only ever the stimulus it declares.
+         *
+         * @param scenario  the case whose seeds and expectations to use
+         * @param injection the conditions to drive instead of the case's own
+         */
+        private PostingRun(ParityScenario scenario, Injection injection) {
+            this.scenario = Objects.requireNonNull(scenario, "A scenario is required");
+            this.injection = Objects.requireNonNull(injection, "An Injection is required");
         }
 
         @Override
@@ -2096,14 +1684,23 @@ class CBTRN01CParityTest {
         }
 
         /**
-         * Reports what the run produced: that every dataset it reached was written to zero times, the
-         * final state of the datasets the case pins, and every {@code DISPLAY} line in emission order.
+         * Reports what the run produced: that every dataset it reached was written to zero times, what
+         * every dataset it reached held afterwards, and every {@code DISPLAY} line in emission order.
          *
          * <p>The writes channel is reported for every dataset whose {@code OPEN} succeeded and is
          * reported as <em>opened and not written to</em>, which is a stronger statement than omitting
          * the dataset: omitting it would say only that the case never mentioned it, while this says the
          * run reached it and produced no record. That is the whole claim of this gate, and it is made in
          * every case rather than in one.
+         *
+         * <p>The final-state channel is reported for <strong>the same set, unconditionally</strong>, and
+         * that is deliberate. What is observable is decided by what the run reached - a DD whose
+         * {@code OPEN} reported {@code '00'} is allocated and readable whether or not any paragraph
+         * touched it - and never by what the case expects. Consulting the expectation to decide what to
+         * observe would make the two sides of the comparison one side: a dataset the case forgot would
+         * also be a dataset nobody looked at, and the case would pass by omission. So every reached
+         * dataset is reported and every case accounts for all of them, including the empty ones, whose
+         * zero rows are themselves the assertion that this program posts nothing.
          *
          * @param recorder   where observations go
          * @param invocation the invocation holding the seeded rows
@@ -2112,8 +1709,6 @@ class CBTRN01CParityTest {
                 ParityHarness.Invocation invocation) {
             for (String dataset : openedOk) {
                 recorder.openedWithoutWriting(dataset, layoutOf(dataset));
-            }
-            for (String dataset : scenario.finalStatePins()) {
                 recorder.finalState(dataset, layoutOf(dataset), rowsOf(invocation, dataset));
             }
             for (String line : lines) {
@@ -2175,6 +1770,19 @@ class CBTRN01CParityTest {
         /** @return every file verb, in the order it was issued */
         private List<String> trace() {
             return List.copyOf(trace);
+        }
+
+        /** @return every read the run issued, in order, keys included */
+        private List<ParityCase.ExpectedOperation> operations() {
+            return List.copyOf(operations);
+        }
+
+        /**
+         * @return the {@code OPEN} and {@code CLOSE} entries of the trace, in issue order, with the reads
+         *         between them removed - the sequence {@code MAIN-PARA} is responsible for
+         */
+        private List<String> openAndCloseTrace() {
+            return trace.stream().filter(entry -> !entry.startsWith(TRACE_READ)).toList();
         }
 
         /** @return every method invoked on the customer repository and its handle */
@@ -2250,10 +1858,31 @@ class CBTRN01CParityTest {
         }
 
         /**
-         * @param dataset the DD being read
+         * The sequential read of the daily file, which carries no key: {@code READ DALYTRAN-FILE INTO}
+         * at {@code :167} takes the next record, wherever the pass happens to be.
          */
-        private void read(String dataset) {
+        private void readNext() {
+            trace.add(TRACE_READ + DALYTRAN);
+            operations.add(new ParityCase.ExpectedOperation(DALYTRAN,
+                    ParityCase.RepositoryOperation.READ_NEXT, null));
+        }
+
+        /**
+         * A keyed read, recorded with the key it was given.
+         *
+         * <p>A key that is entirely blank is recorded as absent rather than as spaces, because that is
+         * what it is: the post-end-of-file lookup at {@code :170-172} reads on whatever the record area
+         * last held, and on an empty dataset it never held anything. That the lookup happened at all,
+         * and with what, is asserted by the {@code CARD NUMBER: } line the fingerprint already pins.
+         *
+         * @param dataset the DD being read
+         * @param key     the key the read was given
+         */
+        private void readByKey(String dataset, String key) {
             trace.add(TRACE_READ + dataset);
+            String trimmed = key == null ? "" : key.strip();
+            operations.add(new ParityCase.ExpectedOperation(dataset,
+                    ParityCase.RepositoryOperation.READ, trimmed.isEmpty() ? null : trimmed));
         }
 
         // -------------------------------------------------------------------------------------------
@@ -2297,7 +1926,7 @@ class CBTRN01CParityTest {
                     .thenAnswer(call -> closed(DALYTRAN, injection.closeStatusOf(DALYTRAN)));
             Deque<DalyTranRepository.ReadResult> reads = readQueue(records);
             when(dalytranFile.readNext()).thenAnswer(call -> {
-                read(DALYTRAN);
+                readNext();
                 return reads.isEmpty() ? DalyTranRepository.ReadResult.endOfFile() : reads.removeFirst();
             });
             return repository;
@@ -2366,7 +1995,7 @@ class CBTRN01CParityTest {
             when(xrefCursor.closeBrowse())
                     .thenAnswer(call -> closed(XREFFILE, injection.closeStatusOf(XREFFILE)));
             when(repository.readByCardNumber(anyString())).thenAnswer(call -> {
-                read(XREFFILE);
+                readByKey(XREFFILE, call.getArgument(0, String.class));
                 CardXrefRecord found = rows.get(call.<String>getArgument(0));
                 if (injection.xrefStatus() != null) {
                     return forcedXrefOutcome(injection.xrefStatus(), found);
@@ -2445,7 +2074,8 @@ class CBTRN01CParityTest {
             when(acctfile.closeFile())
                     .thenAnswer(call -> closed(ACCTFILE, injection.closeStatusOf(ACCTFILE)));
             when(acctfile.readByKey(anyLong())).thenAnswer(call -> {
-                read(ACCTFILE);
+                readByKey(ACCTFILE, ACCOUNT_KEY_CODEC.movePic9(call.getArgument(0, Long.class),
+                        ACCOUNT_ID_WIDTH));
                 if (injection.accountStatus() != null) {
                     return AccountRepository.ReadResult.of(injection.accountStatus());
                 }
@@ -2752,11 +2382,6 @@ class CBTRN01CParityTest {
         }
     }
 
-    /** @return the seed set the close-failure cases share: a daily file that exists and holds no row */
-    private static Map<String, ParityCase.DatasetInput> emptyPassSeeds() {
-        return seeds().with(DALYTRAN, emptyDataset(DALYTRAN_WIDTH, copybookOf(DALYTRAN))).build();
-    }
-
     /**
      * @param images the literal rows to seed, at their copybook width or - for the cross reference - at
      *               the 36 the fixture holds
@@ -2764,108 +2389,6 @@ class CBTRN01CParityTest {
      */
     private static ParityCase.DatasetInput rows(String... images) {
         return new ParityCase.DatasetInput(List.of(images), null, null, null, null, null, null);
-    }
-
-    /**
-     * @param fixture the fixture file name
-     * @return an input seeding every row of it
-     */
-    private static ParityCase.DatasetInput fixture(String fixture) {
-        return new ParityCase.DatasetInput(List.of(), fixture, null, null, null, null, null);
-    }
-
-    /**
-     * @param recordLength the width the dataset reports
-     * @param copybook     the member that declares it
-     * @return an input for a dataset that <em>exists</em> and holds no row, which is what reaches the
-     *         first-read end-of-file branch
-     */
-    private static ParityCase.DatasetInput emptyDataset(int recordLength, String copybook) {
-        return new ParityCase.DatasetInput(List.of(), null, null, null, Boolean.TRUE, recordLength,
-                copybook);
-    }
-
-    /**
-     * A row pinned by its whole image, which asserts every byte and therefore the total width - and so
-     * that every {@code FILLER} span was emitted (gates G19 and G21).
-     *
-     * @param dataset  the binding key
-     * @param rowIndex the zero-based row
-     * @param image    the complete record image
-     * @return the expectation
-     */
-    private static ParityCase.ExpectedRecord bytes(String dataset, int rowIndex, String image) {
-        return new ParityCase.ExpectedRecord(dataset, rowIndex, Map.of(),
-                requireWidth(image, widthOf(dataset), copybookOf(dataset)));
-    }
-
-    /**
-     * A cross-reference row pinned field by field, including the {@code FILLER} the fixture does not
-     * carry and the pad supplies.
-     *
-     * <p>All four spans are named, which is what makes the expectation complete: 16 + 9 + 11 + 14 is the
-     * whole 50 bytes, so no byte of the record goes unasserted.
-     *
-     * @param rowIndex   the zero-based row
-     * @param cardNumber {@code XREF-CARD-NUM}
-     * @param customerId {@code XREF-CUST-ID}
-     * @param accountId  {@code XREF-ACCT-ID}
-     * @return the expectation
-     */
-    private static ParityCase.ExpectedRecord xrefFields(int rowIndex, String cardNumber,
-            int customerId, long accountId) {
-        Map<String, String> fields = new LinkedHashMap<>();
-        fields.put(CardXrefRecord.XREF_CARD_NUM_NAME, exact(cardNumber, CARD_NUMBER_WIDTH,
-                CardXrefRecord.XREF_CARD_NUM_NAME));
-        fields.put(CardXrefRecord.XREF_CUST_ID_NAME, digits(customerId, CUSTOMER_ID_WIDTH));
-        fields.put(CardXrefRecord.XREF_ACCT_ID_NAME, digits(accountId, ACCOUNT_ID_WIDTH));
-        fields.put("FILLER", blanks(CardXrefRecord.FILLER_LENGTH));
-        return new ParityCase.ExpectedRecord(XREFFILE, rowIndex, fields, null);
-    }
-
-    /**
-     * @param expectations the pinned rows
-     * @param dataset      the binding key
-     * @return how many of them address that dataset, which is the row count its dataset-level expectation
-     *         declares
-     */
-    private static int rowsPinnedFor(List<ParityCase.ExpectedRecord> expectations, String dataset) {
-        int pinned = 0;
-        for (ParityCase.ExpectedRecord expectation : expectations) {
-            if (dataset.equals(expectation.dataset())) {
-                pinned++;
-            }
-        }
-        return pinned;
-    }
-
-    /**
-     * @param lines the expected lines, in emission order
-     * @return them on the {@code DISPLAY} channel, whose width is whatever the concatenated operands make
-     *         it
-     */
-    private static List<ParityCase.EmittedMessage> messages(List<String> lines) {
-        List<ParityCase.EmittedMessage> emitted = new ArrayList<>(lines.size());
-        for (String line : lines) {
-            emitted.add(new ParityCase.EmittedMessage(ParityCase.MessageChannel.DISPLAY_LINE, line));
-        }
-        return List.copyOf(emitted);
-    }
-
-    /**
-     * @param inputs the seed set
-     * @return the 36-to-50 cross-reference pad when this case seeds cross-reference rows, and nothing
-     *         otherwise - a normalisation for a dataset that is unseeded or declared empty has no row to
-     *         apply to and is refused by {@link ParityCase}
-     */
-    private static List<ParityCase.DatasetNormalisation> normalisationsFor(
-            Map<String, ParityCase.DatasetInput> inputs) {
-        ParityCase.DatasetInput crossReference = inputs.get(XREFFILE);
-        if (crossReference == null || crossReference.declaredEmpty()) {
-            return List.of();
-        }
-        return List.of(new ParityCase.DatasetNormalisation(XREFFILE,
-                ParityCase.Normalisation.CARDXREF_FILLER_PAD_36_TO_50));
     }
 
     // =================================================================================================
@@ -3097,20 +2620,6 @@ class CBTRN01CParityTest {
     }
 
     /**
-     * Row 0's shape carrying another card number and transaction id, for the cases whose subject is which
-     * key the lookup is issued with rather than what the rest of the record holds.
-     *
-     * @param cardNumber    {@code DALYTRAN-CARD-NUM}
-     * @param transactionId {@code DALYTRAN-ID}
-     * @return the 350-byte record image
-     */
-    private static String dailyTransactionRow(String cardNumber, String transactionId) {
-        return dalytranRow(transactionId, "01", "0001", "POS TERM", "Purchase at Abshire-Lowe",
-                AMOUNT_POSITIVE, MERCHANT_ID, "Abshire-Lowe", "North Enoshaven", "72112", cardNumber,
-                ORIGIN_TIMESTAMP, PROCESS_TIMESTAMP_BLANK);
-    }
-
-    /**
      * {@code ACCOUNT-RECORD} - {@code app/cpy/CVACT01Y.cpy}, whose thirteen spans are
      * {@code ACCT-ID 9(11)}, {@code -ACTIVE-STATUS X(01)}, three {@code S9(10)V99} monetary spans of 12
      * zoned bytes each, {@code -OPEN-DATE X(10)}, {@code -EXPIRAION-DATE X(10)} - the copybook's own
@@ -3289,86 +2798,6 @@ class CBTRN01CParityTest {
      */
     private record FullPass(List<String> lines, List<String> trace,
                             List<ParityCase.ExpectedRecord> finalStateRows) {
-    }
-
-    /**
-     * Derives the expectations for a pass over all 300 rows of {@code dailytran.txt}.
-     *
-     * <p>Mechanical, and derived from the <em>fixtures and the copybook offsets</em> - never from the
-     * translation. Each row supplies its own image line, its card number is resolved against
-     * {@code cardxref.txt} by the same 16/9/11 offsets {@code app/cpy/CVACT03Y.cpy} declares, and the
-     * resolved account id is looked for among the eleven-digit keys of {@code acctdata.txt}. The lines
-     * each outcome produces are the ones written out above, so the derivation decides only <em>which</em>
-     * lines and in what order - which is the part of the program a 300-row pass is worth asserting.
-     *
-     * <p>The post-end-of-file lookup is derived the same way, on the last row's card number and
-     * transaction id, because that is what the untouched record area still holds.
-     *
-     * @return the derived expectations
-     */
-    private static FullPass fullPass() {
-        Map<String, String[]> crossReference = new LinkedHashMap<>();
-        for (String row : fixtureRows(CARDXREF_FIXTURE)) {
-            crossReference.put(row.substring(0, CARD_NUMBER_WIDTH), new String[] {
-                    row.substring(CARD_NUMBER_WIDTH, CARD_NUMBER_WIDTH + CUSTOMER_ID_WIDTH),
-                    row.substring(CARD_NUMBER_WIDTH + CUSTOMER_ID_WIDTH)});
-        }
-        Set<String> accounts = new LinkedHashSet<>();
-        for (String row : fixtureRows(ACCTDATA_FIXTURE)) {
-            accounts.add(row.substring(0, ACCOUNT_ID_WIDTH));
-        }
-
-        List<String> daily = fixtureRows(DAILYTRAN_FIXTURE);
-        List<String> lines = new ArrayList<>();
-        List<String> trace = new ArrayList<>(openTrace(ALL_DDS.size()));
-        List<ParityCase.ExpectedRecord> pinned = new ArrayList<>(daily.size());
-        lines.add(START_BANNER);
-
-        // The record area before the first read: a PIC X span holds spaces, which is what the lookup of
-        // an empty file would be issued with. Both values are replaced by every successful read, and the
-        // pair that survives the last one is what the post-end-of-file lookup uses.
-        String card = blanks(CARD_NUMBER_WIDTH);
-        String transactionId = blanks(TRANSACTION_ID_WIDTH);
-        for (int index = 0; index < daily.size(); index++) {
-            String row = daily.get(index);
-            pinned.add(bytes(DALYTRAN, index, row));
-            lines.add(row);
-            card = row.substring(DALYTRAN_CARD_NUM_OFFSET,
-                    DALYTRAN_CARD_NUM_OFFSET + CARD_NUMBER_WIDTH);
-            transactionId = row.substring(0, TRANSACTION_ID_WIDTH);
-            lines.addAll(lookupLines(card, transactionId, crossReference, accounts));
-            trace.addAll(recordTrace(crossReference.containsKey(card)));
-        }
-        lines.addAll(lookupLines(card, transactionId, crossReference, accounts));
-        trace.addAll(recordTrace(crossReference.containsKey(card)));
-        lines.add(END_BANNER);
-        trace.addAll(closeTrace(ALL_DDS.size()));
-
-        return new FullPass(List.copyOf(lines), List.copyOf(trace), List.copyOf(pinned));
-    }
-
-    /**
-     * The lines one cross-reference lookup and its account read produce.
-     *
-     * @param card           the sixteen-character card number the lookup is issued with
-     * @param transactionId  the transaction id the skip line shows
-     * @param crossReference the cross-reference fixture, keyed by card number
-     * @param accounts       the eleven-digit keys the account fixture holds
-     * @return the lines, in order
-     */
-    private static List<String> lookupLines(String card, String transactionId,
-            Map<String, String[]> crossReference, Set<String> accounts) {
-        String[] resolved = crossReference.get(card);
-        if (resolved == null) {
-            return skipLines(card, transactionId);
-        }
-        List<String> lines = new ArrayList<>(xrefFoundLines(card, resolved[0], resolved[1]));
-        if (accounts.contains(resolved[1])) {
-            lines.add(SUCCESSFUL_READ_OF_ACCOUNT_FILE);
-        } else {
-            lines.addAll(accountNotFoundLines(resolved[1]));
-        }
-        return List.copyOf(lines);
     }
 
     /**

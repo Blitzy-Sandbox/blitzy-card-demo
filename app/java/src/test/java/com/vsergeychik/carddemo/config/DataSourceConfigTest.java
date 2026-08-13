@@ -430,10 +430,13 @@ class DataSourceConfigTest {
      * @return an otherwise identical descriptor
      */
     private static DatasetBinding withLocation(DatasetBinding binding, String location) {
+        // The canonical twelve-component constructor, deliberately: the eleven-component convenience
+        // form defaults the reuse attribute to NOREUSE, which would silently erase the one REUSE
+        // cluster in the estate and make this helper report a geometry change that never happened.
         return new DatasetBinding(location, binding.organization(), binding.gdg(),
                 binding.recordFormat(), binding.blockSize(), binding.recordLength(),
                 binding.copybook(), binding.keyLength(), binding.keyOffset(), binding.base(),
-                binding.alternateKey());
+                binding.alternateKey(), binding.reusable());
     }
 
     @Nested
@@ -1325,7 +1328,14 @@ class DataSourceConfigTest {
                                 .hasMessageContaining("com.example.NoSuchMainframeDriver")
                                 .hasMessageContaining("is not on the classpath")
                                 .hasMessageContaining("spring.datasource.driver-class-name")
-                                .hasMessageContaining("pins no JDBC driver coordinate by design");
+                                .hasMessageContaining("pins no JDBC driver coordinate by design")
+                                // And it says how to fix it. A message that only states the driver is
+                                // absent is unactionable for this artifact in particular: the jar is
+                                // launched by PropertiesLauncher, so -cp beside -jar is discarded by the
+                                // JVM and the obvious remedy silently does nothing.
+                                .hasMessageContaining("LOADER_PATH")
+                                .hasMessageContaining("loader.path")
+                                .hasMessageContaining("-cp entry beside -jar is ignored");
                     });
         }
 
@@ -1347,7 +1357,17 @@ class DataSourceConfigTest {
                                 .hasMessageContaining("spring.datasource.driver-class-name")
                                 .hasMessageContaining("NO FALLBACK IS APPLIED")
                                 .hasMessageContaining("embedded database on this classpath is never "
-                                        + "substituted");
+                                        + "substituted")
+                                // This is the branch a site-specific URL scheme reaches first, so it
+                                // carries the loading instruction too - the deployment is about to name
+                                // a driver class and needs to know where the jar goes.
+                                .hasMessageContaining("LOADER_PATH")
+                                // The two halves are separated by a space. The first is a text block
+                                // and the second is appended to it, and a text block strips trailing
+                                // whitespace from every line - so a separator written INSIDE it would
+                                // be removed and the two sentences would run together as
+                                // "mean nothing.This module pins".
+                                .hasMessageContaining("mean nothing. This module pins");
                     });
         }
 
@@ -1646,15 +1666,18 @@ class DataSourceConfigTest {
          * binding.
          */
         @Test
-        @DisplayName("the dataset descriptor exposes a location and a geometry - exactly ten "
-                + "components, and no eleventh")
+        @DisplayName("the dataset descriptor exposes a location, a geometry and one cluster attribute - "
+                + "exactly twelve components, and no thirteenth")
         void theDescriptorExposesOnlyLocationAndGeometry() {
             List<String> componentNames = Stream.of(DatasetBinding.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
+            // reusable is the twelfth and is a cluster ATTRIBUTE rather than a location or a geometry:
+            // app/catlg/LISTCAT.txt records REUSE or NOREUSE per cluster, and it is what decides whether
+            // an OPEN OUTPUT of an indexed file - VSAM load mode - can begin against a non-empty one.
             assertThat(componentNames).containsExactly("dsname", "organization", "gdg",
                     "recordFormat", "blockSize", "recordLength", "copybook", "keyLength",
-                    "keyOffset", "base", "alternateKey");
+                    "keyOffset", "base", "alternateKey", "reusable");
         }
 
         @Test

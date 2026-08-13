@@ -6,7 +6,7 @@
 
 ### 1.1 Project Overview
 
-This project migrates the AWS CardDemo mainframe COBOL application — 28 programs (19,254 lines), 28 copybooks, 17 BMS mapsets, 29 JCL jobs with 2 cataloged procedures, and 9 ASCII data fixtures — into a single Java 21 (LTS) / Spring Boot 3.x Maven module rooted at `app/java`. It is a **like-for-like language migration, not a redesign**: no new features and no changed business rules. Every observable output — record bytes, field values, numeric scale and rounding, message text, return codes, screen field shapes and error paths — is held identical to what the COBOL produces today.
+This project migrates the AWS CardDemo mainframe COBOL application — 28 programs (19,254 lines), 28 copybooks, 17 BMS mapsets, 29 JCL jobs with 2 cataloged procedures, and 9 ASCII data fixtures — into a single Java 21 (LTS) / Spring Boot 3.x Maven module rooted at `app/java`. It is a **like-for-like language migration, not a redesign**: no new features and no changed business rules. The objective is byte-for-byte equivalence of every observable output — record bytes, field values, numeric scale and rounding, message text, return codes, screen field shapes and error paths — and the delivered module is **gated against that objective rather than asserted to have met it**: every program is diffed field by field against expected values, and a module is not complete until its diff count is zero. Those expected values are *statically derived* — read out of the COBOL sources, the copybook byte layouts, the JCL contracts and the sample data — because this environment cannot execute the legacy programs. Not one of them was captured from a run of the COBOL. So equivalence with a live COBOL execution is the target and the gate is real, but what the gate evidences is conformance to the derived baseline, and that distinction is an open item: risk **R-A**, section 6.2.
 
 The 28 programs divide into **17 CICS online programs and 11 non-CICS programs**, classified by the presence of `EXEC CICS` in each source. The online programs become stateless REST controllers; 9 of the non-CICS programs become Spring Batch jobs; the remaining 2 are `CALL`ed subprograms and become injected Spring components. 17 + 9 + 2 = 28, with no program counted twice and none left out.
 
@@ -18,15 +18,15 @@ Nothing on the mainframe side changed. `app/cbl`, `app/cpy`, `app/cpy-bms`, `app
 
 | Legacy element | Count | Delivered form |
 |---|---|---|
-| CICS online program (`EXEC CICS` present) | 17 | `@RestController`, with a service and repositories behind it |
+| CICS online program (`EXEC CICS` present) | 17 | `@RestController` over a Request/Response payload pair. Six delegate their decision logic to a service; the other eleven hold it in the controller class, and twelve reach their repositories directly — a divergence from the plan's layering, recorded in section 2.6 |
 | Non-CICS program invoked by an `EXEC PGM=` step | 8 | Spring Batch `Job` mirroring the JCL step sequence |
 | Non-CICS orphan invoked by nothing | 1 — `CBTRN01C` | Spring Batch `Job` with **no trigger** |
 | Non-CICS `CALL`ed subprogram | 2 — `CBSTM03B`, `CSUTLDTC` | `@Component` and `@Service`; plain method calls |
 | BMS mapset + symbolic-map copybook | 17 + 17 | one Request/Response payload pair per screen |
-| Data copybook | 27 modelled, 1 not | one Java type per copybook; `app/cpy/UNUSED1Y.cpy` has no consumers and is not modelled |
+| Data copybook | 27 consumed, carried by 25 Java types; 1 unmodelled | one Java type per copybook, with two merges the migration plan itself specifies: `CSMSG01Y` and `CSMSG02Y` share `common.SystemMessages`, and `CSUTLDPY` and `CSUTLDWY` share `account.AccountDateValidator`. `app/cpy/UNUSED1Y.cpy` has no consumers and is not modelled |
 | VSAM KSDS / sequential dataset | 12 | `JdbcTemplate`-backed access, no schema change |
 | JCL job, step, DD, `PARM` and `COND` contract | 29 jobs, 2 procs | Spring Batch steps plus configuration bindings |
-| `EXEC CICS XCTL` program transfer | 8 sites | a response field naming the next target; the server stays stateless |
+| `EXEC CICS XCTL` program transfer | 25 executable sites, in all 17 online programs | a response field naming the next target; the server stays stateless. The migration plan's "8 sites" counts transfer *shapes* — role-routed, communication-area-driven and literal — not occurrences, so 25 is the number to work from |
 | `CALL 'CEE3ABD'` | 9 sites | `AbendException` carrying the COBOL `RETURN-CODE` |
 
 The job count is **nine**, and it is enforced rather than asserted: `carddemo.jobs` in `app/java/src/main/resources/application.yml` declares exactly nine job contracts and `BatchConfig.JobContracts` refuses to start the context if one is absent or re-pointed at another program. Nine decomposes exactly — eight programs carry an `EXEC PGM=` step somewhere under `app/jcl` or `app/proc`, and `CBTRN01C` carries none yet migrates all the same. Where the migration plan's prose says ten, the cause is `CBCUS01C` counted twice: once among the eight and again as the separately named customer file reader. No tenth job was invented to close that gap (practice **B4**).
@@ -46,13 +46,16 @@ The job count is **nine**, and it is enforced rather than asserted: `carddemo.jo
 
 ### 1.4 Critical Unresolved Issues
 
-Three items are open, and all three are escalated rather than absorbed (practice **B12**). The first two need a human decision; the third needs a deployment input. None of them is a defect in the code.
+Six items are open, and every one of them is escalated rather than absorbed (practice **B12**). Five need a human decision — one on baseline provenance, one on naming, one on packaging, and two on the mandated dependency set: the advisory-affected versions it pins and the Micrometer exclusion it cannot deliver — and one needs a deployment input. None of them is a functional defect: nothing listed here changes what the delivered code computes. The full register — eleven items, the other five of which carry no decision because they are already closed by a mitigation — is section 6.1.
 
 | Issue | Why it is open | What closing it requires |
 |---|---|---|
 | **R-A** — the regression baseline is statically derived, not captured from a run of the legacy programs | Executing the 28 COBOL programs is impossible in this environment; eight blockers are itemised in section 6.2. The substitute preserves every substantive part of the gate and changes only the *provenance* of the expected values, which modifies the wording of a stated success criterion | Explicit user confirmation that a statically derived baseline is accepted — or a z/OS runtime, or a COBOL toolchain with indexed file support, Language Environment `CEE*` services, a CICS emulator and the three absent IBM copybooks |
 | **R-B** — `COTRN01C` is named `TransactionAddController` but views a transaction, and `COTRN02C` is named `TransactionViewController` but adds one | The mandated names are honoured verbatim and the behaviour is taken from the source, so the code is correct on both counts. The names are simply inverted relative to what the sources and `README.md` document | Explicit user confirmation of the naming, after which either the names stand or both classes are renamed together |
-| **R-E** — the site JDBC driver is a deployment-time input | There is zero `EXEC SQL` in all 28 programs and indexed VSAM has no standard published JDBC driver, so no driver coordinate is compiled into the build. Production connectivity cannot be exercised here | Supplying `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME` and `CARDDEMO_DATASOURCE_URL` at deployment. Until then the repositories are validated against the fixture-backed harness |
+| **R-E** — the backend binding is a deployment-time input, and the driver is only the first part of it | There is zero `EXEC SQL` in all 28 programs and indexed VSAM has no standard published JDBC driver, so no driver coordinate is compiled into the build. Production connectivity cannot be exercised here | Satisfying the eight-item deployment contract in section 9 — driver, URL and credentials; a relation per configured dataset with the record image in column 1; the record-image form; a byte-ordered collation or `BINARY`; a physical-record ordinal; KSDS-equivalent key uniqueness; and the `BATCH_` metadata. Until then the repositories are validated against the fixture-backed harness |
+| **R-I** — the delivered layering is not the plan's uniform Controller → Service → Repository split | Six of the seventeen online programs delegate their decision logic to a service; eleven hold it in the controller class and twelve inject repositories directly. Behaviour is unaffected — every monetary operation still routes through the single `CobolDecimal` seam, and the parity suite reaches controller logic by constructing the controller as a plain object — but the packaging diverges from what the plan describes. Section 2.6 states the shape program by program | A decision either to ratify the delivered shape or to extract eleven services, which is a packaging refactor with no behavioural change on either side |
+| **R-J** — two entries of the frozen dependency inventory are advisory-affected, and no upgrade exists inside the pinned line | `tomcat-embed-core` 10.1.55 and the Jackson BOM 2.21.4 are version-managed by `spring-boot-dependencies` 3.5.16, which is the last published OSS 3.5.x release. Apache lists 10.1.55 among the versions fixed by 10.1.56 and 10.1.57, and jackson-databind 2.21.4 falls in a range fixed by 2.21.5. The patched versions were tried and resolve, so the gap is held open by AAP 0.5.4 naming the resolved inventory and 0.8.9 forbidding a move off it — not by a missing artifact | An authorised revision of the AAP 0.5.4 inventory to the patched versions, or a commercially supported patched 3.x BOM. Neither can be decided inside the build, which is why `app/java/pom.xml` records the position rather than redeclaring the BOM properties |
+| **R-K** — the plan mandates the web and batch starters and simultaneously excludes Micrometer, and both cannot hold | The observation API is part of how Spring Framework 6 and Spring Batch 5 are built: `AbstractJob` and `AbstractStep` reference it, so removing the five transitive artifacts produces `NoClassDefFoundError` instead of a slimmer build. What the exclusion asks for is delivered and asserted — no registry bean, no exporter, no Actuator, nothing to scrape — but its letter, applied to transitive API jars of mandated starters, is not achievable | A decision on which requirement yields. Section 4.3 states exactly what is and is not present, so the choice can be made on measured facts rather than on the claim that the exclusion already holds |
 
 ### 1.5 Access Issues
 
@@ -61,14 +64,14 @@ The module needs no external system to build, test or be reviewed: no database s
 | Resource | Status | Consequence |
 |---|---|---|
 | z/OS or mainframe runtime | Not available | The legacy programs cannot be executed, so the regression baseline is derived statically — risk **R-A**, section 6.2 |
-| Site data-access JDBC driver | Not available; deployment-time input | Production connectivity is unexercised — risk **R-E**. The `DataSource` is entirely configuration bound and startup is refused, naming the missing property, when none is supplied |
+| Site data-access backend and JDBC driver | Not available; deployment-time input | Production connectivity is unexercised — risk **R-E**. The `DataSource` is entirely configuration bound and startup is refused, naming the missing property, when none is supplied. What else the backend has to expose — relations, record-image column and form, collation, record ordinal, key uniqueness and `BATCH_` metadata — is the deployment contract in section 9 |
 | IBM-supplied copybooks `DFHAID`, `DFHBMSCA`, `DFHATTR` | Referenced by 17, 17 and 2 programs; absent from this repository | Their AID and attribute constants are reproduced in Java from IBM CICS documentation rather than read from source — risk **R-D** |
 
 ### 1.6 Recommended Next Steps
 
 1. **Confirm risk R-A** — accept the statically derived baseline, or provide an environment in which the legacy programs can be run. This is the one open item that touches a stated acceptance criterion.
 2. **Confirm risk R-B** — rule on the `COTRN01C` / `COTRN02C` naming so the inversion is either ratified or corrected in one deliberate change rather than half-fixed.
-3. **Bind the site driver** — supply the deployment-time `DataSource` properties in the target environment and exercise the repositories against real datasets, which is the only part of the module this environment cannot reach.
+3. **Satisfy the deployment contract** — supply the `DataSource` properties *and* the rest of what section 9 lists (a relation per configured dataset, the record-image form, a byte-ordered collation or `BINARY`, the physical-record ordinal, key uniqueness and the `BATCH_` metadata), then exercise the repositories against real datasets. This is the only part of the module this environment cannot reach.
 4. **Review the absent-copybook constants** — check the reproduced `DFHAID`, `DFHBMSCA` and `DFHATTR` values against the CICS release in use, since they came from documentation rather than from a copybook on disk.
 
 ---
@@ -109,11 +112,11 @@ app/java/
         └── carddemo-test-fixtures.yml       in-memory datasource and fixture inventory
 ```
 
-Both resource files are real and both are load-bearing: `app/java/src/main/resources/application.yml` declares *what* every dataset is — DD name, organization, record format, record length, copybook and key length — while `app/java/src/main/resources/application-test.yml` declares only *where* each one lives while the suite runs, rebinding all of them onto in-memory test data.
+Both resource files are real and both are load-bearing: `app/java/src/main/resources/application.yml` declares *what* every dataset is — DD name, organization, record format, record length, copybook and key length — while `app/java/src/main/resources/application-test.yml` declares only *where* each one lives while the suite runs, rebinding all of them into an in-memory database whose relations each test creates and seeds for itself.
 
 ### 2.2 `config/` and `common/`
 
-`config/` holds **6** classes. Four are the ones the migration plan names, and two more emerged from the work:
+`config/` holds **5** classes. Four are the configuration owners the migration plan names, and one more emerged from the work:
 
 | Class | Responsibility |
 |---|---|
@@ -122,7 +125,8 @@ Both resource files are real and both are load-bearing: `app/java/src/main/resou
 | `WebConfig` | Payload mapping and the global error boundary; deliberately leaks no backend detail |
 | `CobolCharsetConfig` | Explicit IBM037 / US-ASCII selection, never the platform default |
 | `DatasetUnitOfWork` | The commit and rollback boundary a `SYNCPOINT` implied |
-| `ScreenTextDeserializer` | Fixed-width screen text binding on the inbound payload edge |
+
+The plan fixes the configuration owners at four and requires the collaborators they publish to be **nested types of the file that registers them**, so `WebConfig` carries three of its own: `CobolErrorHandler`, the global error boundary; `ScreenTextDeserializer`, which judges every inbound screen string once at the payload edge and refuses a shape no `RECEIVE MAP` could have delivered; and `JobSubmissionValidator`, which validates the internal-reader contract at startup. `DatasetUnitOfWork` is the one member that is not a configuration owner at all — it is the `@Component` a locking read runs inside.
 
 `common/` holds **28** classes. Thirteen are the shared translations the plan enumerates — `CobolDecimal`, `FixedWidthRecord`, `FixedWidthCodec`, `AbendException`, `FileStatus`, `CicsAid`, `BmsAttributes`, `NavigationContext`, `ScreenTitles`, `SystemMessages`, `DateHeader`, `PfKeyResolver`, `FieldAttributeSetter` — and the remaining fifteen are supporting types the translation needed: `AidRequestParameter`, `CicsResponse`, `DatasetIntegrityException`, `DatasetObservation`, `DatasetRelation`, `DiagnosticText`, `NumericIntrinsics`, `PhysicalSequence`, `RecordImageForm`, `ResponseOnlyMembers`, `ScreenFieldImage`, `ScreenInputRejectedException`, `ScreenMetadata`, `ScreenResponse`, `SensitiveDiagnostics`.
 
@@ -194,7 +198,7 @@ Twelve datasets are reached, and the tree distributes them across **ten** `@Repo
 
 The last two follow the COBOL: the disclosure-group rate lookup exists only inside the interest calculation, and all four statement inputs are declared in `CBSTM03B`, which is exactly why `CBSTM03A` calls it thirteen times instead of opening them itself.
 
-**Three output writers and one parameter reader**, each pinned to its JCL-declared width by a constant in the class:
+**Four writer classes across three output families, and one parameter reader** — each pinned to its JCL-declared width by a constant in the class. The families are the reject file, the transaction report, and the statement pair; the statement pair is two classes because its two outputs are two DDs of different widths, 80 and 100:
 
 | Component | DD | Width | Note |
 |---|---|---|---|
@@ -225,6 +229,22 @@ The rules the payloads follow:
 - The delivered payload types follow `<Screen>Request` / `<Screen>Response` — for example `transaction.dto.TransactionListRequest` and `transaction.dto.ReportRequestRequest`. There are 17 pairs, plus `card.dto.CardScreenState` for the shared card screen state.
 - Pagination page sizes are **behaviour, not configuration**: 7 for the card list, 10 for the transaction and user lists. They are compiled constants and are deliberately not tunable, because changing one would change what the screen shows.
 
+### 2.6 Where the decision logic actually lives
+
+The plan's layering is Controller → Service → Repository, with the arithmetic in the services. That is what six of the seventeen online programs look like. The other eleven do not, and this section states the delivered shape rather than the intended one, because a diagram that flatters the code is worse than no diagram.
+
+| Shape | Count | Online programs |
+|---|---|---|
+| Controller delegates its decision logic to a service | 6 | `SignOnController` → `SignOnService`, `MainMenuController` → `MainMenuService`, `AdminMenuController` → `AdminMenuService`, `BillPaymentController` → `BillPaymentService`, `AccountUpdateController` → `AccountUpdateService`, `CardUpdateController` → `CardUpdateService` |
+| Controller holds the decision logic itself, with no service | 11 | `AccountViewController`, `CardListController`, `CardSelectController`, `TransactionMenuController`, `TransactionAddController`, `TransactionViewController`, `ReportRequestController`, `UserMenuController`, `UserAddController`, `UserUpdateController`, `UserDeleteController` |
+| Controller injects one or more repositories directly | 12 | the eleven above except `ReportRequestController`, plus `AccountUpdateController` and `CardUpdateController`, which carry both a service *and* repositories |
+
+The two update programs are the mixed case: `AccountUpdateController` injects `AccountUpdateService` for the optimistic-concurrency check translated from `9300-CHECK-CHANGE-IN-REC` and *also* injects the account, cross-reference and customer repositories for its own reads. `ReportRequestController` is the opposite extreme — no service and no repository, because `CORPT00C`'s work is date validation through the injected date subprogram and an 80-byte write to the job-submission port.
+
+Numeric handling follows the same split, though it is narrower than the layering divergence: counting only executable code and not comments, `BigDecimal` or `CobolDecimal` appears in **five** controller classes — `TransactionViewController`, `AccountUpdateController`, `TransactionMenuController`, `ReportRequestController` and `TransactionAddController` — of which four make `CobolDecimal` calls directly and `AccountUpdateController` carries a single `setScale`. What is **not** split is the rounding policy: every monetary operation still routes through the one `CobolDecimal` seam at scale 2 with `RoundingMode.DOWN` wherever the call site sits, so the numeric-parity guarantee in section 5.2 holds regardless of layering.
+
+**This is a divergence from the plan, not a decision this document is entitled to bless.** The plan asks for a Controller → Service → Repository split with the arithmetic in the services, on the reasoning that services are reachable by a test without HTTP in the path. The second half of that reasoning is satisfied anyway — the parity suite constructs those controllers as plain objects and calls their handler methods directly, which is why `CONTROLLER_POJO` is a first-class unit kind in section 3.2 — but the packaging requirement itself is unmet for eleven of the seventeen. It is recorded as risk **R-I** in section 6.1 and left for a deliberate refactor rather than described here as though it were the plan's shape.
+
 ---
 
 ## 3. Tests and Coverage
@@ -239,7 +259,7 @@ Tests ship in the same phase as the code they judge, not after it (practice **B1
 | Parity suite | JUnit 5 parameterised tests over declarative cases | One `<PROGRAM>ParityTest` class per program, 28 in all |
 | Configuration and boundary tests | JUnit 5, Spring test support | The dataset bindings, the job contracts, the charset selection, the error boundary, and the test-workspace isolation |
 
-Deliberately absent, and this is a design decision rather than a gap: the module runs its whole suite **offline** — no external database, no container-based test harness, no network and no mainframe. `app/java/src/main/resources/application-test.yml` rebinds every dataset onto in-memory test data seeded from the nine fixed-width fixtures derived from `app/data/ASCII`.
+Deliberately absent, and this is a design decision rather than a gap: the module runs its whole suite **offline** — no external database, no container-based test harness, no network and no mainframe. `app/java/src/main/resources/application-test.yml` rebinds all 27 dataset bindings onto in-memory test data: 17 of them are backed by the nine fixed-width fixtures derived from `app/data/ASCII`, `USRSEC` is seeded inline from the ten rows of `app/jcl/DUSRSECJ.jcl`, and the remaining nine are datasets a run produces rather than reads, so they start empty. Section 3.4 records the two width normalizations that split entails. The data itself is the tests' own work rather than the profile's: the profile creates no relation, so each test declares the datasets its case needs, loads its rows and holds them privately for the duration of that one case. That is why the suite needs no external database — and why a JVM started on this profile by hand does not have the suite's data; section 9 gives the procedure for that case.
 
 Two guards exist against the worst failure a gate can have, which is passing over evidence that was never produced. `failIfNoTests` is `true` in the Surefire configuration, so a run that discovered nothing fails; and a sentinel test asserts the discovered suite is not merely non-empty but at least as large as the floor recorded in `app/java/pom.xml`, so silently losing most of the suite to a mis-scoped include fails the build rather than reporting green.
 
@@ -250,7 +270,7 @@ Two guards exist against the worst failure a gate can have, which is passing ove
 ```mermaid
 flowchart LR
     A["caseNN.json<br/>declarative case"] --> B["ParityHarness.seed<br/>in-memory datasets from fixtures"]
-    B --> C["ParityHarness.run<br/>executes a job or service"]
+    B --> C["ParityHarness.run<br/>invokes the unit directly<br/>batch job, service, component<br/>or controller POJO - never over HTTP"]
     C --> D["ParityHarness.capture<br/>behavioural fingerprint"]
     D --> E["FieldDiffer.compare<br/>field by field"]
     E --> F{"diff count zero<br/>for all 20 cases?"}
@@ -264,11 +284,11 @@ flowchart LR
 ```
 
 - **Case layout.** Every program owns twenty cases, identified `case01` through `case20`. A case is declarative in either of two equivalent forms, both built on the same `ParityCase` model: most suites load theirs from the test classpath at `app/java/src/test/resources/parity/<PROGRAM>/` — for example `app/java/src/test/resources/parity/CBACT01C/case01.json` — and a few declare theirs in code. Whichever form it takes, a case holds its inputs (dataset to fixture rows), its job parameters, its expected records (dataset, row index, and a field-name-to-value map), its expected return code and its expected messages.
-- **The count is enforced, not merely intended.** `ParityHarness.CASES_PER_PROGRAM` is `20`, and it is the only place that number is written. The classpath loader demands the *exact* set: a short set fails loudly naming each missing case, and a stray extra such as a twenty-first case is refused by name, because a resource the loader does not read is a resource nobody is running. The suites that declare their cases in code apply the same rule to their own set, rejecting one that is short, long, misnumbered or duplicated — and they check it inside the case supplier, so running a single case cannot bypass it. Across the 28 programs that is 560 cases, the figure `README.md` publishes.
-- **Execution.** `ParityHarness` loads a case, seeds the datasets, executes the unit — **a job or a service, never a controller** — and captures a *behavioural fingerprint*: every written record byte-decoded per copybook into named fields, plus the return code and any emitted messages.
+- **The count is enforced, not merely intended.** `ParityHarness.CASES_PER_PROGRAM` is `20`, and it is the **canonical** constant every suite is expected to derive its count from — not the only place the number appears, because `CSUTLDTCParityTest` also pins its own `EXPECTED_CASE_COUNT` at 20 and the harness's self-tests walk literal `1..20` ranges when they generate case identifiers to probe the loader with. The classpath loader demands the *exact* set: a short set fails loudly naming each missing case, and a stray extra such as a twenty-first case is refused by name, because a resource the loader does not read is a resource nobody is running. The suites that declare their cases in code apply the same rule to their own set, rejecting one that is short, long, misnumbered or duplicated — and they check it inside the case supplier, so running a single case cannot bypass it. Across the 28 programs that is 560 cases, the figure `README.md` publishes.
+- **Execution.** `ParityHarness` loads a case, seeds the datasets, invokes the unit and captures a *behavioural fingerprint*: every written record byte-decoded per copybook into named fields, plus the return code and any emitted messages. The unit is invoked **directly, with no HTTP layer and no `JobLauncher` in the path**, and `ParityCase.UnitKind` names the four shapes it can take: `BATCH_JOB` (the tasklet or the reader/processor/writer trio called straight), `SERVICE`, `COMPONENT` (the two called subprograms), and `CONTROLLER_POJO` — a `@RestController` constructed through its own constructor and its handler method called as a plain Java method. Of the 560 declared cases, 178 name `BATCH_JOB`, 263 `CONTROLLER_POJO`, 99 `SERVICE` and 20 `COMPONENT`. Controller POJOs carry the largest share for a reason that is a property of the delivered code rather than of the harness: eleven of the seventeen online programs hold their screen logic in the controller class itself rather than behind a service (section 2.6), so the controller *is* the unit under test.
 - **Comparison.** `FieldDiffer.compare` judges fingerprint against expectation **field by field, not as whole strings**, and returns a diff result carrying a diff count. Whole-string comparison would report one failure where twenty fields differ, and would say nothing about which one.
 - **The completion rule, stated exactly.** *A module is not complete until its diff count is zero across all 20 of its cases.* This is **per module, not per build**: a module with 19 clean cases and one diff is incomplete.
-- **Business logic lives in services**, so a parity test reaches the arithmetic with no HTTP layer and no `JobLauncher` in the path.
+- **A parity test reaches the logic as a plain object**, never through a request. Where a program's decision logic was lifted into a service the test drives the service; where it stayed in the controller — the majority of the online programs, section 2.6 — the test constructs that controller and calls its handler method. Either way there is no servlet container, no `MockMvc` and no `JobLauncher` between the assertion and the code, which is what keeps a diff attributable to the translation rather than to a framework.
 
 ### 3.3 Coverage enforcement
 
@@ -277,11 +297,13 @@ JaCoCo 0.8.15 is bound to the **`verify`** phase with `haltOnFailure` set, and i
 - a `BUNDLE` rule, so the module as a whole clears the bar; and
 - a `PACKAGE` rule, so **every package clears it independently.**
 
-The package rule is what actually delivers the "no unit hides behind another's coverage" requirement in a single-module build, where a bundle-only rule would let a well-covered package mask an untested one. The counter is branch rather than line because the migration is judged on 508 COBOL `88`-level condition names, 111 `EVALUATE` statements and the guard chains around them — only branch coverage evidences that both sides of each of those decisions were exercised. The threshold is a gate, not a target: the build fails below it.
+The package rule is what actually delivers the "no unit hides behind another's coverage" requirement in a single-module build, where a bundle-only rule would let a well-covered package mask an untested one. The counter is branch rather than line because the migration is judged on decisions: the **508** `88`-level condition names and **111** `EVALUATE` statements in `app/cbl`, and the guard chains around them. Those two figures are the programs only. Counting the copybooks as well — which is what the Java side actually implements, because copybook logic is translated too — gives **555** condition names and **112** `EVALUATE` statements: `app/cpy/CSUTLDWY.cpy` contributes 21 condition names, `app/cpy/CVCRD01Y.cpy` 17, `app/cpy/CSLKPCDY.cpy` 5 and `app/cpy/COCOM01Y.cpy` 4, while `app/cpy/CSSTRPFY.cpy` contributes the 112th `EVALUATE`. Only branch coverage evidences that both sides of each of those decisions were exercised. The threshold is a gate, not a target: the build fails below it.
 
 ### 3.4 Fixtures and the two width normalizations
 
-Nine fixed-width fixtures under `app/java/src/test/resources/fixtures/` are derived from `app/data/ASCII`, and eight of the nine match their copybook width exactly. Two seeds need normalizing before comparison, and both are material:
+Nine fixed-width fixtures under `app/java/src/test/resources/fixtures/` are derived from `app/data/ASCII`, and eight of the nine match their copybook width exactly. Those nine back **17** of the test profile's 27 dataset bindings, because the legacy estate addresses several datasets under more than one name — `ACCTDAT` and `ACCTFILE` are the same account master, `CARDAIX` is an alternate-index path over the card master, and `CCXREF`, `CARDXREF`, `XREFFILE`, `CXACAIX` and `XREFFIL1` all reach the one cross-reference cluster. `USRSEC` is the eighteenth, seeded inline because no `usrsec` file exists under `app/data/ASCII`. The remaining nine bindings — `DALYREJS`, `DATEPARM`, `HTMLFILE`, `STMTFILE`, `SYSTRAN`, `TRANFILE`, `TRANREPT`, `TRANSACT` and `TRNXFILE` — are what a run produces rather than what it reads, so they start empty and a test seeds only what its own case declares.
+
+Two seeds need normalizing before comparison, and both are material:
 
 | Seed | Source width | Copybook width | Normalization |
 |---|---|---|---|
@@ -320,17 +342,20 @@ Seventeen resources, one per CICS transaction, each projected field-for-field fr
 | `CU02` | `COUSR02C` | `UserUpdateController` | `PUT /api/users/{userId}` |
 | `CU03` | `COUSR03C` | `UserDeleteController` | `DELETE /api/users/{userId}` |
 
-CICS is pseudo-conversational, so the migration keeps **no server-side session**. The communication area, the key that was pressed and the screen's own field values travel in the payloads, and every reply carries the state the next call needs — including the next program, mapset and map, which is what the eight `XCTL` sites become. Navigation is therefore resolved by the caller; there is no server-side forward, no redirect chain and no session affinity.
+CICS is pseudo-conversational, so the migration keeps **no server-side session**. The communication area, the key that was pressed and the screen's own field values travel in the payloads, and every reply carries the state the next call needs — including the next program, mapset and map, which is what the 25 `XCTL` sites become. Navigation is therefore resolved by the caller; there is no server-side forward, no redirect chain and no session affinity.
 
-Both the first-entry and the re-entry paths exist for all 17 resources, because the source distinguishes them: first entry paints the screen and re-entry validates what was typed, and only re-entry applies the error highlight.
+Both the first-entry and the re-entry paths exist for all 17 resources, because the source distinguishes them: first entry paints the screen and re-entry validates what was typed, and only re-entry applies the error highlight. That distinction is visible from the first call and is worth knowing before trying a route by hand: a bare `GET` with no payload is a *first entry*, so `GET /api/accounts/00000000001` answers with the screen's own prompt — `Enter or update id of account to display`, the literal at `app/cbl/COACTVWC.cbl:114` — rather than with the account, exactly as `COACTVWC` does when `EIBCALEN` is zero (`:282`). The account is returned on the re-entry call, which carries the communication area and the screen's fields in the payload, each at the width its symbolic map declares.
 
 ### 4.2 Launching a batch job
 
 `spring.batch.job.enabled` is `false`, so starting the application runs no job. Each of the nine jobs is submitted explicitly by name, one per process, exactly as JCL submits one `EXEC PGM=` step at a time:
 
 ```shell
-java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=accountBalanceJob
+LOADER_PATH=/opt/carddemo/drivers java -jar app/java/target/carddemo.jar \
+  --carddemo.batch.job-name=accountBalanceJob
 ```
+
+Naming a job also selects a non-web process, so no HTTP port is bound for work that has nothing to serve; `LOADER_PATH` carries the deployment-supplied JDBC driver, as section 9 explains.
 
 | Job bean | Program | JCL origin | Parameters |
 |---|---|---|---|
@@ -354,7 +379,7 @@ Naming these once is more useful than leaving a reader to wonder, and each is ou
 - **No object-relational mapper.** Relational-izing indexed files is the industry default and is deliberately not followed here, because it would impose an entity and table model that does not exist.
 - **No authentication framework, no token and no credential hashing.** Section 5.3 explains why that is the correct outcome rather than a gap.
 - **No cloud service integration and no container runtime.** Nothing in the build or the test suite requires either.
-- **No metrics registry, no exporter, no management endpoint and no tracing.** Nothing is collected, aggregated, exported or scraped, and no observability configuration exists in the module. For full honesty: a handful of observation-API jars do arrive transitively through the mandated web and batch starters, and they cannot be excluded because the base classes of every Spring Batch job and step reference them — the header of `app/java/pom.xml` records that measurement and escalates it as an internal conflict in the plan rather than claiming an exclusion it cannot deliver.
+- **Nothing is configured to collect, retain, export or scrape telemetry.** No exporter, no Actuator, no management endpoint, no tracing bridge and no observability configuration exists in the module, and the assertion is made where it can actually be made — on the bean graph: `CardDemoApplicationTest.noObservabilityRegistryIsWired` requires that no bean of `io.micrometer.core.instrument.MeterRegistry` and none of `io.micrometer.observation.ObservationRegistry` exists in the started context. The stronger claim — that no registry is *present* — would overstate it, so here is the measured position instead. Five artifacts are in the resolved graph — `micrometer-observation`, `micrometer-commons` and `micrometer-core` at compile scope, plus the `HdrHistogram` and `LatencyUtils` that `micrometer-core` itself pulls in at runtime scope — every one of them a non-optional transitive of the web and batch starters the plan mandates, and `micrometer-core` does ship seven registry classes, three of them concrete: `SimpleMeterRegistry`, `CompositeMeterRegistry` and `LoggingMeterRegistry`. They cannot be excluded — `AbstractJob` and `AbstractStep`, the base classes of every Spring Batch job and step, reference them, so dropping the jars yields `NoClassDefFoundError` rather than a slimmer build. Those two base classes also default their registry field to Micrometer's global composite, and in this module that composite has no child registry attached, so what batch instrumentation produces is handed to a registry with nowhere to forward it and is discarded on the spot: nothing is aggregated, retained, exported or scraped. The header of `app/java/pom.xml` records the measurement, and the residue is registered as risk **R-K** rather than presented as an exclusion that was delivered.
 - **No API-documentation generator, no reactive web stack, and no compile-time accessor or mapper generator.**
 - **No CI/CD pipeline.** None exists anywhere in this repository and none was requested, so none was created.
 
@@ -368,13 +393,13 @@ Naming these once is more useful than leaving a reader to wonder, and each is ou
 |---|---|
 | All 28 COBOL programs have a Java class using the mandated name exactly | Section 2.3 maps every one |
 | The 9 mandated domain packages exist, and every program sits in its assigned package | `account`, `customer`, `transaction`, `billing`, `card`, `user`, `admin`, `statement`, `util`, all named in `CardDemoApplication`'s scan list alongside `common` and `config` |
-| One Java type per data copybook; `UNUSED1Y` unmodelled | 27 modelled types; `app/cpy/UNUSED1Y.cpy` has zero consumers and no Java counterpart |
+| One Java type per data copybook; `UNUSED1Y` unmodelled | 27 consumed copybooks carried by 25 top-level types: `CSMSG01Y` and `CSMSG02Y` share `common.SystemMessages`, `CSUTLDPY` and `CSUTLDWY` share `account.AccountDateValidator`, and both merges are the ones the migration plan specifies. Every other consumed copybook has its own type. `app/cpy/UNUSED1Y.cpy` has zero consumers and no Java counterpart |
 | A Request/Response pair per symbolic map | 17 pairs, plus the shared card screen state |
 | Nine batch jobs, and no tenth invented | Enforced by `BatchConfig.JobContracts` against the nine `carddemo.jobs` keys at startup |
 | `CBSTM03B` is a `@Component` and `CSUTLDTC` a `@Service` — neither is a `Job` | Neither has an `EXEC PGM=` step anywhere in `app/jcl` or `app/proc`, so neither may be given one |
 | `CBTRN01C` exists as a runnable job with no scheduled trigger | `transactionPostingJob` is a job bean with no invoker |
 | No Java type exists for `COCRDSEC` | It has no source file; see section 1.1 |
-| Dataset names appear only in configuration | 27 bindings in `app/java/src/main/resources/application.yml`; no dataset literal in Java source |
+| Dataset names appear only in configuration | 27 bindings in `app/java/src/main/resources/application.yml`; **no data-access path** reaches a dataset by a compiled-in name. One `AWS.M2.CARDDEMO` literal does exist in Java, in `ReportRequestController`, and it is payload rather than a path: it is a line of the 80-byte JCL skeleton the COBOL writes, reproduced byte for byte — see section 1.3 |
 
 ### 5.2 Parity, numeric and control-flow invariants
 
@@ -384,7 +409,7 @@ Naming these once is more useful than leaving a reader to wonder, and each is ou
 | Rounding | **`RoundingMode.DOWN`**, never half-up and never half-even, because `ROUNDED` appears **zero times** across all 28 programs, so COBOL truncates. All of it routes through the one `CobolDecimal` seam |
 | Record widths | Account 300, Card 150, CardXref 50, Customer 500, Transaction 350, DalyTran 350, TranCatBal 50, DisclosureGroup 50, TranType 60, TranCategory 60, SecUser 80, Trnx 350 — each pinned by a constant on its record type |
 | Output widths | 430, 133, 80 and 100 bytes, each matching the JCL-declared `LRECL` of its DD |
-| `FILLER` | Emitted as spaces in every serialized record. Omitting a `FILLER` span breaks every downstream offset and the total width, so total width is itself the check |
+| `FILLER` | A `FILLER` that declares a `VALUE` emits that value; one that declares none is padded per its `PICTURE`. In this codebase every unvalued `FILLER` is `PIC X(n)`, so the pad is always spaces — but the valued ones are not, and blanket space-filling would erase the separators in `app/cpy/CSDAT01Y.cpy`, the report literals in `app/cpy/CVTRA07Y.cpy` and the option numbers in the menu tables. Never inferred and never dropped: omitting a span breaks every downstream offset and the total width, so total width is itself the check |
 | Character set | Always named: IBM037 for the EBCDIC datasets, US-ASCII for the sample fixtures. Never the platform default |
 | Field names | Never renamed, **including the misspelling `ACCT-EXPIRAION-DATE`** in `app/cpy/CVACT01Y.cpy`. `app/cpy/CUSTREC.cpy`'s `CUST-DOB-YYYYMMDD` is kept as a distinct type from `app/cpy/CVCUS01Y.cpy`'s `CUST-DOB-YYYY-MM-DD`, because collapsing them would lose a name that field-for-field diffing depends on |
 | Evaluation order | `EVALUATE` ordering is preserved with the default case last; guard chains keep their early exits; the one program with backward loop-forming `GO TO`s is restructured into explicit loops with the iteration order asserted |
@@ -406,14 +431,14 @@ Behaviour is preserved **including** the parts a well-intentioned implementer wo
 
 ### 5.4 Documented conflicts, not corrected
 
-Three conflicts exist between this repository's own artefacts and the mandated design. Every one of them is left standing and explained, because silently fixing a conflict removes the evidence that it existed (practice **B4**).
+Three conflicts exist between this repository's own artefacts and the mandated design, and they occupy **four rows** below because the first of them is carried by two artefacts: the Java-version conflict appears in both `docs/index.md` and `catalog-info.yaml`, and each is listed on its own line so a reader looking for either file finds it. Every conflict is left standing and explained, because silently fixing one removes the evidence that it existed (practice **B4**).
 
-| Artefact | The conflict | Disposition |
+| Conflict and artefact | The conflict | Disposition |
 |---|---|---|
-| `docs/index.md` | Describes the application as migrated to Java 25, which contradicts the mandated Java 21 (LTS) | **Unmodified.** The file is outside the permitted change set for this work. The conflict is recorded here instead |
-| `catalog-info.yaml` | Carries the same Java 25 claim in its description | **Unmodified.** It is catalog metadata outside the migration surface |
-| `docs/technical-specifications.md` | Describes a materially different and more expansive design — a relational database with an object-relational mapper, schema migrations, a security framework, cloud services and an observability stack — targeting a *separate greenfield repository* | **Unmodified and superseded.** Nothing in it that the current mandate does not name is in scope. Facts it records about the *legacy* system remain useful corroborating evidence, and section 6.2 cites one of them |
-| The `COTRN01C` / `COTRN02C` names | Inverted relative to the sources and to the `README.md` inventory | **Names honoured, behaviour from the source, divergence surfaced** as risk **R-B** and escalated for confirmation |
+| **Conflict 1a** — `docs/index.md` | Describes the application as migrated to Java 25, which contradicts the mandated Java 21 (LTS) | **Unmodified.** The file is outside the permitted change set for this work. The conflict is recorded here instead |
+| **Conflict 1b** — `catalog-info.yaml` | Carries the same Java 25 claim in its description | **Unmodified.** It is catalog metadata outside the migration surface |
+| **Conflict 2** — `docs/technical-specifications.md` | Describes a materially different and more expansive design — a relational database with an object-relational mapper, schema migrations, a security framework, cloud services and an observability stack — targeting a *separate greenfield repository* | **Unmodified and superseded.** Nothing in it that the current mandate does not name is in scope. Facts it records about the *legacy* system remain useful corroborating evidence, and section 6.2 cites one of them |
+| **Conflict 3** — the `COTRN01C` / `COTRN02C` names | Inverted relative to the sources and to the `README.md` inventory | **Names honoured, behaviour from the source, divergence surfaced** as risk **R-B** and escalated for confirmation |
 
 For the same reason, `mkdocs.yml` is unchanged: its navigation resolves the *Project Guide* entry against the `docs/` directory, so this page stays reachable without a new entry, and no new page was added under `docs/`.
 
@@ -430,9 +455,12 @@ For the same reason, `mkdocs.yml` is unchanged: its navigation resolves the *Pro
 | **R-C** | Medium | Fourteen further mandated names diverge from the verified source function | Resolved by rule **R1**. Every divergence carries its caveat in section 2.3 | No |
 | **R-D** | Medium | `DFHAID`, `DFHBMSCA` and `DFHATTR` are referenced by 17, 17 and 2 programs but absent from this repository | Their constants are reproduced in `common.CicsAid` and `common.BmsAttributes` from IBM CICS documentation, and asserted by dedicated tests | No |
 | **R-E** | Medium | Production JDBC connectivity cannot be exercised here; the site driver is a deployment-time input | The `DataSource` is entirely configuration bound, startup is refused with a message naming the missing property, and the repositories are validated against the fixture-backed harness with H2 at test scope | No |
+| **R-I** | Medium | The delivered layering diverges from the plan's Controller → Service → Repository split: six of the seventeen online programs delegate their decision logic to a service, eleven hold it in the controller class, and twelve inject repositories directly | The divergence is **documented rather than hidden** — section 2.6 states the shape program by program and section 7's diagram draws both paths. Behaviour is unaffected and gated: every monetary operation still routes through the one `CobolDecimal` seam, and the parity suite reaches controller logic by constructing the controller as a plain object, so no HTTP layer sits in front of the arithmetic either way. Closing it is a packaging refactor, not a behaviour change | **Yes** — whether to refactor the eleven or to ratify the delivered shape |
+| **R-J** | Medium | Two families in the frozen dependency inventory sit in advisory-affected ranges. `tomcat-embed-core` and `tomcat-embed-websocket` resolve to 10.1.55 and the Jackson BOM to 2.21.4, both version-managed by `spring-boot-dependencies` 3.5.16 and neither declared by this module. Apache lists 10.1.55 among the versions fixed by 10.1.56 and 10.1.57, and jackson-databind 2.21.4 falls in a range fixed by 2.21.5 | 3.5.16 is the last published OSS 3.5.x release, so no upgrade exists inside the line the plan pins. Overriding `tomcat.version` to 10.1.57 and `jackson-bom.version` to 2.21.5 was tried and both resolve, so the gap is held open by the plan and not by a missing artifact: AAP 0.5.4 names 10.1.55 and 2.21.4 as the resolved inventory this module is accepted against, and 0.8.9 forbids moving off it. Direct exploitability is not established for this application — the implicated optional Tomcat features are not enabled and Jackson case-insensitive property matching is not switched on. The header of `app/java/pom.xml` records the measurement and the reasoning in full rather than absorbing it silently | **Yes** — either an authorised revision of the AAP 0.5.4 inventory to the patched versions, or a commercially supported patched 3.x BOM |
 | **R-F** | Low | The card cross-reference fixture is 36 bytes per record where its copybook declares 50 | The seed is right-padded to 50 before comparison; the configured record length stays 50 | No |
 | **R-G** | Low | `app/jcl/CREASTMT.JCL` declares the HTML statement at 80 bytes in its pre-delete step and 100 in the creating step | The creating step wins — 100 — and the writer pins that width by constant | No |
 | **R-H** | Low | `CBSTM03A` is the only program whose `GO TO`s form backward loops | Restructured into explicit loops with the iteration order asserted identical; it also carries the densest case coverage | No |
+| **R-K** | Low | The plan conflicts with itself on Micrometer. AAP 0.5.6 excludes it, while 0.5.4 mandates `spring-boot-starter-web` and `spring-boot-starter-batch`, which bring five artifacts in as non-optional transitives: three Micrometer jars and the two histogram libraries `micrometer-core` depends on. On Spring Framework 6 and Spring Batch 5 both requirements cannot hold at once | The letter is not achievable and is not claimed. Removal was attempted and measured: dropping the five produces `NoClassDefFoundError` on `io/micrometer/core/instrument/MeterRegistry` from `AbstractJob` and `AbstractStep` and on `io/micrometer/observation/ObservationConvention` from `ServerHttpObservationFilter` and `RestTemplate`, so an exclusion would stop the module loading rather than slim it. What the prohibition actually asks for is delivered and asserted: no registry bean of either kind, no exporter, no Actuator, no management endpoint, nothing to scrape — checked by `CardDemoApplicationTest.noObservabilityRegistryIsWired`. Section 4.3 states the position and `app/java/pom.xml` records the probe | **Yes** — which requirement yields, the mandated starters or the exclusion |
 
 ### 6.2 Risk R-A in full — where the expected values come from
 
@@ -465,7 +493,7 @@ This subsection exists because an environmental limit must be documented and esc
 | At least 90% branch coverage, per package and for the bundle | **Preserved** |
 | Provenance of the expected values | **Changed** — derived from the source and the fixtures rather than captured from a live COBOL execution |
 
-**Residual risk, and the four things that limit it.** A derived expectation can encode a misreading of the COBOL, where a captured one cannot. So: widths and offsets are taken mechanically from the copybook byte layout rather than from prose; every case is seeded from the real fixtures, so inputs are genuine; cases concentrate on the enumerable arithmetic sites and on the condition-name and `EVALUATE` branches, which is exactly where accumulated legacy behaviour hides; and the three hardest programs — the 4,236-line account update, the statement driver with its backward loops, and the validate-and-post cascade — carry the densest coverage.
+**Residual risk, and the four things that limit it.** A derived expectation can encode a misreading of the COBOL, where a captured one cannot. So: widths and offsets are taken mechanically from the copybook byte layout rather than from prose; inputs are genuine where a fixture supplies them — 260 of the 560 declared cases seed at least one dataset from the nine fixed-width fixtures derived from `app/data/ASCII` — and the rest are deliberate: 193 declare their rows inline to reach a record shape no fixture contains, such as an expired card or a balance at a boundary, 96 declare no input at all because the case exercises a path that reads no dataset — a menu paint, a guard that rejects the screen before any read, or the date subprogram, which touches no dataset at any point, and 11 declare a dataset explicitly *empty* to pin the end-of-file arm. An inline or empty case is no less statically derived than a fixture-backed one — its expected output comes from the same reading of the same paragraph — but it is not evidence about production-shaped data, so the two are counted separately here rather than described as one; cases concentrate on the enumerable arithmetic sites and on the condition-name and `EVALUATE` branches, which is exactly where accumulated legacy behaviour hides; and the three hardest programs — the 4,236-line account update, the statement driver with its backward loops, and the validate-and-post cascade — carry the densest coverage.
 
 **Because this changes the wording of a stated success criterion, it is escalated for explicit user confirmation rather than accepted quietly.** Every parity test class states the same thing in its own header, so the disclosure travels with the code and not only with this document.
 
@@ -493,12 +521,12 @@ flowchart LR
         JOB["Job + Step"]
         SUB["2 called subprograms<br/>@Component and @Service"]
     end
-    subgraph SVC["Service layer — all arithmetic"]
-        SERV["Services"]
+    subgraph SVC["Decision logic — 6 services; 11 controllers hold their own"]
+        SERV["Services<br/>6 of the 17 online programs"]
         CD["CobolDecimal<br/>scale 2, RoundingMode.DOWN"]
     end
     subgraph DATA["Data access — no schema change"]
-        REPO["10 repositories<br/>+ 3 writers + 1 reader"]
+        REPO["10 repositories<br/>+ 4 writers + 1 reader"]
         CODEC["FixedWidthCodec<br/>hand-written offsets"]
         JDBC["JdbcTemplate over the existing datasets"]
     end
@@ -512,8 +540,11 @@ flowchart LR
     JCL --> JOB
     CSD --> JDBC
     CBL --> SERV
+    CBL --> CTRL
     DTO --> CTRL
     CTRL --> SERV
+    CTRL --> CD
+    CTRL --> REPO
     JOB --> SERV
     SUB --> SERV
     SERV --> CD
@@ -522,6 +553,8 @@ flowchart LR
     REPO --> JDBC
     FIX --> PH
     SERV --> PH
+    CTRL --> PH
+    JOB --> PH
     PH --> FD
     FD --> JC
 ```
@@ -532,7 +565,7 @@ flowchart LR
 
 ### Delivered state
 
-The migration is complete as a translation and is gated as one. All 28 COBOL programs have a Java counterpart in the package the plan assigns; 17 stateless REST resources replace the 17 BMS screens; nine Spring Batch jobs reproduce the JCL step sequences, with the two called subprograms as injected components rather than jobs; twelve datasets are reached over plain JDBC through ten repositories and two owning components, with no schema change of any kind; and every record and output width is pinned by a constant to the copybook or the JCL `LRECL` that declares it.
+The translation is structurally complete — every program, screen, dataset and job contract has its counterpart — and it is gated as one. "Complete" here means exactly that and no more: the gate it passes is the statically derived baseline, so the provenance question stays open as risk **R-A** and no claim of observed equivalence with a live COBOL execution is made below. All 28 COBOL programs have a Java counterpart in the package the plan assigns; 17 stateless REST resources replace the 17 BMS screens; nine Spring Batch jobs reproduce the JCL step sequences, with the two called subprograms as injected components rather than jobs; twelve datasets are reached over plain JDBC through ten repositories and two owning components, with no schema change of any kind; and every record and output width is pinned by a constant to the copybook or the JCL `LRECL` that declares it.
 
 The single command `mvn -f app/java/pom.xml clean verify` compiles the module under Java 21, runs every unit and parity test, and enforces at least 90% branch coverage at both bundle and package granularity before it will succeed.
 
@@ -540,9 +573,12 @@ The single command `mvn -f app/java/pom.xml clean verify` compiles the module un
 
 1. **Confirmation of risk R-A** — the statically derived baseline, which changes the provenance of the expected values and nothing else.
 2. **Confirmation of risk R-B** — the inverted transaction-controller naming.
-3. **The deployment-time driver binding** — risk R-E. Everything else about the data-access layer is verified against the fixture-backed harness; only real connectivity is not, and it cannot be from here.
+3. **The deployment-time backend binding** — risk R-E, and the eight-item deployment contract in section 9 that comes with it: not only the driver, URL and credentials, but a relation per configured dataset with the record image in column 1, the record-image form, a byte-ordered collation or `BINARY`, the physical-record ordinal, KSDS-equivalent key uniqueness and the `BATCH_` metadata. Everything else about the data-access layer is verified against the fixture-backed harness; real connectivity is not, and cannot be from here.
+4. **Ratification or refactoring of the delivered layering** — risk R-I. Six of the seventeen online programs delegate their decision logic to a service; eleven hold it in the controller class and twelve inject repositories directly, which is not the uniform Controller → Service → Repository split the plan describes. Section 2.6 states the shape program by program. Closing it is a packaging refactor: no behaviour changes whichever way it is decided.
+5. **The dependency-inventory decision** — risk R-J. `tomcat-embed-core` 10.1.55 and the Jackson BOM 2.21.4, both managed by the pinned Boot 3.5.16, sit in advisory-affected ranges, and 3.5.16 is the last published OSS 3.5.x. The patched versions resolve, so this is a plan decision rather than a missing artifact, and it is recorded in the header of `app/java/pom.xml` instead of being made in the build.
+6. **Which requirement yields on Micrometer** — risk R-K. The plan mandates the web and batch starters and excludes Micrometer, and on Spring Framework 6 and Spring Batch 5 those cannot both hold. No telemetry is collected, retained, exported or scraped, and a test asserts the bean graph carries no registry of either kind; the API jars stay because removing them stops the module loading. Section 4.3 states the measured position.
 
-Nothing else is deferred. There are no placeholders, no stubbed methods and no "to be implemented" paths in the delivered module — with the single, deliberate exception of the fee paragraph the COBOL itself leaves empty.
+Beyond those six, nothing is deferred. There are no placeholders, no stubbed methods and no "to be implemented" paths in the delivered module — with the single, deliberate exception of the fee paragraph the COBOL itself leaves empty.
 
 ### How to judge the work
 
@@ -580,7 +616,7 @@ If Java 21 is not the default, point `JAVA_HOME` at it before building. The path
 mvn -f app/java/pom.xml clean verify
 ```
 
-That one command is the gate, and it matches what `README.md` publishes. It compiles the module, runs every unit and parity test, and enforces the coverage threshold in one pass. Add `-B` for a non-interactive batch-mode run and `-Dsurefire.useFile=false` to keep test output on the console. **There is no watch mode**: every command here runs to completion and stops (practice **B7**).
+That one command is the gate, and it matches what `README.md` publishes. It compiles the module, runs every unit and parity test, and enforces the coverage threshold in one pass. Add `-B` for a non-interactive batch-mode run and `-Dsurefire.useFile=false` to keep test output on the console. **There is no watch mode**: every build command and every batch submission runs to completion and stops (practice **B7**). The two commands that start the online service — `mvn spring-boot:run` and `java -jar` with no `--carddemo.batch.job-name` — run until they are interrupted, because a server is a server; neither is used by the gate.
 
 Narrower commands are useful when only one gate is of interest:
 
@@ -598,10 +634,14 @@ mvn -f app/java/pom.xml spring-boot:run
 
 ```shell
 mvn -f app/java/pom.xml clean package
-java -jar app/java/target/carddemo.jar
+LOADER_PATH=/opt/carddemo/drivers java -jar app/java/target/carddemo.jar
 ```
 
-Either form needs the data source described under *Configuration* below and refuses to start without it, naming the missing property. To start locally with no external data source at all, run on the fixture-backed `test` profile — that profile reaches its in-memory settings through a classpath import that lives in the test tree, so the JVM has to carry `target/test-classes`. From `app/java`:
+`LOADER_PATH` names the directory holding the deployment's own JDBC driver, and a real deployment cannot start without it. The build pins no driver coordinate (residual risk **R-E**), so the driver jar is never inside `carddemo.jar`; the artifact is therefore packaged with Spring Boot's `PropertiesLauncher` (`<layout>ZIP</layout>`), which prepends every directory and jar named in `LOADER_PATH` — or `-Dloader.path=`, a comma-separated list — to the application class loader.
+
+**`-cp` beside `-jar` does not work and cannot be made to work.** With `-jar` the JVM builds the class path from the archive alone and discards `-cp` silently, so `java -cp driver.jar -jar carddemo.jar` fails at startup with *"The JDBC driver class … is not on the classpath"* while the driver sits on the machine. Both driver diagnostics in `DataSourceConfig` therefore name `LOADER_PATH` explicitly.
+
+Either form needs the data source and the CICS region identity described under *Configuration* below and refuses to start without them, naming the missing property. To start locally with no external data source at all, run on the fixture-backed `test` profile — that profile reaches its in-memory settings through a classpath import that lives in the test tree, so the JVM has to carry `target/test-classes`. From `app/java`:
 
 ```shell
 mvn -B test-compile
@@ -610,26 +650,67 @@ java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
      com.vsergeychik.carddemo.CardDemoApplication --spring.profiles.active=test
 ```
 
-Started that way the service answers under `/api` with no mainframe and no database server in sight. Its datasets begin empty, so a batch job launched against a fresh in-memory database reads nothing until something seeds it.
+Started that way the context comes up and `/api` answers with no mainframe and no database server in sight. What that command does **not** do is create a dataset. The profile only says *where* each dataset lives; the module issues no DDL at all, by design, and an in-memory database begins with no relation in it. So until the relations exist a data-backed call **fails rather than reading nothing**, and this is measured rather than assumed: `POST /api/signon` answers `Unable to verify the User ...` because the backend reported `SQLSTATE 42S02` and `SecUserRepository` mapped it to file status `9000`; `GET /api/cards` comes back with `File Error: READ     on CARDDAT   returned RESP 000000019 ,RESP2 000000000` in its `errmsg`, 19 being `DFHRESP(NOTOPEN)`; and `accountBalanceJob` abends at step `STEP05` with `ERROR OPENING ACCTFILE`, `RETURN-CODE=12` and process exit code 12 — which is exactly what `CBACT01C` does when its file will not open. Provision the relation and the same call returns records: with the card master seeded, that `GET /api/cards` answers with a blank `errmsg` and real card numbers in `crdnum1`. The automated suite never meets this, because every test creates and seeds its own relations; `mvn -f app/java/pom.xml clean verify` therefore needs none of what follows.
+
+#### Giving a standalone run some data
+
+Two things have to be true: the relations have to exist, and the database has to outlive the step that created them — the profile's own in-memory database is created fresh per context, so provisioning it from a second process is not possible. Point the run at a file-backed database instead. Each relation is one column wide: the record image in column 1, at the copybook width, one row per fixed-width record. The dataset names this profile uses are in `application-test.yml`; the records come from `app/data/ASCII`. The account master is shown here, and every other dataset follows the same two steps:
+
+```shell
+CP="target/test-classes:target/classes:$(cat target/cp.txt)"
+DB="$PWD/target/local/carddemo"
+DS="CARDDEMO.TEST.ACCTDATA.VSAM.KSDS"
+mkdir -p target/local
+
+{ printf 'CREATE TABLE "%s" (RECORD_IMAGE CHAR(300));\n' "$DS"
+  sed -e "s/'/''/g" -e "s|^|INSERT INTO \"$DS\" VALUES ('|" -e "s|\$|');|" ../data/ASCII/acctdata.txt
+} > target/local/provision.sql
+
+java -cp "$CP" org.h2.tools.RunScript -url "jdbc:h2:file:$DB" -user sa -script target/local/provision.sql
+java -cp "$CP" com.vsergeychik.carddemo.CardDemoApplication \
+     --spring.profiles.active=test --spring.datasource.url="jdbc:h2:file:$DB"
+```
+
+Three details are worth knowing before the first attempt. The sign-on dataset has **no** file under `app/data/ASCII`: the ten users the application ships with are the inline data in `app/jcl/DUSRSECJ.jcl`, and each row is padded to the 80 bytes `app/cpy/CSUSR01Y.cpy` declares — without them `POST /api/signon` cannot succeed and nothing behind it can be reached. The card cross-reference fixture is 36 bytes per record where its copybook declares 50, so pad it up rather than narrowing the relation (risk **R-F**, section 3.4). And the Spring Batch metadata tables are created for you here only because the test-scope configuration asks for it; in a real deployment they are a provisioning step, as *What a deployment must provide* below sets out.
 
 ### Run a batch job
 
 See section 4.2 for the nine job names. Jobs never start on their own, because `spring.batch.job.enabled` is `false`:
 
 ```shell
-java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=accountBalanceJob
+LOADER_PATH=/opt/carddemo/drivers java -jar app/java/target/carddemo.jar \
+  --carddemo.batch.job-name=accountBalanceJob
 ```
+
+A submission reads its datasets through the same deployment-supplied driver, so it needs the same `LOADER_PATH`. Naming a job also selects a **non-web** process: `CardDemoApplication` sets `WebApplicationType.NONE` when `carddemo.batch.job-name` is present, so no HTTP port is bound for work that has nothing to serve, and the process ends with the job's `RETURN-CODE` as its exit code. The name may equally be supplied as `CARDDEMO_BATCH_JOB_NAME`, the relaxed spelling of the same property, for a container that finds a variable easier to set than a flag. An explicit `spring.main.web-application-type` still overrides the choice, because Boot binds that property after the launcher has made it.
 
 The interest calculation is the only job that takes a parameter. Its `parmDate` value defaults from configuration, and the supported way to change it is the environment variable:
 
 ```shell
-CARDDEMO_JOB_PARM_DATE=2022071800 \
+CARDDEMO_JOB_PARM_DATE=2022071800 LOADER_PATH=/opt/carddemo/drivers \
   java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=accountInterestCalcJob
 ```
 
 ### Configuration and data access
 
-Dataset names and the `DataSource` are entirely configuration bound in `app/java/src/main/resources/application.yml`, so no dataset name and no connection detail is compiled into the code. The site-specific driver is supplied at deployment through `CARDDEMO_DATASOURCE_URL`, `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME` and the matching credential variables. `app/java/src/main/resources/application-test.yml` rebinds every dataset onto in-memory test data seeded from the nine fixtures, which is what lets the suite run offline.
+Dataset names and the `DataSource` are entirely configuration bound in `app/java/src/main/resources/application.yml`, so no dataset name and no connection detail is compiled into the code. The site-specific driver is supplied at deployment through `CARDDEMO_DATASOURCE_URL`, `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME`, the matching credential variables, and `LOADER_PATH` for the jar itself. The CICS region identity is a deployment input on the same footing: `CARDDEMO_CICS_APPLID` and `CARDDEMO_CICS_SYSID` supply the two `EXEC CICS ASSIGN` values the sign-on screen paints, and neither has a default, because both are compared byte for byte by the parity suite. `app/java/src/main/resources/application-test.yml` rebinds all 27 dataset bindings onto in-memory test data — 17 fixture-backed, `USRSEC` inline, nine produced by a run and therefore empty at its start — which is what lets the suite run offline.
+
+### What a deployment must provide
+
+The driver is the input people remember; it is not the only one. Everything below is a deployment-time obligation, and it is listed here because the module deliberately cannot satisfy any of it on its own: it issues no DDL (gate G44), holds no dataset name in Java (gate G46), and pins no driver coordinate (risk **R-E**). None of it was exercised against a production backend from this build, which is what makes writing it down the useful thing to do.
+
+| # | What the deployment must provide | Why, and what happens without it |
+|---|---|---|
+| 1 | **Driver, URL and credentials** — `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME`, `CARDDEMO_DATASOURCE_URL`, and `CARDDEMO_DATASOURCE_USERNAME` / `_PASSWORD` as the site requires | No driver coordinate is compiled into the build. Startup is refused, naming the missing property — risk **R-E** |
+| 2 | **A relation for every configured dataset** — the 27 DD bindings under `carddemo.datasets` and the 11 job-scoped entries beneath `carddemo.jobs`, which resolve to **23 distinct dataset names** once the aliases collapse | There is no lazy creation and no fallback. A missing relation surfaces as the backend's own refusal mapped to file status `9000`, so the call **fails** rather than reading an empty dataset |
+| 3 | **The whole record image in the first column** | `common.DatasetRelation` reads and writes at ordinal 1 and *discovers* that column's name from `ResultSetMetaData` — the position is the contract, the name is site-specific. The record's interior is addressed by absolute byte offset from the copybook, never by SQL, so no copybook field is or may become a column |
+| 4 | **The representation, stated** — `carddemo.record-image.form`, `CHARACTER` or `BINARY` | The key carries **no default** on purpose: a deployment that never said how its records cross JDBC fails at startup instead of letting a driver pick a code page and silently convert every record |
+| 5 | **Bytewise comparison and ordering, when the form is `CHARACTER`** | A keyed read is an escaped `LIKE` over the record image and a browse advance is `>`, `<` or `>=` on it, so the relation's collation must be byte-ordered: case-sensitive, no trailing-blank equivalence, non-linguistic. None of those failures raises an error — they move a key boundary or a page boundary. A backend that cannot guarantee it must use `BINARY`, which has no collation to get wrong |
+| 6 | **A physical-record ordinal** — `carddemo.physical-sequence.expression`, also with **no default** | SQL guarantees no row order without an `ORDER BY`, and the daily transaction file, the sorted report input, the date-parameter dataset and the statement work datasets are all read in written order. The value names whatever the driver presents for a stored record's position; `RECORD_ORDINAL` is what the shipped bindings assume |
+| 7 | **KSDS-equivalent key uniqueness** | A keyed rewrite or delete probes for exactly one row and refuses the commit when a statement would affect more (`common.DatasetIntegrityException`), because CICS has no multi-record outcome to report. The module depends on that uniqueness; it does not and may not create the constraint |
+| 8 | **Spring Batch metadata** — the `BATCH_`-prefixed tables and sequences (six tables and three sequences in the H2 dialect; the DDL Spring Batch ships is per-backend) | `spring.batch.jdbc.initialize-schema` is `never` in the default profile and `spring.sql.init.mode` is `never` too, so nothing this module runs will create them. Provisioning them is a deployment step, exactly as it is for the datasets |
+
+Items 4 and 6 are the two that fail *loudly* and early, by design — both keys are bound with no default, so a deployment that omits either one cannot start. Items 5 and 7 are the two that fail *quietly*, which is why they are stated here rather than left to be discovered: a linguistic collation or a duplicate key produces plausible output rather than an error.
 
 ### Troubleshooting
 
@@ -640,6 +721,8 @@ Dataset names and the `DataSource` are entirely configuration bound in `app/java
 | A parity test fails reporting a non-zero diff count | The diff names the dataset, the row and the field. Fix the translation, not the case file — unless the case itself is provably misderived from the COBOL, in which case fix the derivation and record why |
 | A parity test fails saying a program declares fewer than 20 cases | The case set is incomplete. Complete it in the form that suite uses — a case file on the test classpath, or a declaration in the suite. A short set is not a smaller gate, it is a gate that passes without asking the questions |
 | Startup fails with a message naming a datasource property | No site driver or URL was supplied. This is the intended behaviour for an unconfigured environment — supply the deployment-time properties, or run on the `test` profile as shown above |
+| Startup fails with *"The JDBC driver class … is not on the classpath"* although the jar is on the machine | The driver was passed with `-cp`, which `-jar` ignores. Put the jar in a directory and name that directory in `LOADER_PATH` (or `-Dloader.path=`) as shown above |
+| Startup fails naming `carddemo.cics.applid` or `carddemo.cics.sysid` | The CICS region identity was not supplied. Export `CARDDEMO_CICS_APPLID` and `CARDDEMO_CICS_SYSID`; there is deliberately no default, because both values are painted into fields the parity suite compares |
 | A record or output width assertion fails | A `FILLER` span was probably dropped, or a fixture was compared without its normalization. Check the copybook width and section 3.4 |
 | The application starts but no job runs | Correct: `spring.batch.job.enabled` is `false`. Submit the job by name as shown in section 4.2 |
 
@@ -658,10 +741,11 @@ Dataset names and the `DataSource` are entirely configuration bound in `app/java
 | `mvn -f app/java/pom.xml -B test -Dsurefire.useFile=false` | Run the tests with output on the console |
 | `mvn -f app/java/pom.xml -B test -Dtest=AccountUpdateServiceTest` | Run one test class |
 | `mvn -f app/java/pom.xml spring-boot:run` | Start the application from the build |
-| `java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=<jobName>` | Submit one batch job by name |
+| `LOADER_PATH=<drivers> java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=accountBalanceJob` | Submit one batch job by name, in a non-web process — substitute any of the nine names listed in section 4.2. The name is written out rather than shown as a bracketed placeholder because angle brackets are shell redirection |
+| `LOADER_PATH=<drivers> java -jar app/java/target/carddemo.jar` | Start the online service from the packaged jar |
 | `mvn -f app/java/pom.xml -B dependency:tree` | Inspect the resolved dependency graph |
 
-Add `-o` to any of these for an offline build once the local repository is warm. Every command is non-interactive and terminates; none of them starts a watcher.
+Add `-o` to any of these for an offline build once the local repository is warm. Every command is non-interactive and none starts a watcher. All of them terminate on their own except the two that start the online service — the `spring-boot:run` row and the `java -jar` row that names no job — which serve until they are interrupted.
 
 ### B. Port Reference
 
@@ -669,7 +753,7 @@ Add `-o` to any of these for an offline build once the local repository is warm.
 |---|---|---|
 | 8080 | The CardDemo application, HTTP | The default. Override with `CARDDEMO_SERVER_PORT`; the `test` profile uses an ephemeral port |
 
-That is the whole list. The module runs no other listener and depends on no other service.
+That is the whole list of listeners: the module opens no other port. It is not, however, free of external dependencies at runtime — outside the `test` profile it depends on the data-access backend, on the terms set out under *What a deployment must provide* in section 9.
 
 ### C. Key File Locations
 
@@ -677,7 +761,7 @@ That is the whole list. The module runs no other listener and depends on no othe
 |---|---|
 | `app/java/pom.xml` | The only build manifest in the repository |
 | `app/java/src/main/resources/application.yml` | Datasource, 27 dataset bindings, 9 job contracts, charsets, job-submission port |
-| `app/java/src/main/resources/application-test.yml` | Fixture-backed profile; rebinds every dataset in memory |
+| `app/java/src/main/resources/application-test.yml` | The `test` profile: rebinds every dataset name into the in-memory database. It creates no relation and seeds no row — the tests do both |
 | `app/java/src/test/resources/carddemo-test-fixtures.yml` | The in-memory datasource and the fixture inventory, test classpath only |
 | `app/java/src/main/java/com/vsergeychik/carddemo/CardDemoApplication.java` | Entry point; the 11 scanned packages |
 | `app/java/src/test/java/com/vsergeychik/carddemo/parity/ParityHarness.java` | Seeds, runs and fingerprints a case; enforces the exact case set |
@@ -696,19 +780,20 @@ Every version below is a fixed, published release — read from `app/java/pom.xm
 |---|---|---|
 | Java (OpenJDK) | **21.0.11** | Java 21 (LTS) is the mandated target; the compiler is configured with `<release>21</release>` |
 | Apache Maven | **3.9.16** | 3.9 is the floor; 3.8.x is below it |
-| `spring-boot-starter-parent` | **3.5.16** | The highest published 3.x. The 4.x line was evaluated and **deliberately rejected**: the mandate pins Spring Boot 3.x, and constraint fidelity outranks recency (practice **B2**) |
+| `spring-boot-starter-parent` | **3.5.16** | The highest published 3.x, and the last published OSS 3.5.x. The 4.x line was evaluated and **deliberately rejected**: the mandate pins Spring Boot 3.x, and constraint fidelity outranks recency (practice **B2**). Two families it manages — `tomcat-embed-core` 10.1.55 and the Jackson BOM 2.21.4 — are advisory-affected with no upgrade available inside the pinned line: risk **R-J** |
 | Spring Batch | **5.2.6** | Managed by the parent BOM. The 6.x line belongs to the newer parent and is not used |
 | Declared starters | `spring-boot-starter-web`, `-batch`, `-jdbc`, `-validation`, `-test` | Five starters, none naming a version — all managed by the parent BOM |
 | `com.h2database:h2` | **2.3.232** | **Test scope only**, and it stays there |
 | `maven-compiler-plugin` | **3.15.0** | `<release>21</release>`, parameter names retained, `-Xlint:all` advisory |
 | `maven-surefire-plugin` | **3.5.6** | Console output, full stack traces, alphabetical order, fails when no test is found |
 | `jacoco-maven-plugin` | **0.8.15** | `BRANCH` covered-ratio at least 0.90, at bundle **and** package level, bound to `verify`, halting on failure |
+| `spring-boot-maven-plugin` | inherited from the parent | Repackages the jar with `<layout>ZIP</layout>`, so `PropertiesLauncher` is the `Main-Class` and `LOADER_PATH` can add the deployment-supplied JDBC driver. `Start-Class` stays the pinned entry point |
 
 Exactly six dependencies are declared, and none of them names a version. Nothing outside that closed set may be added.
 
 ### E. Environment Variable Reference
 
-Only what the delivered module actually reads. Every one has a default or is required for a specific purpose; none holds a credential in this repository.
+Every variable the delivered module reads, whether through a `${...}` placeholder in `application.yml`, `application-test.yml` or the test fixture inventory, or directly in `CardDemoApplication`; plus the one its jar launcher reads, the one Boot itself reads to pick a profile, and the one the toolchain needs to select a JDK. Nothing else influences a build or a run. Every entry has a default or is required for a specific purpose, and none holds a credential in this repository.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
@@ -716,13 +801,22 @@ Only what the delivered module actually reads. Every one has a default or is req
 | `CARDDEMO_DATASOURCE_URL` | Yes, to start outside the `test` profile | unset | The site data-access URL |
 | `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME` | Yes, to start outside the `test` profile | unset | The deployment-supplied driver — risk **R-E** |
 | `CARDDEMO_DATASOURCE_USERNAME` / `_PASSWORD` | As the site requires | unset | Credentials, supplied at deployment and never committed |
+| `CARDDEMO_DATASOURCE_MAXIMUM_POOL_SIZE` | No | `10` | HikariCP's pool ceiling. Deliberately modest: no performance objective is stated, and enlarging the pool would not help a workload whose jobs depend on strict record ordering |
+| `CARDDEMO_DATASOURCE_MINIMUM_IDLE` | No | `2` | HikariCP's idle floor |
+| `CARDDEMO_DATASOURCE_CONNECTION_TIMEOUT_MS` | No | `30000` | How long a caller waits to **borrow** a connection, in milliseconds. It is not a statement timeout: no statement bound exists, because a cancelled statement is an outcome the COBOL has no arm for |
+| `CARDDEMO_CICS_APPLID` | Yes, to start outside the `test` profile | unset — **no default** | The region's `EXEC CICS ASSIGN APPLID`, painted in `APPLIDO` on the sign-on screen at `PIC X(8)` |
+| `CARDDEMO_CICS_SYSID` | Yes, to start outside the `test` profile | unset — **no default** | The region's `EXEC CICS ASSIGN SYSID`, painted in `SYSIDO` on the same screen |
 | `CARDDEMO_SERVER_PORT` | No | `8080` | The application HTTP port |
 | `CARDDEMO_SERVER_CONTEXT_PATH` | No | `/` | Servlet context path |
 | `CARDDEMO_DATASET_<DD>` | No | the dataset name from `app/csd/CARDDEMO.CSD` or the JCL | Overrides one dataset binding, one variable per DD name |
+| `CARDDEMO_BATCH_JOB_NAME` | No | unset | The relaxed spelling of `carddemo.batch.job-name`. Naming a job here has the same effect as passing the flag: the process starts non-web and submits that one job |
 | `CARDDEMO_JOB_PARM_DATE` | No | the value in configuration | The interest job's `parmDate`; character data, never parsed as a date |
 | `CARDDEMO_JOB_SUBMISSION_ROOT` / `_DESTINATION` / `_CHARSET` | No | unset / unset / `IBM037` | Where the 80-byte job-submission records go |
-| `SPRING_PROFILES_ACTIVE` | No | none | Set to `test` only for a fixture-backed local run |
+| `SPRING_PROFILES_ACTIVE` | No | none | Set to `test` only for a local run against in-memory data |
+| `CARDDEMO_TEST_WORK_DIR` | No | `${java.io.tmpdir}/carddemo-test/<clone>/<run>` | `test` profile only: the run-owned root for everything a run writes, including the job-submission destination. Set it to hand a CI executor an explicit root, which then replaces both discriminators and is the caller's to keep unique |
 | `CLONE_INDEX` | No | `local` | Isolates one checkout's test output from another's |
+| `CARDDEMO_TEST_WORK_DIR` | No | `${java.io.tmpdir}/carddemo-test/` plus the clone and run discriminators | `test` profile only: the root a run materialises its produced datasets under. Setting it replaces the whole derived path, discriminators included, so isolation between concurrent runs becomes the caller's to guarantee |
+| `LOADER_PATH` | Yes, to start outside the `test` profile | unset | Read by the jar's `PropertiesLauncher`, not by the module: the directories and jars holding the deployment-supplied JDBC driver. `-cp` beside `-jar` is ignored by the JVM, so this is the only way in |
 
 ### F. Developer Tools Guide
 
@@ -750,7 +844,7 @@ mvn -f app/java/pom.xml -B clean verify
 dirname "$(dirname "$(readlink -f "$(command -v java)")")"
 ```
 
-There is no container image to build and no infrastructure to bring up; the module has no runtime dependency beyond a JDK and, in production, the deployment-supplied data-access driver.
+There is no container image to build and nothing to bring up to build, test or review the module — a JDK is enough. Running it in production is a different matter: it needs the data-access backend and driver on the terms section 9 sets out, including the relations, the record-image form, the collation, the record ordinal, the key uniqueness and the `BATCH_` metadata.
 
 ### G. Glossary
 
@@ -767,7 +861,7 @@ The right-hand column is what each construct became **in this migration**. Sever
 | `COMP-3` | Packed decimal. Becomes an in-memory `BigDecimal` or integer. Note that **no persisted record in this application uses it** — every stored numeric field is zoned display, which is why the codec needs no nibble unpacking |
 | `PIC 9…V…` | A COBOL decimal field. Always a `BigDecimal` at the declared scale, never a `double` or `float` |
 | `ROUNDED` | The COBOL rounding phrase. It appears **zero times** in all 28 programs, so COBOL truncates — hence `RoundingMode.DOWN` everywhere |
-| `FILLER` | An unnamed span in a record. Emitted as spaces; dropping one breaks every downstream offset |
+| `FILLER` | An unnamed span in a record. Emits its declared `VALUE` where it has one — the date separators of `app/cpy/CSDAT01Y.cpy`, the report literals of `app/cpy/CVTRA07Y.cpy`, the option numbers of `app/cpy/COMEN02Y.cpy` — and otherwise pads per its `PICTURE`, which is spaces for every unvalued `FILLER` here; dropping one breaks every downstream offset |
 | SYNCPOINT | The CICS commit and rollback point. Became the `config.DatasetUnitOfWork` boundary |
 | `FILE STATUS` / `RESP` | The COBOL and CICS I/O result codes. Became one `common.FileStatus` constant set, so the caller's branch structure is unchanged |
 | `EXEC CICS XCTL` | Program transfer. Became a response field naming the next target, resolved by the caller |

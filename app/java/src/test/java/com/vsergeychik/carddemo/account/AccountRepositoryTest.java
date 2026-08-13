@@ -53,14 +53,12 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -73,6 +71,10 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import com.vsergeychik.carddemo.testsupport.ConcurrentTasks;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Unit tests for {@link AccountRepository}, the account master dataset's only reader and only writer.
@@ -860,6 +862,44 @@ class AccountRepositoryTest {
     }
 
     /**
+     * A mocked chain that describes a usable column, answers the keyed read with no rows, and then
+     * refuses the unreadable-row probe that follows it.
+     *
+     * <p>For the one arm of the absence proof no seeded relation can produce: a probe the backend will not
+     * run. Two prepared statements are handed out - the read's, which yields nothing, and the probe's,
+     * which raises - so the outcome under test is the repository's response to an unprovable absence.
+     *
+     * @return a template whose keyed read is empty and whose probe is refused
+     * @throws SQLException never; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate emptyReadThenRefusedProbe() throws SQLException {
+        DataSource dataSource = Mockito.mock(DataSource.class);
+        Connection connection = Mockito.mock(Connection.class);
+        Statement statement = Mockito.mock(Statement.class);
+        ResultSet describeResultSet = Mockito.mock(ResultSet.class);
+        ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+        Mockito.when(dataSource.getConnection()).thenReturn(connection);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(describeResultSet);
+        Mockito.when(describeResultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
+
+        PreparedStatement keyedRead = Mockito.mock(PreparedStatement.class);
+        ResultSet noRows = Mockito.mock(ResultSet.class);
+        Mockito.when(noRows.next()).thenReturn(false);
+        Mockito.when(keyedRead.executeQuery()).thenReturn(noRows);
+        Mockito.when(connection.prepareStatement(Mockito.anyString())).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.endsWith("IS NULL")) {
+                throw new SQLException("the unreadable-row probe is refused");
+            }
+            return keyedRead;
+        });
+        return new JdbcTemplate(dataSource);
+    }
+
+    /**
      * A mocked chain that describes a usable column but refuses every prepared statement.
      *
      * @return a template whose probe succeeds and whose reads and writes fail
@@ -1462,6 +1502,67 @@ class AccountRepositoryTest {
     class KeyedReadTests {
 
         @Test
+        @DisplayName("finding DB-05: a present-but-unreadable row is not reported as an absent record")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            // ACCT-ID is the leading eleven bytes of the record image, so a row whose record-image column
+            // holds nothing has no knowable key: the keyed predicate - a comparison, UNKNOWN against a
+            // null - cannot match it, and the read comes back empty. Reporting '23' from there would tell
+            // CBTRN02C to reject the transaction with reason 103 and COACTVWC to paint "Account not found"
+            // about a record that is sitting in the dataset.
+            List<String> rows = new ArrayList<>(fixtureRows());
+            rows.add(null);
+            AccountRepository repository = repository(seeded(rows));
+
+            ReadResult result = repository.readByKey(99999999999L);
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
+            assertThat(result.account()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key still reports '23', proved rather than assumed")
+        void aGenuinelyAbsentKeyIsStillNotFound() {
+            AccountRepository repository = repository(seeded(fixtureRows()));
+
+            ReadResult result = repository.readByKey(99999999999L);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a read that found its record is untouched by an unreadable row")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            // The boundary of the proof: it runs on the empty path only, because a VSAM READ of a key that
+            // resolves does not fail because another record is damaged.
+            List<String> rows = new ArrayList<>(fixtureRows());
+            rows.add(null);
+            AccountRepository repository = repository(seeded(rows));
+            long acctId = Long.parseLong(keyImageOf(fixtureRows().get(0)));
+
+            ReadResult result = repository.readByKey(acctId);
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.account().orElseThrow().getAcctId()).isEqualTo(acctId);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a probe the backend refuses is reported, never assumed absent")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() throws SQLException {
+            AccountRepository repository = repository(emptyReadThenRefusedProbe());
+
+            ReadResult result = repository.readByKey(1L);
+
+            assertThat(result.isNotFound())
+                    .as("the probe established nothing, so the absence stays unproved")
+                    .isFalse();
+            assertThat(result.isOther()).isTrue();
+        }
+
+
+        @Test
         @DisplayName("finds the record for an existing identifier")
         void findsAnExistingRecord() {
             List<String> rows = fixtureRows();
@@ -1695,6 +1796,33 @@ class AccountRepositoryTest {
             assertThat(reread.getAcctCurrCycCredit()).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(reread.getAcctCurrCycDebit()).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(reread.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
+        }
+
+        @Test
+        @DisplayName("a record built over another code page is refused, and nothing is written")
+        void aRecordInAForeignCodePageIsRefused() {
+            // AccountRecord is byte-backed and this repository binds record.toByteArray() unchanged, so a
+            // record built over another page would be stored as corrupt bytes and reported as FILE STATUS
+            // '00' - a silent success. Both rewrite entry points share one body, so both refuse it.
+            List<String> rows = fixtureRows();
+            AccountRepository repository = repository(seeded(rows));
+            long acctId = Long.parseLong(keyImageOf(rows.get(0)));
+            AccountRecord stored = repository.readByKey(acctId).account().orElseThrow();
+            AccountRecord onEbcdic =
+                    AccountRecord.decode(stored.toFixedWidthString(), Charset.forName("IBM037"));
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> withUnitOfWork(() -> repository.rewrite(onEbcdic)))
+                    .withMessageContaining("IBM037")
+                    .withMessageContaining("US-ASCII");
+
+            // Nothing was written: the stored row is still the one that was read.
+            assertThat(repository.readByKey(acctId).account().orElseThrow().toFixedWidthString())
+                    .isEqualTo(stored.toFixedWidthString());
+
+            // The dataset's own page is accepted, which is what every other rewrite test relies on.
+            assertThat(repository.datasetCharset()).isEqualTo(ASCII);
+            assertThat(withUnitOfWork(() -> repository.rewrite(stored)).isWritten()).isTrue();
         }
 
         @Test
@@ -1985,6 +2113,19 @@ class AccountRepositoryTest {
                     + "\" LIKE ? ESCAPE '\\' ORDER BY \"" + RECORD_IMAGE_COLUMN + "\" ASC";
         }
 
+        /**
+         * The unreadable-row probe a keyed read that matched nothing issues before it reports the absence
+         * (finding DB-05).
+         *
+         * <p>It appears in these sequences because these reads find no record: {@code ACCT-ID} lives inside
+         * the record image, so a row with no image has no knowable key, and {@code NOTFND} is only sayable
+         * once no such row exists. A read that finds its record issues no probe.
+         */
+        private String unreadableRowsProbe() {
+            return "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE \"" + RECORD_IMAGE_COLUMN
+                    + "\" IS NULL";
+        }
+
         @Test
         @DisplayName("asks the driver for a locking read, where the plain keyed read does not")
         void asksTheDriverForALockingRead() throws SQLException {
@@ -1993,15 +2134,16 @@ class AccountRepositoryTest {
 
             repository.readByKey(1L);
             assertThat(prepared)
-                    .as("the plain keyed read takes no lock, and must not start taking one")
-                    .containsExactly(keyedSelect());
+                    .as("the plain keyed read takes no lock, and must not start taking one; the probe "
+                            + "that follows it proves the absence and takes none either")
+                    .containsExactly(keyedSelect(), unreadableRowsProbe());
 
             prepared.clear();
             withUnitOfWork(() -> repository.readForUpdate("0".repeat(ELEVEN)));
 
             // What the repository actually handed the driver, captured verbatim. This is the whole of
             // F01: the two reads must not be the same statement.
-            assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE");
+            assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE", unreadableRowsProbe());
         }
 
         @Test
@@ -2014,7 +2156,8 @@ class AccountRepositoryTest {
 
                 withUnitOfWork(() -> file.readForUpdate("0".repeat(ELEVEN)));
 
-                assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE");
+                assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE",
+                        unreadableRowsProbe());
             }
         }
 
@@ -2214,34 +2357,32 @@ class AccountRepositoryTest {
 
         @Test
         @DisplayName("two threads browsing their own handles over one repository each read all 50")
-        void twoThreadsEachReadEveryRecord() throws InterruptedException {
+        @Timeout(value = 60, unit = TimeUnit.SECONDS)
+        void twoThreadsEachReadEveryRecord() {
             List<String> rows = fixtureRows();
             List<String> expected = rows.stream().sorted().toList();
             AccountRepository repository = repository(seeded(rows));
-            List<List<String>> results = List.of(new ArrayList<>(), new ArrayList<>());
-            List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+
+            // The barrier is what makes the two browses genuinely overlap: neither reads a record until
+            // both have arrived, so a shared cursor would be shared while both are using it. Its await is
+            // bounded, and a task that never reaches the barrier now fails as a timeout naming the task
+            // rather than hanging the join forever with no report written for this suite at all.
             CyclicBarrier startTogether = new CyclicBarrier(2);
+            Callable<List<String>> browse = () -> {
+                startTogether.await(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                try (AccountFile file = repository.open(OpenMode.INPUT)) {
+                    return drain(file, FIXTURE_RECORDS + 1);
+                }
+            };
 
-            List<Thread> workers = new ArrayList<>();
-            for (List<String> sink : results) {
-                Thread worker = new Thread(() -> {
-                    try {
-                        startTogether.await();
-                        try (AccountFile file = repository.open(OpenMode.INPUT)) {
-                            sink.addAll(drain(file, FIXTURE_RECORDS + 1));
-                        }
-                    } catch (RuntimeException | InterruptedException | BrokenBarrierException problem) {
-                        failures.add(problem);
-                    }
-                });
-                workers.add(worker);
-                worker.start();
-            }
-            for (Thread worker : workers) {
-                worker.join();
-            }
+            // Each task returns its own rows instead of filling a sink handed to it, and any throwable it
+            // raises arrives here as the cause of the assertion. The previous shape caught three named
+            // exception types into a synchronised list and asserted that list empty - which reported an
+            // exception, but let an Error through unrecorded and still needed an unbounded join to get
+            // there.
+            List<List<String>> results = ConcurrentTasks.runBoth(browse, browse);
 
-            assertThat(failures).isEmpty();
+            assertThat(results).hasSize(2);
             assertThat(results).allSatisfy(read -> assertThat(read)
                     .as("a shared position would have split the 50 records between the two threads")
                     .containsExactlyElementsOf(expected));

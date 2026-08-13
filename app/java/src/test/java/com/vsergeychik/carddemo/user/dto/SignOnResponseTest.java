@@ -12,6 +12,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 import java.io.IOException;
@@ -68,10 +69,12 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * <h2>The two subjects this file exists for</h2>
  *
  * <ol>
- *   <li><strong>The 11-versus-10 asymmetry.</strong> {@code app/cpy-bms/COSGN00.CPY} declares eleven
- *       {@code xxxO} items; this payload carries ten. The eleventh, {@code PASSWDO} at CPY line 146, is
- *       omitted deliberately, and {@link TheOmittedEleventhField} holds the two counts apart so the gap
- *       cannot be closed by accident.</li>
+ *   <li><strong>The two fields nothing writes and the program sends anyway.</strong> No {@code MOVE} in
+ *       {@code app/cbl/COSGN00C.cbl} targets {@code USERIDO} or {@code PASSWDO}, and both are
+ *       transmitted: the group {@code REDEFINES} below makes each of them the same span as its
+ *       {@code xxxI} counterpart, so the receive fills them and the send carries them.
+ *       {@link TheOverlayPair} holds that, together with the split between being on the wire and being
+ *       in a rendering.</li>
  *   <li><strong>The group-level {@code REDEFINES} overlay.</strong> {@code COSGN00.CPY:85} declares
  *       {@code 01 COSGN0AO REDEFINES COSGN0AI}, one 308-byte storage area seen through two sets of
  *       names. {@link GroupRedefinesOverlay} proves the geometry and round-trips a value across the two
@@ -106,17 +109,18 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       {@code java.nio.file} import, no directory walk and no path literal. Every expectation is an
  *       inlined {@code private static final} constant carrying the file and line it was transcribed
  *       from, which also makes the suite independent of the working directory it runs in.</li>
- *   <li><strong>B4</strong> - <em>the practice that governs this file most.</em> The copybook's eleven
- *       and the payload's ten are both recorded, with the evidence, and neither is adjusted to agree
- *       with the other. See {@link TheOmittedEleventhField}.</li>
- *   <li><strong>B5</strong> - asymmetries are asserted as correct, not smoothed. Ten members is right;
- *       no eleventh is invented for symmetry with {@code SignOnRequest}. {@code USERIDO} stays declared
- *       although the program never writes it. {@code curTime} stays nine characters although the four
- *       sibling user screens declare eight.</li>
+ *   <li><strong>B4</strong> - the four {@code PASSWD} reference lines and the zero {@code PASSWDO}
+ *       write sites are both recorded, with the evidence, and the conclusion drawn from them is the one
+ *       the {@code REDEFINES} supports rather than the one the write sites alone suggest. See
+ *       {@link TheOverlayPair}.</li>
+ *   <li><strong>B5</strong> - asymmetries are asserted as correct, not smoothed. {@code USERIDO} and
+ *       {@code PASSWDO} stay declared although no {@code MOVE} writes them, because the overlay sends
+ *       them. {@code curTime} stays nine characters although the four sibling user screens declare
+ *       eight.</li>
  *   <li><strong>B6</strong> and gate <strong>G41</strong> - the security posture is neither weakened nor
- *       strengthened. This response carries no password at all, so there is nothing to hash even if
- *       hashing were in scope; the suite asserts that no password, token, encoder or security type is
- *       reachable through this payload's API or its serialised form.</li>
+ *       strengthened. The password travels because the map transmits it, unhashed and unmasked, and it
+ *       appears in no rendering; the suite asserts both halves, and that no token, encoder or security
+ *       type is reachable through this payload's API.</li>
  *   <li><strong>B7</strong> and gate <strong>G54</strong> - deterministic and non-interactive. No
  *       {@code now()}, no random value, no ordering dependence, no sleep, no I/O. The one
  *       time-derived expectation is read through {@link Clock#fixed} at {@link ZoneOffset#UTC}, which
@@ -214,8 +218,15 @@ class SignOnResponseTest {
      */
     private static final int DFHMDF_NAMED = 11;
 
-    /** Map-derived members of the response: {@value #DFHMDF_NAMED} named fields less {@code PASSWD}. */
-    private static final int RESPONSE_MAP_MEMBERS = 10;
+    /**
+     * Map-derived members of the response: all {@value #DFHMDF_NAMED} named fields.
+     *
+     * <p>{@code PASSWDO} and {@code USERIDO} are among them although no {@code MOVE} writes either -
+     * {@code 01 COSGN0AO REDEFINES COSGN0AI} at {@code COSGN00.CPY:85} makes each of them the same span
+     * as its {@code xxxI} counterpart, so the {@code RECEIVE} fills them and the {@code SEND} transmits
+     * them. Section 3 holds that.
+     */
+    private static final int RESPONSE_MAP_MEMBERS = 11;
 
     // =================================================================================================
     // THE OUTPUT VIEW, in the copybook's declaration order. Parallel lists sharing one index, so each
@@ -254,31 +265,31 @@ class SignOnResponseTest {
             175, 197);
 
     // =================================================================================================
-    // THE TEN MEMBERS THE PAYLOAD ACTUALLY CARRIES, and the five that carry the navigation contract.
+    // THE ELEVEN MEMBERS THE PAYLOAD CARRIES, and the six that carry the navigation and text contracts.
     // =================================================================================================
 
-    /** The ten map-derived component names, in {@code 01 COSGN0AO} declaration order, less the password. */
+    /** The eleven map-derived component names, in {@code 01 COSGN0AO} declaration order. */
     private static final List<String> RESPONSE_MEMBERS = List.of(
             "trnName", "title01", "curDate", "pgmName", "title02", "curTime",
-            "applId", "sysId", "userId", "errMsg");
+            "applId", "sysId", "userId", "passwd", "errMsg");
 
-    /** The ten {@code xxxO} items the payload projects - {@link #OUTPUT_MAP_ITEMS} less {@code PASSWDO}. */
+    /** The eleven {@code xxxO} items the payload projects - all of {@link #OUTPUT_MAP_ITEMS}. */
     private static final List<String> RESPONSE_MAP_ITEMS = List.of(
             "TRNNAMEO", "TITLE01O", "CURDATEO", "PGMNAMEO", "TITLE02O", "CURTIMEO",
-            "APPLIDO", "SYSIDO", "USERIDO", "ERRMSGO");
+            "APPLIDO", "SYSIDO", "USERIDO", "PASSWDO", "ERRMSGO");
 
-    /** The ten declared widths of {@link #RESPONSE_MEMBERS}, in the same order. */
-    private static final List<Integer> RESPONSE_WIDTHS = List.of(4, 40, 8, 8, 40, 9, 8, 8, 8, 78);
+    /** The eleven declared widths of {@link #RESPONSE_MEMBERS}, in the same order. */
+    private static final List<Integer> RESPONSE_WIDTHS = List.of(4, 40, 8, 8, 40, 9, 8, 8, 8, 8, 78);
 
     /**
-     * The five members with no {@code DFHMDF} behind them, in component order.
+     * The six members with no {@code DFHMDF} behind them, in component order.
      *
      * <p>They are the mandated, documented exception to "every member is a screen field": once the
-     * server is stateless, {@code EXEC CICS XCTL} has to be expressed as data. See
-     * {@link RoleRoutingAndXctl} and {@link StatelessConversationState}.
+     * server is stateless, {@code EXEC CICS XCTL} and {@code EXEC CICS SEND TEXT} both have to be
+     * expressed as data. See {@link RoleRoutingAndXctl} and {@link StatelessConversationState}.
      */
     private static final List<String> NAVIGATION_MEMBERS = List.of(
-            "role", "nextProgram", "nextMapset", "nextMap", "navigationContext");
+            "role", "nextProgram", "nextMapset", "nextMap", "plainText", "navigationContext");
 
     /**
      * A member's name <strong>on the wire</strong>.
@@ -306,21 +317,27 @@ class SignOnResponseTest {
         return members.stream().map(SignOnResponseTest::wireNameOf).toList();
     }
 
-    /** {@value #COMPONENT_COUNT} components: {@value #RESPONSE_MAP_MEMBERS} map-derived plus five. */
-    private static final int COMPONENT_COUNT = 15;
+    /** {@value #COMPONENT_COUNT} components: {@value #RESPONSE_MAP_MEMBERS} map-derived plus six. */
+    private static final int COMPONENT_COUNT = 17;
 
-    /** The screen-field stem of the one named field this payload omits: {@code PASSWD}, bms line 175. */
-    private static final String OMITTED_SCREEN_FIELD = "PASSWD";
+    /** The screen-field stem of the credential field: {@code PASSWD}, bms line 175. */
+    private static final String CREDENTIAL_SCREEN_FIELD = "PASSWD";
 
-    /** The symbolic-map item this payload omits: {@code PASSWDO}, {@code COSGN00.CPY:146}. */
-    private static final String OMITTED_OUTPUT_ITEM = "PASSWDO";
+    /** The credential's symbolic-map output item: {@code PASSWDO}, {@code COSGN00.CPY:146}. */
+    private static final String CREDENTIAL_OUTPUT_ITEM = "PASSWDO";
+
+    /**
+     * An obviously fake eight-character password image, standing for what {@code EXEC CICS RECEIVE MAP}
+     * left in the {@code PASSWDI}/{@code PASSWDO} span. Never a credential or an environment secret.
+     */
+    private static final String RECEIVED_PASSWORD = "PASSWORD";
 
     /**
      * The four - and only four - lines of {@code app/cbl/COSGN00C.cbl} that mention {@code PASSWD} at
      * all: 123, 126, 135 and 244.
      *
-     * <p>Recorded as data so {@link TheOmittedEleventhField#theProgramNeverSendsThePasswordBack()} can
-     * state the census rather than merely describe it. What each line does is set out there.
+     * <p>Recorded as data so {@link TheOverlayPair#noMoveWritesTheOutputItem()} can state the census
+     * rather than merely describe it. What each line does is set out there.
      */
     private static final List<Integer> PASSWD_REFERENCE_LINES = List.of(123, 126, 135, 244);
 
@@ -674,11 +691,13 @@ class SignOnResponseTest {
                 "CICSAPPL",
                 "CICS    ",
                 "ADMIN001",
+                RECEIVED_PASSWORD,
                 codec().movePicX(MSG_WRONG_PASSWORD, SignOnResponse.ERRMSG_LENGTH),
                 SignOnResponse.ROLE_ADMIN,
                 SignOnResponse.NEXT_PROGRAM_ADMIN,
                 MAPSET_NAME,
                 MAP_NAME,
+                " ".repeat(SignOnResponse.PLAIN_TEXT_LENGTH),
                 signedOnContext(SignOnResponse.ROLE_ADMIN));
     }
 
@@ -700,7 +719,7 @@ class SignOnResponseTest {
     private static List<String> mapValuesOf(SignOnResponse response) {
         return List.of(response.trnName(), response.title01(), response.curDate(),
                 response.pgmName(), response.title02(), response.curTime(), response.applId(),
-                response.sysId(), response.userId(), response.errMsg());
+                response.sysId(), response.userId(), response.passwd(), response.errMsg());
     }
 
     /**
@@ -821,23 +840,22 @@ class SignOnResponseTest {
             assertThat(SignOnResponse.MAP_FIELDS)
                     .containsExactlyElementsOf(RESPONSE_MAP_ITEMS)
                     .hasSize(RESPONSE_MAP_MEMBERS)
-                    .doesNotContain(OMITTED_OUTPUT_ITEM);
+                    .contains(CREDENTIAL_OUTPUT_ITEM);
             assertThat(OUTPUT_MAP_ITEMS)
-                    .as("the copybook itself declares %d items, %s among them", DFHMDF_NAMED,
-                            OMITTED_OUTPUT_ITEM)
+                    .as("the copybook declares %d items and the payload projects all of them",
+                            DFHMDF_NAMED)
                     .hasSize(DFHMDF_NAMED)
-                    .contains(OMITTED_OUTPUT_ITEM)
-                    .containsAll(RESPONSE_MAP_ITEMS);
+                    .containsExactlyElementsOf(RESPONSE_MAP_ITEMS);
         }
 
         @Test
         @DisplayName("MAPSET_NAMED_FIELDS is the whole screen, in mapset order, PASSWD included")
         void namedFieldsMatchTheMapset() {
             assertThat(SignOnResponse.MAPSET_NAMED_FIELDS)
-                    .as("the census of the screen is complete, so the omission stays visible")
+                    .as("the census of the screen is complete")
                     .containsExactlyElementsOf(SCREEN_FIELDS)
                     .hasSize(DFHMDF_NAMED)
-                    .contains(OMITTED_SCREEN_FIELD);
+                    .contains(CREDENTIAL_SCREEN_FIELD);
         }
 
         @Test
@@ -878,7 +896,8 @@ class SignOnResponseTest {
                     SignOnResponse.CURDATE_FIELD, SignOnResponse.PGMNAME_FIELD,
                     SignOnResponse.TITLE02_FIELD, SignOnResponse.CURTIME_FIELD,
                     SignOnResponse.APPLID_FIELD, SignOnResponse.SYSID_FIELD,
-                    SignOnResponse.USERID_FIELD, SignOnResponse.ERRMSG_FIELD))
+                    SignOnResponse.USERID_FIELD, SignOnResponse.PASSWD_FIELD,
+                    SignOnResponse.ERRMSG_FIELD))
                     .as("a tidied name would make a real field-for-field difference invisible")
                     .containsExactlyElementsOf(RESPONSE_MAP_ITEMS);
         }
@@ -886,9 +905,9 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the published field lists are immutable, so no caller can edit the census")
         void publishedListsAreImmutable() {
-            assertRefusesModification(() -> SignOnResponse.MAP_FIELDS.add(OMITTED_OUTPUT_ITEM));
+            assertRefusesModification(() -> SignOnResponse.MAP_FIELDS.add(CREDENTIAL_OUTPUT_ITEM));
             assertRefusesModification(() ->
-                    SignOnResponse.MAPSET_NAMED_FIELDS.remove(OMITTED_SCREEN_FIELD));
+                    SignOnResponse.MAPSET_NAMED_FIELDS.remove(CREDENTIAL_SCREEN_FIELD));
         }
 
         @Test
@@ -1003,8 +1022,9 @@ class SignOnResponseTest {
                     .endsWith(" ");
             assertThat(new SignOnResponse(TRANSACTION_ID, ScreenTitles.CCDA_TITLE01, FIXED_CURDATE,
                     PROGRAM_NAME, ScreenTitles.CCDA_TITLE02, moved, "CICSAPPL", "CICS    ",
-                    "ADMIN001", " ".repeat(SignOnResponse.ERRMSG_LENGTH), SignOnResponse.ROLE_ADMIN,
-                    SignOnResponse.NEXT_PROGRAM_ADMIN, MAPSET_NAME, MAP_NAME,
+                    "ADMIN001", RECEIVED_PASSWORD, " ".repeat(SignOnResponse.ERRMSG_LENGTH),
+                    SignOnResponse.ROLE_ADMIN, SignOnResponse.NEXT_PROGRAM_ADMIN, MAPSET_NAME,
+                    MAP_NAME, " ".repeat(SignOnResponse.PLAIN_TEXT_LENGTH),
                     signedOnContext(SignOnResponse.ROLE_ADMIN)).curTime())
                     .isEqualTo(moved);
         }
@@ -1112,8 +1132,8 @@ class SignOnResponseTest {
         void publishedWidthsEqualTheCopybooks() {
             assertThat(publishedWidths()).containsExactlyElementsOf(RESPONSE_WIDTHS);
             assertThat(RESPONSE_WIDTHS.stream().mapToInt(Integer::intValue).sum())
-                    .as("the ten projected widths, which is 219 less the omitted PASSWDO's 8")
-                    .isEqualTo(PAYLOAD_WIDTH_TOTAL - 8);
+                    .as("all eleven projected widths, which is the copybook's whole data total")
+                    .isEqualTo(PAYLOAD_WIDTH_TOTAL);
         }
     }
 
@@ -1128,6 +1148,7 @@ class SignOnResponseTest {
                 SignOnResponse.APPLID_LENGTH,
                 SignOnResponse.SYSID_LENGTH,
                 SignOnResponse.USERID_LENGTH,
+                SignOnResponse.PASSWD_LENGTH,
                 SignOnResponse.ERRMSG_LENGTH);
     }
 
@@ -1146,88 +1167,88 @@ class SignOnResponseTest {
     }
 
     // =================================================================================================
-    // 3. THE ELEVENTH NAMED FIELD.
+    // 3. THE TWO FIELDS THE PROGRAM TRANSMITS WITHOUT WRITING.
     //
     //    ##############################################################################################
     //    #                                                                                            #
-    //    #   READ THIS BEFORE "FIXING" THE COUNT.                                                     #
+    //    #   READ THIS BEFORE "TIDYING" USERIDO OR PASSWDO AWAY.                                      #
     //    #                                                                                            #
-    //    #   app/cpy-bms/COSGN00.CPY declares ELEVEN xxxO items. SignOnResponse carries TEN.           #
-    //    #   The missing one is PASSWDO, at COSGN00.CPY:146, and it is missing ON PURPOSE.             #
-    //    #                                                                                            #
-    //    #   The whole of the evidence is four lines. Every mention of PASSWD in the 260 lines of       #
-    //    #   app/cbl/COSGN00C.cbl is one of these, and there is no fifth:                              #
+    //    #   Neither field has a MOVE into it anywhere in the 260 lines of app/cbl/COSGN00C.cbl. Every #
+    //    #   mention of PASSWD in the program is one of these four, and there is no fifth:             #
     //    #                                                                                            #
     //    #     :123  WHEN PASSWDI OF COSGN0AI = SPACES OR LOW-VALUES     <- READS the input item       #
     //    #     :126  MOVE -1 TO PASSWDL OF COSGN0AI                      <- cursor, not a value        #
     //    #     :135  MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI) TO    <- READS the input item       #
     //    #     :244  MOVE -1 TO PASSWDL OF COSGN0AI                      <- cursor, not a value        #
     //    #                                                                                            #
-    //    #   PASSWDO IS NEVER REFERENCED ANYWHERE IN THE PROGRAM. The program only ever READS          #
-    //    #   PASSWDI and only ever POSITIONS THE CURSOR through PASSWDL - the MOVE -1 idiom. It        #
-    //    #   never writes the password back to the screen, so SEND-SIGNON-SCREEN at :145-157, which    #
-    //    #   sends FROM(COSGN0AO), provably sends no password. Adding a member here would INVENT       #
-    //    #   behaviour the COBOL does not have, which this migration forbids as firmly as it forbids   #
-    //    #   removing behaviour (B5, and the plan's like-for-like directive).                          #
+    //    #   An earlier revision of the subject read exactly that evidence and concluded the field is  #
+    //    #   never sent, so it omitted PASSWDO and left USERIDO at LOW-VALUES on every path. THE       #
+    //    #   EVIDENCE WAS INCOMPLETE. Section 4 of this file proves the missing half: COSGN00.CPY:85   #
+    //    #   declares 01 COSGN0AO REDEFINES COSGN0AI, so USERIDI and USERIDO are ONE eight-byte span   #
+    //    #   and PASSWDI and PASSWDO are ANOTHER. EXEC CICS RECEIVE MAP at :110-115 writes those       #
+    //    #   spans, and EXEC CICS SEND MAP ... FROM(COSGN0AO) at :151-157 transmits whatever they      #
+    //    #   hold. The program does not need a MOVE, and it does not have one.                         #
     //    #                                                                                            #
-    //    #   Both counts are therefore recorded and NEITHER is adjusted to agree with the other        #
-    //    #   (B4). The class is not padded to eleven, and no other field is dropped to round the       #
-    //    #   number down. The cases below hold the two apart so the gap cannot close by accident.      #
+    //    #   So an error repaint DOES come back with the typed user id in the field - which is what a  #
+    //    #   3270 operator sees when 'Wrong Password. Try again ...' arrives - and it re-transmits the #
+    //    #   password field too, dark (bms L175 is ATTRB=(DRK,FSET,UNPROT)) but on the wire. Both      #
+    //    #   fields are projected for that reason, and the counts now agree at eleven.                 #
+    //    #                                                                                            #
+    //    #   Carried is not logged. toString substitutes a constant marker for passwd, so no log line, #
+    //    #   exception message or debugger view can publish the credential (CWE-532), while equals and #
+    //    #   hashCode keep it because they are value semantics. The cases below hold both halves.      #
     //    #                                                                                            #
     //    #   DO NOT GENERALISE THIS EITHER WAY. The rule is "mirror the program", not "hide            #
-    //    #   passwords" and not "echo passwords". SignOnRequest carries a password because COSGN00C    #
-    //    #   reads one. UserUpdateResponse carries one because app/cbl/COUSR02C.cbl:169 really does    #
-    //    #   execute MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI. Those two are opposites and BOTH are     #
-    //    #   correct. Each screen is decided from its own source.                                      #
+    //    #   passwords" and not "echo passwords". UserUpdateResponse carries one because               #
+    //    #   app/cbl/COUSR02C.cbl:169 executes MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI outright; this  #
+    //    #   screen carries one because a REDEFINES puts it in the span that is sent. Each screen is   #
+    //    #   decided from its own source.                                                             #
     //    #                                                                                            #
     //    ##############################################################################################
     // =================================================================================================
 
     @Nested
-    @DisplayName("The eleventh named field: PASSWD is absent, and the program proves why")
-    class TheOmittedEleventhField {
+    @DisplayName("The overlay pair: USERIDO and PASSWDO are sent although nothing writes them")
+    class TheOverlayPair {
 
         @Test
-        @DisplayName("eleven named screen fields, ten members: both counts stand, neither is adjusted")
-        void bothCountsStand() {
+        @DisplayName("eleven named screen fields, eleven members: the counts agree by assertion")
+        void bothCountsAgree() {
             assertThat(SignOnResponse.MAPSET_NAMED_FIELD_COUNT)
                     .as("COSGN00.CPY declares eleven xxxO items and the mapset eleven named DFHMDFs")
                     .isEqualTo(DFHMDF_NAMED)
                     .isEqualTo(11);
             assertThat(SignOnResponse.MAP_FIELD_COUNT)
-                    .as("and this payload carries ten")
+                    .as("and this payload carries every one of them")
                     .isEqualTo(RESPONSE_MAP_MEMBERS)
-                    .isEqualTo(10);
-            assertThat(SignOnResponse.MAPSET_NAMED_FIELD_COUNT - SignOnResponse.MAP_FIELD_COUNT)
-                    .as("the gap is exactly one field, and that field is %s",
-                            SignOnResponse.OMITTED_FIELD)
-                    .isEqualTo(1);
-            assertThat(SignOnResponse.OMITTED_FIELD).isEqualTo(OMITTED_SCREEN_FIELD);
-            assertThat(SignOnResponse.OMITTED_ITEM).isEqualTo(OMITTED_OUTPUT_ITEM);
+                    .isEqualTo(SignOnResponse.MAPSET_NAMED_FIELD_COUNT);
+            assertThat(SignOnResponse.MAP_FIELDS)
+                    .as("in declaration order, PASSWDO between USERIDO and ERRMSGO")
+                    .containsExactlyElementsOf(OUTPUT_MAP_ITEMS);
+            assertThat(SignOnResponse.PASSWD_FIELD).isEqualTo(CREDENTIAL_OUTPUT_ITEM);
         }
 
         @Test
-        @DisplayName("PASSWD is a real named screen field, so the omission is a decision not an oversight")
+        @DisplayName("PASSWD is a real named screen field, at the width of the record it is compared to")
         void passwordIsARealScreenField() {
-            // bms line 175 labels it and COSGN00.CPY:146 declares PASSWDO PIC X(8). It is a genuine
-            // field that this payload genuinely declines to carry.
-            assertThat(SCREEN_FIELDS).contains(OMITTED_SCREEN_FIELD);
-            assertThat(OUTPUT_MAP_ITEMS).contains(OMITTED_OUTPUT_ITEM);
-            assertThat(MAPSET_LINES.get(SCREEN_FIELDS.indexOf(OMITTED_SCREEN_FIELD)))
+            // bms line 175 labels it and COSGN00.CPY:146 declares PASSWDO PIC X(8).
+            assertThat(SCREEN_FIELDS).contains(CREDENTIAL_SCREEN_FIELD);
+            assertThat(OUTPUT_MAP_ITEMS).contains(CREDENTIAL_OUTPUT_ITEM);
+            assertThat(MAPSET_LINES.get(SCREEN_FIELDS.indexOf(CREDENTIAL_SCREEN_FIELD)))
                     .as("PASSWD DFHMDF is at app/bms/COSGN00.bms:175")
                     .isEqualTo(175);
-            assertThat(COPYBOOK_LINES.get(OUTPUT_MAP_ITEMS.indexOf(OMITTED_OUTPUT_ITEM)))
+            assertThat(COPYBOOK_LINES.get(OUTPUT_MAP_ITEMS.indexOf(CREDENTIAL_OUTPUT_ITEM)))
                     .as("PASSWDO PIC X(8) is at app/cpy-bms/COSGN00.CPY:146")
                     .isEqualTo(146);
-            assertThat(DECLARED_WIDTHS.get(SCREEN_FIELDS.indexOf(OMITTED_SCREEN_FIELD)))
+            assertThat(DECLARED_WIDTHS.get(SCREEN_FIELDS.indexOf(CREDENTIAL_SCREEN_FIELD)))
                     .as("eight characters, the width of SEC-USR-PWD it is compared against")
                     .isEqualTo(SecUserRecord.SEC_USR_PWD_LENGTH)
                     .isEqualTo(8);
         }
 
         @Test
-        @DisplayName("the program never sends the password back: four PASSWD lines, none of them PASSWDO")
-        void theProgramNeverSendsThePasswordBack() {
+        @DisplayName("no MOVE writes PASSWDO: four PASSWD lines, none of them the output item")
+        void noMoveWritesTheOutputItem() {
             assertThat(PASSWD_REFERENCE_LINES)
                     .as("every PASSWD mention in app/cbl/COSGN00C.cbl, and there is no fifth")
                     .containsExactly(123, 126, 135, 244)
@@ -1236,53 +1257,78 @@ class SignOnResponseTest {
                     .as("PASSWDO - the OUTPUT item - is referenced nowhere in the program")
                     .isZero();
             // Two of the four read PASSWDI, the INPUT item; the other two move -1 into PASSWDL, which
-            // positions the cursor and is not a value at all. Neither kind writes the output view.
+            // positions the cursor and is not a value at all. And yet the field is transmitted, because
+            // the group REDEFINES makes PASSWDI and PASSWDO the same span - section 4 proves the overlay
+            // is exact at 308 bytes, which is what makes "no write site" and "sent anyway" both true.
             assertThat(PASSWD_REFERENCE_LINES).contains(123, 135);
             assertThat(PASSWD_REFERENCE_LINES).contains(126, 244);
-        }
-
-        @Test
-        @DisplayName("no component, accessor or constant introduces a password")
-        void noPasswordAnywhereInTheApi() {
-            // Stated as an explicit loop rather than through a collection matcher, so that a failure
-            // names the offending component instead of reporting only that the set did not match.
-            for (String name : componentNames()) {
-                assertThat(name.toLowerCase(Locale.ROOT))
-                        .as("component %s", name)
-                        .doesNotContain("pass")
-                        .doesNotContain("pwd")
-                        .doesNotContain("secret")
-                        .doesNotContain("credential");
-            }
-            for (Method method : SignOnResponse.class.getDeclaredMethods()) {
-                assertThat(method.getName().toLowerCase(Locale.ROOT))
-                        .as("method %s", method.getName())
-                        .doesNotContain("pwd")
-                        .doesNotContain("secret");
-            }
             assertThat(SignOnResponse.MAP_FIELDS)
-                    .as("and the projected census names no password item")
-                    .doesNotContain(OMITTED_OUTPUT_ITEM);
+                    .as("so the projected census names the output item all the same")
+                    .contains(CREDENTIAL_OUTPUT_ITEM);
         }
 
         @Test
-        @DisplayName("the serialised payload has no key naming a password")
-        void noPasswordKeyOnTheWire() {
-            assertThat(jsonKeys(populated()))
-                    .as("nothing on the wire mentions a password, in any nesting level")
-                    .doesNotContain("passwd", "password", "pwd", "secusrpwd", "secret");
+        @DisplayName("withReceivedMapArea sets both spans, and only those two")
+        void theOverlayMutatorSetsBothSpans() {
+            SignOnResponse blank = SignOnResponse.empty();
+
+            SignOnResponse received = blank.withReceivedMapArea("ADMIN001", RECEIVED_PASSWORD);
+
+            assertThat(received.userId()).isEqualTo("ADMIN001");
+            assertThat(received.passwd()).isEqualTo(RECEIVED_PASSWORD);
+            assertThat(received.trnName()).isEqualTo(blank.trnName());
+            assertThat(received.errMsg()).isEqualTo(blank.errMsg());
+            assertThat(received.plainText()).isEqualTo(blank.plainText());
+            assertThat(received.navigationContext()).isEqualTo(blank.navigationContext());
+            assertThat(blank.passwd())
+                    .as("the receiver is immutable, so the original still holds LOW-VALUES")
+                    .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.PASSWD_LENGTH));
         }
 
         @Test
-        @DisplayName("USERIDO is likewise never written, yet stays declared: nothing is tidied")
-        void theUserIdStaysDeclaredAlthoughNeverWritten() {
-            // The counterpart asymmetry, and the reason the PASSWD omission is not simply "drop what
-            // the program never writes". USERIDO has no write site either - the program reads USERIDI
-            // at :118 and :132 and moves -1 into USERIDL at :121, :250 and :255 - yet USERID is a real
-            // named DFHMDF at bms:156, and MOVE LOW-VALUES TO COSGN0AO initialises the whole output
-            // group, so the field is part of the screen's shape regardless. It stays (B5). What
-            // distinguishes PASSWD is not "unwritten" but "a credential the program never echoes".
-            assertThat(componentNames()).contains("userId");
+        @DisplayName("an untransmitted field is LOW-VALUES, which is what empty() carries")
+        void anUntransmittedSpanIsLowValues() {
+            // :81 MOVE LOW-VALUES TO COSGN0AO on the cold start; never written at all on the PF3 and
+            // invalid-key arms, where COPY COSGN00 at :50 leaves WORKING-STORAGE at binary zeros.
+            assertThat(SignOnResponse.empty().userId())
+                    .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.USERID_LENGTH));
+            assertThat(SignOnResponse.empty().passwd())
+                    .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.PASSWD_LENGTH));
+        }
+
+        @Test
+        @DisplayName("the credential is on the wire, and in no rendering - CWE-532")
+        void theCredentialIsCarriedButNeverRendered() {
+            SignOnResponse repaint = populated();
+
+            assertThat(repaint.passwd())
+                    .as("the span EXEC CICS SEND MAP ... FROM(COSGN0AO) transmits")
+                    .isEqualTo(RECEIVED_PASSWORD);
+            assertThat(jsonKeys(repaint))
+                    .as("the item is PASSWDO, so the wire name is passwd")
+                    .contains("passwd")
+                    .doesNotContain("password", "pwd", "secusrpwd", "secret");
+            assertThat(repaint.toString())
+                    .as("a log line is not a 3270")
+                    .doesNotContain(RECEIVED_PASSWORD)
+                    .contains(SensitiveDiagnostics.REDACTED);
+            assertThat(repaint)
+                    .as("equals keeps the password: value semantics disclose nothing")
+                    .isEqualTo(populated())
+                    .isNotEqualTo(repaint.withReceivedMapArea(repaint.userId(), "OTHERPWD"));
+        }
+
+        @Test
+        @DisplayName("USERIDO is painted by the same overlay, and is not upper-cased on the way out")
+        void theUserIdIsPaintedByTheSameOverlay() {
+            // :132-134 MOVE FUNCTION UPPER-CASE(USERIDI) writes WS-USER-ID and CDEMO-USER-ID, never back
+            // into the span, so a lower-case attempt comes back lower-case in the field while the
+            // communication area carries it upper-cased. Both are observable and they legitimately differ.
+            SignOnResponse repaint = SignOnResponse.empty()
+                    .withReceivedMapArea("admin001", RECEIVED_PASSWORD);
+
+            assertThat(repaint.userId()).isEqualTo("admin001");
+            assertThat(componentNames()).contains("userId", "passwd");
             assertThat(SignOnResponse.MAP_FIELDS).contains(SignOnResponse.USERID_FIELD);
             assertThat(SignOnResponse.USERID_FIELD).isEqualTo("USERIDO");
         }
@@ -1293,9 +1339,8 @@ class SignOnResponseTest {
             // Gate G41 and practice B6. COSGN00C.cbl:223 authenticates with IF SEC-USR-PWD =
             // WS-USER-PWD - a direct comparison against SEC-USR-PWD PIC X(08) of CSUSR01Y.cpy:21.
             // There is no hash, salt, token or expiry in the legacy design, and introducing one would
-            // change observable behaviour. Since this response carries no password at all, there is
-            // nothing here to hash even if hashing were permitted - the assertion is that no security
-            // type has crept into the payload's API either.
+            // change observable behaviour. The password this payload carries is the screen field the
+            // program transmits, unhashed and unmasked, for exactly that reason.
             for (String name : reachableTypeNames()) {
                 assertThat(name)
                         .as("reachable type %s", name)
@@ -1659,11 +1704,15 @@ class SignOnResponseTest {
     class RoleRoutingAndXctl {
 
         @Test
-        @DisplayName("the payload declares the role and all three next-target members")
+        @DisplayName("the payload declares the role, all three next-target members and the plain text")
         void theNavigationMembersExist() {
             assertThat(componentNames())
-                    .contains("role", "nextProgram", "nextMapset", "nextMap", "navigationContext");
-            assertThat(NAVIGATION_MEMBERS).hasSize(5);
+                    .contains("role", "nextProgram", "nextMapset", "nextMap", "plainText",
+                            "navigationContext");
+            assertThat(NAVIGATION_MEMBERS)
+                    .as("the XCTL triple, the role it is chosen from, the SEND TEXT transmission and "
+                            + "the communication area - six carriers with no DFHMDF behind them")
+                    .hasSize(6);
         }
 
         @Test
@@ -2151,16 +2200,17 @@ class SignOnResponseTest {
         }
 
         @Test
-        @DisplayName("the header fields the paragraph writes are eight of the ten map members")
-        void theHeaderCoversEightOfTheTenMembers() {
+        @DisplayName("the header fields the paragraph writes are eight of the eleven map members")
+        void theHeaderCoversEightOfTheElevenMembers() {
             List<String> written = List.of("title01", "title02", "trnName", "pgmName", "curDate",
                     "curTime", "applId", "sysId");
             assertThat(written).hasSize(8).allSatisfy(name ->
                     assertThat(RESPONSE_MEMBERS).contains(name));
             assertThat(RESPONSE_MEMBERS)
-                    .as("the two the paragraph leaves alone")
-                    .containsAll(List.of("userId", "errMsg"));
-            assertThat(RESPONSE_MAP_MEMBERS - written.size()).isEqualTo(2);
+                    .as("the three the paragraph leaves alone: the error line its caller writes at "
+                            + ":149, and the two overlay spans the RECEIVE fills")
+                    .containsAll(List.of("userId", "passwd", "errMsg"));
+            assertThat(RESPONSE_MAP_MEMBERS - written.size()).isEqualTo(3);
         }
     }
 
@@ -2357,7 +2407,8 @@ class SignOnResponseTest {
             "6, APPLIDO",
             "7, SYSIDO",
             "8, USERIDO",
-            "9, ERRMSGO"
+            "9, PASSWDO",
+            "10, ERRMSGO"
         })
         @DisplayName("null is rejected and the failure names the item, because COBOL has no null")
         void nullIsRejected(int index, String field) {
@@ -2377,7 +2428,8 @@ class SignOnResponseTest {
             "6, APPLIDO, 8",
             "7, SYSIDO, 8",
             "8, USERIDO, 8",
-            "9, ERRMSGO, 78"
+            "9, PASSWDO, 8",
+            "10, ERRMSGO, 78"
         })
         @DisplayName("an over-wide value is rejected, naming the item, the width and the length")
         void overWideIsRejected(int index, String field, int width) {
@@ -2428,7 +2480,7 @@ class SignOnResponseTest {
      * Builds a response with one map-derived component replaced, so the constructor's guard can be
      * driven per component without fifteen near-identical literal argument lists.
      *
-     * @param index the 0-based position among the ten map-derived components
+     * @param index the 0-based position among the eleven map-derived components
      * @param value the value to place there, possibly {@code null} or over-wide
      */
     private static SignOnResponse constructWith(int index, String value) {
@@ -2436,8 +2488,10 @@ class SignOnResponseTest {
         values.set(index, value);
         return new SignOnResponse(values.get(0), values.get(1), values.get(2), values.get(3),
                 values.get(4), values.get(5), values.get(6), values.get(7), values.get(8),
-                values.get(9), SignOnResponse.ROLE_ADMIN, SignOnResponse.NEXT_PROGRAM_ADMIN,
-                MAPSET_NAME, MAP_NAME, signedOnContext(SignOnResponse.ROLE_ADMIN));
+                values.get(9), values.get(10), SignOnResponse.ROLE_ADMIN,
+                SignOnResponse.NEXT_PROGRAM_ADMIN, MAPSET_NAME, MAP_NAME,
+                " ".repeat(SignOnResponse.PLAIN_TEXT_LENGTH),
+                signedOnContext(SignOnResponse.ROLE_ADMIN));
     }
 
     // =================================================================================================

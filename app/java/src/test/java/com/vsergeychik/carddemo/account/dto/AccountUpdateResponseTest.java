@@ -23,6 +23,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.math.BigDecimal;
@@ -73,7 +74,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <ul>
  *   <li><strong>B1</strong> - only coordinates {@code app/java/pom.xml} already resolves: JUnit Jupiter
- *       5.12.2, AssertJ 3.27.7, Jackson 2.21.4, all managed by {@code spring-boot-starter-parent:3.5.16}.
+ *       5.12.2, AssertJ 3.27.7 and Jackson 2.21.5, under {@code spring-boot-starter-parent:3.5.16}.
  *       No new dependency, and in particular no Lombok, MapStruct, springdoc, Testcontainers or
  *       {@code spring-security-test}.</li>
  *   <li><strong>B2</strong> - no Boot 4.x, JUnit 6 or Batch 6 API is used, however current: the plan pins
@@ -2357,37 +2358,124 @@ class AccountUpdateResponseTest {
         }
 
         @Test
-        @DisplayName("the rendering discloses every value as stored - nothing masked (practice B6)")
-        void theRenderingIsCompleteAndUnmasked() {
+        @DisplayName("the rendering names every field and classifies every value (CWE-532)")
+        void theRenderingIsCompleteAndClassified() {
             AccountUpdateResponse response = AccountUpdateResponse.initial()
                     .withValue(ScreenField.ACTSSN1, "078")
                     .withValue(ScreenField.ACTSSN2, "05")
                     .withValue(ScreenField.ACTSSN3, "1120")
                     .withValue(ScreenField.ACSGOVT, "GOVTID9988776655    ")
-                    .withValue(ScreenField.DOBYEAR, "1955");
+                    .withValue(ScreenField.ACSEFTC, "EFT12345678901234567")
+                    .withValue(ScreenField.ACSTFCO, "789")
+                    .withValue(ScreenField.DOBYEAR, "1955")
+                    .withValue(ScreenField.DOBMON, "08")
+                    .withValue(ScreenField.DOBDAY, "16")
+                    .withValue(ScreenField.ACSLNAM, "SANDERSON")
+                    .withValue(ScreenField.ACSADL1, "1234 CEDAR STREET")
+                    .withValue(ScreenField.ACSPH1A, "617")
+                    .withValue(ScreenField.ACCTSID, "00000000011")
+                    .withValue(ScreenField.ACSTNUM, "000000009")
+                    .withValue(ScreenField.ACURBAL, "+00000123.45")
+                    .withValue(ScreenField.ACSSTTE, "MA")
+                    .withValue(ScreenField.ACSCTRY, "USA");
             String rendered = response.toString();
-            assertThat(rendered)
-                    .as("COACTUPC paints all of these on a 3270 in the clear; hiding them here would "
-                            + "be an unrequested behaviour change")
-                    .contains("ACTSSN1='078'", "ACTSSN2='05'", "ACTSSN3='1120'",
-                            "DOBYEAR='1955'")
-                    .contains("GOVTID9988776655");
-            assertThat(rendered).startsWith("AccountUpdateResponse[").endsWith("]")
-                    .contains("nextProgram=", "commArea=", "cardScreenState=",
-                            "navigationContext=");
+
+            // Every field is still NAMED. The field name is what a difference is reported against, and
+            // it carries no data, so nothing about diagnosability is given up here.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(rendered).as("%s appears in the rendering", field.label())
                         .contains(field.label() + "='");
             }
+            assertThat(rendered).startsWith("AccountUpdateResponse[").endsWith("]")
+                    .contains("nextProgram=", "commArea=", "cardScreenState=",
+                            "navigationContext=");
+
             // Scoped to THIS type's own 54-field section. The embedded NavigationContext,
             // CardScreenState, AcctSnapshot and CustSnapshot each apply their own disclosure policy to
-            // their own rendering - AcctSnapshot masks its account key, CardScreenState masks the PAN -
-            // and those are their decisions to make, not this type's to override. What this type owes is
-            // that nothing IT holds is withheld, which is what the section below asserts.
+            // their own rendering, and those are their decisions to make, not this type's to override.
             String ownSection = rendered.substring(0, rendered.indexOf(", nextProgram='"));
+
+            // Withheld entirely: the value appears nowhere, in no part and in no order.
             assertThat(ownSection)
-                    .as("no field of this type may be masked, redacted or omitted")
-                    .doesNotContain("[REDACTED]", "****", "<omitted>", "[blank]");
+                    .as("the social-security parts, date of birth, government identifier, funds "
+                            + "transfer account and credit score are withheld outright - a build log "
+                            + "keeps this text and none of it is what a parity difference is read from")
+                    .doesNotContain("078", "1120", "GOVTID9988776655", "EFT12345678901234567",
+                            "1955")
+                    .contains("ACTSSN1='" + SensitiveDiagnostics.REDACTED + "'",
+                            "ACSGOVT='" + SensitiveDiagnostics.REDACTED + "'",
+                            "ACSEFTC='" + SensitiveDiagnostics.REDACTED + "'",
+                            "ACSTFCO='" + SensitiveDiagnostics.REDACTED + "'",
+                            "DOBYEAR='" + SensitiveDiagnostics.REDACTED + "'",
+                            "DOBMON='" + SensitiveDiagnostics.REDACTED + "'",
+                            "DOBDAY='" + SensitiveDiagnostics.REDACTED + "'");
+
+            // Length only: the shape survives, the content does not.
+            assertThat(ownSection)
+                    .as("a name, an address line and a telephone part have no useful prefix, so only "
+                            + "their shape is reported")
+                    .doesNotContain("SANDERSON", "CEDAR")
+                    .contains("ACSLNAM='" + SensitiveDiagnostics.describeText("SANDERSON") + "'",
+                            "ACSPH1A='" + SensitiveDiagnostics.describeText("617") + "'");
+
+            // Masked to the last four: enough to correlate two log lines, not enough to identify.
+            assertThat(ownSection)
+                    .as("the account and customer keys keep their stored width and their last four "
+                            + "characters, which is what correlation needs")
+                    .contains("ACCTSID='" + SensitiveDiagnostics.maskIdentifier("00000000011") + "'",
+                            "ACSTNUM='" + SensitiveDiagnostics.maskIdentifier("000000009") + "'");
+
+            // Plain: what a parity investigation is actually conducted from stays legible.
+            assertThat(ownSection)
+                    .as("balances, coarse geography and the screen furniture stay legible - they are "
+                            + "the difference a parity failure consists of and identify nobody once "
+                            + "the keys above are masked")
+                    .contains("ACURBAL='+00000123.45'", "ACSSTTE='MA'", "ACSCTRY='USA'");
+
+            // The classification itself, asserted directly rather than inferred from the rendering.
+            assertThat(AccountUpdateResponse.disclosureOf(null))
+                    .as("a field nobody classified is withheld, not published")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
+            assertThat(AccountUpdateResponse.disclosureOf(ScreenField.ACTSSN2))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
+            assertThat(AccountUpdateResponse.disclosureOf(ScreenField.ACCTSID))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.IDENTIFIER);
+            assertThat(AccountUpdateResponse.disclosureOf(ScreenField.ACSFNAM))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.TEXT);
+            assertThat(AccountUpdateResponse.disclosureOf(ScreenField.ACRDLIM))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+        }
+
+        @Test
+        @DisplayName("masking the rendering leaves the payload, the accessors and equality untouched")
+        void maskingIsRenderingOnly() {
+            AccountUpdateResponse response = AccountUpdateResponse.initial()
+                    .withValue(ScreenField.ACTSSN1, "078")
+                    .withValue(ScreenField.ACSGOVT, "GOVTID9988776655    ")
+                    .withValue(ScreenField.DOBYEAR, "1955");
+
+            // The stored values are the parity contract and are untouched. COACTUPC paints all of this
+            // on a 3270 in the clear, so withholding it from the PAYLOAD would be an unrequested
+            // behaviour change (practice B6). Only the diagnostic rendering is classified.
+            assertThat(response.value(ScreenField.ACTSSN1)).isEqualTo("078");
+            assertThat(response.value(ScreenField.ACSGOVT)).isEqualTo("GOVTID9988776655    ");
+            assertThat(response.value(ScreenField.DOBYEAR)).isEqualTo("1955");
+
+            AccountUpdateResponse sameValues = AccountUpdateResponse.initial()
+                    .withValue(ScreenField.ACTSSN1, "078")
+                    .withValue(ScreenField.ACSGOVT, "GOVTID9988776655    ")
+                    .withValue(ScreenField.DOBYEAR, "1955");
+            AccountUpdateResponse differingOnlyInAWithheldField = AccountUpdateResponse.initial()
+                    .withValue(ScreenField.ACTSSN1, "079")
+                    .withValue(ScreenField.ACSGOVT, "GOVTID9988776655    ")
+                    .withValue(ScreenField.DOBYEAR, "1955");
+
+            assertThat(response).isEqualTo(sameValues)
+                    .hasSameHashCodeAs(sameValues);
+            assertThat(response)
+                    .as("a wrong social-security digit is still a difference - comparison never went "
+                            + "through the rendering, so redaction cannot hide one")
+                    .isNotEqualTo(differingOnlyInAWithheldField);
         }
 
         @Test

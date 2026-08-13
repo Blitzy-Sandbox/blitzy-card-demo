@@ -1327,13 +1327,14 @@ class FileStatusTest {
     class ClassShapeAndImmutability {
 
         /**
-         * The seventeen constants the class publishes.
+         * The eighteen constants the class publishes.
          *
          * <p>Listed by name rather than merely counted, so that an accidentally added public field -
          * the usual way mutable static state gets in - fails with the offending name in the report.
          */
         private static final List<String> PUBLISHED_CONSTANT_NAMES = List.of(
-                "OK", "RECORD_LENGTH_CONFLICT", "END_OF_FILE", "DUPLICATE", "NOT_FOUND", "STATUS_LENGTH",
+                "OK", "RECORD_LENGTH_CONFLICT", "END_OF_FILE", "DUPLICATE", "NOT_FOUND",
+                "OPEN_MODE_CONFLICT", "STATUS_LENGTH",
                 "STATUS_IMAGE_LENGTH", "NORMAL", "NOTFND", "DUPREC", "DUPKEY", "INVREQ", "NOTOPEN",
                 "ENDFILE", "LENGERR", "NO_REASON_CODE", "RESP_NOT_REPORTED", "APPL_AOK", "APPL_EOF",
                 "DISPLAY_PREFIX");

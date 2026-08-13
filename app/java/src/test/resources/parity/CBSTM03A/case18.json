@@ -1,7 +1,7 @@
 {
   "program": "CBSTM03A",
   "caseId": "case18",
-  "description": "THE ORDERED THREE-ARM READ DISPATCH OF 8500-READTRNX-READ (app/cbl/CBSTM03A.CBL:L837-L847), driven across both of the arms a seeded run can reach: THREE '00' RETURNS THAT ITERATE THE PARAGRAPH and a FOURTH read that takes '10' and hands the run on. THE ARMS STAND IN SOURCE ORDER WITH WHEN OTHER LAST (gate G30) - WHEN '00' MOVE WS-M03B-FLDT TO TRNX-RECORD then GO TO 8500-READTRNX-READ at :838-:840, WHEN '10' GO TO 8599-EXIT at :841-:842, WHEN OTHER DISPLAY / DISPLAY / PERFORM 9999-ABEND-PROGRAM at :843-:846, END-EVALUATE at :847. EVALUATE is ordered: the first matching WHEN wins and WHEN OTHER is the default, so the order is behaviour and not layout. THE '00' ARM IS A BACKWARD BRANCH TO THE PARAGRAPH'S OWN LABEL. GO TO 8500-READTRNX-READ at :840 re-enters at :818, so the card-break test at :819-:825 and the three table stores at :827-:829 run again for the record just moved in. CBSTM03A is the ONLY one of the twenty-eight programs whose GO TOs form implicit loops, which is why the restructured form must iterate in exactly this order (gate G32): store, then read, then test - never read-then-store, which would drop the record the open primed and load the end-of-file image instead. THE CALL IS SET UP EXACTLY AS THE SOURCE SETS IT UP, AND ONE STATEMENT IS ABSENT: MOVE 'TRNXFILE' TO WS-M03B-DD (:832), SET M03B-READ TO TRUE (:833) - the sequential read, not the M03B-READ-K keyed read that 2000-CUSTFILE-GET and 3000-ACCTFILE-GET use - MOVE SPACES TO WS-M03B-FLDT (:834), then CALL 'CBSTM03B' USING WS-M03B-AREA (:835). THERE IS NO MOVE ZERO TO WS-M03B-RC HERE, although the sibling read at 1000-XREFFILE-GET-NEXT does exactly that at :349 before its own call. So this EVALUATE tests whatever two characters the collaborator leaves behind over whatever the previous iteration left, and the status is never pre-cleared. That asymmetry between two reads ninety lines apart is preserved rather than regularised (practice B5). CBSTM03B answers with MOVE TRNXFILE-STATUS TO LK-M03B-RC (app/cbl/CBSTM03B.CBL:L152), so this is the raw two-character COBOL FILE STATUS of a status area independent of the other three DD names. TRNXFILE is ORGANIZATION INDEXED, ACCESS MODE SEQUENTIAL, RECORD KEY IS FD-TRNXS-ID (CBSTM03B.CBL:L31-L35) and 1000-TRNXFILE-PROC (:L133) serves it OPEN INPUT, READ INTO LK-M03B-FLDT and CLOSE, so records arrive ascending by the 32-byte key. THE RECORD MOVE SITS INSIDE THE '00' ARM HERE, NOT AFTER END-EVALUATE - THE OPPOSITE OF THE OTHER READ. MOVE WS-M03B-FLDT TO TRNX-RECORD is at :839, guarded by WHEN '00', so on the terminating '10' it does NOT run and TRNX-RECORD still holds the last real record. Its counterpart in 1000-XREFFILE-GET-NEXT is at :364, AFTER the END-EVALUATE at :362, so THAT one runs on the '10' path too and overwrites CARD-XREF-RECORD with a non-record on the way out. Two paragraphs, the same shape, the MOVE on opposite sides of the dispatch: case17 pins that one, this case pins this one, and normalising the pair would read as tidying while changing what each leaves behind at end of file (practice B5). TWO FILE-STATUS CONVENTIONS ARE APPLIED TO THIS ONE DD WITHIN NINETY LINES, AND ARE NEVER UNIFIED. THE FIRST TRNXFILE RECORD IS NOT READ BY THIS LOOP AT ALL: 8100-TRNXFILE-OPEN reads it at :746 under the OPEN-STYLE guard IF WS-M03B-RC = '00' OR '04' (:748-:754), which ACCEPTS '04' and has NO '10' ARM whatsoever - an empty TRNXFILE abends there rather than terminating. That paragraph then moves the record at :756 UNCONDITIONALLY, outside its own guard, and primes WS-SAVE-CARD (:757), CR-CNT = 1 (:758), TR-CNT = 0 (:759) before MOVE 'READTRNX' TO WS-FL-DD (:760) and GO TO 0000-START (:761). Every SUBSEQUENT record arrives through the three-arm EVALUATE at :837, which accepts '00' and '10' and NOT '04'. So on the same DD, '04' is tolerated by the first read and fatal to every later one, while '10' abends at the first read and terminates the loop normally afterwards. A translation that folded the two into one acceptance set would pass whichever half it was written against and break the other. THE ITERATION COUNT, RECORD BY RECORD. WS-FL-DD is PIC X(8) VALUE 'TRNXFILE' (:67), so the ALTER-driven dispatcher at 0000-START (:296-:314) enters 8100-TRNXFILE-OPEN first; it consumes seeded row 1 at :746; :760 then routes WHEN 'READTRNX' GO TO 8500-READTRNX-READ (:311-:312). The paragraph therefore runs FOUR times for four seeded rows, and the read at call site :835 answers '00', '00', '00', '10' in that order - THREE ITERATIONS OF THE '00' ARM, WHICH IS THE POINT OF SEEDING FOUR ROWS RATHER THAN TWO. Passes 1 to 3 take the IF branch at :819-:820 because WS-SAVE-CARD still equals TRNX-CARD-NUM, stepping TR-CNT to 1, 2 and 3 under CR-CNT 1. Pass 4 takes the ELSE at :821-:824 because row 4 carries a different card: it closes the first card with MOVE TR-CNT TO WS-TRCT (CR-CNT), steps CR-CNT to 2 and resets TR-CNT to 1. The read that pass 4 then issues is the '10'. WS-TRCT (1) is 3 and WS-TRCT (2) is 1, both inside the WS-CARD-TBL OCCURS 51 / WS-TRAN-TBL OCCURS 10 bounds declared at :225-:233 (gate G33). case09 pins the WS-TRCT arithmetic across three cards in detail; what this case pins is the read sequence and the iteration count through :835. THE '10' ARM IS A HANDOFF, NOT THE END OF THE PROGRAM - AND THAT IS THE ASSERTION MOST EASILY LOST. GO TO 8599-EXIT (:842) reaches :849-:853, which does MOVE TR-CNT TO WS-TRCT (CR-CNT) (:850), MOVE 'XREFFILE' TO WS-FL-DD (:851) and GO TO 0000-START (:852). Control therefore returns to the dispatcher and the run OPENS THREE MORE FILES before any statement exists: 8200-XREFFILE-OPEN (:765, which sets 'CUSTFILE' at :779), 8300-CUSTFILE-OPEN (:783, which sets 'ACCTFILE' at :797) and 8400-ACCTFILE-OPEN (:801, which reaches GO TO 1000-MAINLINE at :815). Only then does the statement loop at :316-:329 run, followed by the four closes in source order (:331, :333, :335, :337), CLOSE STMT-FILE HTML-FILE (:339) and 9999-GOBACK (:341-:342). A translation that treated this '10' as a terminal condition would skip the XREFFILE, CUSTFILE and ACCTFILE opens entirely and write nothing at all, so the twenty-two and ninety-seven records below ARE the evidence that the handoff happened. The run is a clean completion and is asserted as one: expectedReturnCode IS 0 and expectedMessages carries NO error line - only the nine TIOT lines the program emits at :270-:291, before OPEN OUTPUT STMT-FILE HTML-FILE at :293. THE FOURTH ROW IS LOADED AND NEVER WRITTEN, WHICH IS HOW THE BOUND IS PROVED. XREFFILE is seeded with only the FIRST row of cardxref.txt, card 0500024453765740, while the table holds that card plus 0683586198171516 from row 4. 4000-TRNXFILE-GET's PERFORM VARYING (:417-:432) stops on its SECOND term at CR-JMP = 2, because WS-CARD-NUM (2) already exceeds XREF-CARD-NUM, so card 0683586198171516's transaction sits loaded and unwritten and no second statement exists. The loop was bounded by the TRNXFILE '10', not by the cross-reference and not by the table. THE COUNTS COME FROM THE WRITE SEQUENCE, NOT FROM A RUN (practice B11). Every statement is 19 + N STMTFILE records and 64 + 11N HTMLFILE records for N written transactions: 5000-CREATE-STATEMENT writes ST-LINE0 (:460) and then fifteen more lines ST-LINE1, 2, 3, 4, 5, 6, 5, 7, 8, 9, 10, 11, 12, 13, 12 (:488-:502) for sixteen; 6000-WRITE-TRANS writes one ST-LINE14 and eleven HTML records per transaction (:675-:723); and the tail of 4000-TRNXFILE-GET writes ST-LINE12, ST-LINE14A and ST-LINE15 (:435-:437) plus the eight-record HTML footer (:439-:454) for three more. On the HTML side 5100-WRITE-HTML-HEADER contributes twenty-two records and 5200-WRITE-HTML-NMADBS thirty-four, which with that footer is the sixty-four. HERE N IS 3, so the single statement is TWENTY-TWO STMTFILE and NINETY-SEVEN HTMLFILE records - one per '00' store that the cross-reference reached, which is why the transaction count and the iteration count are the same number seen from two sides. THE AMOUNTS EXERCISE BOTH SIGN STATES OF THE TRAILING-SIGN MASK. The three written transactions are +250.00, -75.50 and +1000.25, each held as an 11-byte zoned DISPLAY TRNX-AMT PIC S9(09)V99 with the sign overpunched onto its last byte per app/cpy/COSTM01.CPY. ADD TRNX-AMT TO WS-TOTAL-AMT (:429) accumulates them into WS-TOTAL-AMT PIC S9(9)V99 (:65), which MOVE WS-TOTAL-AMT TO WS-TRN-AMT (:433) and MOVE WS-TRN-AMT TO ST-TOTAL-TRAMT (:434) render as a Total EXP of 1174.75. ST-TRANAMT and ST-TOTAL-TRAMT are both PIC Z(9).99- (:137, :142), so leading zeros are suppressed to spaces and the sign is a TRAILING position: blank for the two credits and the total, '-' for the debit. No scale changes anywhere in the chain and nothing is rounded - the keyword ROUNDED does not occur in this program - so the Java receiver truncates at scale 2 with RoundingMode.DOWN. THE FIELD VALUES ARE THE FIXTURES' OWN, READ THROUGH THE COPYBOOKS. Cross-reference row 1 carries XREF-CUST-ID 000000050 and XREF-ACCT-ID 00000000050: custdata.txt gives Aniya / Alba / Von, '1588 Nienow Cape' and 'Suite 187', and because the STRING at :472-:481 carries DELIMITED BY ' ' it stops at the INTERNAL space of CUST-ADDR-LINE-3 'New Aricchester', so ST-ADD3 is 'New OR USA 04257' and not the whole city. CUST-FICO-CREDIT-SCORE is 623. acctdata.txt gives ACCT-CURR-BAL '00000004920{', a zoned +492.00 whose '{' overpunch is a positive zero, which MOVE ACCT-CURR-BAL TO ST-CURR-BAL (:484) renders as '000000492.00' with leading zeros INTACT because that mask is 9 and not Z. MOVE TRNX-DESC TO ST-TRANDT (:677) narrows PIC X(100) to PIC X(49), truncating on the right as COBOL does for an alphanumeric receiver; the three seeded descriptions are shorter than 49, so each appears in full and space-padded, and case14 owns the truncating case. THE WHEN OTHER ARM IS NOT DRIVEN HERE, AND IS NOT SILENTLY DROPPED EITHER. A ParityCase carries inputs and expectations; it carries no substituted FILE STATUS, and it cannot - app/jcl/CREASTMT.JCL:L79 declares STEP040 as EXEC PGM=CBSTM03A,COND=(0,NE) with no PARM at all, so jobParameters has nothing to carry one in, and a status the seeded data cannot produce is a property of the environment rather than of the input. One case file also has exactly one terminal outcome, and this one's is a return code of 0, which is incompatible with an abend. That arm is therefore owned executably by StatementGenerationJobATest.TheStatusMatrix, whose theLoopTrnxReadRejectsOhFour forces '04' at THIS call site after one good read - the status the first read at :746 accepts and this EVALUATE refuses - and asserts the whole of it. WHAT IT MUST PRODUCE, FOR THE RECORD AND IN THIS ORDER: 'ERROR READING TRNXFILE' from :844, then 'RETURN CODE: ' from :845 followed by the two-character status - THE SPACE AFTER THE COLON IS PART OF THE LITERAL and survives - then 'ABENDING PROGRAM' from 9999-ABEND-PROGRAM at :922, and NOTHING AFTER IT. Note the text names TRNXFILE where the sibling read at :359 names XREFFILE, so the two guards are not interchangeable even in their diagnostics. BECAUSE THAT FAILURE FIRES IN THE OPEN AND LOAD PHASE, 1000-MAINLINE NEVER RUNS AND NOT ONE STATEMENT RECORD IS PRODUCED: STMTFILE and HTMLFILE are open from :293 but hold ZERO rows each, and since app/jcl/CREASTMT.JCL:L87-L96 declares both DISP=(NEW,CATLG,DELETE) a run that never reaches 9999-GOBACK leaves nothing behind either. That makes this the EARLIEST abend point of any case in this folder - earlier than case13, which reaches the XREFFILE read with the table already loaded, and far earlier than case16, which abends in a close after a whole statement is written. THAT PARAGRAPH'S CALL 'CEE3ABD' AT :923 IS BARE: no ABCODE and no TIMING, the only one of the nine abend sites in the codebase shaped that way, and it stays bare (gate G35, practice B5). In Java it becomes common.AbendException. CBSTM03A ALSO ASSIGNS NO RETURN-CODE ANYWHERE - no MOVE of any value TO RETURN-CODE, no APPL-RESULT and no 88 APPL-EOF VALUE 16, all of which belong to other programs - so none is invented for it (practice B1) and the non-zero exit of that path comes from the abend convention alone. UNIT AND INVOCATION: statement.StatementGenerationJobA as a BATCH_JOB, reached at step / Tasklet level with statement.StatementGenerationJobB as its constructor-injected collaborator - no JobLauncher, no job repository and no HTTP anywhere in the path (gate G51). screenRequest and expectedResponse are absent because a batch job has no screen, and jobParameters is empty for the reason given above. SEED, WIDTHS AND ENCODING. The four TRNXFILE rows are inline because no ASCII fixture exists for it - app/data/ASCII holds exactly nine .txt files and there is no tenth to ask for - and each is EXACTLY 350 characters per app/cpy/COSTM01.CPY, a 32-byte TRNX-KEY of TRNX-CARD-NUM and TRNX-ID followed by a 318-byte TRNX-REST that ends in a space-filled FILLER PIC X(20) (gate G21). They are in ascending card-then-id order, which is what STEP010's SORT FIELDS=(263,16,CH,A,1,16,CH,A) produces: position 263 for sixteen characters is TRAN-CARD-NUM in the 350-byte CVTRA05Y record and position 1 is TRAN-ID, and the REPRO at STEP020 lands the result in the COSTM01 layout that puts the card first. XREFFILE is seeded from cardxref.txt AS IT SHIPS, 36 characters per row and NOT pre-padded: app/cpy/CVACT03Y.cpy declares CARD-XREF-RECORD as 50 with a trailing FILLER PIC X(14) that the fixture omits, and the single declared CARDXREF_FILLER_PAD_36_TO_50 normalisation is what supplies those fourteen spaces once, at seed time - parity.FieldDiffer owns that pad and this file does not anticipate it (gate G16, risk R-F). ACCTFILE is acctdata.txt at 50 x 300 and CUSTFILE is custdata.txt at 50 x 500, read through app/cpy/CUSTREC.cpy, whose CUST-DOB-YYYYMMDD is deliberately a different field name from CVCUS01Y's hyphenated CUST-DOB-YYYY-MM-DD (requirement I1). Every STMTFILE image is EXACTLY 80 characters, from FD-STMTFILE-REC PIC X(80) at :45 and DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB) at app/jcl/CREASTMT.JCL:L89; every HTMLFILE image is EXACTLY 100, from FD-HTMLFILE-REC PIC X(100) at :47 and DCB=(LRECL=100,BLKSIZE=800,RECFM=FB) at CREASTMT.JCL:L94, which supersedes the LRECL=80 the pre-delete step declares for the same DD at L69 (gates G19, G20, risk R-G). Line 90 of that JCL is genuinely corrupted - it reads SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS - and its stray ' 00,RECFM=FB)' sits directly beneath the STMTFILE DD where it is easy to misread as an LRECL of 100; the width above is therefore taken from line 89, and the JCL is left exactly as it is (practice B4). Bytes are US-ASCII throughout, named rather than defaulted (practice B8). PROVENANCE: every expected value here is STATICALLY DERIVED - by reading the paragraphs cited above, the record layouts in app/cpy, the DD and COND contracts in app/jcl/CREASTMT.JCL and the shipped fixtures in app/data/ASCII - and NOT ONE OF THEM WAS CAPTURED FROM A LIVE COBOL EXECUTION, which this environment cannot perform (practice B12). Nothing in the case depends on a clock, a locale or a path, so the run is reproducible (practice B7).",
+  "description": "THE ORDERED THREE-ARM READ DISPATCH OF 8500-READTRNX-READ (app/cbl/CBSTM03A.CBL:L837-L847), driven across both of the arms a seeded run can reach: THREE '00' RETURNS THAT ITERATE THE PARAGRAPH and a FOURTH read that takes '10' and hands the run on. THE ARMS STAND IN SOURCE ORDER WITH WHEN OTHER LAST (gate G30) - WHEN '00' MOVE WS-M03B-FLDT TO TRNX-RECORD then GO TO 8500-READTRNX-READ at :838-:840, WHEN '10' GO TO 8599-EXIT at :841-:842, WHEN OTHER DISPLAY / DISPLAY / PERFORM 9999-ABEND-PROGRAM at :843-:846, END-EVALUATE at :847. EVALUATE is ordered: the first matching WHEN wins and WHEN OTHER is the default, so the order is behaviour and not layout. THE '00' ARM IS A BACKWARD BRANCH TO THE PARAGRAPH'S OWN LABEL. GO TO 8500-READTRNX-READ at :840 re-enters at :818, so the card-break test at :819-:825 and the three table stores at :827-:829 run again for the record just moved in. CBSTM03A is the ONLY one of the twenty-eight programs whose GO TOs form implicit loops, which is why the restructured form must iterate in exactly this order (gate G32): store, then read, then test - never read-then-store, which would drop the record the open primed and load the end-of-file image instead. THE CALL IS SET UP EXACTLY AS THE SOURCE SETS IT UP, AND ONE STATEMENT IS ABSENT: MOVE 'TRNXFILE' TO WS-M03B-DD (:832), SET M03B-READ TO TRUE (:833) - the sequential read, not the M03B-READ-K keyed read that 2000-CUSTFILE-GET and 3000-ACCTFILE-GET use - MOVE SPACES TO WS-M03B-FLDT (:834), then CALL 'CBSTM03B' USING WS-M03B-AREA (:835). THERE IS NO MOVE ZERO TO WS-M03B-RC HERE, although the sibling read at 1000-XREFFILE-GET-NEXT does exactly that at :349 before its own call. So this EVALUATE tests whatever two characters the collaborator leaves behind over whatever the previous iteration left, and the status is never pre-cleared. That asymmetry between two reads ninety lines apart is preserved rather than regularised (practice B5). CBSTM03B answers with MOVE TRNXFILE-STATUS TO LK-M03B-RC (app/cbl/CBSTM03B.CBL:L152), so this is the raw two-character COBOL FILE STATUS of a status area independent of the other three DD names. TRNXFILE is ORGANIZATION INDEXED, ACCESS MODE SEQUENTIAL, RECORD KEY IS FD-TRNXS-ID (CBSTM03B.CBL:L31-L35) and 1000-TRNXFILE-PROC (:L133) serves it OPEN INPUT, READ INTO LK-M03B-FLDT and CLOSE, so records arrive ascending by the 32-byte key. THE RECORD MOVE SITS INSIDE THE '00' ARM HERE, NOT AFTER END-EVALUATE - THE OPPOSITE OF THE OTHER READ. MOVE WS-M03B-FLDT TO TRNX-RECORD is at :839, guarded by WHEN '00', so on the terminating '10' it does NOT run and TRNX-RECORD still holds the last real record. Its counterpart in 1000-XREFFILE-GET-NEXT is at :364, AFTER the END-EVALUATE at :362, so THAT one runs on the '10' path too and overwrites CARD-XREF-RECORD with a non-record on the way out. Two paragraphs, the same shape, the MOVE on opposite sides of the dispatch: case17 pins that one, this case pins this one, and normalising the pair would read as tidying while changing what each leaves behind at end of file (practice B5). TWO FILE-STATUS CONVENTIONS ARE APPLIED TO THIS ONE DD WITHIN NINETY LINES, AND ARE NEVER UNIFIED. THE FIRST TRNXFILE RECORD IS NOT READ BY THIS LOOP AT ALL: 8100-TRNXFILE-OPEN reads it at :746 under the OPEN-STYLE guard IF WS-M03B-RC = '00' OR '04' (:748-:754), which ACCEPTS '04' and has NO '10' ARM whatsoever - an empty TRNXFILE abends there rather than terminating. That paragraph then moves the record at :756 UNCONDITIONALLY, outside its own guard, and primes WS-SAVE-CARD (:757), CR-CNT = 1 (:758), TR-CNT = 0 (:759) before MOVE 'READTRNX' TO WS-FL-DD (:760) and GO TO 0000-START (:761). Every SUBSEQUENT record arrives through the three-arm EVALUATE at :837, which accepts '00' and '10' and NOT '04'. So on the same DD, '04' is tolerated by the first read and fatal to every later one, while '10' abends at the first read and terminates the loop normally afterwards. A translation that folded the two into one acceptance set would pass whichever half it was written against and break the other. THE ITERATION COUNT, RECORD BY RECORD. WS-FL-DD is PIC X(8) VALUE 'TRNXFILE' (:67), so the ALTER-driven dispatcher at 0000-START (:296-:314) enters 8100-TRNXFILE-OPEN first; it consumes seeded row 1 at :746; :760 then routes WHEN 'READTRNX' GO TO 8500-READTRNX-READ (:311-:312). The paragraph therefore runs FOUR times for four seeded rows, and the read at call site :835 answers '00', '00', '00', '10' in that order - THREE ITERATIONS OF THE '00' ARM, WHICH IS THE POINT OF SEEDING FOUR ROWS RATHER THAN TWO. Passes 1 to 3 take the IF branch at :819-:820 because WS-SAVE-CARD still equals TRNX-CARD-NUM, stepping TR-CNT to 1, 2 and 3 under CR-CNT 1. Pass 4 takes the ELSE at :821-:824 because row 4 carries a different card: it closes the first card with MOVE TR-CNT TO WS-TRCT (CR-CNT), steps CR-CNT to 2 and resets TR-CNT to 1. The read that pass 4 then issues is the '10'. WS-TRCT (1) is 3 and WS-TRCT (2) is 1, both inside the WS-CARD-TBL OCCURS 51 / WS-TRAN-TBL OCCURS 10 bounds declared at :225-:233 (gate G33). case09 pins the WS-TRCT arithmetic across three cards in detail; what this case pins is the read sequence and the iteration count through :835. THE '10' ARM IS A HANDOFF, NOT THE END OF THE PROGRAM - AND THAT IS THE ASSERTION MOST EASILY LOST. GO TO 8599-EXIT (:842) reaches :849-:853, which does MOVE TR-CNT TO WS-TRCT (CR-CNT) (:850), MOVE 'XREFFILE' TO WS-FL-DD (:851) and GO TO 0000-START (:852). Control therefore returns to the dispatcher and the run OPENS THREE MORE FILES before any statement exists: 8200-XREFFILE-OPEN (:765, which sets 'CUSTFILE' at :779), 8300-CUSTFILE-OPEN (:783, which sets 'ACCTFILE' at :797) and 8400-ACCTFILE-OPEN (:801, which reaches GO TO 1000-MAINLINE at :815). Only then does the statement loop at :316-:329 run, followed by the four closes in source order (:331, :333, :335, :337), CLOSE STMT-FILE HTML-FILE (:339) and 9999-GOBACK (:341-:342). A translation that treated this '10' as a terminal condition would skip the XREFFILE, CUSTFILE and ACCTFILE opens entirely and write nothing at all, so the twenty-two and ninety-seven records below ARE the evidence that the handoff happened. The run is a clean completion and is asserted as one: expectedReturnCode IS 0 and expectedMessages carries NO error line - only the nine TIOT lines the program emits at :270-:291, before OPEN OUTPUT STMT-FILE HTML-FILE at :293. THE FOURTH ROW IS LOADED AND NEVER WRITTEN, WHICH IS HOW THE BOUND IS PROVED. XREFFILE is seeded with only the FIRST row of cardxref.txt, card 0500024453765740, while the table holds that card plus 0683586198171516 from row 4. 4000-TRNXFILE-GET's PERFORM VARYING (:417-:432) stops on its SECOND term at CR-JMP = 2, because WS-CARD-NUM (2) already exceeds XREF-CARD-NUM, so card 0683586198171516's transaction sits loaded and unwritten and no second statement exists. The loop was bounded by the TRNXFILE '10', not by the cross-reference and not by the table. THE COUNTS COME FROM THE WRITE SEQUENCE, NOT FROM A RUN (practice B11). Every statement is 19 + N STMTFILE records and 64 + 11N HTMLFILE records for N written transactions: 5000-CREATE-STATEMENT writes ST-LINE0 (:460) and then fifteen more lines ST-LINE1, 2, 3, 4, 5, 6, 5, 7, 8, 9, 10, 11, 12, 13, 12 (:488-:502) for sixteen; 6000-WRITE-TRANS writes one ST-LINE14 and eleven HTML records per transaction (:675-:723); and the tail of 4000-TRNXFILE-GET writes ST-LINE12, ST-LINE14A and ST-LINE15 (:435-:437) plus the eight-record HTML footer (:439-:454) for three more. On the HTML side 5100-WRITE-HTML-HEADER contributes twenty-two records and 5200-WRITE-HTML-NMADBS thirty-four, which with that footer is the sixty-four. HERE N IS 3, so the single statement is TWENTY-TWO STMTFILE and NINETY-SEVEN HTMLFILE records - one per '00' store that the cross-reference reached, which is why the transaction count and the iteration count are the same number seen from two sides. THE AMOUNTS EXERCISE BOTH SIGN STATES OF THE TRAILING-SIGN MASK. The three written transactions are +250.00, -75.50 and +1000.25, each held as an 11-byte zoned DISPLAY TRNX-AMT PIC S9(09)V99 with the sign overpunched onto its last byte per app/cpy/COSTM01.CPY. ADD TRNX-AMT TO WS-TOTAL-AMT (:429) accumulates them into WS-TOTAL-AMT PIC S9(9)V99 (:65), which MOVE WS-TOTAL-AMT TO WS-TRN-AMT (:433) and MOVE WS-TRN-AMT TO ST-TOTAL-TRAMT (:434) render as a Total EXP of 1174.75. ST-TRANAMT and ST-TOTAL-TRAMT are both PIC Z(9).99- (:137, :142), so leading zeros are suppressed to spaces and the sign is a TRAILING position: blank for the two credits and the total, '-' for the debit. No scale changes anywhere in the chain and nothing is rounded - the keyword ROUNDED does not occur in this program - so the Java receiver truncates at scale 2 with RoundingMode.DOWN. THE FIELD VALUES ARE THE FIXTURES' OWN, READ THROUGH THE COPYBOOKS. Cross-reference row 1 carries XREF-CUST-ID 000000050 and XREF-ACCT-ID 00000000050: custdata.txt gives Aniya / Alba / Von, '1588 Nienow Cape' and 'Suite 187', and because the STRING at :472-:481 carries DELIMITED BY ' ' it stops at the INTERNAL space of CUST-ADDR-LINE-3 'New Aricchester', so ST-ADD3 is 'New OR USA 04257' and not the whole city. CUST-FICO-CREDIT-SCORE is 623. acctdata.txt gives ACCT-CURR-BAL '00000004920{', a zoned +492.00 whose '{' overpunch is a positive zero, which MOVE ACCT-CURR-BAL TO ST-CURR-BAL (:484) renders as '000000492.00' with leading zeros INTACT because that mask is 9 and not Z. MOVE TRNX-DESC TO ST-TRANDT (:677) narrows PIC X(100) to PIC X(49), truncating on the right as COBOL does for an alphanumeric receiver; the three seeded descriptions are shorter than 49, so each appears in full and space-padded, and case14 owns the truncating case. THE WHEN OTHER ARM IS NOT DRIVEN HERE, AND IS NOT SILENTLY DROPPED EITHER. A ParityCase carries inputs and expectations; it carries no substituted FILE STATUS, and it cannot - app/jcl/CREASTMT.JCL:L79 declares STEP040 as EXEC PGM=CBSTM03A,COND=(0,NE) with no PARM at all, so jobParameters has nothing to carry one in, and a status the seeded data cannot produce is a property of the environment rather than of the input. One case file also has exactly one terminal outcome, and this one's is a return code of 0, which is incompatible with an abend. That arm is therefore owned executably by StatementGenerationJobATest.TheStatusMatrix, whose theLoopTrnxReadRejectsOhFour forces '04' at THIS call site after one good read - the status the first read at :746 accepts and this EVALUATE refuses - and asserts the whole of it. WHAT IT MUST PRODUCE, FOR THE RECORD AND IN THIS ORDER: 'ERROR READING TRNXFILE' from :844, then 'RETURN CODE: ' from :845 followed by the two-character status - THE SPACE AFTER THE COLON IS PART OF THE LITERAL and survives - then 'ABENDING PROGRAM' from 9999-ABEND-PROGRAM at :922, and NOTHING AFTER IT. Note the text names TRNXFILE where the sibling read at :359 names XREFFILE, so the two guards are not interchangeable even in their diagnostics. BECAUSE THAT FAILURE FIRES IN THE OPEN AND LOAD PHASE, 1000-MAINLINE NEVER RUNS AND NOT ONE STATEMENT RECORD IS PRODUCED: STMTFILE and HTMLFILE are open from :293 but hold ZERO rows each, and since app/jcl/CREASTMT.JCL:L87-L96 declares both DISP=(NEW,CATLG,DELETE) a run that never reaches 9999-GOBACK leaves nothing behind either. That makes this the EARLIEST abend point of any case in this folder - earlier than case13, which reaches the XREFFILE read with the table already loaded, and far earlier than case16, which abends in a close after a whole statement is written. THAT PARAGRAPH'S CALL 'CEE3ABD' AT :923 IS BARE: no ABCODE and no TIMING, the only one of the nine abend sites in the codebase shaped that way, and it stays bare (gate G35, practice B5). In Java it becomes common.AbendException. CBSTM03A ALSO ASSIGNS NO RETURN-CODE ANYWHERE - no MOVE of any value TO RETURN-CODE, no APPL-RESULT and no 88 APPL-EOF VALUE 16, all of which belong to other programs - so none is invented for it (practice B1) and the non-zero exit of that path comes from the abend convention alone. UNIT AND INVOCATION: statement.StatementGenerationJobA as a BATCH_JOB, reached at step / Tasklet level with statement.StatementGenerationJobB as its constructor-injected collaborator - no JobLauncher, no job repository and no HTTP anywhere in the path (gate G51). screenRequest and expectedResponse are absent because a batch job has no screen, and jobParameters is empty for the reason given above. SEED, WIDTHS AND ENCODING. The four TRNXFILE rows are inline because no ASCII fixture exists for it - app/data/ASCII holds exactly nine .txt files and there is no tenth to ask for - and each is EXACTLY 350 characters per app/cpy/COSTM01.CPY, a 32-byte TRNX-KEY of TRNX-CARD-NUM and TRNX-ID followed by a 318-byte TRNX-REST that ends in a space-filled FILLER PIC X(20) (gate G21). They are in ascending card-then-id order, which is what STEP010's SORT FIELDS=(263,16,CH,A,1,16,CH,A) produces: position 263 for sixteen characters is TRAN-CARD-NUM in the 350-byte CVTRA05Y record and position 1 is TRAN-ID, and the REPRO at STEP020 lands the result in the COSTM01 layout that puts the card first. XREFFILE is seeded from cardxref.txt AS IT SHIPS, 36 characters per row and NOT pre-padded: app/cpy/CVACT03Y.cpy declares CARD-XREF-RECORD as 50 with a trailing FILLER PIC X(14) that the fixture omits, and the single declared CARDXREF_FILLER_PAD_36_TO_50 normalisation is what supplies those fourteen spaces once, at seed time - parity.FieldDiffer owns that pad and this file does not anticipate it (gate G16, risk R-F). ACCTFILE is acctdata.txt at 50 x 300 and CUSTFILE is custdata.txt at 50 x 500, read through app/cpy/CUSTREC.cpy, whose CUST-DOB-YYYYMMDD is deliberately a different field name from CVCUS01Y's hyphenated CUST-DOB-YYYY-MM-DD (requirement I1). Every STMTFILE image is EXACTLY 80 characters, from FD-STMTFILE-REC PIC X(80) at :45 and DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB) at app/jcl/CREASTMT.JCL:L89; every HTMLFILE image is EXACTLY 100, from FD-HTMLFILE-REC PIC X(100) at :47 and DCB=(LRECL=100,BLKSIZE=800,RECFM=FB) at CREASTMT.JCL:L94, which supersedes the LRECL=80 the pre-delete step declares for the same DD at L69 (gates G19, G20, risk R-G). Line 90 of that JCL is genuinely corrupted - it reads SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS - and its stray ' 00,RECFM=FB)' sits directly beneath the STMTFILE DD where it is easy to misread as an LRECL of 100; the width above is therefore taken from line 89, and the JCL is left exactly as it is (practice B4). Bytes are US-ASCII throughout, named rather than defaulted (practice B8). PROVENANCE: every expected value here is STATICALLY DERIVED - by reading the paragraphs cited above, the record layouts in app/cpy, the DD and COND contracts in app/jcl/CREASTMT.JCL and the shipped fixtures in app/data/ASCII - and NOT ONE OF THEM WAS CAPTURED FROM A LIVE COBOL EXECUTION, which this environment cannot perform (practice B12). Nothing in the case depends on a clock, a locale or a path, so the run is reproducible (practice B7). WHAT THE RUN LEAVES BEHIND, OBSERVED RATHER THAN ASKED ABOUT: app/jcl/CREASTMT.JCL:L87-L96 declares both outputs DISP=(NEW,CATLG,DELETE), so a run that reaches 9999-GOBACK retains exactly the records it wrote and a run that does not retains none of them. Both datasets are opened on every path that runs at all, which makes both observable on every such path, so this case declares a FINAL_STATE expectation for each - byte for byte, and identical to its WRITES channel because this run completes with RETURN-CODE 0. It is declared unconditionally rather than only for the cases whose adapter chose to look: an observation selected by consulting the expectation makes the two sides of the comparison one side, and a case that ought to have pinned a retained record but did not would have had nothing observed to contradict it.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRNXFILE": {
@@ -624,7 +624,603 @@
       "expectedBytes": "</html>                                                                                             "
     }
   ],
-  "expectedFinalState": [],
+  "expectedFinalState": [
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "*******************************START OF STATEMENT*******************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "Aniya Alba Von                                                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "1588 Nienow Cape                                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "Suite 187                                                                       "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 4,
+      "expectedBytes": "New OR USA 04257                                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 5,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 6,
+      "expectedBytes": "                                 Basic Details                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 7,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 8,
+      "expectedBytes": "Account ID         :00000000050                                                 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 9,
+      "expectedBytes": "Current Balance    :000000492.00                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 10,
+      "expectedBytes": "FICO Score         :623                                                         "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 11,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 12,
+      "expectedBytes": "                              TRANSACTION SUMMARY                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 13,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 14,
+      "expectedBytes": "Tran ID         Tran Details                                         Tran Amount"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 15,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 16,
+      "expectedBytes": "TRAN000000000001 Open read L746, stored by loop pass 1            $      250.00 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 17,
+      "expectedBytes": "TRAN000000000002 Loop read L835 00 arm, stored by pass 2          $       75.50-"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 18,
+      "expectedBytes": "TRAN000000000003 Loop read L835 00 arm, stored by pass 3          $     1000.25 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 19,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 20,
+      "expectedBytes": "Total EXP:                                                        $     1174.75 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 21,
+      "expectedBytes": "********************************END OF STATEMENT********************************"
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 0,
+      "expectedBytes": "<!DOCTYPE html>                                                                                     "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 1,
+      "expectedBytes": "<html lang=\"en\">                                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 2,
+      "expectedBytes": "<head>                                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 3,
+      "expectedBytes": "<meta charset=\"utf-8\">                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 4,
+      "expectedBytes": "<title>HTML Table Layout</title>                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 5,
+      "expectedBytes": "</head>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 6,
+      "expectedBytes": "<body style=\"margin:0px;\">                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 7,
+      "expectedBytes": "<table  align=\"center\" frame=\"box\" style=\"width:70%; font:12px Segoe UI,sans-serif;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 8,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 9,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 10,
+      "expectedBytes": "<h3>Statement for Account Number: 00000000050         </h3>                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 11,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 12,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 13,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 14,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#FFAF33;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 15,
+      "expectedBytes": "<p style=\"font-size:16px\">Bank of XYZ</p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 16,
+      "expectedBytes": "<p>410 Terry Ave N</p>                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 17,
+      "expectedBytes": "<p>Seattle WA 99999</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 18,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 19,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 20,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 21,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 22,
+      "expectedBytes": "<p style=\"font-size:16px\">Aniya Alba Von  </p>                                                      "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 23,
+      "expectedBytes": "<p>1588 Nienow Cape  </p>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 24,
+      "expectedBytes": "<p>Suite 187  </p>                                                                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 25,
+      "expectedBytes": "<p>New OR USA 04257  </p>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 26,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 27,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 28,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 29,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 30,
+      "expectedBytes": "<p style=\"font-size:16px\">Basic Details</p>                                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 31,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 32,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 33,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 34,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 35,
+      "expectedBytes": "<p>Account ID         : 00000000050         </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 36,
+      "expectedBytes": "<p>Current Balance    : 000000492.00 </p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 37,
+      "expectedBytes": "<p>FICO Score         : 623                 </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 38,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 39,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 40,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 41,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 42,
+      "expectedBytes": "<p style=\"font-size:16px\">Transaction Summary</p>                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 43,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 44,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 45,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 46,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 47,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran ID</p>                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 48,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 49,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 50,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran Details</p>                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 51,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 52,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 53,
+      "expectedBytes": "<p style=\"font-size:16px\">Amount</p>                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 54,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 55,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 56,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 57,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 58,
+      "expectedBytes": "<p>TRAN000000000001</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 59,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 60,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 61,
+      "expectedBytes": "<p>Open read L746, stored by loop pass 1            </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 62,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 63,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 64,
+      "expectedBytes": "<p>      250.00 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 65,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 66,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 67,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 68,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 69,
+      "expectedBytes": "<p>TRAN000000000002</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 70,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 71,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 72,
+      "expectedBytes": "<p>Loop read L835 00 arm, stored by pass 2          </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 73,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 74,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 75,
+      "expectedBytes": "<p>       75.50-</p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 76,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 77,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 78,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 79,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 80,
+      "expectedBytes": "<p>TRAN000000000003</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 81,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 82,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 83,
+      "expectedBytes": "<p>Loop read L835 00 arm, stored by pass 3          </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 84,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 85,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 86,
+      "expectedBytes": "<p>     1000.25 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 87,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 88,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 89,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 90,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 91,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 92,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 93,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 94,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 95,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 96,
+      "expectedBytes": "</html>                                                                                             "
+    }
+  ],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
@@ -680,6 +1276,18 @@
     {
       "dataset": "HTMLFILE",
       "channel": "WRITES",
+      "rowCount": 97,
+      "recordLength": 100
+    },
+    {
+      "dataset": "STMTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 22,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "FINAL_STATE",
       "rowCount": 97,
       "recordLength": 100
     }

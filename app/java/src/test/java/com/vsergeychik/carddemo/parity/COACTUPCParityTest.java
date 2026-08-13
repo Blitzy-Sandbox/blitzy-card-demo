@@ -24,9 +24,11 @@ import com.vsergeychik.carddemo.account.dto.AccountUpdateResponse;
 import com.vsergeychik.carddemo.account.model.AccountRecord;
 import com.vsergeychik.carddemo.card.CardRepository;
 import com.vsergeychik.carddemo.card.CardXrefRepository;
+import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
@@ -34,6 +36,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
@@ -50,7 +53,9 @@ import com.vsergeychik.carddemo.parity.ParityCase.EmittedMessage;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedDataset;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedRecord;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedResponse;
+import com.vsergeychik.carddemo.parity.ParityCase.ForcedOutcome;
 import com.vsergeychik.carddemo.parity.ParityCase.MessageChannel;
+import com.vsergeychik.carddemo.parity.ParityCase.RepositoryOperation;
 import com.vsergeychik.carddemo.parity.ParityCase.ScreenRequest;
 import com.vsergeychik.carddemo.parity.ParityCase.ScreenSend;
 import com.vsergeychik.carddemo.parity.ParityCase.Termination;
@@ -75,6 +80,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 import javax.sql.DataSource;
@@ -363,6 +369,19 @@ class COACTUPCParityTest {
     private static final String CUSTDAT = CustomerRepository.CICS_FILE_NAME;
 
     /**
+     * The {@code CARDDAT} binding key, as {@code app/csd/CARDDEMO.CSD} names the file.
+     *
+     * <p>COACTUPC reads no card record - {@code LIT-CARDFILENAME} appears in its declarations and in no
+     * {@code EXEC CICS} verb - so this dataset is only ever seeded and observed, never read. That is worth
+     * a case declaring anyway: "the card file is as it was" is an assertion, and one a translation that
+     * added a read would fail.
+     */
+    private static final String CARDDAT = CardRepository.BASE_DD_NAME;
+
+    /** The {@code CXACAIX} alternate-index path over {@code CCXREF}, read by {@code 9200}. */
+    private static final String CXACAIX = CardXrefRepository.ALTERNATE_INDEX_DD_NAME;
+
+    /**
      * {@code EIBCALEN} on a cold start - the left arm of the {@code :880} guard. CICS passes no
      * communication area, so {@code INITIALIZE CARDDEMO-COMMAREA WS-THIS-PROGCOMMAREA} runs at
      * {@code :883-884}.
@@ -548,6 +567,27 @@ class COACTUPCParityTest {
     /** {@code WS-EDIT-VARIABLE-NAME} as {@code :1478} moves it before the open-date edit. */
     private static final String EDIT_FIELD_NAME = "Open Date";
 
+    /**
+     * The commarea key under which a case declares the program's own carried area.
+     *
+     * <p>{@code DFHCOMMAREA} carries two things end to end: the sixteen {@code CDEMO-} items of
+     * {@code CARDDEMO-COMMAREA}, which every online program shares, and then this program's own
+     * {@code WS-THIS-PROGCOMMAREA} - the change action followed by {@code ACUP-OLD-DETAILS} and
+     * {@code ACUP-NEW-DETAILS}, declared at {@code app/cbl/COACTUPC.cbl:652-849}. {@code :890-892} moves
+     * the second part in whole on a warm turn, which is why a case declares it as one image under one key
+     * rather than as four hundred and thirty-six separate entries per group.
+     */
+    private static final String PROGRAM_AREA_KEY = "WS-THIS-PROGCOMMAREA";
+
+    /**
+     * The linkage name under which a case declares the inbound {@code WS-RETURN-MSG}.
+     *
+     * <p>Declared {@code PIC X(75)} at {@code app/cbl/COACTUPC.cbl:479}. It is an <em>input</em> to
+     * {@code 9600-WRITE-PROCESSING} as well as an output, because the paragraph's first act at
+     * {@code :3891} is to test whether an earlier edit already put a message there.
+     */
+    private static final String LINKAGE_RETURN_MSG = "WS-RETURN-MSG";
+
     // =================================================================================================
     // THE GATE. Twenty cases, each judged field by field, each required to diff to zero.
     // =================================================================================================
@@ -563,9 +603,9 @@ class COACTUPCParityTest {
      * @return the twenty scenarios this program owns; never {@code null}
      */
     private static List<ParityScenario> cases() {
-        List<ParityScenario> scenarios = List.of(case01(), case02(), case03(), case04(), case05(),
-                case06(), case07(), case08(), case09(), case10(), case11(), case12(), case13(),
-                case14(), case15(), case16(), case17(), case18(), case19(), case20());
+        List<ParityScenario> scenarios = ParityHarness.casesOf(PROGRAM).stream()
+                .map(COACTUPCParityTest::bind)
+                .toList();
         if (scenarios.size() != ParityHarness.CASES_PER_PROGRAM) {
             throw new IllegalStateException("The parity gate for " + PROGRAM + " requires exactly "
                     + ParityHarness.CASES_PER_PROGRAM + " cases, named case01 through case"
@@ -584,6 +624,364 @@ class COACTUPCParityTest {
             }
         }
         return scenarios;
+    }
+
+    /**
+     * Binds one loaded case to the adapter that reaches the unit the case declares.
+     *
+     * <p>The dispatch is on {@link ParityCase#unitKind()} - the case's own declaration - and never on its
+     * identifier. Everything the adapters need beyond the seed comes from the case too: the account key
+     * from the received {@code ACCTSIDI} or the carried {@code CDEMO-ACCT-ID}, the conversation from the
+     * commarea, and both detail groups from the {@code WS-THIS-PROGCOMMAREA} image, decoded at the offsets
+     * {@code app/cbl/COACTUPC.cbl:652-849} declares through the production
+     * {@link AccountUpdateRequest.CommArea#decode} rather than a second reading of the same copybook.
+     *
+     * @param parityCase one of the twenty loaded cases
+     * @return that case bound to its adapter
+     * @throws IllegalStateException if the case declares a unit kind this program has no unit for
+     */
+    private static ParityScenario bind(ParityCase parityCase) {
+        return switch (parityCase.unitKind()) {
+            case SERVICE -> new ParityScenario(parityCase, UnitKind.SERVICE,
+                    COACTUPCParityTest::serviceUnit, "AccountUpdateService.writeProcessing");
+            case CONTROLLER_POJO -> new ParityScenario(parityCase, UnitKind.CONTROLLER_POJO,
+                    COACTUPCParityTest::controllerUnit, "AccountUpdateController.updateAccount");
+            case BATCH_JOB, COMPONENT -> throw new IllegalStateException("Case " + PROGRAM + '/'
+                    + parityCase.caseId() + " declares unitKind " + parityCase.unitKind()
+                    + ", which COACTUPC has no unit for: it is a CICS online program, so its units are "
+                    + "AccountUpdateController (CONTROLLER_POJO) and AccountUpdateService (SERVICE).");
+        };
+    }
+
+    /**
+     * Reaches {@code 9600-WRITE-PROCESSING} with the two detail groups the case declares.
+     *
+     * <p>{@code ACUP-OLD-DETAILS} is the snapshot the screen was painted from and
+     * {@code ACUP-NEW-DETAILS} is what the operator left on it; both live in
+     * {@code WS-THIS-PROGCOMMAREA}, which {@code :890-892} moves in from {@code DFHCOMMAREA} whole, so a
+     * case that declares a warm turn declares both groups and this adapter decodes rather than invents
+     * them.
+     *
+     * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
+     * @return the recorded outcome; never {@code null}
+     */
+    private static UnitOutcome serviceUnit(Invocation invocation) {
+        AccountUpdateRequest.CommArea area = programAreaOf(invocation);
+        requireReceivedFieldsMatch(invocation, area.newDetails());
+        return serviceUnit(invocation,
+                detailsOf(DetailGroup.OLD, area.oldDetails()),
+                detailsOf(DetailGroup.NEW, area.newDetails()));
+    }
+
+    /**
+     * Requires the case's received {@code xxxI} items to agree with the {@code ACUP-NEW-DETAILS} it
+     * declares, and runs the five {@code COMPUTE} seams to establish the five monetary ones.
+     *
+     * <p>A case states the same values twice on purpose, because the program holds them twice: what the
+     * operator keyed arrives in {@code CACTUPAI} and {@code 1200-EDIT-MAP-INPUTS} moves each item into its
+     * {@code ACUP-NEW-} counterpart before {@code 9600-WRITE-PROCESSING} is reached. Stating both is what
+     * keeps a case readable at both levels - what was typed, and what the carried area therefore holds -
+     * and this check is what stops the two drifting into a case exercising an area no operator could have
+     * produced.
+     *
+     * <p>The five monetary items are the reason this check exists rather than being a formality. Each is
+     * the subject of one of the program's five - and only five - {@code COMPUTE} statements, at
+     * {@code :1079-1080}, {@code :1093-1094}, {@code :1107-1108}, {@code :1121-1122} and
+     * {@code :1135-1136}, every one of them {@code FUNCTION NUMVAL-C} of fifteen bytes of screen text
+     * stored into a {@code PIC S9(10)V99} receiver with no {@code ROUNDED} anywhere. Running the
+     * production seam here and requiring its result to equal the case's independently written twelve-byte
+     * image is what makes gates <strong>G23</strong>, <strong>G24</strong> and <strong>G28</strong> live:
+     * a seam that rounded instead of truncating would produce a different final digit from the one the
+     * case declares, and this check - not a downstream diff - would name the receiver.
+     *
+     * <p>An item the case does not declare is skipped rather than defaulted. The three date groups and the
+     * two phone groups are checked through the same composition seams the program uses, so a case that
+     * declared a date the composition could not produce fails here too.
+     *
+     * @param invocation the invocation, for the case's received map fields and code page
+     * @param newDetails the {@code ACUP-NEW-DETAILS} the declared area decoded to
+     * @throws IllegalStateException if a declared field and the declared area disagree
+     */
+    private static void requireReceivedFieldsMatch(Invocation invocation,
+                                                   AccountUpdateRequest.Details newDetails) {
+        Map<String, String> received = invocation.mapFields();
+        if (received.isEmpty()) {
+            return;
+        }
+        FixedWidthCodec codec = invocation.codec();
+        AccountUpdateRequest.AcctSnapshot acct = newDetails.acct();
+        AccountUpdateRequest.CustSnapshot cust = newDetails.cust();
+
+        requireField(invocation, "ACCTSIDI", acct.acctIdX());
+        requireField(invocation, "ACSTTUSI", acct.activeStatus());
+        requireField(invocation, "AADDGRPI", acct.groupId());
+        requireField(invocation, "ACSTNUMI", cust.custIdX());
+        requireField(invocation, "ACSFNAMI", cust.firstName());
+        requireField(invocation, "ACSMNAMI", cust.middleName());
+        requireField(invocation, "ACSLNAMI", cust.lastName());
+        requireField(invocation, "ACSADL1I", cust.addrLine1());
+        requireField(invocation, "ACSADL2I", cust.addrLine2());
+        requireField(invocation, "ACSCITYI", cust.addrLine3());
+        requireField(invocation, "ACSSTTEI", cust.addrStateCd());
+        requireField(invocation, "ACSCTRYI", cust.addrCountryCd());
+        requireField(invocation, "ACSZIPCI", cust.addrZip());
+        requireField(invocation, "ACSGOVTI", cust.govtIssuedId());
+        requireField(invocation, "ACSEFTCI", cust.eftAccountId());
+        requireField(invocation, "ACSPFLGI", cust.priHolderInd());
+        requireField(invocation, "ACSTFCOI", cust.ficoScoreX());
+
+        requireParts(invocation, cust.ssnX(), "ACUP-NEW-CUST-SSN-X",
+                List.of("ACTSSN1I", "ACTSSN2I", "ACTSSN3I"), List.of(3, 2, 4), List.of(0, 3, 5));
+        requireParts(invocation, acct.openDate(), "ACUP-NEW-OPEN-DATE",
+                List.of("OPNYEARI", "OPNMONI", "OPNDAYI"), List.of(4, 2, 2), List.of(0, 4, 6));
+        requireParts(invocation, acct.expiraionDate(), "ACUP-NEW-EXPIRAION-DATE",
+                List.of("EXPYEARI", "EXPMONI", "EXPDAYI"), List.of(4, 2, 2), List.of(0, 4, 6));
+        requireParts(invocation, acct.reissueDate(), "ACUP-NEW-REISSUE-DATE",
+                List.of("RISYEARI", "RISMONI", "RISDAYI"), List.of(4, 2, 2), List.of(0, 4, 6));
+        requireParts(invocation, cust.dobYyyyMmDd(), "ACUP-NEW-CUST-DOB-YYYY-MM-DD",
+                List.of("DOBYEARI", "DOBMONI", "DOBDAYI"), List.of(4, 2, 2), List.of(0, 4, 6));
+        requireParts(invocation, cust.phoneNum1(), "ACUP-NEW-CUST-PHONE-NUM-1-X",
+                List.of("ACSPH1AI", "ACSPH1BI", "ACSPH1CI"), List.of(3, 3, 4), List.of(1, 5, 9));
+        requireParts(invocation, cust.phoneNum2(), "ACUP-NEW-CUST-PHONE-NUM-2-X",
+                List.of("ACSPH2AI", "ACSPH2BI", "ACSPH2CI"), List.of(3, 3, 4), List.of(1, 5, 9));
+
+        requireComputed(invocation, "ACRDLIMI", acct.creditLimit(),
+                AccountUpdateService.computeCreditLimit(received.get("ACRDLIMI"), null, codec));
+        requireComputed(invocation, "ACSHLIMI", acct.cashCreditLimit(),
+                AccountUpdateService.computeCashCreditLimit(received.get("ACSHLIMI"), null, codec));
+        requireComputed(invocation, "ACURBALI", acct.currBal(),
+                AccountUpdateService.computeCurrBal(received.get("ACURBALI"), null, codec));
+        requireComputed(invocation, "ACRCYCRI", acct.currCycCredit(),
+                AccountUpdateService.computeCurrCycCredit(received.get("ACRCYCRI"), null, codec));
+        requireComputed(invocation, "ACRCYDBI", acct.currCycDebit(),
+                AccountUpdateService.computeCurrCycDebit(received.get("ACRCYDBI"), null, codec));
+    }
+
+    /**
+     * Requires one received {@code xxxI} item to equal the carried item {@code 1100-RECEIVE-MAP} moves it
+     * into.
+     *
+     * <p>Every one of the seventeen pairs is written the same way in the source - the guard at
+     * {@code :1051}, {@code :1064}, {@code :1145} and thirty more sites is
+     * {@code IF <field> = '*' OR = SPACES MOVE LOW-VALUES ELSE MOVE <field>} - and the two arms are both
+     * modelled here, because a case that supplied a blank field and declared spaces rather than
+     * {@code LOW-VALUES} would be describing a state {@code INITIALIZE ACUP-NEW-DETAILS} plus that
+     * {@code MOVE} cannot produce.
+     *
+     * <p>The value is not trimmed. Each of these {@code MOVE}s is width-for-width - the symbolic map's
+     * {@code xxxI} item and its {@code ACUP-NEW-} counterpart carry the same {@code PICTURE} - so
+     * comparing the declared characters at the declared width is comparing what the program compares.
+     *
+     * @param invocation the invocation, for the case's received fields and a message that names the case
+     * @param field      the symbolic-map input item
+     * @param carried    the carried item the area declares
+     */
+    private static void requireField(Invocation invocation, String field, String carried) {
+        String typed = invocation.mapFields().get(field);
+        if (typed == null) {
+            return;
+        }
+        String expected = stagedImage(typed, carried.length());
+        if (!expected.equals(carried)) {
+            throw new IllegalStateException("Case " + invocation.program() + '/' + invocation.caseId()
+                    + " declares " + field + " and the ACUP-NEW item it is moved into, and the two "
+                    + "disagree at width " + carried.length() + ". The MOVE in 1100-RECEIVE-MAP is "
+                    + "width-for-width and its blank arm moves LOW-VALUES rather than spaces, so an area "
+                    + "that holds neither is an area no operator could have produced.");
+        }
+    }
+
+    /**
+     * Requires each part of a grouped carried item to equal the field it is moved from.
+     *
+     * <p>The five grouped items - the three dates, the social security number and the two phone numbers -
+     * are each a {@code REDEFINES} over a wider {@code PIC X} item whose parts are moved
+     * <em>independently</em>, one guarded {@code MOVE} per part. Comparing the group as a whole would
+     * therefore be wrong for the phone numbers, whose {@code FILLER X(1)} separators at
+     * {@code app/cbl/COACTUPC.cbl:813-819} are moved by nothing at all and hold whatever the area held.
+     * Comparing part by part at the part's own offset is what the copybook describes.
+     *
+     * @param invocation the invocation, for the case's received fields
+     * @param carried    the whole carried item the area declares
+     * @param cobolName  the carried item's COBOL name, for the message
+     * @param fields     the symbolic-map input items, in part order
+     * @param widths     each part's declared width, in the same order
+     * @param offsets    each part's offset within the carried item, in the same order
+     */
+    private static void requireParts(Invocation invocation, String carried, String cobolName,
+                                     List<String> fields, List<Integer> widths,
+                                     List<Integer> offsets) {
+        for (int part = 0; part < fields.size(); part++) {
+            String typed = invocation.mapFields().get(fields.get(part));
+            if (typed == null) {
+                continue;
+            }
+            int offset = offsets.get(part);
+            int width = widths.get(part);
+            String declared = carried.substring(offset, offset + width);
+            String expected = stagedImage(typed, width);
+            if (!expected.equals(declared)) {
+                throw new IllegalStateException("Case " + invocation.program() + '/'
+                        + invocation.caseId() + " declares " + fields.get(part) + " and the "
+                        + cobolName + " part at offset " + offset + " it is moved into, and the two "
+                        + "disagree. Each part of a grouped item is moved by its own guarded MOVE, so a "
+                        + "part that does not hold what the screen supplied is a state the program cannot "
+                        + "be in.");
+            }
+        }
+    }
+
+    /**
+     * What one guarded {@code MOVE} leaves in a carried item.
+     *
+     * @param typed the characters the screen supplied
+     * @param width the carried item's declared width
+     * @return {@code LOW-VALUES} at that width when the field is the not-supplied marker or blank, and the
+     *         value at that width otherwise
+     */
+    private static String stagedImage(String typed, int width) {
+        boolean notSupplied = AccountUpdateService.NOT_SUPPLIED_MARKER.equals(typed.trim())
+                || typed.isBlank();
+        return notSupplied ? "\u0000".repeat(width) : picX(typed, width);
+    }
+
+    /**
+     * Requires one of the five {@code COMPUTE} receivers to hold what its seam produces from the screen.
+     *
+     * <p>The seam is run, its {@link AccountUpdateService.MonetaryEdit#value()} is rendered at the
+     * receiver's declared {@code PIC S9(10)V99} width through the same codec the case's code page names,
+     * and the result must equal the twelve bytes the case wrote independently. This is the one check in
+     * the class that can distinguish truncation from rounding.
+     *
+     * @param invocation the invocation, for a message that names the case
+     * @param field      the symbolic-map input item the seam parsed
+     * @param carried    the twelve-byte receiver image the area declares
+     * @param edit       what the seam produced
+     */
+    private static void requireComputed(Invocation invocation, String field, String carried,
+                                        AccountUpdateService.MonetaryEdit edit) {
+        if (invocation.mapFields().get(field) == null) {
+            return;
+        }
+        String rendered = invocation.codec().encodeSignedScaled(edit.value(),
+                AccountUpdateService.MONETARY_INTEGER_DIGITS, CobolDecimal.MONETARY_SCALE);
+        if (!rendered.equals(carried)) {
+            throw new IllegalStateException("Case " + invocation.program() + '/' + invocation.caseId()
+                    + " declares " + field + " and the twelve bytes of " + edit.cobolReceiver()
+                    + " it computes to, and the two disagree. FUNCTION NUMVAL-C of the screen text stored "
+                    + "into PIC S9(10)V99 truncates - ROUNDED appears zero times in COACTUPC and zero "
+                    + "times across all twenty-eight programs - so a receiver image that does not match "
+                    + "means either the case or the rounding mode is wrong (gates G23, G24, G28).");
+        }
+    }
+
+    /**
+     * A {@code PIC X(n)} image: the value space-padded on the right, or truncated on the right if longer.
+     *
+     * <p>Both directions are COBOL's own for an alphanumeric {@code MOVE} - pad right, truncate right -
+     * so a comparison built on this helper reports a width mismatch the same way the program would.
+     *
+     * @param value  the characters, or {@code null} for none
+     * @param length the declared width
+     * @return the image, exactly {@code length} characters
+     */
+    private static String picX(String value, int length) {
+        String source = value == null ? "" : value;
+        return source.length() >= length ? source.substring(0, length)
+                : source + " ".repeat(length - source.length());
+    }
+
+    /**
+     * Projects one decoded detail group onto the shape {@code 9600-WRITE-PROCESSING} takes.
+     *
+     * <p>Two representations of one copybook group: {@link AccountUpdateRequest.Details} is its
+     * fixed-width form, addressed by offset, and {@link AccountUpdateDetails} is the typed form the
+     * service reads. The projection is field for field with no interpretation - every numeric value comes
+     * from the snapshot's own {@code REDEFINES} accessor, so the {@code PIC 9} views the COBOL uses are
+     * the views used here, and the three date items are split by their own year, month and day accessors
+     * rather than by arithmetic on a string.
+     *
+     * @param group   which of the two groups this is
+     * @param details the decoded group
+     * @return the typed group the service takes
+     */
+    private static AccountUpdateDetails detailsOf(DetailGroup group,
+                                                  AccountUpdateRequest.Details details) {
+        AccountUpdateRequest.AcctSnapshot acct = details.acct();
+        AccountUpdateRequest.CustSnapshot cust = details.cust();
+        return new AccountUpdateDetails(group,
+                new AccountData(acct.acctId(), acct.activeStatus(), acct.currBalN(),
+                        acct.creditLimitN(), acct.cashCreditLimitN(),
+                        acct.openYear(), acct.openMon(), acct.openDay(),
+                        acct.expYear(), acct.expMon(), acct.expDay(),
+                        acct.reissueYear(), acct.reissueMon(), acct.reissueDay(),
+                        acct.currCycCreditN(), acct.currCycDebitN(), acct.groupId()),
+                new CustomerData((int) cust.custId(), cust.firstName(), cust.middleName(),
+                        cust.lastName(), cust.addrLine1(), cust.addrLine2(), cust.addrLine3(),
+                        cust.addrStateCd(), cust.addrCountryCd(), cust.addrZip(), cust.phoneNum1(),
+                        cust.phoneNum2(), (int) cust.ssn(), cust.govtIssuedId(), cust.dobYear(),
+                        cust.dobMon(), cust.dobDay(), cust.eftAccountId(), cust.priHolderInd(),
+                        cust.ficoScore()));
+    }
+
+    /**
+     * Reaches the controller with the account key and the conversation the case declares.
+     *
+     * @param invocation the seeded datasets, the AID, the commarea, the received fields, the pinned clock
+     *                   and the recorder
+     * @return the recorded outcome; never {@code null}
+     */
+    private static UnitOutcome controllerUnit(Invocation invocation) {
+        return controllerUnit(invocation, accountKeyOf(invocation),
+                invocation.eibcalen() == 0 ? null : navigationContextFrom(invocation.commarea()));
+    }
+
+    /**
+     * Decodes the {@code WS-THIS-PROGCOMMAREA} image the case declares.
+     *
+     * <p>Absent, the area is what {@code INITIALIZE WS-THIS-PROGCOMMAREA} at {@code :884} leaves: the
+     * change action at {@code LOW-VALUES} and both detail groups at their initialised state. That is the
+     * cold-start shape and a legitimate thing for a case to declare by omission, because {@code EIBCALEN}
+     * zero is how CICS reports it.
+     *
+     * @param invocation the invocation, for the case's commarea and code page
+     * @return the decoded area; never {@code null}
+     * @throws IllegalStateException if the declared image is not exactly the area's declared width
+     */
+    private static AccountUpdateRequest.CommArea programAreaOf(Invocation invocation) {
+        String image = invocation.commarea().get(PROGRAM_AREA_KEY);
+        if (image == null) {
+            return AccountUpdateRequest.CommArea.initialised();
+        }
+        if (image.length() != AccountUpdateRequest.CommArea.RECORD_LENGTH) {
+            throw new IllegalStateException("Case " + invocation.program() + '/' + invocation.caseId()
+                    + " declares a " + PROGRAM_AREA_KEY + " image of " + image.length()
+                    + " characters where WS-THIS-PROGCOMMAREA is "
+                    + AccountUpdateRequest.CommArea.RECORD_LENGTH + " bytes - the change action followed "
+                    + "by ACUP-OLD-DETAILS and ACUP-NEW-DETAILS, at app/cbl/COACTUPC.cbl:652-849. A short "
+                    + "image would decode into a state the program cannot be in.");
+        }
+        return AccountUpdateRequest.CommArea.decode(image.getBytes(invocation.charset()),
+                invocation.codec());
+    }
+
+    /**
+     * The account key the URI carries, taken from the case.
+     *
+     * <p>Order of preference mirrors where the program reads the key from: what the operator typed
+     * ({@code ACCTSIDI}), then what the conversation carried ({@code CDEMO-ACCT-ID}), then spaces - the
+     * cold-start state in which {@code 1210-EDIT-ACCOUNT} prompts for it.
+     *
+     * @param invocation the invocation
+     * @return the eleven-character key, never {@code null}
+     */
+    private static String accountKeyOf(Invocation invocation) {
+        String typed = invocation.mapFields().get("ACCTSIDI");
+        if (typed != null) {
+            return typed;
+        }
+        String carried = invocation.commarea().get("CDEMO-ACCT-ID");
+        return carried == null ? " ".repeat(AccountUpdateRequest.ACCTSID_LENGTH) : carried;
     }
 
     /**
@@ -622,11 +1020,10 @@ class COACTUPCParityTest {
     /**
      * This class's stem, the program name and the harness's resource convention agree.
      *
-     * <p>The twenty cases are declared in code rather than loaded from
-     * {@code src/test/resources/parity/COACTUPC/}, which the harness supports equally - it validates
-     * either through the same {@link ParityCase} constructor. The convention is still asserted, because
-     * the identifiers a case carries are the file-name stems that directory would use, and the two must
-     * not drift apart.
+     * <p>The twenty cases are loaded from {@code src/test/resources/parity/COACTUPC/} by
+     * {@link ParityHarness#casesOf}, so the identifiers a case carries are the file-name stems of the
+     * files that were read. The convention is asserted anyway: it is what makes a missing or misnamed
+     * file a load failure rather than a silently shorter gate.
      */
     @Test
     @DisplayName("the class stem, the program name and the parity/COACTUPC convention agree")
@@ -1872,7 +2269,7 @@ class COACTUPCParityTest {
                 new AccountUpdateService(unreachableAccountRepository(),
                         unreachableCustomerRepository(), unitOfWork("structural")),
                 new AccountDateValidator(CODEC, new DateUtilityJob(), clock),
-                new AreaCodeLookup(CODEC), clock);
+                new AreaCodeLookup(CODEC), clock, FIXTURE_CHARSET);
 
         AccountUpdateRequest request = AccountUpdateRequest.initial()
                 .withCommArea(AccountUpdateRequest.CommArea.initialised()
@@ -1917,7 +2314,7 @@ class COACTUPCParityTest {
                 new AccountUpdateService(unreachableAccountRepository(),
                         unreachableCustomerRepository(), unitOfWork("structural")),
                 new AccountDateValidator(CODEC, new DateUtilityJob(), clock),
-                new AreaCodeLookup(CODEC), clock);
+                new AreaCodeLookup(CODEC), clock, FIXTURE_CHARSET);
 
         NavigationContext context = NavigationContext.empty()
                 .withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM).withPgmReenter();
@@ -1944,829 +2341,9 @@ class COACTUPCParityTest {
     // case15-case20 drive AccountUpdateController (the screen-shaped paths).
     // =================================================================================================
 
-    /**
-     * {@code case01} - the clean check, asserted as both complete record images. {@code SERVICE}.
-     *
-     * <p>The snapshot the screen was painted from agrees with both records read back under their locks in
-     * all thirty-five compared items, so {@code :4141} and {@code :4189} both take {@code CONTINUE} and
-     * the two rewrites proceed. This is the strongest assertion in the class: declaring
-     * {@code expectedBytes} for both datasets makes the differ compare every addressable span of both
-     * layouts, {@code FILLER} included, so the case fails if a reserved span is dropped, shortened, or
-     * filled with anything other than spaces (gates <strong>G19</strong> and <strong>G21</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case01() {
-        return serviceScenario("case01",
-                "9700-CHECK-CHANGE-IN-REC finds no change in either block at "
-                        + "app/cbl/COACTUPC.cbl:4115-4192, so both rewrites proceed. Asserted as the "
-                        + "complete 300-byte and 500-byte images so that FILLER X(178) and FILLER X(100) "
-                        + "are compared too.",
-                UnaryOperator.identity(), UnaryOperator.identity(),
-                newAccountData(), newCustomerData(),
-                List.of(accountWrite(fullNewAccountImage()), customerWrite(fullNewCustomerImage())),
-                clearReturnMessage());
-    }
-
-    /**
-     * {@code case02} - one compared item changed underneath. {@code SERVICE}.
-     *
-     * <p>The snapshot's {@code ACUP-OLD-CURR-BAL-N} holds {@code 999.99} where {@code ACCTDAT} holds
-     * {@code 194.00}. The second operand of the {@code AND} chain at {@code :4117} is false, so the
-     * {@code ELSE} arm runs: {@code :4143} sets {@code DATA-WAS-CHANGED-BEFORE-UPDATE} and {@code :4144}
-     * leaves through {@code GO TO 9600-WRITE-PROCESSING-EXIT} without rewriting either record. Both
-     * datasets must be untouched - the customer record is never written even though its own block was
-     * never even evaluated.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case02() {
-        return serviceScenario("case02",
-                "One compared item differs - the snapshot balance is 999.99 where ACCTDAT holds 194.00 - "
-                        + "so 9700 sets DATA-WAS-CHANGED-BEFORE-UPDATE at :4143 and the GO TO at :4144 "
-                        + "abandons both rewrites.",
-                stale -> withCurrBal(stale, new BigDecimal("999.99")), UnaryOperator.identity(),
-                newAccountData(), newCustomerData(),
-                List.of(), returnMessage(AccountUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
-    }
-
-    /**
-     * {@code case03} - three compared items changed at once. {@code SERVICE}.
-     *
-     * <p>Active status, credit limit and expiry year all differ. The {@code AND} chain short-circuits at
-     * the first false operand - {@code ACCT-ACTIVE-STATUS} at {@code :4115} - but the outcome is
-     * identical to {@code case02}'s, because the {@code ELSE} arm is a single unconditional
-     * {@code SET} and {@code GO TO} rather than a per-field repair. That equivalence is the point: a
-     * translation that reported which items differed <em>through the return message</em> would diverge
-     * here, because the message is one literal for every combination.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case03() {
-        return serviceScenario("case03",
-                "Three compared items differ at once - active status, credit limit and expiry year. The "
-                        + "AND chain short-circuits at :4115 but the ELSE arm at :4142-4145 is one "
-                        + "unconditional SET and GO TO, so the outcome matches the single-item case "
-                        + "exactly.",
-                stale -> withExpiryYear(withCreditLimit(withStatus(stale, "N"),
-                        new BigDecimal("1.00")), "1999"),
-                UnaryOperator.identity(), newAccountData(), newCustomerData(),
-                List.of(), returnMessage(AccountUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
-    }
-
-    /**
-     * {@code case04} - the {@code FILLER}-adjacent compared item changed. {@code SERVICE}.
-     *
-     * <p>{@code ACCT-GROUP-ID} occupies offset 112 for ten bytes and {@code FILLER X(178)} begins at 122,
-     * so it is the last compared item in the stored layout and the one an off-by-one would miss.
-     * Perturbing only that span proves the comparison reads offset 112 and not 102 or 122: at 102 it
-     * would read {@code ACCT-ADDR-ZIP}, which {@code 9700} does not compare at all, and at 122 the first
-     * reserved space, which is identical between the snapshot and the record - so either way the check
-     * would wrongly pass and the rewrite would go ahead.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case04() {
-        return serviceScenario("case04",
-                "Only ACCT-GROUP-ID differs. It is the ten bytes at offset 112, immediately before "
-                        + "FILLER X(178) at 122 and immediately after the uncompared ACCT-ADDR-ZIP at "
-                        + "102, so a comparison reading either neighbouring span would find no "
-                        + "difference and wrongly allow the rewrite.",
-                stale -> withGroupId(stale, "PREMIUM"), UnaryOperator.identity(),
-                newAccountData(), newCustomerData(),
-                List.of(), returnMessage(AccountUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
-    }
-
-    /**
-     * {@code case05} - a block-two item changed with block one clean. {@code SERVICE}.
-     *
-     * <p>{@code CUST-FICO-CREDIT-SCORE} at {@code :4187} is the nineteenth and last item of the customer
-     * block, and every account item matches. Block one therefore takes {@code CONTINUE} at {@code :4141}
-     * and block two is reached and fails, which is the only way to prove the blocks are evaluated in
-     * source order: a translation that evaluated them together, or the customer block first, would
-     * produce the same refusal here but would fail {@code case02}, where the account block's failure
-     * must stop the comparison before the customer record is ever compared.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case05() {
-        return serviceScenario("case05",
-                "Every account item matches and CUST-FICO-CREDIT-SCORE - the last of block two's "
-                        + "nineteen, at :4187 - does not. Block one takes CONTINUE at :4141 and block "
-                        + "two fails at :4190-4193, which is what proves the two blocks run in source "
-                        + "order.",
-                UnaryOperator.identity(), stale -> withFicoScore(stale, 811),
-                newAccountData(), newCustomerData(),
-                List.of(), returnMessage(AccountUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
-    }
-
-    /**
-     * {@code case06} - three items changed underneath that {@code 9700} does not compare. {@code SERVICE}.
-     *
-     * <p>{@code ACCT-ID}, {@code ACCT-ADDR-ZIP} and {@code CUST-ID} are all absent from the comparison:
-     * neither key appears in either block, and the account's zip sits at offset 102 <em>between</em> two
-     * compared items without being one. Changing all three underneath must leave the rewrite entirely
-     * unaffected. A translation that helpfully compared a key, or that compared the whole record image
-     * instead of the thirty-five named items, would refuse an update the COBOL accepts - and would do so
-     * silently, because the refusal looks exactly like a genuine concurrent change.
-     *
-     * <p>The written image is the same one {@code case01} produces, which is the assertion: the
-     * uncompared spans influence neither the decision nor the bytes.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case06() {
-        return serviceScenario("case06",
-                "ACCT-ID, ACCT-ADDR-ZIP and CUST-ID all differ from the record and none of them is one "
-                        + "of 9700's thirty-five compared items, so the check passes and both rewrites "
-                        + "proceed exactly as they do when nothing differs at all.",
-                stale -> withAcctId(withAddrZip(stale, "99999-0000"), 99999999999L),
-                stale -> withCustId(stale, 987654321),
-                newAccountData(), newCustomerData(),
-                List.of(accountWrite(fullNewAccountImage()), customerWrite(fullNewCustomerImage())),
-                clearReturnMessage());
-    }
-
-    /**
-     * {@code case07} - the two case-folding comparisons. {@code SERVICE}.
-     *
-     * <p>{@code :4139-4140} compares {@code ACCT-GROUP-ID} through {@code FUNCTION LOWER-CASE} on
-     * <em>both</em> operands, and {@code :4152-4153} compares {@code CUST-FIRST-NAME} through
-     * {@code FUNCTION UPPER-CASE} on both. So a snapshot whose group identifier and first name differ
-     * from the record's only in letter case is <strong>not</strong> a concurrent change, and the rewrite
-     * proceeds. Two folds in one case rather than two cases, because they are the same property
-     * asserted in the two directions the source actually uses, and because the direction is what a
-     * translation gets wrong: folding one operand only would make this case fail while {@code case01}
-     * still passed.
-     *
-     * <p>The stored group identifier is ten spaces, which folds to itself, so the group half of this case
-     * is asserted through {@link #theFoldedComparisonsFoldBothOperands()} where a non-blank stored value
-     * can be arranged; here the first name carries the case.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case07() {
-        return serviceScenario("case07",
-                "The snapshot's first name is the record's in the opposite letter case. :4152-4153 "
-                        + "applies FUNCTION UPPER-CASE to both operands, so this is not a concurrent "
-                        + "change and both rewrites proceed. Folding only one operand would pass case01 "
-                        + "and fail here.",
-                UnaryOperator.identity(), COACTUPCParityTest::foldFirstNameToUpper,
-                newAccountData(), newCustomerData(),
-                List.of(accountWrite(fullNewAccountImage()), customerWrite(fullNewCustomerImage())),
-                clearReturnMessage());
-    }
-
-    /**
-     * {@code case08} - the {@code ACCT-UPDATE-RECORD} offset defect, as a complete image. {@code SERVICE}.
-     *
-     * <p>This case exists to pin a defect, and it is the reason a whole-image assertion is used rather
-     * than a field list. {@code ACCT-UPDATE-RECORD} at {@code app/cbl/COACTUPC.cbl:418-433} carries no
-     * {@code ACCT-ADDR-ZIP} item, so its {@code ACCT-UPDATE-GROUP-ID PIC X(10)} at {@code :432} sits at
-     * offset <strong>102</strong> - where {@code app/cpy/CVACT01Y.cpy} puts {@code ACCT-ADDR-ZIP} - and
-     * its {@code FILLER X(188)} at {@code :433} covers bytes 112 to 299, which includes the real
-     * {@code ACCT-GROUP-ID}.
-     *
-     * <p>The consequence, asserted here byte for byte: after the rewrite the stored zip
-     * {@code "A000000000"} has been replaced by {@code "ZEROPCT   "} and the stored group identifier has
-     * been erased to spaces. Both the field list and the 300-byte image are declared, so the report names
-     * the two spans rather than only reporting a long image mismatch.
-     *
-     * <p>Repairing this would be a behaviour change and a parity violation. It is preserved (practice
-     * <strong>B5</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case08() {
-        Map<String, String> spans = new LinkedHashMap<>();
-        spans.put(AccountRecord.ACCT_ADDR_ZIP_NAME,
-                CODEC.movePicX(NEW_GROUP_ID, AccountRecord.ACCT_ADDR_ZIP_LENGTH));
-        spans.put(AccountRecord.ACCT_GROUP_ID_NAME, STORED_GROUP_ID);
-        return serviceScenario("case08",
-                "The rewrite writes ACUP-NEW-GROUP-ID at offset 102, over the stored ACCT-ADDR-ZIP, and "
-                        + "blanks 112 to 299 including the real ACCT-GROUP-ID. ACCT-UPDATE-RECORD at "
-                        + ":418-433 declares no zip item and a FILLER X(188) rather than X(178), which "
-                        + "is what shifts every span after the cycle amounts ten bytes early.",
-                UnaryOperator.identity(), UnaryOperator.identity(),
-                newAccountData(), newCustomerData(),
-                List.of(new ExpectedRecord(ACCTDAT, 0, Map.copyOf(spans), fullNewAccountImage()),
-                        customerWrite(fullNewCustomerImage())),
-                clearReturnMessage());
-    }
-
-    /**
-     * {@code case09} - the account lock is not taken. {@code SERVICE}.
-     *
-     * <p>{@code ACCTDAT} is seeded empty, so the {@code EXEC CICS READ ... UPDATE} at {@code :3893-3903}
-     * answers {@code NOTFND}. {@code :3908-3915} therefore sets {@code INPUT-ERROR}, sets
-     * {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} because the return message was off, and leaves through
-     * {@code GO TO 9600-WRITE-PROCESSING-EXIT}. Three properties are asserted together: the message is
-     * the account one and not the customer one, nothing is written to either dataset, and
-     * <strong>{@code CUSTDAT} is never read at all</strong> - which is why it is declared on the
-     * final-state channel holding exactly its seeded rows.
-     *
-     * <p>This is the {@code FILE STATUS} arm of gate <strong>G47</strong> at the first of the two read
-     * sites; the second site and the two rewrite sites are covered by
-     * {@link #everyFileStatusArmOfWriteProcessingIsReached()}.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case09() {
-        return serviceScenario("case09",
-                "ACCTDAT is empty, so the READ ... UPDATE at :3893-3903 answers NOTFND and :3908-3915 "
-                        + "sets COULD-NOT-LOCK-ACCT-FOR-UPDATE. The customer record is never read and "
-                        + "neither dataset is written.",
-                UnaryOperator.identity(), UnaryOperator.identity(),
-                newAccountData(), newCustomerData(),
-                List.of(), returnMessage(AccountUpdateService.MSG_COULD_NOT_LOCK_ACCT_FOR_UPDATE),
-                true, false);
-    }
-
-    /**
-     * {@code case10} - {@code COMPUTE ACUP-NEW-CREDIT-LIMIT-N} at {@code :1079-1080}. {@code SERVICE}.
-     *
-     * <p>The screen supplies {@code "$7,500.567"}. {@code FUNCTION NUMVAL-C} accepts the currency sign
-     * and the digit separator and yields {@code 7500.567}; the receiver is {@code PIC S9(10)V99}, and the
-     * keyword {@code ROUNDED} appears <strong>zero</strong> times in this program - and zero times in all
-     * twenty-eight - so the excess fraction is <em>truncated</em>. The stored credit limit is therefore
-     * {@code 7500.56}, not {@code 7500.57}.
-     *
-     * <p>The third decimal digit is deliberately {@code 7}, which is where {@link RoundingMode#DOWN} and
-     * {@code HALF_UP} disagree. A translation that rounded would write {@code 7500.57} and this case
-     * would fail on exactly one span of the image - which is the whole point of a field-level difference
-     * report (gates <strong>G24</strong> and <strong>G28</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case10() {
-        return computeScenario("case10", "ACUP-NEW-CREDIT-LIMIT-N", "1079-1080", "$7,500.567",
-                keyed -> AccountUpdateService.computeCreditLimit(keyed, null, CODEC), "7500.56",
-                COACTUPCParityTest::withCreditLimit);
-    }
-
-    /**
-     * {@code case11} - {@code COMPUTE ACUP-NEW-CASH-CREDIT-LIMIT-N} at {@code :1093-1094}. {@code SERVICE}.
-     *
-     * <p>The screen supplies {@code "1500.999"}, whose exact value cannot be stored at scale 2. Truncation
-     * gives {@code 1500.99}; rounding would give {@code 1501.00} and would change the integer part as
-     * well as the fraction, so this case additionally proves the truncation happens at the receiver's
-     * declared scale rather than at some later formatting step.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case11() {
-        return computeScenario("case11", "ACUP-NEW-CASH-CREDIT-LIMIT-N", "1093-1094", "1500.999",
-                keyed -> AccountUpdateService.computeCashCreditLimit(keyed, null, CODEC), "1500.99",
-                COACTUPCParityTest::withCashLimit);
-    }
-
-    /**
-     * {@code case12} - {@code COMPUTE ACUP-NEW-CURR-BAL-N} at {@code :1107-1108}. {@code SERVICE}.
-     *
-     * <p>One of the two sites whose {@code FUNCTION NUMVAL-C} operand is the <strong>staging copy</strong>
-     * {@code ACUP-NEW-CURR-BAL-X} rather than the map field {@code ACURBALI OF CACTUPAI}. The asymmetry is
-     * real - three sites read the map field and two read the copy - and it matters because the copy is a
-     * {@code PIC X(15)} that the preceding {@code MOVE} at {@code :1105} has already padded, so the
-     * operand is fifteen characters wide where the map field is what arrived.
-     *
-     * <p>The value is negative: {@code "-42.079"} truncates <em>toward zero</em> to {@code -42.07}, not
-     * away from it to {@code -42.08}. {@link RoundingMode#DOWN} is truncation toward zero, which is what
-     * a COBOL store without {@code ROUNDED} does; {@code FLOOR} would give {@code -42.08} and is
-     * forbidden for exactly this reason.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case12() {
-        return computeScenario("case12", "ACUP-NEW-CURR-BAL-N", "1107-1108", "-42.079",
-                keyed -> AccountUpdateService.computeCurrBal(keyed, null, CODEC), "-42.07",
-                COACTUPCParityTest::withCurrBal);
-    }
-
-    /**
-     * {@code case13} - {@code COMPUTE ACUP-NEW-CURR-CYC-CREDIT-N} at {@code :1121-1122}. {@code SERVICE}.
-     *
-     * <p>The screen supplies {@code "11.115"}, an exact half at the third decimal place. This is the
-     * case that separates {@link RoundingMode#DOWN} from {@code HALF_EVEN} as well as from
-     * {@code HALF_UP}: truncation gives {@code 11.11}, half-up gives {@code 11.12}, and half-even also
-     * gives {@code 11.12} because {@code 1} is odd. Only truncation matches the source.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case13() {
-        return computeScenario("case13", "ACUP-NEW-CURR-CYC-CREDIT-N", "1121-1122", "11.115",
-                keyed -> AccountUpdateService.computeCurrCycCredit(keyed, null, CODEC), "11.11",
-                COACTUPCParityTest::withCycCredit);
-    }
-
-    /**
-     * {@code case14} - {@code COMPUTE ACUP-NEW-CURR-CYC-DEBIT-N} at {@code :1135-1136}. {@code SERVICE}.
-     *
-     * <p>The second of the two staging-copy sites. The screen supplies {@code "22.229"}, which truncates
-     * to {@code 22.22}. Together with {@code case12} this pins both copy-reading sites, and together with
-     * {@code case10}, {@code case11} and {@code case13} every one of the five {@code COMPUTE} receivers
-     * has at least one targeted assertion on the bytes it lands in.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case14() {
-        return computeScenario("case14", "ACUP-NEW-CURR-CYC-DEBIT-N", "1135-1136", "22.229",
-                keyed -> AccountUpdateService.computeCurrCycDebit(keyed, null, CODEC), "22.22",
-                COACTUPCParityTest::withCycDebit);
-    }
-
-    /**
-     * {@code case15} - the cold start. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code EIBCALEN} is zero, so the left arm of the {@code :880-882} guard is true and
-     * {@code :883-886} initialises the communication area, sets {@code CDEMO-PGM-ENTER} and sets
-     * {@code ACUP-DETAILS-NOT-FETCHED}. The {@code EVALUATE} at {@code :919} then reaches its second arm
-     * at {@code :963-972} - {@code ACUP-DETAILS-NOT-FETCHED AND CDEMO-PGM-ENTER} - which sends the map
-     * and returns <strong>without ever performing {@code 1000-PROCESS-INPUTS}</strong>. Nothing is
-     * edited, no file is read, and no field is highlighted.
-     *
-     * <p>This is the fifty-four-field baseline every other screen case is a perturbation of, and it is
-     * the {@code OK}/{@code ENTER} corner of the highlight matrix: no colour is assigned anywhere
-     * (gate <strong>G38</strong>). Note {@code CDEMO-PGM-REENTER} on the way out, set at {@code :970}
-     * before {@code GO TO COMMON-RETURN} - the response's context is the <em>next</em> turn's, not this
-     * one's, which is what makes the conversation stateless (rule <strong>R6</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case15() {
-        return controllerScenario("case15",
-                "EIBCALEN is zero, so :883-886 initialises the commarea and the :963-972 arm sends the "
-                        + "map without performing 1000-PROCESS-INPUTS. Fifty-four fields: six header "
-                        + "literals, forty-two LOW-VALUES data fields, the information prompt, a blank "
-                        + "error line and three function-key legends. No field is highlighted.",
-                ACCT_KEY, EIBCALEN_NONE, "DFHENTER", null, Map.of(),
-                promptScreen(null, null),
-                navigationImage(NavigationContext.empty().withPgmReenter()),
-                THIS_MAPSET, THIS_MAP, null, "ACCTSIDL", Termination.RETURN_TRANSID);
-    }
-
-    /**
-     * {@code case16} - a fresh entry from the main menu. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code EIBCALEN} is the full carried length this time, so the left arm of {@code :880} is false;
-     * the right arm - {@code CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER} - is true, and
-     * the communication area is initialised anyway. The screen is therefore byte-identical to
-     * {@code case15}'s, including the discarded {@code CDEMO-FROM-PROGRAM}.
-     *
-     * <p>That identity is the assertion. A translation that read the guard as {@code EIBCALEN = 0} alone
-     * would take the {@code ELSE} arm at {@code :888-892}, keep the menu's context, and reach
-     * {@code 1000-PROCESS-INPUTS} instead - producing a different screen from the same input. Two cases
-     * for one screen is the only way to catch that, because the screen a wrong reading produces is a
-     * perfectly plausible one.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case16() {
-        return controllerScenario("case16",
-                "EIBCALEN is the full carried length and CDEMO-FROM-PROGRAM is COMEN01C with "
-                        + "CDEMO-PGM-ENTER, so the right arm of :880-882 initialises the commarea and the "
-                        + "screen is byte-identical to the cold start's. Reading the guard as EIBCALEN=0 "
-                        + "alone would keep the menu's context and paint a different screen.",
-                ACCT_KEY, EIBCALEN_FULL, "DFHENTER",
-                NavigationContext.empty().withFromTranid(MENU_TRANID).withFromProgram(MENU_PGM)
-                        .withPgmEnter(),
-                Map.of(),
-                promptScreen(null, null),
-                navigationImage(NavigationContext.empty().withPgmReenter()),
-                THIS_MAPSET, THIS_MAP, null, "ACCTSIDL", Termination.RETURN_TRANSID);
-    }
-
-    /**
-     * {@code case17} - {@code PF03} with a carried origin. {@code CONTROLLER_POJO}.
-     *
-     * <p>The {@code EVALUATE}'s first arm at {@code :925-959} is the {@code XCTL}, and it is the one path
-     * through this program that sends no map at all. {@code CDEMO-FROM-TRANID} is {@code CM00} and
-     * {@code CDEMO-FROM-PROGRAM} is {@code COMEN01C}, so neither is {@code LOW-VALUES} nor
-     * {@code SPACES} and the {@code ELSE} arms at {@code :933} and {@code :941} carry them into
-     * {@code CDEMO-TO-TRANID} and {@code CDEMO-TO-PROGRAM}. This program then names <em>itself</em> as
-     * the origin at {@code :944-945}, declares the user a regular user at {@code :947}, sets
-     * {@code CDEMO-PGM-ENTER}, records its own mapset and map as the last ones at {@code :949-950}, takes
-     * a syncpoint and transfers.
-     *
-     * <p>The observable is a {@code nextProgram} of {@code COMEN01C} with <strong>zero sends</strong> and
-     * {@link Termination#XCTL}, which is gate <strong>G40</strong>: the transfer becomes a response field
-     * the client resolves, never a server-side forward. There is no {@code nextMapset} and no
-     * {@code nextMap}, because {@code 3400-SEND-SCREEN} - the only paragraph that assigns them - is never
-     * reached.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case17() {
-        return controllerScenario("case17",
-                "PF03 with CM00/COMEN01C carried in the commarea. The :925-959 arm takes the ELSE at "
-                        + ":933 and :941, echoes the origin into CDEMO-TO-TRANID and CDEMO-TO-PROGRAM, "
-                        + "names itself as the new origin, and transfers. Zero sends and Termination.XCTL.",
-                ACCT_KEY, EIBCALEN_FULL, "DFHPF3",
-                NavigationContext.empty().withFromTranid(MENU_TRANID).withFromProgram(MENU_PGM)
-                        .withPgmReenter(),
-                Map.of(),
-                null,
-                navigationImage(NavigationContext.empty()
-                        .withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM)
-                        .withToTranid(MENU_TRANID).withToProgram(MENU_PGM)
-                        .withUserTypeUser().withPgmEnter()
-                        .withLastMap(THIS_MAP).withLastMapset(THIS_MAPSET)),
-                null, null, MENU_PGM, null, Termination.XCTL);
-    }
-
-    /**
-     * {@code case18} - {@code PF03} with no carried origin. {@code CONTROLLER_POJO}.
-     *
-     * <p>The other side of both guards in the same arm. {@code CDEMO-FROM-TRANID} and
-     * {@code CDEMO-FROM-PROGRAM} arrive as spaces, so {@code :929-932} and {@code :937-940} substitute
-     * {@code LIT-MENUTRANID} and {@code LIT-MENUPGM} - the main menu - as the transfer target. The
-     * {@code nextProgram} is the same {@code COMEN01C} {@code case17} produces, and that coincidence is
-     * exactly why both cases are needed: the two arms are indistinguishable from the target alone, and
-     * only the navigation image tells them apart. Here {@code CDEMO-TO-TRANID} is the literal
-     * {@code CM00} rather than an echo of what arrived.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case18() {
-        return controllerScenario("case18",
-                "PF03 with a blank origin. :929-932 and :937-940 substitute LIT-MENUTRANID and "
-                        + "LIT-MENUPGM, so the target is the main menu by default rather than by echo. "
-                        + "The nextProgram matches case17's, so only the navigation image distinguishes "
-                        + "the two arms.",
-                ACCT_KEY, EIBCALEN_FULL, "DFHPF3",
-                NavigationContext.empty().withPgmReenter(),
-                Map.of(),
-                null,
-                navigationImage(NavigationContext.empty()
-                        .withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM)
-                        .withToTranid(MENU_TRANID).withToProgram(MENU_PGM)
-                        .withUserTypeUser().withPgmEnter()
-                        .withLastMap(THIS_MAP).withLastMapset(THIS_MAPSET)),
-                null, null, MENU_PGM, null, Termination.XCTL);
-    }
-
-    /**
-     * {@code case19} - a re-entry with a non-numeric account filter: colour only. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code CDEMO-PGM-REENTER} sends the {@code EVALUATE} to its {@code WHEN OTHER} arm at
-     * {@code :995-1003}, which performs {@code 1000-PROCESS-INPUTS}, {@code 2000-DECIDE-ACTION} and
-     * {@code 3000-SEND-MAP} in that order. {@code 1210-EDIT-ACCOUNT} finds {@code CC-ACCT-ID} present but
-     * not numeric, so {@code :1802-1812} sets {@code INPUT-ERROR}, composes the eleven-digit message with
-     * a {@code STRING ... DELIMITED BY SIZE}, zeroes {@code CDEMO-ACCT-ID} and leaves through
-     * {@code GO TO 1210-EDIT-ACCOUNT-EXIT} <strong>without</strong> setting
-     * {@code FLG-ACCTFILTER-ISVALID}. {@code 2000-DECIDE-ACTION}'s first arm therefore finds its
-     * {@code IF FLG-ACCTFILTER-ISVALID} false at {@code :2573} and <strong>no file is read at all</strong>
-     * - which is why this case needs no seeded dataset and asserts none.
-     *
-     * <p>The screen is the {@code case15} baseline with three differences, and each is a gate:
-     * {@code ACCTSIDO} echoes what was keyed, {@code ERRMSGO} carries the message, and
-     * {@code ACCTSIDC} carries {@link BmsAttributes#DFHRED}. The {@code CSSETATY} rule is
-     * <em>colour only</em> here, because the field flag is {@code NOT-OK} rather than {@code BLANK} - so
-     * no {@code '*'} reaches {@code ACCTSIDO}, and the value the operator keyed survives to be corrected
-     * (gate <strong>G38</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case19() {
-        return controllerScenario("case19",
-                "A re-entry whose account filter is present but not numeric. :1802-1812 composes the "
-                        + "eleven-digit message and leaves without setting FLG-ACCTFILTER-ISVALID, so "
-                        + "2000-DECIDE-ACTION reads no file. The field flag is NOT-OK, so CSSETATY "
-                        + "assigns the colour item only and the keyed value survives.",
-                NON_NUMERIC_ACCT, EIBCALEN_FULL, "DFHENTER",
-                NavigationContext.empty().withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM)
-                        .withPgmReenter(),
-                Map.of("ACCTSIDI", NON_NUMERIC_ACCT),
-                promptScreen(NON_NUMERIC_ACCT, MSG_ACCT_NOT_ELEVEN_DIGITS),
-                navigationImage(NavigationContext.empty()
-                        .withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM).withPgmReenter()),
-                THIS_MAPSET, THIS_MAP, THIS_PGM, "ACCTSIDL", Termination.RETURN_TRANSID);
-    }
-
-    /**
-     * {@code case20} - a re-entry with a blank account filter: colour <em>and</em> asterisk.
-     * {@code CONTROLLER_POJO}.
-     *
-     * <p>The fourth corner of the highlight matrix, and the only one that assigns two items. The filter
-     * arrives as spaces, so {@code 1210-EDIT-ACCOUNT} takes its <em>first</em> guard at {@code :1787-1798}
-     * - {@code CC-ACCT-ID EQUAL LOW-VALUES OR CC-ACCT-ID EQUAL SPACES} - which sets
-     * {@code FLG-ACCTFILTER-BLANK} rather than merely {@code NOT-OK}, sets {@code WS-PROMPT-FOR-ACCT},
-     * zeroes both account identifiers and exits. {@code 1200-EDIT-MAP-INPUTS} then sets
-     * {@code NO-SEARCH-CRITERIA-RECEIVED} at {@code :1441-1443}, whose message is
-     * {@code "No input received"} - a different literal from {@code case19}'s, from a different guard.
-     *
-     * <p>Because the flag is {@code BLANK}, {@code CSSETATY} assigns <strong>both</strong> items:
-     * {@link BmsAttributes#DFHRED} into {@code ACCTSIDC} <em>and</em> {@code '*'} into
-     * {@code ACCTSIDO}. The asterisk is not decoration - it is what makes the empty field visible on a
-     * 3270 whose colour the operator may not have - and it means the output item no longer holds what was
-     * keyed. Nothing was keyed, so nothing is lost (gate <strong>G38</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case20() {
-        return controllerScenario("case20",
-                "A re-entry whose account filter is blank. :1787-1798 sets FLG-ACCTFILTER-BLANK and "
-                        + "1200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED at :1441-1443, whose "
-                        + "message is a different literal from the not-numeric one. The BLANK flag makes "
-                        + "CSSETATY assign both items: DFHRED into ACCTSIDC and '*' into ACCTSIDO.",
-                BLANK_ACCT, EIBCALEN_FULL, "DFHENTER",
-                NavigationContext.empty().withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM)
-                        .withPgmReenter(),
-                Map.of("ACCTSIDI", BLANK_ACCT),
-                promptScreen(FieldAttributeSetter.ASTERISK, MSG_NO_INPUT_RECEIVED),
-                navigationImage(NavigationContext.empty()
-                        .withFromTranid(THIS_TRANID).withFromProgram(THIS_PGM).withPgmReenter()),
-                THIS_MAPSET, THIS_MAP, THIS_PGM, "ACCTSIDL", Termination.RETURN_TRANSID);
-    }
-
     // =================================================================================================
     // SCENARIO BUILDERS. Each composes a ParityCase and pairs it with the adapter that reaches its unit.
     // =================================================================================================
-
-    /**
-     * Builds a {@link UnitKind#SERVICE} scenario with both datasets seeded from their real fixtures.
-     *
-     * <p>The dataset expectations are derived rather than restated: each dataset appears on the
-     * {@link DatasetChannel#WRITES} channel with as many rows as the case expects written - which is zero
-     * for every arm that abandons the rewrite, and that zero is an assertion in its own right - and on
-     * the {@link DatasetChannel#FINAL_STATE} channel at its seeded row count, because neither rewrite
-     * ever adds or removes a row.
-     *
-     * @param caseId      {@code case01} through {@code case14}
-     * @param description what the case pins, quoting the source lines it comes from
-     * @param staleAcct   how the {@code ACUP-OLD-ACCT-DATA} snapshot differs from the seeded row
-     * @param staleCust   how the {@code ACUP-OLD-CUST-DATA} snapshot differs from the seeded row
-     * @param newAcct     {@code ACUP-NEW-ACCT-DATA}, what the screen supplied
-     * @param newCust     {@code ACUP-NEW-CUST-DATA}, what the screen supplied
-     * @param writes      what the run must have written, in write order
-     * @param messages    the message the run must have produced
-     * @return the scenario
-     */
-    private static ParityScenario serviceScenario(String caseId,
-                                                  String description,
-                                                  UnaryOperator<AccountData> staleAcct,
-                                                  UnaryOperator<CustomerData> staleCust,
-                                                  AccountData newAcct,
-                                                  CustomerData newCust,
-                                                  List<ExpectedRecord> writes,
-                                                  List<EmittedMessage> messages) {
-        return serviceScenario(caseId, description, staleAcct, staleCust, newAcct, newCust, writes,
-                messages, false, false);
-    }
-
-    /**
-     * Builds a {@link UnitKind#SERVICE} scenario in full, optionally with a dataset seeded empty.
-     *
-     * <p>An empty dataset is how a lock failure is arranged, and it is arranged that way deliberately
-     * rather than through a forced repository outcome: a dataset with no rows cannot answer any key, so
-     * {@code NOTFND} is what it genuinely returns rather than what it was told to return. The forced
-     * outcomes the case model supports are reserved for responses the data cannot produce, which for this
-     * paragraph is the {@code DFHRESP} other-than-{@code NORMAL} arm -
-     * {@link #everyFileStatusArmOfWriteProcessingIsReached()} drives those.
-     *
-     * @param caseId        the case identifier
-     * @param description   what the case pins
-     * @param staleAcct     how the account snapshot differs from the seeded row
-     * @param staleCust     how the customer snapshot differs from the seeded row
-     * @param newAcct       what the screen supplied for the account
-     * @param newCust       what the screen supplied for the customer
-     * @param writes        what the run must have written
-     * @param messages      the message the run must have produced
-     * @param emptyAccounts whether {@code ACCTDAT} is seeded empty
-     * @param emptyCustomers whether {@code CUSTDAT} is seeded empty
-     * @return the scenario
-     */
-    private static ParityScenario serviceScenario(String caseId,
-                                                  String description,
-                                                  UnaryOperator<AccountData> staleAcct,
-                                                  UnaryOperator<CustomerData> staleCust,
-                                                  AccountData newAcct,
-                                                  CustomerData newCust,
-                                                  List<ExpectedRecord> writes,
-                                                  List<EmittedMessage> messages,
-                                                  boolean emptyAccounts,
-                                                  boolean emptyCustomers) {
-        Map<String, DatasetInput> inputs = new LinkedHashMap<>();
-        inputs.put(ACCTDAT, emptyAccounts
-                ? DatasetInput.ofEmpty(AccountRecord.RECORD_LENGTH, "CVACT01Y")
-                : new DatasetInput(null, "acctdata.txt", 0, SEEDED_ROWS));
-        inputs.put(CUSTDAT, emptyCustomers
-                ? DatasetInput.ofEmpty(CustomerRecord.RECORD_LENGTH, "CVCUS01Y")
-                : new DatasetInput(null, "custdata.txt", 0, SEEDED_ROWS));
-
-        int accountRows = emptyAccounts ? 0 : SEEDED_ROWS;
-        int customerRows = emptyCustomers ? 0 : SEEDED_ROWS;
-        List<ExpectedRecord> finalState = new ArrayList<>(accountRows + customerRows);
-        finalState.addAll(finalStateOf(ACCTDAT, "acctdata.txt", AccountRecord.RECORD_LENGTH,
-                accountRows, writes));
-        finalState.addAll(finalStateOf(CUSTDAT, "custdata.txt", CustomerRecord.RECORD_LENGTH,
-                customerRows, writes));
-
-        ParityCase parityCase = new ParityCase(PROGRAM, caseId, description, UnitKind.SERVICE,
-                inputs, Map.of(),
-                new ScreenRequest(EIBCALEN_FULL, null, PINNED_CLOCK, CHARSET_NAME, Map.of(),
-                        Map.of(), Map.of()),
-                null, writes, List.copyOf(finalState), 0, messages, List.of(),
-                List.of(new ExpectedDataset(ACCTDAT, DatasetChannel.WRITES,
-                                (int) writes.stream().filter(row -> ACCTDAT.equals(row.dataset()))
-                                        .count(), AccountRecord.RECORD_LENGTH),
-                        new ExpectedDataset(CUSTDAT, DatasetChannel.WRITES,
-                                (int) writes.stream().filter(row -> CUSTDAT.equals(row.dataset()))
-                                        .count(), CustomerRecord.RECORD_LENGTH),
-                        new ExpectedDataset(ACCTDAT, DatasetChannel.FINAL_STATE, accountRows,
-                                AccountRecord.RECORD_LENGTH),
-                        new ExpectedDataset(CUSTDAT, DatasetChannel.FINAL_STATE, customerRows,
-                                CustomerRecord.RECORD_LENGTH)));
-        return new ParityScenario(parityCase, UnitKind.SERVICE,
-                invocation -> serviceUnit(invocation, staleAcct, staleCust, newAcct, newCust),
-                "AccountUpdateService.writeProcessing");
-    }
-
-    /**
-     * Builds one of the five {@code COMPUTE} scenarios, with the input and the expectation drawn from
-     * independent sources.
-     *
-     * <p>The <strong>input</strong> is the seam's own output on the screen string, so the arithmetic is
-     * genuinely exercised end to end: {@code FUNCTION NUMVAL-C} parses the characters and the store into
-     * a {@code PIC S9(10)V99} receiver discards the excess fraction. The <strong>expectation</strong> is
-     * a literal read off the COBOL, and it is deliberately <em>not</em> the seam's output.
-     *
-     * <p>That separation is the whole point, and it was arrived at the hard way. An earlier revision of
-     * this method took a single {@code BigDecimal computed}, obtained by calling
-     * {@code AccountUpdateService.computeCreditLimit(...)}, and used it for both roles - and its own
-     * documentation asserted that this was "not circular". It was. With one value in both roles the case
-     * says only "whatever the screen supplied is what got stored", which is true for any value and blind
-     * to the rounding mode; it tested the codec and nothing else. Verified by mutation: flipping all five
-     * literals to their {@code HALF_UP} counterparts left every one of the forty-three tests green.
-     *
-     * <p>With the two sources separated, a seam that rounded would store {@code 7500.57} where the
-     * expectation says {@code 7500.56}, and the same mutation now fails all five cases with two
-     * differences each - the write image and the final-state image. The seam's agreement with the literal,
-     * <em>and</em> its disagreement with the rounded value, are additionally asserted directly by
-     * {@link #theFiveComputeSitesTruncateRatherThanRound()}, so a numeric failure is attributable either
-     * to the arithmetic or to the plumbing but never ambiguously to both (practice <strong>B12</strong>,
-     * gate <strong>G24</strong>).
-     *
-     * @param caseId      the case identifier
-     * @param receiver    the COBOL receiving item, for the description
-     * @param sourceLines the {@code COMPUTE}'s source lines, for the description
-     * @param screenField what the screen supplied, exactly as it would arrive
-     * @param compute     the seam, which parses {@code screenField} and produces the stored value
-     * @param truncated   the value a store without {@code ROUNDED} leaves behind, as a literal read off
-     *                    the COBOL rather than obtained from {@code compute}
-     * @param apply       how to place a value into the {@code ACUP-NEW} group's one relevant item
-     * @return the scenario
-     */
-    private static ParityScenario computeScenario(String caseId,
-                                                  String receiver,
-                                                  String sourceLines,
-                                                  String screenField,
-                                                  MonetaryCompute compute,
-                                                  String truncated,
-                                                  MonetaryPlacement apply) {
-        // The input and the expectation are derived from two INDEPENDENT sources, and that independence
-        // is the whole point of the case.
-        //
-        // The input is what the COMPUTE seam actually produces from the screen string, so the arithmetic
-        // is genuinely exercised: FUNCTION NUMVAL-C parses the characters and the store into a
-        // PIC S9(10)V99 receiver discards the excess fraction.
-        //
-        // The expectation is a literal read off the COBOL. It is deliberately NOT the seam's own output.
-        // An earlier revision of this method derived both from one value, which made the case say only
-        // "whatever the screen supplied is what got stored" - trivially true for any value, and blind to
-        // the rounding mode. Verified by mutation: flipping these literals to their HALF_UP counterparts
-        // left every case green. With the two sources separated, a seam that rounded would store
-        // 7500.57 where the expectation says 7500.56 and case10 would fail (practice B12, gate G24).
-        AccountData supplied = apply.place(newAccountData(), compute.of(screenField).value());
-        AccountData expected = apply.place(newAccountData(), new BigDecimal(truncated));
-        return serviceScenario(caseId,
-                "COMPUTE " + receiver + " = FUNCTION NUMVAL-C(...) at app/cbl/COACTUPC.cbl:" + sourceLines
-                        + " with the screen supplying \"" + screenField + "\". ROUNDED appears zero "
-                        + "times in this program and in all twenty-eight, so the excess fraction is "
-                        + "truncated to " + truncated + " at the receiver's PIC S9(10)V99 scale and that "
-                        + "is what reaches the stored bytes.",
-                UnaryOperator.identity(), UnaryOperator.identity(), supplied, newCustomerData(),
-                List.of(accountWrite(accountUpdateImage(expected)),
-                        customerWrite(fullNewCustomerImage())),
-                clearReturnMessage());
-    }
-
-    /**
-     * One of the five {@code COMPUTE} seams, as a function of the screen string it parses.
-     *
-     * <p>A functional interface rather than {@code Function<String, MonetaryEdit>} so the two-argument
-     * tail each seam carries - the prior value and the codec - is bound at the call site where it can be
-     * read, and so the name says what the thing is.
-     */
-    private interface MonetaryCompute {
-
-        /**
-         * Runs the seam on one screen string.
-         *
-         * @param screenField the characters the operator keyed, at the field's declared width
-         * @return the edit, carrying the value, the receiver's COBOL name and its source lines
-         */
-        MonetaryEdit of(String screenField);
-    }
-
-    /**
-     * Builds a {@link UnitKind#CONTROLLER_POJO} scenario.
-     *
-     * <p>No dataset is seeded and no write is expected, because none of the six screen cases reaches a
-     * file verb: three of them return before {@code 1000-PROCESS-INPUTS} and the other three fail the
-     * account-filter edit, which leaves {@code FLG-ACCTFILTER-ISVALID} unset and so skips every read.
-     * That is asserted by construction - the adapter hands the controller repositories that throw on any
-     * call - which is a stronger statement than an empty expectation and a clearer failure than a
-     * confusing diff.
-     *
-     * @param caseId      {@code case15} through {@code case20}
-     * @param description what the case pins
-     * @param acctId      the account identifier in the URI, which is what {@code ACCTSIDI} carries
-     * @param eibcalen    {@code EIBCALEN}
-     * @param aid         the {@code DFHAID} mnemonic for the raw {@code EIBAID} byte
-     * @param context     the inbound {@code CARDDEMO-COMMAREA}, or {@code null} for a cold start
-     * @param mapFields   the inbound {@code xxxI} items
-     * @param send        the map area the run must send, or {@code null} when it sends none
-     * @param navigation  the outbound {@code CARDDEMO-COMMAREA}, all sixteen fields
-     * @param nextMapset  {@code CCARD-NEXT-MAPSET} afterwards, or {@code null} when unassigned
-     * @param nextMap     {@code CCARD-NEXT-MAP} afterwards, or {@code null} when unassigned
-     * @param nextProgram {@code CCARD-NEXT-PROG} afterwards, or {@code null} when unassigned
-     * @param cursorField the {@code xxxL} item the cursor was positioned through, or {@code null}
-     * @param termination how the interaction ended
-     * @return the scenario
-     */
-    private static ParityScenario controllerScenario(String caseId,
-                                                     String description,
-                                                     String acctId,
-                                                     int eibcalen,
-                                                     String aid,
-                                                     NavigationContext context,
-                                                     Map<String, String> mapFields,
-                                                     Map<String, String> send,
-                                                     Map<String, String> navigation,
-                                                     String nextMapset,
-                                                     String nextMap,
-                                                     String nextProgram,
-                                                     String cursorField,
-                                                     Termination termination) {
-        Map<String, String> commarea = context == null ? Map.of() : navigationImage(context);
-        List<ScreenSend> sends = send == null
-                ? List.of()
-                : List.of(new ScreenSend(send, colourAndHighlightExpectation(send)));
-        ParityCase parityCase = new ParityCase(PROGRAM, caseId, description,
-                UnitKind.CONTROLLER_POJO, Map.of(), Map.of(),
-                new ScreenRequest(eibcalen, aid, PINNED_CLOCK, CHARSET_NAME, commarea, mapFields,
-                        Map.of()),
-                new ExpectedResponse(nextProgram, nextMapset, nextMap, navigation, sends, cursorField,
-                        termination),
-                List.of(), List.of(), 0, List.of(), List.of(), List.of());
-        return new ParityScenario(parityCase, UnitKind.CONTROLLER_POJO,
-                invocation -> controllerUnit(invocation, acctId, context),
-                "AccountUpdateController.updateAccount");
-    }
-
-    /**
-     * What one dataset holds after the run, row by row - derived from the writes rather than restated.
-     *
-     * <p>A row the case expects written holds the written image; every other row holds exactly the fixture
-     * bytes it was seeded with. Deriving it is what makes "nothing else moved" an assertion rather than an
-     * assumption: a rewrite that addressed the wrong row would satisfy the write channel and fail here, on
-     * two rows at once, which is a far more legible failure than a single mismatched image.
-     *
-     * @param dataset     the binding key
-     * @param fixture     the bare fixture file name the rows were seeded from
-     * @param recordWidth the copybook's declared record length
-     * @param rowCount    how many rows the dataset holds, which a rewrite never changes
-     * @param writes      what the case expects written
-     * @return one expectation per row, in row order
-     */
-    private static List<ExpectedRecord> finalStateOf(String dataset, String fixture, int recordWidth,
-                                                     int rowCount, List<ExpectedRecord> writes) {
-        List<ExpectedRecord> rows = new ArrayList<>(rowCount);
-        for (int index = 0; index < rowCount; index++) {
-            final int rowIndex = index;
-            String image = writes.stream()
-                    .filter(write -> dataset.equals(write.dataset())
-                            && Integer.valueOf(rowIndex).equals(write.rowIndex()))
-                    .map(ExpectedRecord::expectedBytes)
-                    .findFirst()
-                    .orElseGet(() -> fixtureRow(fixture, recordWidth, rowIndex));
-            rows.add(new ExpectedRecord(dataset, rowIndex, Map.of(), image));
-        }
-        return rows;
-    }
-
-    /** How a {@code COMPUTE}'s result is placed into the {@code ACUP-NEW-ACCT-DATA} group. */
-    private interface MonetaryPlacement {
-
-        /**
-         * Places one computed value.
-         *
-         * @param data  the group as it stands
-         * @param value the value the {@code COMPUTE} left in its {@code -N} span
-         * @return the group with that one item replaced
-         */
-        AccountData place(AccountData data, BigDecimal value);
-    }
 
     // =================================================================================================
     // THE SERVICE ADAPTER. Constructs AccountUpdateService through its own constructor and calls
@@ -2792,35 +2369,36 @@ class COACTUPCParityTest {
      * stale case a one-item difference rather than a wholesale substitution: if the fixture ever changed,
      * a case that restated the whole snapshot would keep passing while asserting the wrong thing.
      *
+     * <p>Neither detail group is built here. Both arrive decoded from the {@code WS-THIS-PROGCOMMAREA}
+     * image the case declares, and the key, the carried conversation and the inbound
+     * {@code WS-RETURN-MSG} come from the case too - so this method supplies the collaborators and
+     * records the result, and nothing about the stimulus.
+     *
      * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
-     * @param staleAcct  how the account snapshot differs from the seeded row
-     * @param staleCust  how the customer snapshot differs from the seeded row
-     * @param newAcct    {@code ACUP-NEW-ACCT-DATA}
-     * @param newCust    {@code ACUP-NEW-CUST-DATA}
+     * @param oldDetails {@code ACUP-OLD-DETAILS}, as the declared area holds it
+     * @param newDetails {@code ACUP-NEW-DETAILS}, as the declared area holds it
      * @return the recorded outcome; never {@code null}
      */
     private static UnitOutcome serviceUnit(Invocation invocation,
-                                           UnaryOperator<AccountData> staleAcct,
-                                           UnaryOperator<CustomerData> staleCust,
-                                           AccountData newAcct,
-                                           CustomerData newCust) {
+                                           AccountUpdateDetails oldDetails,
+                                           AccountUpdateDetails newDetails) {
         SeededDataset seededAccounts = invocation.dataset(ACCTDAT);
         SeededDataset seededCustomers = invocation.dataset(CUSTDAT);
         List<String> accountRows = new ArrayList<>(seededAccounts.rows());
         List<String> customerRows = new ArrayList<>(seededCustomers.rows());
-
-        AccountUpdateDetails oldDetails = new AccountUpdateDetails(DetailGroup.OLD,
-                staleAcct.apply(storedAccountSnapshot()), staleCust.apply(storedCustomerSnapshot()));
-        AccountUpdateDetails newDetails =
-                new AccountUpdateDetails(DetailGroup.NEW, newAcct, newCust);
+        ForcedOutcome forcedRewrite =
+                invocation.hasForcedOutcome(RepositoryOperation.REWRITE)
+                        ? invocation.forcedOutcome(RepositoryOperation.REWRITE)
+                        : null;
 
         AccountUpdateService service = new AccountUpdateService(
-                fixtureAccountRepository(accountRows), fixtureCustomerRepository(customerRows),
+                fixtureAccountRepository(accountRows, forcedRewrite),
+                fixtureCustomerRepository(customerRows, forcedRewrite),
                 unitOfWork(invocation.caseId()));
 
-        WriteResult result = service.writeProcessing(ACCT_KEY,
-                NavigationContext.empty().withCustId(CUST_KEY), oldDetails, newDetails,
-                AccountUpdateService.RETURN_MESSAGE_OFF, invocation.codec());
+        WriteResult result = service.writeProcessing(accountKeyOf(invocation),
+                navigationContextFrom(invocation.commarea()), oldDetails, newDetails,
+                returnMessageOf(invocation), invocation.codec());
 
         UnitOutcome.Builder recorder = invocation.recorder();
         // isRewritten(), not acctUpdateRecordImage().isPresent(). The staging at :3956-4057 happens
@@ -2843,6 +2421,18 @@ class COACTUPCParityTest {
             recorder.openedWithoutWriting(CUSTDAT, CustomerRecord.LAYOUT);
             recorder.finalStateUnchanged(seededAccounts, AccountRecord.LAYOUT);
             recorder.finalStateUnchanged(seededCustomers, CustomerRecord.LAYOUT);
+        }
+        // Every other dataset the case seeded is recorded too, on both channels, because an observation
+        // shaped by what the unit happens to touch cannot report a dataset it should not have touched.
+        // 9600-WRITE-PROCESSING reads and rewrites ACCTDAT and CUSTDAT only, and "CXACAIX and CARDDAT are
+        // exactly as they were seeded" is the assertion that says so.
+        for (Map.Entry<String, SeededDataset> seeded : invocation.datasets().entrySet()) {
+            if (ACCTDAT.equals(seeded.getKey()) || CUSTDAT.equals(seeded.getKey())) {
+                continue;
+            }
+            RecordLayout layout = layoutOf(seeded.getKey());
+            recorder.openedWithoutWriting(seeded.getKey(), layout);
+            recorder.finalStateUnchanged(seeded.getValue(), layout);
         }
         // WS-RETURN-MSG is PIC X(75). Neither width-bearing message channel is 75 - one is the 80-byte
         // WORKING-STORAGE message of the batch programs, the other the 78-byte screen field - so the
@@ -2886,17 +2476,19 @@ class COACTUPCParityTest {
      */
     private static UnitOutcome controllerUnit(Invocation invocation, String acctId,
                                              NavigationContext context) {
+        RecordingDateUtility dateUtility = new RecordingDateUtility();
         AccountUpdateController controller = new AccountUpdateController(
-                unreachableAccountRepository(), unreachableCardXrefRepository(),
-                unreachableCustomerRepository(),
+                screenAccountRepository(invocation),
+                screenCardXrefRepository(invocation),
+                screenCustomerRepository(invocation),
                 new AccountUpdateService(unreachableAccountRepository(),
                         unreachableCustomerRepository(), unitOfWork(invocation.caseId())),
-                new AccountDateValidator(invocation.codec(), new DateUtilityJob(),
-                        invocation.clock()),
-                new AreaCodeLookup(invocation.codec()), invocation.clock());
+                new AccountDateValidator(invocation.codec(), dateUtility, invocation.clock()),
+                new AreaCodeLookup(invocation.codec()), invocation.clock(),
+                invocation.codec().charset());
 
         ScreenResponse<AccountUpdateResponse> body = controller.updateAccount(acctId,
-                requestFrom(context, invocation.mapFields(), acctId), null, invocation.eibcalen(),
+                screenRequestFrom(invocation, context, acctId), null, invocation.eibcalen(),
                 Integer.valueOf(Byte.toUnsignedInt(aidByte(invocation.aid())))).getBody();
         AccountUpdateResponse painted = Objects.requireNonNull(body,
                 "COACTUPC ends in EXEC CICS XCTL at :955 or EXEC CICS RETURN at :1013 on every path, "
@@ -2904,8 +2496,203 @@ class COACTUPCParityTest {
 
         UnitOutcome.Builder recorder = invocation.recorder();
         recorder.response(observed(painted, body));
+        // Every seeded dataset is recorded on both channels, whatever the path did, because the
+        // observation must not be shaped by the expectation. The eight CSD FILE definitions at
+        // app/csd/CARDDAT.CSD carry STATUS(ENABLED) OPENTIME(FIRSTREF), so a file is available to the
+        // transaction whether or not a path touches it and the program issues no OPEN that could fail.
+        // "Nothing was written and the rows are exactly as they were seeded" is therefore an assertion
+        // rather than a silence, and it is one only an unconditional capture can make.
+        for (Map.Entry<String, SeededDataset> seeded : invocation.datasets().entrySet()) {
+            RecordLayout layout = layoutOf(seeded.getKey());
+            recorder.openedWithoutWriting(seeded.getKey(), layout);
+            recorder.finalStateUnchanged(seeded.getValue(), layout);
+        }
+        // The eighty bytes CSUTLDTC leaves in WS-DATE-VALIDATION-RESULT, once per call, in call order.
+        // CSUTLDPY:293 is the CALL and CSUTLDWY:60-85 is the receiving area; the two are one area declared
+        // twice. Nothing else in the response exposes them, so a case that pins a date edit can only
+        // assert it here - and the count itself is an assertion, because the edit chain stops at the first
+        // field it rejects and a translation that carried on would produce more of these than the COBOL.
+        for (String message : dateUtility.results()) {
+            recorder.message(new EmittedMessage(MessageChannel.WS_MESSAGE_80, message));
+        }
         recorder.returnCode(0);
         return recorder.build();
+    }
+
+    /**
+     * The {@link RecordLayout} of one seeded dataset.
+     *
+     * @param dataset the CICS file name the case seeds under
+     * @return that dataset's layout
+     * @throws IllegalStateException if the case seeds a dataset COACTUPC does not name
+     */
+    private static RecordLayout layoutOf(String dataset) {
+        return switch (dataset) {
+            case ACCTDAT -> AccountRecord.LAYOUT;
+            case CUSTDAT -> CustomerRecord.LAYOUT;
+            case CARDDAT -> CardRecord.LAYOUT;
+            case CXACAIX -> CardXrefRecord.LAYOUT;
+            default -> throw new IllegalStateException("A COACTUPC case seeded \"" + dataset
+                    + "\", which is not one of the five datasets the program names. Its CICS file "
+                    + "literals are ACCTDAT, CARDDAT, CARDAIX, CUSTDAT and CXACAIX, and the four with a "
+                    + "record layout here are the four a case can seed.");
+        };
+    }
+
+    /**
+     * A {@code DateUtilityJob} that records the eighty-byte result of every call.
+     *
+     * <p>Wrapping rather than stubbing: the real validator computes every answer, so nothing about
+     * {@code CSUTLDTC}'s behaviour is asserted twice, and the wrapper adds only the one thing the
+     * controller's response does not expose - the sequence of {@code WS-MESSAGE} images the four
+     * {@code CALL} sites produced.
+     */
+    private static final class RecordingDateUtility extends DateUtilityJob {
+
+        /** The eighty-byte results, in call order. */
+        private final List<String> results = new ArrayList<>(4);
+
+        @Override
+        public DateValidationResult validateDate(String lsDate, String lsDateFormat) {
+            DateValidationResult result = super.validateDate(lsDate, lsDateFormat);
+            results.add(result.message());
+            return result;
+        }
+
+        /** @return the eighty-byte results, in call order */
+        List<String> results() {
+            return List.copyOf(results);
+        }
+    }
+
+    /**
+     * An {@code ACCTDAT} repository answering the one keyed read the screen path makes.
+     *
+     * <p>{@code 9300-GETACCTDATA-BYACCT} issues the {@code EXEC CICS READ} at {@code :3702-3711} and
+     * nothing else, so this stub answers {@code readByKey} and refuses every other verb. A case that wants
+     * the {@code WHEN OTHER} arm of that read's {@code EVALUATE} names {@code ACCTDAT} in its
+     * {@code unitStimulus.callSiteOutcomes} with the {@code RESP} to report, which is the only way to
+     * reach it: a fixture that holds the record cannot report {@code NOTOPEN} on its own.
+     *
+     * @param invocation the invocation, for the seeded rows, the declared call-site outcomes and the
+     *                   code page
+     * @return the stub
+     */
+    private static AccountRepository screenAccountRepository(Invocation invocation) {
+        AccountRepository repository = strictAccountRepository();
+        List<String> rows = seededRows(invocation, ACCTDAT);
+        OptionalInt drivenResp = callSiteResp(invocation, ACCTDAT);
+        Mockito.doAnswer(read -> {
+            if (drivenResp.isPresent()) {
+                return AccountRepository.ReadResult.of(AccountRepository.PERMANENT_ERROR_STATUS,
+                        CicsResponse.reported(drivenResp.getAsInt(), FileStatus.NO_REASON_CODE));
+            }
+            String key = CODEC.movePic9(((Number) read.getArgument(0)).longValue(),
+                    AccountRecord.ACCT_ID_LENGTH);
+            for (String row : rows) {
+                if (row.startsWith(key)) {
+                    return AccountRepository.ReadResult.found(
+                            AccountRecord.decode(row, FIXTURE_CHARSET));
+                }
+            }
+            return AccountRepository.ReadResult.notFound();
+        }).when(repository).readByKey(ArgumentMatchers.anyLong());
+        return repository;
+    }
+
+    /**
+     * A {@code CXACAIX} repository answering the alternate-index read {@code 9200-GETCARDXREF-BYACCT}
+     * makes at {@code :3653-3663}.
+     *
+     * <p>The seeded rows are thirty-six bytes wide where {@code CVACT03Y} declares fifty, because
+     * {@code app/data/ASCII/cardxref.txt} omits the trailing {@code FILLER X(14)}; they are padded here
+     * before decoding, which is the same normalisation the case declares for the comparison.
+     *
+     * @param invocation the invocation, for the seeded rows and the declared call-site outcomes
+     * @return the stub
+     */
+    private static CardXrefRepository screenCardXrefRepository(Invocation invocation) {
+        List<String> rows = seededRows(invocation, CXACAIX);
+        OptionalInt drivenResp = callSiteResp(invocation, CXACAIX);
+        CardXrefRepository repository = unreachableCardXrefRepository();
+        Mockito.doAnswer(read -> {
+            if (drivenResp.isPresent()) {
+                return CardXrefRepository.ReadResult.other(
+                        CardXrefRepository.ALTERNATE_INDEX_DD_NAME,
+                        CardXrefRepository.PERMANENT_ERROR_STATUS);
+            }
+            String accountKey = ((String) read.getArgument(0)).trim();
+            for (String row : rows) {
+                CardXrefRecord record = CardXrefRecord.decode(
+                        picX(row, CardXrefRecord.RECORD_LENGTH).getBytes(FIXTURE_CHARSET),
+                        FIXTURE_CHARSET);
+                if (CODEC.movePic9(record.xrefAcctId(), CardXrefRecord.XREF_ACCT_ID_LENGTH)
+                        .equals(CODEC.movePic9(Long.parseLong(accountKey),
+                                CardXrefRecord.XREF_ACCT_ID_LENGTH))) {
+                    return CardXrefRepository.ReadResult.found(
+                            CardXrefRepository.ALTERNATE_INDEX_DD_NAME, record,
+                            picX(row, CardXrefRecord.RECORD_LENGTH));
+                }
+            }
+            return CardXrefRepository.ReadResult.notFound(
+                    CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+        }).when(repository).readByAccountIdViaAltIndex(ArgumentMatchers.anyString());
+        return repository;
+    }
+
+    /**
+     * A {@code CUSTDAT} repository answering the keyed read {@code 9400-GETCUSTDATA-BYCUST} makes.
+     *
+     * @param invocation the invocation, for the seeded rows and the declared call-site outcomes
+     * @return the stub
+     */
+    private static CustomerRepository screenCustomerRepository(Invocation invocation) {
+        List<String> rows = seededRows(invocation, CUSTDAT);
+        OptionalInt drivenResp = callSiteResp(invocation, CUSTDAT);
+        CustomerRepository repository = strictCustomerRepository();
+        Mockito.doAnswer(read -> {
+            if (drivenResp.isPresent()) {
+                return CustomerRepository.ReadResult.of(CustomerRepository.PERMANENT_ERROR_STATUS);
+            }
+            String key = ((String) read.getArgument(0)).trim();
+            for (String row : rows) {
+                if (row.startsWith(CODEC.movePic9(Long.parseLong(key),
+                        CustomerRepository.KEY_LENGTH))) {
+                    return CustomerRepository.ReadResult.found(
+                            CustomerRecord.decode(row, FIXTURE_CHARSET), row);
+                }
+            }
+            return CustomerRepository.ReadResult.notFound();
+        }).when(repository).readByKey(ArgumentMatchers.anyString());
+        return repository;
+    }
+
+    /**
+     * @param invocation the invocation
+     * @param dataset    the CICS file name
+     * @return the rows the case seeded for that dataset, or an empty list when it seeded none
+     */
+    private static List<String> seededRows(Invocation invocation, String dataset) {
+        return invocation.hasDataset(dataset) ? invocation.dataset(dataset).rows() : List.of();
+    }
+
+    /**
+     * The {@code RESP} a case drives one read site to report.
+     *
+     * <p>Named by the site rather than by the verb, because COACTUPC reads three different files and the
+     * message each failure composes names the file: {@code 9200} reports {@code CXACAIX}, {@code 9300}
+     * reports {@code ACCTDAT} and {@code 9400} reports {@code CUSTDAT}. A single {@code read} entry could
+     * not say which, and a case whose declaration cannot say what it drives is not declarative.
+     *
+     * @param invocation the invocation, for the case's declared call-site outcomes
+     * @param dataset    the CICS file name of the read site
+     * @return the response to report, or empty when the case drives that site to nothing
+     */
+    private static OptionalInt callSiteResp(Invocation invocation, String dataset) {
+        return invocation.stimulus().callSite(dataset.trim())
+                .map(outcome -> outcome.resp() == null ? OptionalInt.of(FileStatus.NOTOPEN)
+                        : OptionalInt.of(outcome.resp()))
+                .orElse(OptionalInt.empty());
     }
 
     /**
@@ -2976,7 +2763,13 @@ class COACTUPCParityTest {
     private static Map<String, String> outputItems(AccountUpdateResponse painted) {
         Map<String, String> items = new LinkedHashMap<>();
         for (AccountUpdateResponse.ScreenField field : AccountUpdateResponse.ScreenField.values()) {
-            items.put(field.symbolicItemName(), painted.value(field));
+            // At the item's declared width, space-padded on the right. The payload holds the logical value
+            // a MOVE supplied - CSSETATY's one-character '*' marker among them - while the symbolic map
+            // declares every xxxO item PIC X(n), and an alphanumeric MOVE into a wider item space-fills the
+            // remainder. Reporting the value unpadded would compare a Java string length against a COBOL
+            // field width, which is not a comparison the copybook supports.
+            items.put(field.symbolicItemName(),
+                    picX(painted.value(field), field.length()));
         }
         return Map.copyOf(items);
     }
@@ -3163,63 +2956,6 @@ class COACTUPCParityTest {
         return storedCustomerSnapshot();
     }
 
-    /** @return {@code data} with {@code ACUP-OLD-ACTIVE-STATUS} replaced */
-    private static AccountData withStatus(AccountData data, String status) {
-        return new AccountData(data.acctId(), status, data.currBal(), data.creditLimit(),
-                data.cashCreditLimit(), data.openYear(), data.openMon(), data.openDay(),
-                data.expYear(), data.expMon(), data.expDay(), data.reissueYear(), data.reissueMon(),
-                data.reissueDay(), data.currCycCredit(), data.currCycDebit(), data.groupId());
-    }
-
-    /** @return {@code data} with the {@code CURR-BAL} item replaced */
-    private static AccountData withCurrBal(AccountData data, BigDecimal value) {
-        return new AccountData(data.acctId(), data.activeStatus(), value, data.creditLimit(),
-                data.cashCreditLimit(), data.openYear(), data.openMon(), data.openDay(),
-                data.expYear(), data.expMon(), data.expDay(), data.reissueYear(), data.reissueMon(),
-                data.reissueDay(), data.currCycCredit(), data.currCycDebit(), data.groupId());
-    }
-
-    /** @return {@code data} with the {@code CREDIT-LIMIT} item replaced */
-    private static AccountData withCreditLimit(AccountData data, BigDecimal value) {
-        return new AccountData(data.acctId(), data.activeStatus(), data.currBal(), value,
-                data.cashCreditLimit(), data.openYear(), data.openMon(), data.openDay(),
-                data.expYear(), data.expMon(), data.expDay(), data.reissueYear(), data.reissueMon(),
-                data.reissueDay(), data.currCycCredit(), data.currCycDebit(), data.groupId());
-    }
-
-    /** @return {@code data} with the {@code CASH-CREDIT-LIMIT} item replaced */
-    private static AccountData withCashLimit(AccountData data, BigDecimal value) {
-        return new AccountData(data.acctId(), data.activeStatus(), data.currBal(),
-                data.creditLimit(), value, data.openYear(), data.openMon(), data.openDay(),
-                data.expYear(), data.expMon(), data.expDay(), data.reissueYear(), data.reissueMon(),
-                data.reissueDay(), data.currCycCredit(), data.currCycDebit(), data.groupId());
-    }
-
-    /** @return {@code data} with the {@code CURR-CYC-CREDIT} item replaced */
-    private static AccountData withCycCredit(AccountData data, BigDecimal value) {
-        return new AccountData(data.acctId(), data.activeStatus(), data.currBal(),
-                data.creditLimit(), data.cashCreditLimit(), data.openYear(), data.openMon(),
-                data.openDay(), data.expYear(), data.expMon(), data.expDay(), data.reissueYear(),
-                data.reissueMon(), data.reissueDay(), value, data.currCycDebit(), data.groupId());
-    }
-
-    /** @return {@code data} with the {@code CURR-CYC-DEBIT} item replaced */
-    private static AccountData withCycDebit(AccountData data, BigDecimal value) {
-        return new AccountData(data.acctId(), data.activeStatus(), data.currBal(),
-                data.creditLimit(), data.cashCreditLimit(), data.openYear(), data.openMon(),
-                data.openDay(), data.expYear(), data.expMon(), data.expDay(), data.reissueYear(),
-                data.reissueMon(), data.reissueDay(), data.currCycCredit(), value, data.groupId());
-    }
-
-    /** @return {@code data} with the expiry year item replaced */
-    private static AccountData withExpiryYear(AccountData data, String year) {
-        return new AccountData(data.acctId(), data.activeStatus(), data.currBal(),
-                data.creditLimit(), data.cashCreditLimit(), data.openYear(), data.openMon(),
-                data.openDay(), year, data.expMon(), data.expDay(), data.reissueYear(),
-                data.reissueMon(), data.reissueDay(), data.currCycCredit(), data.currCycDebit(),
-                data.groupId());
-    }
-
     /** @return {@code data} with the {@code GROUP-ID} item replaced, padded to its declared ten */
     private static AccountData withGroupId(AccountData data, String groupId) {
         return new AccountData(data.acctId(), data.activeStatus(), data.currBal(),
@@ -3229,32 +2965,6 @@ class COACTUPCParityTest {
                 CODEC.movePicX(groupId, AccountRecord.ACCT_GROUP_ID_LENGTH));
     }
 
-    /** @return {@code data} with {@code ACCT-ID} replaced - an item {@code 9700} does not compare */
-    private static AccountData withAcctId(AccountData data, long acctId) {
-        return new AccountData(acctId, data.activeStatus(), data.currBal(), data.creditLimit(),
-                data.cashCreditLimit(), data.openYear(), data.openMon(), data.openDay(),
-                data.expYear(), data.expMon(), data.expDay(), data.reissueYear(), data.reissueMon(),
-                data.reissueDay(), data.currCycCredit(), data.currCycDebit(), data.groupId());
-    }
-
-    /**
-     * A snapshot whose account zip differs from the record's.
-     *
-     * <p>{@code ACUP-OLD-ACCT-DATA} carries no zip item at all - {@code 9700} does not compare one - so
-     * there is nothing on the account side to perturb, and the perturbation this method exists for is
-     * therefore a no-op that documents the absence. The observable half of {@code case06}'s claim is the
-     * customer identifier and the account identifier, both of which <em>are</em> carried and neither of
-     * which is compared.
-     *
-     * @param data the snapshot
-     * @param zip  the zip the record would have to hold for the difference to matter
-     * @return the snapshot, unchanged
-     */
-    private static AccountData withAddrZip(AccountData data, String zip) {
-        Objects.requireNonNull(zip, "A zip is required to name what is not being compared");
-        return data;
-    }
-
     /** @return {@code data} with {@code CUST-ID} replaced - an item {@code 9700} does not compare */
     private static CustomerData withCustId(CustomerData data, int custId) {
         return new CustomerData(custId, data.firstName(), data.middleName(), data.lastName(),
@@ -3262,15 +2972,6 @@ class COACTUPCParityTest {
                 data.addrCountryCd(), data.addrZip(), data.phoneNum1(), data.phoneNum2(),
                 data.ssn(), data.govtIssuedId(), data.dobYear(), data.dobMon(), data.dobDay(),
                 data.eftAccountId(), data.priHolderInd(), data.ficoScore());
-    }
-
-    /** @return {@code data} with {@code CUST-FICO-CREDIT-SCORE} replaced - block two's last item */
-    private static CustomerData withFicoScore(CustomerData data, int score) {
-        return new CustomerData(data.custId(), data.firstName(), data.middleName(), data.lastName(),
-                data.addrLine1(), data.addrLine2(), data.addrLine3(), data.addrStateCd(),
-                data.addrCountryCd(), data.addrZip(), data.phoneNum1(), data.phoneNum2(),
-                data.ssn(), data.govtIssuedId(), data.dobYear(), data.dobMon(), data.dobDay(),
-                data.eftAccountId(), data.priHolderInd(), score);
     }
 
     /**
@@ -3420,22 +3121,6 @@ class COACTUPCParityTest {
         return AccountUpdateService.composeStoredDate(year, month, day, CODEC);
     }
 
-    /** @return an expectation that {@code ACCTDAT} row 0 holds exactly {@code image} */
-    private static ExpectedRecord accountWrite(String image) {
-        return new ExpectedRecord(ACCTDAT, 0, Map.of(), image);
-    }
-
-    /** @return an expectation that {@code CUSTDAT} row 0 holds exactly {@code image} */
-    private static ExpectedRecord customerWrite(String image) {
-        return new ExpectedRecord(CUSTDAT, 0, Map.of(), image);
-    }
-
-    /** @return the cleared {@code WS-RETURN-MSG}: seventy-five spaces, which is not the same as absent */
-    private static List<EmittedMessage> clearReturnMessage() {
-        return List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE,
-                AccountUpdateService.RETURN_MESSAGE_OFF));
-    }
-
     /**
      * The message a refused or failed write leaves in {@code WS-RETURN-MSG}.
      *
@@ -3548,48 +3233,6 @@ class COACTUPCParityTest {
         return Map.copyOf(screen);
     }
 
-    /**
-     * The one hundred and eight attribute items a send carries, derived from what the fields hold.
-     *
-     * <p>Two rules, and they are the whole of {@code CSSETATY} plus {@code 3390-SETUP-INFOMSG-ATTRS} as
-     * they apply on the prompt screen:
-     *
-     * <ul>
-     *   <li>The colour item is {@link BmsAttributes#DFHRED} for a field whose validation failed and
-     *       {@code DFHDFCOL} - the default - for every other field. On the prompt screen the only field
-     *       that can fail is {@code ACCTSID}, and it has failed exactly when the error line is not
-     *       blank.</li>
-     *   <li>The highlight item is {@code DFHDFHI} - the default - everywhere except {@code INFOMSG},
-     *       which {@code :3572} sets to {@code DFHBMASB} whenever there <em>is</em> an information
-     *       message. There always is one on this screen, because {@code 3250}'s first two arms both set
-     *       {@code PROMPT-FOR-SEARCH-KEYS}.</li>
-     * </ul>
-     *
-     * <p>Derived from the field values rather than restated per case, because the two are not independent:
-     * a reddened field with no error text, or an error text with no reddened field, would be a difference
-     * this expectation cannot express - and that is deliberate, since neither is a state the source can
-     * produce.
-     *
-     * @param screen the fifty-four field values this send carries
-     * @return the colour and highlight items keyed by symbolic-map name
-     */
-    private static Map<String, String> colourAndHighlightExpectation(Map<String, String> screen) {
-        boolean accountFilterFailed = !screen
-                .get(AccountUpdateResponse.ScreenField.ERRMSG.symbolicItemName()).isBlank();
-        Map<String, String> items = new LinkedHashMap<>();
-        for (AccountUpdateResponse.ScreenField field : AccountUpdateResponse.ScreenField.values()) {
-            boolean reddened = accountFilterFailed && field == AccountUpdateResponse.ScreenField.ACCTSID;
-            items.put(field.colourItemName(), reddened
-                    ? BmsAttributes.COLOUR_MNEMONICS.get(BmsAttributes.DFHRED)
-                    : BmsAttributes.COLOUR_MNEMONICS.get(BmsAttributes.DFHDFCOL));
-            boolean brightened = field == AccountUpdateResponse.ScreenField.INFOMSG;
-            items.put(field.hilightItemName(), brightened
-                    ? BmsAttributes.FIELD_ATTRIBUTE_MNEMONICS.get(BmsAttributes.DFHBMASB)
-                    : BmsAttributes.HIGHLIGHT_MNEMONICS.get(BmsAttributes.DFHDFHI));
-        }
-        return Map.copyOf(items);
-    }
-
     /** @return {@code length} {@code X'00'} characters - {@code LOW-VALUES}, not spaces */
     private static String lowValues(int length) {
         return String.valueOf('\u0000').repeat(length);
@@ -3606,6 +3249,69 @@ class COACTUPCParityTest {
      * @param context the context
      * @return the sixteen fields
      */
+    /**
+     * Rebuilds the carried conversation from the {@code CDEMO-} items a case declares.
+     *
+     * <p>The exact inverse of {@link #navigationImage(NavigationContext)}: sixteen items, read by the
+     * same {@link NavigationContext} field-name constants the image is written under, so the two cannot
+     * drift apart. An item a case does not declare keeps the value {@link NavigationContext#empty()}
+     * gives it, which is what {@code INITIALIZE} leaves in {@code CARDDEMO-COMMAREA} - spaces for the
+     * {@code PIC X} items and zero for the {@code PIC 9} ones. Declaring only what a case is about is
+     * therefore not an omission; it is the same shape the COBOL is in.
+     *
+     * @param declared the case's commarea entries, keyed by COBOL field name
+     * @return the carried conversation; never {@code null}
+     */
+    private static NavigationContext navigationContextFrom(Map<String, String> declared) {
+        NavigationContext initial = NavigationContext.empty();
+        if (declared.isEmpty()) {
+            return initial;
+        }
+        return new NavigationContext(
+                text(declared, NavigationContext.FROM_TRANID_FIELD, initial.fromTranid()),
+                text(declared, NavigationContext.FROM_PROGRAM_FIELD, initial.fromProgram()),
+                text(declared, NavigationContext.TO_TRANID_FIELD, initial.toTranid()),
+                text(declared, NavigationContext.TO_PROGRAM_FIELD, initial.toProgram()),
+                text(declared, NavigationContext.USER_ID_FIELD, initial.userId()),
+                text(declared, NavigationContext.USER_TYPE_FIELD, initial.userType()),
+                (int) number(declared, NavigationContext.PGM_CONTEXT_FIELD, initial.pgmContext()),
+                (int) number(declared, NavigationContext.CUST_ID_FIELD, initial.custId()),
+                text(declared, NavigationContext.CUST_FNAME_FIELD, initial.custFname()),
+                text(declared, NavigationContext.CUST_MNAME_FIELD, initial.custMname()),
+                text(declared, NavigationContext.CUST_LNAME_FIELD, initial.custLname()),
+                number(declared, NavigationContext.ACCT_ID_FIELD, initial.acctId()),
+                text(declared, NavigationContext.ACCT_STATUS_FIELD, initial.acctStatus()),
+                number(declared, NavigationContext.CARD_NUM_FIELD, initial.cardNum()),
+                text(declared, NavigationContext.LAST_MAP_FIELD, initial.lastMap()),
+                text(declared, NavigationContext.LAST_MAPSET_FIELD, initial.lastMapset()));
+    }
+
+    /**
+     * @param declared the case's commarea entries
+     * @param field    the COBOL field name
+     * @param fallback the initialised value to keep when the case declares no such item
+     * @return the declared text, or the fallback
+     */
+    private static String text(Map<String, String> declared, String field, String fallback) {
+        String value = declared.get(field);
+        return value == null ? fallback : value;
+    }
+
+    /**
+     * @param declared the case's commarea entries
+     * @param field    the COBOL field name
+     * @param fallback the initialised value to keep when the case declares no such item
+     * @return the declared digits as a number, or the fallback - a blank {@code PIC 9} image is treated as
+     *         undeclared, because a case that pads a numeric item with spaces has said nothing about it
+     */
+    private static long number(Map<String, String> declared, String field, long fallback) {
+        String value = declared.get(field);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return Long.parseLong(value.trim());
+    }
+
     private static Map<String, String> navigationImage(NavigationContext context) {
         Map<String, String> image = new LinkedHashMap<>();
         image.put(NavigationContext.FROM_TRANID_FIELD, context.fromTranid());
@@ -3650,11 +3356,52 @@ class COACTUPCParityTest {
         if (context == null) {
             return null;
         }
-        String acctsid = mapFields.getOrDefault("ACCTSIDI", acctId);
-        return AccountUpdateRequest.initial()
+        AccountUpdateRequest request = AccountUpdateRequest.initial()
                 .withValue(AccountUpdateRequest.ScreenField.ACCTSID,
-                        CODEC.movePicX(acctsid, AccountUpdateRequest.ACCTSID_LENGTH))
+                        CODEC.movePicX(mapFields.getOrDefault("ACCTSIDI", acctId),
+                                AccountUpdateRequest.ACCTSID_LENGTH))
                 .withNavigationContext(context);
+        // Every other xxxI item the case declares, at its own declared width. The label is the item name
+        // without its trailing I, which is the symbolic map's own convention, and ScreenField.ofLabel is
+        // the production lookup for it - so a case naming a field COACTUP.bms does not declare fails here
+        // by name instead of being silently ignored.
+        for (Map.Entry<String, String> received : mapFields.entrySet()) {
+            String item = received.getKey();
+            if ("ACCTSIDI".equals(item)) {
+                continue;
+            }
+            AccountUpdateRequest.ScreenField field = AccountUpdateRequest.ScreenField.ofLabel(
+                    item.substring(0, item.length() - 1));
+            request = request.withValue(field,
+                    CODEC.movePicX(received.getValue(), field.length()));
+        }
+        return request;
+    }
+
+    /**
+     * The request the handler receives, with the program's own carried area attached.
+     *
+     * <p>{@code DFHCOMMAREA} carries {@code CARDDEMO-COMMAREA} and {@code WS-THIS-PROGCOMMAREA} together,
+     * and {@code :890-892} moves the second in whole on a warm turn. A case that declares one declares the
+     * change action too, and that single byte decides the whole shape of the turn: {@code LOW-VALUES} or
+     * spaces is {@code ACUP-DETAILS-NOT-FETCHED}, on which {@code 1100-RECEIVE-MAP} returns at
+     * {@code :1060-1062} after reading nothing but the account filter, while {@code 'S'} and the five
+     * {@code ACUP-CHANGES-} values reach the whole of {@code 1200-EDIT-MAP-INPUTS}.
+     *
+     * @param invocation the invocation, for the case's commarea, received fields and code page
+     * @param context    the carried conversation, or {@code null} for a cold start
+     * @param acctId     the URI key
+     * @return the request, or {@code null} when the case declares no commarea
+     */
+    private static AccountUpdateRequest screenRequestFrom(Invocation invocation,
+                                                          NavigationContext context, String acctId) {
+        AccountUpdateRequest request = requestFrom(context, invocation.mapFields(), acctId);
+        if (request == null) {
+            return null;
+        }
+        return invocation.commarea().containsKey(PROGRAM_AREA_KEY)
+                ? request.withCommArea(programAreaOf(invocation))
+                : request;
     }
 
     /**
@@ -3713,6 +3460,106 @@ class COACTUPCParityTest {
      * @return the stub
      */
     private static AccountRepository fixtureAccountRepository(List<String> rows) {
+        return fixtureAccountRepository(rows, null);
+    }
+
+    /**
+     * The inbound {@code WS-RETURN-MSG} the case hands the paragraph.
+     *
+     * <p>{@code 9600-WRITE-PROCESSING} is reached with whatever the edits left in {@code WS-RETURN-MSG},
+     * and it tests that value at {@code :3891} before doing anything: a message already present means an
+     * edit failed and the paragraph returns without touching a file. A case that wants that leg declares
+     * the message under {@code unitStimulus.linkage}; the default is the cleared state, which is
+     * seventy-five spaces and not the empty string.
+     *
+     * @param invocation the invocation, for the case's declared linkage
+     * @return the seventy-five-character message; never {@code null}
+     * @throws IllegalStateException if the declared message is not exactly seventy-five characters
+     */
+    private static String returnMessageOf(Invocation invocation) {
+        String declared = invocation.stimulus().linkageValue(LINKAGE_RETURN_MSG).orElse(null);
+        if (declared == null) {
+            return AccountUpdateService.RETURN_MESSAGE_OFF;
+        }
+        if (declared.length() != AccountUpdateService.RETURN_MESSAGE_LENGTH) {
+            throw new IllegalStateException("Case " + invocation.program() + '/' + invocation.caseId()
+                    + " declares a " + LINKAGE_RETURN_MSG + " of " + declared.length()
+                    + " characters where WS-RETURN-MSG is PIC X("
+                    + AccountUpdateService.RETURN_MESSAGE_LENGTH
+                    + ") at app/cbl/COACTUPC.cbl:479. A message of another width is not a state the "
+                    + "program can be in.");
+        }
+        return declared;
+    }
+
+    /**
+     * An {@code ACCTDAT} repository answering from the seeded rows, with the rewrite outcome the case
+     * forces.
+     *
+     * <p>A forced outcome replaces the write rather than following it: the rows are left exactly as they
+     * were, which is what a refused {@code EXEC CICS REWRITE} leaves behind. That is the only way
+     * {@code 9600-WRITE-PROCESSING}'s two rewrite-failure legs can be reached at all, because a fixture
+     * that holds the record cannot refuse the write on its own.
+     *
+     * @param rows   the seeded rows, mutated in place by an accepted rewrite
+     * @param forced the outcome the case forces for {@code rewrite}, or {@code null} to let it succeed
+     * @return the stub
+     */
+    private static AccountRepository fixtureAccountRepository(List<String> rows,
+                                                             ForcedOutcome forced) {
+        AccountRepository repository = fixtureAccountRepositoryInternal(rows);
+        if (forced != null) {
+            Mockito.doAnswer(rewrite -> forcedAccountWrite(forced))
+                    .when(repository).rewrite(ArgumentMatchers.any());
+        }
+        return repository;
+    }
+
+    /**
+     * @param forced the outcome the case forces
+     * @return that outcome as an {@link AccountRepository.WriteResult}
+     */
+    private static AccountRepository.WriteResult forcedAccountWrite(ForcedOutcome forced) {
+        return switch (forced.outcome()) {
+            case OK -> AccountRepository.WriteResult.written();
+            case NOT_FOUND -> AccountRepository.WriteResult.notFound();
+            case DUPLICATE, END_OF_FILE, OTHER -> throw new IllegalStateException(
+                    "COACTUPC's account REWRITE at app/cbl/COACTUPC.cbl:4064-4070 tests RESP for NORMAL "
+                            + "and treats every other response as LOCKED-BUT-UPDATE-FAILED, so the only "
+                            + "outcomes a case can force on it are OK and NOT_FOUND; " + forced.outcome()
+                            + " is not one the paragraph distinguishes.");
+        };
+    }
+
+    /**
+     * A {@code CUSTDAT} repository answering from the seeded rows, with the rewrite outcome the case
+     * forces.
+     *
+     * @param rows   the seeded rows, mutated in place by an accepted rewrite
+     * @param forced the outcome the case forces for {@code rewrite}, or {@code null} to let it succeed
+     * @return the stub
+     */
+    private static CustomerRepository fixtureCustomerRepository(List<String> rows,
+                                                               ForcedOutcome forced) {
+        CustomerRepository repository = fixtureCustomerRepositoryInternal(rows);
+        if (forced != null) {
+            Mockito.doAnswer(rewrite -> switch (forced.outcome()) {
+                case OK -> CustomerRepository.WriteResult.written();
+                case NOT_FOUND -> CustomerRepository.WriteResult.notFound();
+                case DUPLICATE, END_OF_FILE, OTHER -> throw new IllegalStateException(
+                        "COACTUPC's customer REWRITE at app/cbl/COACTUPC.cbl:4084-4090 tests RESP for "
+                                + "NORMAL only, so the only outcomes a case can force on it are OK and "
+                                + "NOT_FOUND; " + forced.outcome() + " is not one it distinguishes.");
+            }).when(repository).rewrite(ArgumentMatchers.any(CustomerRecord.class));
+        }
+        return repository;
+    }
+
+    /**
+     * @param rows the seeded rows, mutated in place by a rewrite
+     * @return an {@code ACCTDAT} repository over those rows with no forced outcome
+     */
+    private static AccountRepository fixtureAccountRepositoryInternal(List<String> rows) {
         AccountRepository repository = strictAccountRepository();
         Mockito.doAnswer(read -> {
             String key = read.getArgument(0);
@@ -3751,6 +3598,14 @@ class COACTUPCParityTest {
      * @return the stub
      */
     private static CustomerRepository fixtureCustomerRepository(List<String> rows) {
+        return fixtureCustomerRepository(rows, null);
+    }
+
+    /**
+     * @param rows the seeded rows, mutated in place by a rewrite
+     * @return a {@code CUSTDAT} repository over those rows with no forced outcome
+     */
+    private static CustomerRepository fixtureCustomerRepositoryInternal(List<String> rows) {
         CustomerRepository repository = strictCustomerRepository();
         Mockito.doAnswer(read -> {
             String key = read.getArgument(0);
@@ -3777,9 +3632,18 @@ class COACTUPCParityTest {
         return repository;
     }
 
-    /** @return an {@code ACCTDAT} repository that refuses every call */
+    /**
+     * An {@code ACCTDAT} repository that refuses every <em>verb</em>.
+     *
+     * <p>{@code datasetCharset} is answered rather than refused, because it is not a file verb: it
+     * reports the code page the dataset is stored in, and {@code 9600-WRITE-PROCESSING} reads it to
+     * refuse a caller codec that is not that page. Refusing it here would fail a guard whose whole
+     * purpose is to stop a record being written in the wrong encoding.
+     *
+     * @return the repository
+     */
     private static AccountRepository strictAccountRepository() {
-        return Mockito.mock(AccountRepository.class, unstubbed -> {
+        AccountRepository repository = Mockito.mock(AccountRepository.class, unstubbed -> {
             throw new UnsupportedOperationException(PROGRAM + " called AccountRepository."
                     + unstubbed.getMethod().getName() + ", for which it has no statement. Its account "
                     + "file verbs are the EXEC CICS READ at app/cbl/COACTUPC.cbl:3705-3715, the "
@@ -3787,16 +3651,25 @@ class COACTUPCParityTest {
                     + "no DELETE and no browse anywhere in the program - so a call to anything else is a "
                     + "translation reaching for a verb the source does not contain.");
         });
+        Mockito.doReturn(FIXTURE_CHARSET).when(repository).datasetCharset();
+        return repository;
     }
 
-    /** @return a {@code CUSTDAT} repository that refuses every call */
+    /**
+     * A {@code CUSTDAT} repository that refuses every <em>verb</em>, answering only the code page it
+     * stores records in - see {@link #strictAccountRepository()} for why that one is not a verb.
+     *
+     * @return the repository
+     */
     private static CustomerRepository strictCustomerRepository() {
-        return Mockito.mock(CustomerRepository.class, unstubbed -> {
+        CustomerRepository strict = Mockito.mock(CustomerRepository.class, unstubbed -> {
             throw new UnsupportedOperationException(PROGRAM + " called CustomerRepository."
                     + unstubbed.getMethod().getName() + ", for which it has no statement. Its customer "
                     + "file verbs are the EXEC CICS READ at :3756-3766, the READ ... UPDATE at "
                     + ":3921-3931 and the REWRITE at :4084-4090.");
         });
+        Mockito.doReturn(FIXTURE_CHARSET).when(strict).datasetCharset();
+        return strict;
     }
 
     /**

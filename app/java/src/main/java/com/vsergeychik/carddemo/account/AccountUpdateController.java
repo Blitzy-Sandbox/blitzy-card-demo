@@ -21,10 +21,12 @@ import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import jakarta.validation.Valid;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.EnumMap;
@@ -36,6 +38,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -325,6 +328,53 @@ public class AccountUpdateController {
     /** {@code WS-EDIT-CURRENCY-9-2 PIC X(15)} ({@code :372}) and the mask that fills it. */
     static final int WS_EDIT_CURRENCY_LENGTH = 15;
 
+    // -------------------------------------------------------------------------------------------------
+    // CICS-OUTPUT-EDIT-VARS' three REDEFINES overlays - app/cbl/COACTUPC.cbl:357-369.
+    //
+    // Preserved, not implemented. CUST-ACCT-ID-X, CUST-ACCT-ID-N and every field of the WS-EDIT-DATE-X
+    // group appear exactly once in COACTUPC beyond their own declarations: nothing sets them and nothing
+    // reads them. Their two live siblings in the same group, WS-EDIT-CURRENCY-9-2 and its edited form,
+    // are used twenty-two and twenty-one times and are modelled above.
+    //
+    // The overlays are modelled as widths and offsets rather than as fields because a REDEFINES is a view
+    // of storage, and the thing gate G34 asks about a view is that both accessors address the same bytes.
+    // AccountUpdateRedefinesCensusTest round-trips them at those offsets in both directions. Declaring
+    // mutable staging fields for them instead would be inventing state the program does not keep.
+    // -------------------------------------------------------------------------------------------------
+
+    /** {@code CUST-ACCT-ID-X PIC X(11)} ({@code :358}) and {@code CUST-ACCT-ID-N PIC 9(11)} over it. */
+    static final int CUST_ACCT_ID_LENGTH = 11;
+
+    /**
+     * {@code WS-EDIT-DATE-X PIC X(10)} ({@code :361}), overlaid twice.
+     *
+     * <p>Once by {@code FILLER REDEFINES WS-EDIT-DATE-X} ({@code :362-367}), which splits the ten bytes
+     * into {@code X(4)} year, a one-byte separator, {@code X(2)} month, another separator and
+     * {@code X(2)} day - the {@code YYYY-MM-DD} shape. And once by
+     * {@code WS-EDIT-DATE-X REDEFINES WS-EDIT-DATE-X PIC 9(10)} ({@code :368-369}), which redefines the
+     * item <em>by its own name</em>. That is not a transcription slip: the source says exactly that, and
+     * it is why the ten bytes have three names and one of them is used for two of the views.
+     */
+    static final int WS_EDIT_DATE_X_LENGTH = 10;
+
+    /** {@code WS-EDIT-DATE-X-YEAR PIC X(4)} ({@code :363}) - offset 0 of the ten. */
+    static final int WS_EDIT_DATE_YEAR_OFFSET = 0;
+
+    /** {@code WS-EDIT-DATE-X-YEAR PIC X(4)} ({@code :363}). */
+    static final int WS_EDIT_DATE_YEAR_LENGTH = 4;
+
+    /** {@code WS-EDIT-DATE-MONTH PIC X(2)} ({@code :365}) - offset 5, after the first separator. */
+    static final int WS_EDIT_DATE_MONTH_OFFSET = 5;
+
+    /** {@code WS-EDIT-DATE-MONTH PIC X(2)} ({@code :365}). */
+    static final int WS_EDIT_DATE_MONTH_LENGTH = 2;
+
+    /** {@code WS-EDIT-DATE-DAY PIC X(2)} ({@code :367}) - offset 8, after the second separator. */
+    static final int WS_EDIT_DATE_DAY_OFFSET = 8;
+
+    /** {@code WS-EDIT-DATE-DAY PIC X(2)} ({@code :367}). */
+    static final int WS_EDIT_DATE_DAY_LENGTH = 2;
+
     /** {@code WS-LONG-MSG PIC X(500)} ({@code :465}) - declared for {@code SEND-LONG-TEXT}, never sent. */
     static final int WS_LONG_MSG_LENGTH = 500;
 
@@ -490,6 +540,31 @@ public class AccountUpdateController {
      */
     static final String MSG_NO_CHANGES_DETECTED =
             "No change detected with respect to values fetched.";
+
+    /**
+     * {@code WS-PROMPT-FOR-LASTNAME} ({@code :485-486}) - <strong>declared and never referenced</strong>.
+     *
+     * <p>One of four {@code WS-RETURN-MSG} condition names {@code COACTUPC} declares without ever setting
+     * or testing: this one, {@link #MSG_ACCT_STATUS_MUST_BE_YES_NO},
+     * {@link #MSG_THIS_MONTH_NOT_VALID} and {@link #MSG_THIS_YEAR_NOT_VALID}. Each appears exactly once in
+     * the file, at its own declaration. They are transcribed rather than dropped because the copybook and
+     * the program are the parity contract and a declared literal is part of it - dead code is preserved,
+     * not tidied away. Their text is asserted by {@code AccountUpdateConditionCensusTest} so a transcription
+     * error cannot hide behind their disuse.
+     *
+     * <p>The last two are not dead everywhere: {@code COCRDUPC} declares the same two card-expiry texts
+     * and does reach them, which is why {@code CardUpdateController} carries live copies.
+     */
+    static final String MSG_PROMPT_FOR_LASTNAME = "Last name not provided";
+
+    /** {@code ACCT-STATUS-MUST-BE-YES-NO} ({@code :503-504}) - declared, never referenced. */
+    static final String MSG_ACCT_STATUS_MUST_BE_YES_NO = "Account Active Status must be Y or N";
+
+    /** {@code THIS-MONTH-NOT-VALID} ({@code :509-510}) - declared, never referenced. */
+    static final String MSG_THIS_MONTH_NOT_VALID = "Card expiry month must be between 1 and 12";
+
+    /** {@code THIS-YEAR-NOT-VALID} ({@code :511-512}) - declared, never referenced. */
+    static final String MSG_THIS_YEAR_NOT_VALID = "Invalid card expiry year";
 
     /** {@code DID-NOT-FIND-ACCT-IN-ACCTDAT} ({@code :499-500}) - tested at {@code :3626}, never set. */
     static final String MSG_DID_NOT_FIND_ACCT_IN_ACCTDAT =
@@ -830,18 +905,35 @@ public class AccountUpdateController {
     // =================================================================================================
 
     /**
-     * The codec every {@code MOVE} in this class routes through.
-     *
-     * <p>{@code US-ASCII} because every value handled here is a screen field or a work-area item, never
-     * a dataset image: the repositories own their own code page and this controller never touches
-     * either dataset's bytes. It is a shared immutable value, so it is safe as a constant and is not
-     * mutable static state.
+     * The {@code PICTURE}-rule codec for this class's {@code static} members - and for nothing that
+     * becomes bytes.
      *
      * <p>It exists because a Java assignment is <strong>not</strong> a COBOL {@code MOVE}.
      * {@code COACTUPC} contains 502 {@code MOVE} statements and many of them cross a width: for
      * {@code PIC X} COBOL keeps the leading characters and space pads on the right, and for
      * {@code PIC 9} it keeps the trailing digits and zero pads on the left. Getting the direction wrong
      * is silent, so no cross-width move in this class is written as an assignment.
+     *
+     * <p><strong>Its scope is deliberately narrow, and the boundary is the code page.</strong>
+     * {@link FixedWidthCodec#movePicX(String, int)}, {@link FixedWidthCodec#movePic9(String, int)},
+     * {@link FixedWidthCodec#decodePic9(String)} and
+     * {@link FixedWidthCodec#encodeSignedScaled(java.math.BigDecimal, int, int)} count and place
+     * <em>characters</em>: pad, truncate, zero-fill and overpunch produce the same characters under
+     * {@code US-ASCII} and under {@code IBM037}, so which code page this codec carries cannot affect
+     * their result. Every operation that does depend on the code page - constructing a record area,
+     * encoding or decoding a whole image, and the codec handed to
+     * {@link AccountUpdateService#writeProcessing} - uses the injected {@link #codec} instead, because
+     * that one carries the page the datasets are actually stored in.
+     *
+     * <p>An earlier revision used this codec for those operations too, and it was the persistence
+     * defect it looks like: {@code IBM037} is what {@code application.yml} binds in production, the
+     * staged 300-byte and 500-byte images were decoded as {@code US-ASCII}, and the repositories wrote
+     * the resulting bytes verbatim. The {@code US-ASCII} test profile made the two agree, so no test
+     * could see it. {@code AccountUpdateService} now refuses a codec that is not the datasets' own.
+     *
+     * <p>It is a {@code static} constant because a {@code static} initialiser cannot reach an instance
+     * field, and the literals below are padded at class-load time. It is a shared immutable value, so
+     * it is safe as a constant and is not mutable static state (practice B9).
      */
     private static final FixedWidthCodec PIC_X_CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
@@ -1412,6 +1504,25 @@ public class AccountUpdateController {
     private final Clock clock;
 
     /**
+     * The codec carrying the <em>active dataset</em> code page - the one every byte this transaction
+     * produces or consumes is measured in.
+     *
+     * <p>Three things in this class turn characters into bytes or bytes into characters, and all three
+     * use this codec rather than {@link #PIC_X_CODEC}: the {@code ACCOUNT-RECORD} work area
+     * ({@code :3388}, {@code :3656}), the {@code DFHCOMMAREA} round trips at {@code :889-893} and
+     * {@code :1010-1013}, and the codec handed to
+     * {@link AccountUpdateService#writeProcessing(String, NavigationContext,
+     * AccountUpdateService.AccountUpdateDetails, AccountUpdateService.AccountUpdateDetails, String,
+     * FixedWidthCodec)}, which decodes the two staged images into the records it rewrites.
+     *
+     * <p>The {@code Charset} is qualified explicitly at the constructor rather than defaulted, because
+     * {@code CobolCharsetConfig} publishes more than one and the platform default is never consulted
+     * (practice <strong>B8</strong>). It is held rather than rebuilt per call because a codec is
+     * immutable and validates its code page once at construction.
+     */
+    private final FixedWidthCodec codec;
+
+    /**
      * Constructs the controller.
      *
      * @param accountRepository     the account master, {@code ACCTDAT}
@@ -1421,6 +1532,11 @@ public class AccountUpdateController {
      * @param accountDateValidator  {@code CSUTLDPY} plus {@code CSUTLDWY}
      * @param areaCodeLookup        {@code CSLKPCDY}
      * @param clock                 the clock behind {@code FUNCTION CURRENT-DATE}
+     * @param datasetCharset        the active dataset code page, from
+     *                              {@code @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)}. It
+     *                              is what the two record images this transaction rewrites are encoded
+     *                              in, so it must be the page both repositories use - never the
+     *                              platform default and never a hard-coded one
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public AccountUpdateController(AccountRepository accountRepository,
@@ -1429,7 +1545,8 @@ public class AccountUpdateController {
             AccountUpdateService accountUpdateService,
             AccountDateValidator accountDateValidator,
             AreaCodeLookup areaCodeLookup,
-            Clock clock) {
+            Clock clock,
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset) {
         this.accountRepository = Objects.requireNonNull(accountRepository,
                 "An AccountRepository is required: 9300-GETACCTDATA-BYACCT reads ACCTDAT at "
                         + "app/cbl/COACTUPC.cbl:3702-3711 and this controller reaches it no other way");
@@ -1455,18 +1572,24 @@ public class AccountUpdateController {
                 "A Clock is required: 3100-SCREEN-INIT reads FUNCTION CURRENT-DATE twice and "
                         + "EDIT-DATE-OF-BIRTH reads it again; reading a clock inline would make every "
                         + "parity case non-deterministic");
+        this.codec = new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "The active dataset "
+                + "code page is required: 9600-WRITE-PROCESSING rewrites a 300-byte ACCOUNT-RECORD and "
+                + "a 500-byte CUSTOMER-RECORD at app/cbl/COACTUPC.cbl:4065-4091, and those bytes are "
+                + "only right in the page the datasets are stored in; it is never the platform "
+                + "default"));
     }
 
     /**
-     * The codec this controller applies the {@code PIC X} and {@code PIC 9} move rules with.
+     * The codec this controller applies the {@code PIC X} and {@code PIC 9} move rules with, carrying
+     * the active dataset code page.
      *
      * <p>Exposed so a test can drive a move through the same instance the flow uses rather than through
-     * a lookalike.
+     * a lookalike, and so a test can assert <em>which</em> code page is in force on the write path.
      *
-     * @return the shared charset-neutral codec, never {@code null}
+     * @return the injected dataset codec, never {@code null} and immutable
      */
     FixedWidthCodec codec() {
-        return PIC_X_CODEC;
+        return codec;
     }
 
     // =================================================================================================
@@ -1579,21 +1702,25 @@ public class AccountUpdateController {
      * <p>The request is copied rather than mutated, so a caller's object is never altered by having been
      * passed here - which is also what makes concurrent requests independent.
      *
-     * <h4>The payload's own key field must not contradict the URI</h4>
-     * This route states the record's key twice - in the URI and in {@code ACCTSIDI}, the field the URI
-     * binds - and a terminal has only one. The payload's member is therefore required to agree before it
-     * is overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
-     * refused at the boundary by
-     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
-     * Overwriting it silently, which is what happened before, discarded the operator's own typed key with
-     * no message on the estate's busiest write route. A client that echoes a painted screen agrees with
-     * the URI and never reaches the refusal.
+     * <h4>The URI seeds a first entry and is ignored on a re-entry</h4>
+     * A 3270 screen has one key field and no URI, and {@code COACTUPC} reads {@code ACCTSIDI} in exactly
+     * one place: {@code 1100-RECEIVE-MAP} at {@code :1039-1058}, reached only from
+     * {@code 1000-PROCESS-INPUTS}, which the {@code EVALUATE} at {@code :925-1005} performs on the
+     * re-entry arms alone. The entry arm paints the screen from the key it was handed, and that is what
+     * the path variable projects.
+     *
+     * <p>So the path value is written into {@code ACCTSIDI} on a first entry - no communication area, or
+     * one whose context is not re-entry - and on a re-entry the received field is left <strong>exactly as
+     * it arrived</strong> and processed by {@code 1200-EDIT-MAP-INPUTS} and {@code 9000-READ-ACCT}.
+     * Typing another account number over a painted screen is a valid action of this screen: it is the
+     * whole of how an operator moves from one account to the next, and it is neither overwritten nor
+     * refused here.
      *
      * @param acctId  the account identifier from the URI
      * @param request the received payload, or {@code null} on a cold start
-     * @return a request whose {@code ACCTSIDI} is the eleven-character image of {@code acctId}
-     * @throws IllegalArgumentException     if {@code acctId} is wider than {@code ACCTSIDI}
-     * @throws ScreenInputRejectedException if the payload's {@code acctsid} names a different account
+     * @return on a first entry, a request whose {@code ACCTSIDI} is the eleven-character image of
+     *         {@code acctId}; on a re-entry, the request as it arrived
+     * @throws IllegalArgumentException if {@code acctId} is wider than {@code ACCTSIDI}
      */
     AccountUpdateRequest bind(String acctId, AccountUpdateRequest request) {
         if (acctId.length() > AccountUpdateRequest.ACCTSID_LENGTH) {
@@ -1603,30 +1730,60 @@ public class AccountUpdateController {
                     AccountUpdateRequest.ACCTSID_LENGTH, acctId.length());
         }
         AccountUpdateRequest received = request == null ? AccountUpdateRequest.initial() : request;
-        ScreenInputRejectedException.requireKeyAgreement(ACCTSID_MEMBER, acctId,
-                received.value(AccountUpdateRequest.ScreenField.ACCTSID),
-                AccountUpdateRequest.ACCTSID_LENGTH, PIC_X_CODEC, NO_CRITERION_IMAGE);
+        if (isReentry(received)) {
+            return received;
+        }
         return received.withValue(AccountUpdateRequest.ScreenField.ACCTSID,
                 PIC_X_CODEC.movePicX(acctId, AccountUpdateRequest.ACCTSID_LENGTH));
     }
 
     /**
-     * Resolves {@code EIBCALEN}.
+     * Whether this turn is one on which the source performs {@code 1100-RECEIVE-MAP} and reads the
+     * operator's own typed key.
      *
-     * <p>{@code COACTUPC} reads it exactly once, at {@code :880}, and only asks whether it is zero. So
-     * the accepted values are zero and the length of the area this program is entered with,
-     * {@value #PASSED_COMMAREA_LENGTH} - {@code CARDDEMO-COMMAREA} followed by
-     * {@code WS-THIS-PROGCOMMAREA}, which is what {@code :888-892} slices apart.
+     * <p>{@code app/cbl/COACTUPC.cbl:880-893} treats an absent communication area as no conversation -
+     * it initialises both areas and sets {@code CDEMO-PGM-ENTER} - and the {@code EVALUATE} at
+     * {@code :925-1005} reaches {@code 1000-PROCESS-INPUTS} only from an arm that requires
+     * {@code CDEMO-PGM-REENTER}. A payload carrying no area, or one whose context is not
+     * {@value NavigationContext#PGM_CONTEXT_REENTER}, is therefore a turn on which nothing was received.
      *
-     * <p>A stated value must agree with what arrived. {@code EIBCALEN} describes the area CICS passed,
-     * so it cannot contradict the payload, and the contradiction matters: {@code :880} uses it to decide
-     * whether the conversation's state survives the turn.
+     * @param received the payload as it arrived
+     * @return {@code true} when the source would read the map's own key on this turn
+     */
+    private static boolean isReentry(AccountUpdateRequest received) {
+        return received.isReenter();
+    }
+
+    /**
+     * Resolves {@code EIBCALEN} - the length of the area that arrived, tested for zero and nothing else.
      *
-     * @param eibcalen the stated value, or {@code null} to derive it
-     * @param request  the received payload
-     * @return zero when no communication area arrived, otherwise a positive length
-     * @throws IllegalArgumentException if the stated value is not a length this program addresses, or
-     *                                  disagrees with the payload
+     * <h4>Zero versus non-zero is the whole of what the source asks</h4>
+     * {@code app/cbl/COACTUPC.cbl:880} tests {@code EIBCALEN} against zero and never against any other
+     * value: zero means the transaction was typed at a clear screen and there is no conversation, and
+     * anything else means an area arrived and its first 160 bytes are {@code CARDDEMO-COMMAREA}.
+     * So this method preserves the length that arrived and branches on zero versus non-zero, exactly as
+     * the source does.
+     *
+     * <h4>Why no set of accepted lengths is enumerated</h4>
+     * Because the real lengths are several and all of them are legitimate. COMEN01C transfers control passing
+     * {@code CARDDEMO-COMMAREA} alone, and
+     * this program's own {@code COMMON-RETURN} passes {@code WS-COMMAREA}, declared {@code PIC X(2000)} - so a
+     * client continuing the pseudo-conversation faithfully reports 2000 while one
+     * arriving from the menu reports 160. An earlier revision accepted only zero and one
+     * synthetic length and answered {@code 400} to both of those real values, which refused the very
+     * payload this API's own response tells a client to send back. Any non-negative length is therefore
+     * accepted and carried through unchanged; only the zero test is acted on, because only the zero test
+     * exists in the source.
+     *
+     * <p>A stated value must still agree with what actually arrived: {@code EIBCALEN} describes the area
+     * CICS passed, so a payload carrying a communication area cannot report zero and a payload carrying
+     * none cannot report a length. That is not an invented rule but the one relation the parameter has to
+     * the body, and {@code :880} branches on it.
+     *
+     * @param eibcalen the stated value, or {@code null} to derive it from the carrier
+     * @param request  the bound request, whose commarea presence is the carrier
+     * @return zero when no communication area arrived, otherwise the length that arrived
+     * @throws IllegalArgumentException if the stated value is negative, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, AccountUpdateRequest request) {
         boolean carried = request.hasNavigationContext();
@@ -1634,14 +1791,9 @@ public class AccountUpdateController {
             return carried ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
         }
         int stated = eibcalen;
-        if (stated != NO_COMMAREA_LENGTH
-                && stated != NavigationContext.COMMAREA_LENGTH
-                && stated != PASSED_COMMAREA_LENGTH) {
+        if (stated < NO_COMMAREA_LENGTH) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
-                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
-                    + "program is " + NO_COMMAREA_LENGTH + ", " + NavigationContext.COMMAREA_LENGTH
-                    + " (CARDDEMO-COMMAREA) or " + PASSED_COMMAREA_LENGTH
-                    + " (CARDDEMO-COMMAREA plus WS-THIS-PROGCOMMAREA).");
+                    + ", and EIBCALEN is the length of the area CICS passed, which cannot be negative.");
         }
         if ((stated == NO_COMMAREA_LENGTH) == carried) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
@@ -2924,10 +3076,34 @@ public class AccountUpdateController {
         /** {@code ACUP-NEW-CUST-DATA} ({@code :798-855}). */
         final CustDataArea acupNewCust = new CustDataArea();
 
-        /** {@code ACCOUNT-RECORD} of {@code app/cpy/CVACT01Y.cpy}, copied at {@code :640}. */
+        /**
+         * {@code ACCOUNT-RECORD} of {@code app/cpy/CVACT01Y.cpy}, copied at {@code :640}.
+         *
+         * <p><strong>A record area, not an optional record.</strong> The copybook declares an
+         * {@code 01}-level item, so the 300 bytes exist for the whole task whether or not a read has ever
+         * filled them, and they hold what COBOL leaves there: spaces in every {@code PIC X} field and zero
+         * in every numeric one. A failed {@code EXEC CICS READ ... INTO(ACCOUNT-RECORD)} leaves the area
+         * exactly as it was, and {@code 9500-STORE-FETCHED-DATA} then copies that unchanged image into
+         * {@code ACUP-OLD-ACCT-DATA} and the communication area - a defect of the original, reachable
+         * because {@code :3720} comments out {@code SET DID-NOT-FIND-ACCT-IN-ACCTDAT TO TRUE} and so
+         * leaves {@code 9000}'s guard ineffective. It is preserved (practice <strong>B5</strong>).
+         *
+         * <p>So the field is <strong>never {@code null}</strong>, and {@code null} is never used to mean
+         * "unchanged": {@link Conversation#Conversation(Charset)} establishes the starting image at the
+         * moment storage exists, and only a successful read replaces it. It is not an {@code Optional} for
+         * the same reason - {@code 3202-SHOW-ORIGINAL-VALUES} reaches the area through the
+         * {@code FOUND-ACCT-IN-MASTER} flag, not through the presence of a record.
+         */
         AccountRecord accountRecord;
 
-        /** {@code CUSTOMER-RECORD} of {@code app/cpy/CVCUS01Y.cpy}, copied at {@code :646}. */
+        /**
+         * {@code CUSTOMER-RECORD} of {@code app/cpy/CVCUS01Y.cpy}, copied at {@code :646}.
+         *
+         * <p>The same in every respect as {@link #accountRecord}: an {@code 01}-level area that exists for
+         * the whole task, is never {@code null}, and is left unchanged by an unsuccessful read - with
+         * {@code :3769} commenting out {@code SET DID-NOT-FIND-CUST-IN-CUSTDAT TO TRUE} for the customer
+         * half of the same defect.
+         */
         CustomerRecord customerRecord;
 
         /**
@@ -2975,6 +3151,33 @@ public class AccountUpdateController {
 
         /** Whether {@code COMMON-RETURN} has run, so it cannot run twice however the flow reached it. */
         boolean returned;
+
+        /**
+         * Creates one interaction's storage with both record areas at their COBOL starting image.
+         *
+         * <p>{@link #accountRecord} and {@link #customerRecord} are established here rather than in
+         * {@link AccountUpdateController#initializeStorage} because they are {@code 01}-level items in
+         * their own right - {@code COPY CVACT01Y} at {@code :640} and {@code COPY CVCUS01Y} at
+         * {@code :646}, both outside {@code 01 WS-MISC-STORAGE} at {@code :35} - so neither
+         * {@code INITIALIZE WS-MISC-STORAGE} at {@code :867} nor the one at {@code :983} reaches them.
+         * Storage coming into existence is the only event that gives them a value COBOL agrees with.
+         *
+         * <p>The code page is a constructor argument because {@link AccountRecord} is byte-backed: it
+         * holds 300 bytes and hands them back unchanged, so an area is only meaningful in a stated page.
+         * The caller passes the active dataset page, which is the page a read would have filled the area
+         * in - so the image a read leaves alone is measured exactly as the image a read writes.
+         * {@link CustomerRecord} needs no page: it is a record of {@code String} fields that acquires one
+         * only when its repository encodes it.
+         *
+         * @param datasetCharset the active dataset code page; must not be {@code null}
+         * @throws NullPointerException if {@code datasetCharset} is {@code null}
+         */
+        Conversation(Charset datasetCharset) {
+            Objects.requireNonNull(datasetCharset,
+                    "ACCOUNT-RECORD is 300 bytes of storage and needs the code page they are written in");
+            this.accountRecord = new AccountRecord(datasetCharset);
+            this.customerRecord = new CustomerRecord();
+        }
 
         /** @return {@code WS-CARD-RID-ACCT-ID PIC 9(11)}'s numeric value. */
         long wsCardRidAcctIdN() {
@@ -3205,15 +3408,19 @@ public class AccountUpdateController {
      * untouched, because {@code ABEND-ROUTINE} cancels the handler at {@code :4219-4221} before abending
      * and so cannot re-enter itself.
      *
-     * <p>Two things are deliberately outside that handler. Ahead of it,
-     * {@link ScreenInputRejectedException#requireRepresentable} judges the received map against the
-     * screen code page, because a character that code page cannot represent is a value no
-     * {@code RECEIVE MAP} could have delivered - only a hand-built payload reaches it - and answering
-     * the caller's own mistake as a transaction abend is wrong. Sweeping before the flow begins also
-     * means the refusal precedes every read and every write, so nothing partial is left behind. Inside
-     * it, a {@link ScreenInputRejectedException} raised deeper in the flow is rethrown for the same
-     * reason: {@code ABEND-ROUTINE} is for a unit of work that genuinely did not complete, not for a
-     * payload describing a conversation this program cannot be in.
+     * <p>One thing is deliberately outside that handler: a {@link ScreenInputRejectedException} raised
+     * deeper in the flow is rethrown rather than handled, because {@code ABEND-ROUTINE} is for a unit of
+     * work that genuinely did not complete, not for a payload describing a conversation this program
+     * cannot be in.
+     *
+     * <p><strong>No code-page sweep stands ahead of the flow.</strong> Whether a value could have been
+     * delivered by a terminal at the configured code page is a transport judgement, and it is made once
+     * for every string of every request body by {@code config.WebConfig.ScreenTextDeserializer} at the JSON
+     * boundary. Making it here as well ran it ahead of {@code :880-893}, where the program decides
+     * whether it has a conversation at all, and ahead of the {@code EVALUATE} at {@code :1025-1062} that
+     * decides whether {@code 1100-RECEIVE-MAP} runs - so a field this program was about to ignore could
+     * be refused, and it was refused against a hard-coded {@code US-ASCII} rather than the page actually
+     * in force.
      *
      * @param request  the terminal input area and carried state
      * @param eibcalen {@code EIBCALEN}
@@ -3225,8 +3432,7 @@ public class AccountUpdateController {
     PaintedScreen handle(AccountUpdateRequest request, int eibcalen, byte eibAid) {
         Objects.requireNonNull(request, "A request is required: COACTUPC is entered with a terminal "
                 + "input area, and an absent one is spaces rather than nothing");
-        ScreenInputRejectedException.requireRepresentable(request.fieldValues(), codec());
-        Conversation task = new Conversation();
+        Conversation task = new Conversation(codec.charset());
         try {
             main0000(request, task, eibcalen, eibAid);
         } catch (AbendException alreadyAbending) {
@@ -3349,12 +3555,10 @@ public class AccountUpdateController {
         // WS-COMMAREA PIC X(2000), the third area INITIALIZE blanks.
         task.wsCommarea = spaces(WS_COMMAREA_LENGTH);
 
-        // The record areas. ACCOUNT-RECORD and CUSTOMER-RECORD are WORKING-STORAGE group items, so they
-        // exist whether or not a read has filled them, and hold what COBOL leaves there: spaces in every
-        // PIC X field and zero in every numeric one. They are not Optionals because 3202 can reach them
-        // through the FOUND-xxx-IN-MASTER guards without a successful read having happened.
-        task.accountRecord = new AccountRecord(PIC_X_CODEC.charset());
-        task.customerRecord = new CustomerRecord();
+        // ACCOUNT-RECORD and CUSTOMER-RECORD are deliberately NOT reset. The INITIALIZE at :867 names
+        // CC-WORK-AREA, WS-MISC-STORAGE and WS-COMMAREA, and the two copybooks at :640 and :646 are
+        // 01-level items outside all three - so each area keeps whatever it holds, which for a fresh task
+        // is the starting image Conversation's constructor gave it.
         task.cardXrefRecord = Optional.empty();
         task.abendData = SystemMessages.AbendData.spaces();
 
@@ -3420,9 +3624,9 @@ public class AccountUpdateController {
         }
         // :889-893 - the two moves out of DFHCOMMAREA, by offset.
         task.carddemoCommarea = NavigationContext.fromFixedWidth(
-                PIC_X_CODEC, task.carddemoCommarea.toFixedWidth(PIC_X_CODEC));
+                codec, task.carddemoCommarea.toFixedWidth(codec));
         AccountUpdateRequest.CommArea atWidth =
-                AccountUpdateRequest.CommArea.decode(task.toCommArea().encode(PIC_X_CODEC), PIC_X_CODEC);
+                AccountUpdateRequest.CommArea.decode(task.toCommArea().encode(codec), codec);
         task.acupChangeAction = atWidth.changeAction();
         task.acupOldAcct.fromSnapshot(atWidth.oldDetails().acct());
         task.acupOldCust.fromSnapshot(atWidth.oldDetails().cust());
@@ -3621,8 +3825,8 @@ public class AccountUpdateController {
         task.wsLongMsg = spaces(WS_LONG_MSG_LENGTH);
         task.wsInfoMsg = spaces(WS_INFO_MSG_LENGTH);
         task.wsReturnMsg = WS_RETURN_MSG_OFF;
-        task.accountRecord = new AccountRecord(PIC_X_CODEC.charset());
-        task.customerRecord = new CustomerRecord();
+        // As at :867, the two record areas are NOT reset: INITIALIZE WS-MISC-STORAGE names one 01-level
+        // item, and the copybooks at :640 and :646 are two others.
         task.cardXrefRecord = Optional.empty();
         task.abendData = SystemMessages.AbendData.spaces();
     }
@@ -3724,10 +3928,10 @@ public class AccountUpdateController {
         // built because its total width is what EXEC CICS RETURN LENGTH reports, and a payload that
         // cannot fit it is a payload the next turn could not restore.
         AccountUpdateRequest.CommArea thisProg = task.toCommArea();
-        task.wsCommarea = PIC_X_CODEC.padToDeclaredWidth(
-                PIC_X_CODEC.decodeImage(task.carddemoCommarea.toFixedWidth(PIC_X_CODEC),
+        task.wsCommarea = codec.padToDeclaredWidth(
+                codec.decodeImage(task.carddemoCommarea.toFixedWidth(codec),
                         "CARDDEMO-COMMAREA")
-                        + PIC_X_CODEC.decodeImage(thisProg.encode(PIC_X_CODEC),
+                        + codec.decodeImage(thisProg.encode(codec),
                                 "WS-THIS-PROGCOMMAREA"),
                 WS_COMMAREA_LENGTH);
 
@@ -4190,6 +4394,16 @@ public class AccountUpdateController {
         // times inside the paragraph, so 'SSN' never reaches a message; the MOVE is reproduced anyway.
         task.wsEditVariableName = editVariableName(NAME_SSN);
         editUsSsn1265(task);
+        // The three parts of WS-EDIT-US-SSN-FLGS (app/cbl/COACTUPC.cbl:132-146) published into
+        // WS-NON-KEY-FLAGS, exactly as the two telephone numbers publish theirs below. 3280-SETUP-ATTRS
+        // copies CSSETATY three times for these fields - EDIT-US-SSN-PART1, -PART2 and -PART3 at
+        // :3296-3313 - and 3390-SETUP-CURSOR tests FLG-EDIT-US-SSN-PARTn-NOT-OK and -BLANK at :3077-3088,
+        // so a rejected part must redden ACTSSN1, ACTSSN2 or ACTSSN3 and claim the cursor. Without this
+        // publication the flags were written and never read, and a non-numeric SSN part was rejected into
+        // WS-RETURN-MSG while the field itself stayed at its default colour.
+        task.setFlag(AccountUpdateResponse.ScreenField.ACTSSN1, task.wsEditUsSsnPart1Flgs);
+        task.setFlag(AccountUpdateResponse.ScreenField.ACTSSN2, task.wsEditUsSsnPart2Flgs);
+        task.setFlag(AccountUpdateResponse.ScreenField.ACTSSN3, task.wsEditUsSsnPart3Flgs);
 
         // :1534-1542 - the date of birth: the generic date edit, and then, only if it passed, the
         // additional not-in-the-future check. The second call overwrites the flag group.
@@ -5550,7 +5764,7 @@ public class AccountUpdateController {
                         task.acupNewAcct.toAccountData(),
                         task.acupNewCust.toCustomerData()),
                 task.wsReturnMsg,
-                PIC_X_CODEC);
+                codec);
 
         // WS-RETURN-MSG and WS-INPUT-FLAG are the paragraph's own shared items; they come back changed.
         task.wsReturnMsg = atReturnWidth(result.returnMessage());
@@ -6574,6 +6788,15 @@ public class AccountUpdateController {
      * already did it at {@code :3610} and nothing has written the group since. The second one is
      * redundant and is reproduced.
      *
+     * <p><strong>It can be reached without a record having been read.</strong> {@code 9000-READ-ACCT}
+     * guards this call with {@code DID-NOT-FIND-ACCT-IN-ACCTDAT} and
+     * {@code DID-NOT-FIND-CUST-IN-CUSTDAT}, but the two statements that would set those conditions are
+     * commented out at {@code :3720} and {@code :3769}, so neither guard ever fires. A {@code NOTFND} read
+     * therefore arrives here with its {@code WORKING-STORAGE} area unchanged, and this paragraph stores
+     * that image - zero identifiers, spaces - into {@code ACUP-OLD-DETAILS} and the communication area.
+     * The two areas are read as they stand, with no assertion that a read filled them: the wrong value is
+     * the original's and is preserved (practice <strong>B5</strong>).
+     *
      * <p>The dates arrive as {@code PIC X(10)} {@code YYYY-MM-DD} in both records and are split
      * {@code (1:4)}, {@code (6:2)}, {@code (9:2)} - skipping the two hyphens - into the eight-character
      * spans. The commented-out whole-field {@code MOVE}s above each split ({@code :3831}, {@code :3838},
@@ -6583,10 +6806,14 @@ public class AccountUpdateController {
      * @param task this interaction's storage
      */
     void storeFetchedData9500(Conversation task) {
-        AccountRecord account = Objects.requireNonNull(task.accountRecord,
-                "9500-STORE-FETCHED-DATA is reached only after 9300 filled ACCOUNT-RECORD");
-        CustomerRecord customer = Objects.requireNonNull(task.customerRecord,
-                "9500-STORE-FETCHED-DATA is reached only after 9400 filled CUSTOMER-RECORD");
+        // Both areas are read exactly as they stand, with no test that a read filled them - because this
+        // paragraph is reached after a failed read as well as a successful one. :3720 and :3769 comment
+        // out the two SET DID-NOT-FIND-* statements, so 9000's guards never fire, and what gets stored is
+        // then the area's unchanged image: account id zero, customer id zero, spaces. That wrong value
+        // going into ACUP-OLD-DETAILS and the commarea is the original's defect and is preserved
+        // (practice B5). Demanding a record here instead raised an abend the source cannot produce.
+        AccountRecord account = task.accountRecord;
+        CustomerRecord customer = task.customerRecord;
 
         // :3805-3811 - the communication area. CDEMO-CARD-NUM comes from the cross-reference, which is
         // why the card number the operator sees survives a customer-record change.

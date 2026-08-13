@@ -19,13 +19,19 @@ import java.util.OptionalInt;
  * That is the faithful translation of an abend - and it is the wrong answer for a value the
  * <em>caller</em> supplied.
  *
- * <p>The two cases below are exactly that: states the 3270 conversation cannot be in, which only a
+ * <p>The cases below are exactly that: states the 3270 conversation cannot be in, which only a
  * hand-built JSON payload can reach. On a terminal, a {@code RECEIVE MAP} delivers bytes already in
- * the terminal's code page and a communication area is only ever the one the program itself wrote, so
- * neither case has a COBOL behaviour to be faithful to. Refusing them at the boundary keeps the abend
- * path for what it is for - a unit of work that genuinely did not complete - and gives the caller the
- * same controlled {@code 400} that {@code COUSR01C} and {@code COTRN02C}, which declare no
- * {@code HANDLE ABEND}, already produce for the identical input.
+ * the terminal's code page, so neither case has a COBOL behaviour to be faithful to. Refusing them at
+ * the boundary keeps the abend path for what it is for - a unit of work that genuinely did not
+ * complete - and gives the caller the same controlled {@code 400} that {@code COUSR01C} and
+ * {@code COTRN02C}, which declare no {@code HANDLE ABEND}, already produce for the identical input.
+ *
+ * <p><strong>What is NOT refused here is as much part of the contract as what is.</strong> A screen key
+ * that names a different record from the URI, and a communication area whose fetched key is blank, were
+ * both refused by this type and are not any longer: a 3270 screen has one key field and no URI, so
+ * there is no disagreement for the source to have an answer to, and a blank fetched key is answered by
+ * the source's own {@code HANDLE ABEND} path rather than by a new class of HTTP error. Each route now
+ * treats the URI as what seeds a first entry, and lets the program read its own map on a re-entry.
  *
  * <h2>The producers</h2>
  * <ul>
@@ -42,23 +48,11 @@ import java.util.OptionalInt;
  *       datasets, US-ASCII for the fixtures. An accented Latin letter, a CJK ideograph or an emoji has
  *       no representation there, so {@code FixedWidthRecord.Transcoder} refuses it rather than letting
  *       {@code String.getBytes} substitute {@code '?'} and write a value into a dataset that no COBOL
- *       program could have produced. See {@link #unrepresentable(String, String, Charset, int)}.</li>
- *   <li><strong>A communication area that contradicts itself.</strong> {@code COCRDUPC:671-672} moves
- *       {@code CCUP-OLD-ACCTID PIC X(11)} into {@code CDEMO-ACCT-ID PIC 9(11)} on the turn that
- *       processes a fetched card. The only writer of {@code CCUP-OLD-ACCTID} is the program itself, at
- *       {@code :1006-1007}, and it writes the eleven digits it read - so on any real conversation the
- *       receiving numeric item gets digits. A payload that asks for the processing action while leaving
- *       those keys blank describes a screen that was never fetched, and the numeric item it feeds
- *       cannot hold blanks at all. See {@link #inconsistentCommarea(String, String)}.</li>
- *   <li><strong>Two different values for one key.</strong> A keyed route states its record's key twice -
- *       once in the URI and once in the screen field the URI binds - and on a terminal there is only
- *       ever one. A payload that types {@code 00000000002} into the account filter while asking
- *       {@code /api/accounts/00000000001} describes a screen that cannot exist, and the alternative to
- *       refusing it is discarding one of the two values with no message, which is silent loss of the
- *       operator's own input. This is a refusal of the REST transport, raised before the flow begins,
- *       not an invented COBOL condition: the legacy screen has no URI to disagree with, and a client
- *       that echoes a painted screen agrees with the path and never reaches it. See
- *       {@link #requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.</li>
+ *       program could have produced. This is judged at the JSON boundary, for every string of every
+ *       body of all seventeen routes, by {@code config.WebConfig.ScreenTextDeserializer} against the <em>active</em>
+ *       code page the deployment named - not per route, and not inside a program's flow, where it would
+ *       run ahead of the program's own decision about whether it receives a map at all.
+ *       See {@link #unrepresentable(String, String, Charset, int)}.</li>
  * </ul>
  *
  * <h2>Why it extends {@link IllegalArgumentException}</h2>
@@ -78,6 +72,29 @@ import java.util.OptionalInt;
  * the fault, the code page or the item involved, and the width - never the content (practice
  * <strong>B6</strong>).
  *
+ * <h2>Two audiences, two texts</h2>
+ * <strong>What this type tells the caller and what it tells the server are deliberately different
+ * texts, and only one of them is published.</strong>
+ *
+ * <ul>
+ *   <li>{@link #publicDetail()} is what reaches the response body. It is a <em>fixed</em> sentence per
+ *       {@link Reason} - composed here and nowhere else - naming the member and nothing else. No code
+ *       page, no symbolic-map item, no {@code PIC X(n)}, no Unicode code point, no width, no bound and
+ *       no 3270 or {@code RECEIVE MAP} mechanics.</li>
+ *   <li>{@link #getMessage()} is the server-side diagnostic. It carries exactly those internal facts,
+ *       because they are what an engineer holding the copybook open needs, and it reaches the server
+ *       log and nothing else.</li>
+ * </ul>
+ *
+ * <p>The split exists because the two audiences are not the same. The caller of an unauthenticated
+ * endpoint needs to know <em>which member</em> to correct and <em>what kind</em> of thing is wrong with
+ * it; the code page this deployment decodes datasets in, the copybook item a member projects and the
+ * mechanics of a 3270 field are facts about the <em>inside</em> of this system, and publishing them one
+ * rejected field at a time hands an attacker a map of it. Neither text ever carries the value.
+ *
+ * @see #publicDetail() for the text the caller is answered with
+ * @see Reason for the fixed public sentence of each refusal
+ *
  * @see com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler for the 400 this is answered with
  * @see AbendException for the failure family this type exists to stay out of
  */
@@ -96,6 +113,68 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
     private static final char LOW_VALUE = '\u0000';
 
     /**
+     * What kind of thing is wrong with the request, and the <strong>fixed</strong> sentence the caller
+     * is answered with for it.
+     *
+     * <p>One constant per refusal shape, and the sentence is a constant too: it is written here, it
+     * takes no argument but the member name, and no factory can widen it by wording its own diagnostic
+     * differently. That is the property that makes the published text safe to keep publishing as this
+     * class grows - the risk a fixed, argument-free response exists to close.
+     *
+     * <p>Each sentence answers the only two questions a caller can act on: which member is at fault,
+     * and what class of thing is wrong with it. None of them names a code page, a copybook item, a
+     * {@code PICTURE} clause, a Unicode code point, a width, a bound, or anything about 3270 terminals -
+     * those live in {@link ScreenInputRejectedException#getMessage()}, which reaches the server log
+     * only.
+     */
+    public enum Reason {
+
+        /**
+         * A character the screen cannot carry - a control character no terminal transmits, or one the
+         * configured code page has no representation for. The two are one answer to a caller, because
+         * the correction is the same: send characters the screen can carry.
+         */
+        UNSUPPORTED_CHARACTER("contains a character this screen field cannot carry"),
+
+        /** The member arrived as something other than JSON character data - a number, a boolean, an
+         * object or an array where a screen field belongs. */
+        NOT_CHARACTER_DATA("must be sent as a JSON string, because it is a screen field"),
+
+        /** More characters than the screen field accepts. Refused rather than truncated, because
+         * keeping the leading characters could silently address a different record. */
+        TOO_WIDE("is longer than this screen field accepts"),
+
+        /** A stated value outside the range the item it stands for can hold. */
+        OUTSIDE_RANGE("is outside the range this request value accepts"),
+
+        /** Two accepted spellings of one request value state different things. */
+        CONTRADICTORY_SPELLINGS("contradicts another spelling of the same request value");
+
+        /** The fault, worded for the caller, with the member name supplied at the call site. */
+        private final String publicPredicate;
+
+        /**
+         * @param publicPredicate the fixed predicate, read after the member name
+         */
+        Reason(final String publicPredicate) {
+            this.publicPredicate = publicPredicate;
+        }
+
+        /**
+         * The sentence published for this reason, naming the member the caller sent and nothing else.
+         *
+         * @param member the payload member, path variable or parameter at fault, spelled as the caller
+         *               sent it, or {@code null} when the refusal names none
+         * @return the public detail; never {@code null}
+         */
+        String publicDetail(final String member) {
+            return "The value supplied for " + (member == null ? "this request" : member) + " "
+                    + publicPredicate + ". Correct it and send the request again. The rejected value "
+                    + "is not echoed here.";
+        }
+    }
+
+    /**
      * The payload member at fault, or {@code null} when the refusal names no single member.
      *
      * <p>{@code transient} is deliberate even though {@link String} is serialisable: an exception that
@@ -105,14 +184,52 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
     private final transient String member;
 
     /**
+     * What kind of thing is wrong, which is what selects the fixed sentence the caller is answered
+     * with. Never {@code null}.
+     */
+    private final Reason reason;
+
+    /**
      * Builds a refusal naming the payload member at fault.
      *
+     * @param reason  what kind of thing is wrong; must not be {@code null}
      * @param member  the member's name as the caller sent it, or {@code null} when none is named
-     * @param message what is wrong, stating the shape of the fault and never the value
+     * @param message the <em>diagnostic</em>: what is wrong, stating the shape of the fault, the item,
+     *                the code page or the width - and never the value. Reaches the server log, never a
+     *                response body
      */
-    private ScreenInputRejectedException(final String member, final String message) {
+    private ScreenInputRejectedException(final Reason reason,
+            final String member,
+            final String message) {
         super(message);
+        this.reason = Objects.requireNonNull(reason, "A Reason is required: it selects the fixed "
+                + "sentence the caller is answered with, and there is no unclassified refusal");
         this.member = member;
+    }
+
+    /**
+     * What kind of thing is wrong with the request.
+     *
+     * @return the reason; never {@code null}
+     */
+    public Reason reason() {
+        return reason;
+    }
+
+    /**
+     * The text this refusal is <strong>published</strong> as: a fixed sentence for its
+     * {@link #reason()}, naming the member the caller sent and disclosing nothing else.
+     *
+     * <p>This is what {@code WebConfig.CobolErrorHandler} puts in the response body, in place of
+     * {@link #getMessage()}. The distinction is the whole point of the pair: the diagnostic names the
+     * code page, the symbolic-map item, the {@code PICTURE} width and the Unicode code point, all of
+     * which describe the inside of this system, and a caller of an unauthenticated endpoint has no
+     * business being handed them one rejected field at a time.
+     *
+     * @return the public detail; never {@code null} and never carrying the rejected value
+     */
+    public String publicDetail() {
+        return reason.publicDetail(member);
     }
 
     /**
@@ -147,7 +264,8 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
         Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
         Objects.requireNonNull(itemName, "The symbolic-map item name is required");
         Objects.requireNonNull(charset, "The code page that refused the character is required");
-        return new ScreenInputRejectedException(member, "The value supplied for " + member
+        return new ScreenInputRejectedException(Reason.UNSUPPORTED_CHARACTER, member,
+                "The value supplied for " + member
                 + " contains a character - Unicode code point U+"
                 + String.format("%04X", codePoint) + " - that code page " + charset.name()
                 + " cannot represent, so no 3270 RECEIVE MAP could have delivered it into "
@@ -166,7 +284,8 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
     public static ScreenInputRejectedException controlCharacter(final String member,
             final int codePoint) {
         Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
-        return new ScreenInputRejectedException(member, "The value supplied for " + member
+        return new ScreenInputRejectedException(Reason.UNSUPPORTED_CHARACTER, member,
+                "The value supplied for " + member
                 + " contains a control character - Unicode code point U+"
                 + String.format("%04X", codePoint) + " - which a 3270 terminal cannot transmit into a "
                 + "PIC X field: a RECEIVE MAP delivers the modified fields of a screen as graphic "
@@ -275,39 +394,86 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
         Objects.requireNonNull(codec, "A FixedWidthCodec is required: the code page a screen value is "
                 + "judged against is stated explicitly, never derived from the platform");
         for (Map.Entry<String, String> field : fieldValues.entrySet()) {
-            String value = field.getValue();
-            if (value == null) {
-                continue;
-            }
-            OptionalInt offending = codec.firstUnrepresentableCodePoint(value);
-            if (offending.isPresent()) {
-                throw unrepresentable(jsonMemberOfLabel(field.getKey()), field.getKey() + "I",
-                        codec.charset(), offending.getAsInt());
-            }
+            requireRepresentable(jsonMemberOfLabel(field.getKey()), field.getKey() + "I",
+                    field.getValue(), codec);
         }
     }
 
     /**
-     * Refuses a communication-area member that does not carry what the program itself would have
-     * written there.
+     * Judges one value against the code page and refuses the first character it cannot represent.
+     *
+     * <p>The single-value form of {@link #requireRepresentable(Map, FixedWidthCodec)}, and the form the
+     * JSON boundary uses: {@code config.WebConfig.ScreenTextDeserializer} meets one string at a time, has the
+     * member name the caller spelled, and has no map of the whole screen to sweep. Judging there is what
+     * makes the rule reach <em>every</em> request family rather than the three that sweep their received
+     * map - a member left off any one route's list would be a silent hole, and fourteen of the seventeen
+     * screens were exactly that hole.
+     *
+     * <p>The rule itself is unchanged: every screen field is {@code PIC X(n)}, which is n <em>bytes</em>
+     * in a single-byte code page, so a character with no representation there is a value no
+     * {@code RECEIVE MAP} could have delivered. Refusing it here rather than at the record write is what
+     * lets the answer name a member: by the time the value reaches a dataset it is one span of a
+     * fixed-width image and the member it came from is no longer known.
+     *
+     * <p>A {@code null} value is skipped rather than refused: an absent field is spaces on a terminal,
+     * and it carries no character to judge.
      *
      * @param member   the payload member's name, as the caller sent it; must not be {@code null}
-     * @param expected what the program writes there, stated as a shape and never as a value - for
-     *                 example {@code "the eleven digits of the fetched account identifier"}; must not
-     *                 be {@code null}
-     * @return the refusal, never {@code null}
-     * @throws NullPointerException if either argument is {@code null}
+     * @param itemName the item the member projects, for example {@code ACSFNAMI}, for the server-side
+     *                 diagnostic only; must not be {@code null}
+     * @param value    the value as received; may be {@code null}
+     * @param codec    the codec carrying the screen code page; must not be {@code null}
+     * @throws NullPointerException         if {@code member}, {@code itemName} or {@code codec} is
+     *                                     {@code null}
+     * @throws ScreenInputRejectedException if the value carries a character the code page cannot
+     *                                     represent
      */
-    public static ScreenInputRejectedException inconsistentCommarea(final String member,
-            final String expected) {
+    public static void requireRepresentable(final String member,
+            final String itemName,
+            final String value,
+            final FixedWidthCodec codec) {
         Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
-        Objects.requireNonNull(expected, "A statement of what the program writes there is required");
-        return new ScreenInputRejectedException(member, "The communication area supplied for " + member
-                + " does not carry " + expected + ", so it describes a conversation this program "
-                + "cannot be in: the only writer of that member is this program itself, and the "
-                + "requested action processes the record it fetched. Fetch the record first - send the "
-                + "screen with no change action - and send back the communication area the reply "
-                + "carries. The rejected value is not echoed here.");
+        Objects.requireNonNull(itemName, "The item the member projects is required for the diagnostic");
+        Objects.requireNonNull(codec, "A FixedWidthCodec is required: the code page a screen value is "
+                + "judged against is stated explicitly, never derived from the platform");
+        if (value == null) {
+            return;
+        }
+        final OptionalInt offending = codec.firstUnrepresentableCodePoint(value);
+        if (offending.isPresent()) {
+            throw unrepresentable(member, itemName, codec.charset(), offending.getAsInt());
+        }
+    }
+
+    /**
+     * Refuses a member that arrived as something other than JSON character data.
+     *
+     * <p>Every payload member of all seventeen screens projects a {@code PIC X(n)} item, so a JSON
+     * number, boolean, object or array where a screen field belongs is not a screen field with an
+     * unusual value - it is not a screen field at all. Coercing it would fabricate a character image no
+     * terminal sent: {@code 11} for a {@code PIC X(11)} account filter drops the nine leading zeros the
+     * screen actually carries, and {@code true} is a five-character word the operator never typed.
+     *
+     * <p>The token shape is named in the diagnostic and not in the published answer: what the caller
+     * needs to be told is that the member must be sent as a string, which {@link Reason} states.
+     *
+     * @param member     the payload member's name, as the caller sent it; must not be {@code null}
+     * @param tokenShape what arrived instead, for example {@code VALUE_NUMBER_INT}; must not be
+     *                   {@code null}
+     * @return the refusal, never {@code null}
+     * @throws NullPointerException if {@code member} or {@code tokenShape} is {@code null}
+     */
+    public static ScreenInputRejectedException notCharacterData(final String member,
+            final String tokenShape) {
+        Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
+        Objects.requireNonNull(tokenShape, "The JSON token shape that arrived is required");
+        return new ScreenInputRejectedException(Reason.NOT_CHARACTER_DATA, member,
+                "The member " + member + " arrived as JSON " + tokenShape + " where a screen field "
+                + "belongs. Every payload member of every screen projects a PIC X(n) item, so it is "
+                + "character data or it is nothing: coercing a number would drop leading zeros and "
+                + "fabricate a field image no RECEIVE MAP delivered. Send it as a JSON string, or as an "
+                + "explicit null where the screen accepts an untransmitted field. The rejected value is "
+                + "not echoed here.");
     }
 
     /**
@@ -349,7 +515,8 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
             final int supplied) {
         Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
         Objects.requireNonNull(itemName, "The item the value is carried in is required");
-        return new ScreenInputRejectedException(member, "The value supplied for " + member + " is "
+        return new ScreenInputRejectedException(Reason.TOO_WIDE, member,
+                "The value supplied for " + member + " is "
                 + supplied + " characters, but it is carried in " + itemName + ", so a 3270 field could "
                 + "not have delivered it. It is refused rather than truncated, because keeping the "
                 + "leading " + declared + " characters would silently address a different record than "
@@ -375,10 +542,44 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
         Objects.requireNonNull(member, "The canonical parameter name is required");
         Objects.requireNonNull(alias, "The alternate parameter name is required");
         Objects.requireNonNull(what, "A statement of what the two spell is required");
-        return new ScreenInputRejectedException(member, "The " + member + " and " + alias
+        return new ScreenInputRejectedException(Reason.CONTRADICTORY_SPELLINGS, member,
+                "The " + member + " and " + alias
                 + " parameters are two spellings of the same value and state different things. One "
                 + "terminal interaction has " + what + ", so the two cannot disagree. Send one of them, "
                 + "or send both with the same value. Neither stated value is echoed here.");
+    }
+
+    /**
+     * Refuses a request that states one attention identifier twice and disagrees with itself.
+     *
+     * <p>A screen's key can arrive two ways: as the raw {@code EIBAID} byte in a query parameter, and as
+     * the {@code CCARD-AID} token a previous screen's response echoed into the payload. One terminal
+     * interaction presents one key, so the two cannot name different ones. Believing either would send
+     * the request down a branch the caller did not unambiguously ask for - and because the byte is the
+     * lossless statement and the token is a folded projection of it, the disagreement is exactly the
+     * case where guessing changes behaviour.
+     *
+     * <p>Neither stated key is echoed, for the reason the class documents.
+     *
+     * @param member        the payload member carrying the token, as the caller sent it; must not be
+     *                      {@code null}
+     * @param parameterName the query parameter carrying the raw byte; must not be {@code null}
+     * @return the refusal, never {@code null}
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public static ScreenInputRejectedException conflictingAid(final String member,
+            final String parameterName) {
+        Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
+        Objects.requireNonNull(parameterName, "The parameter name carrying the raw byte is required");
+        return new ScreenInputRejectedException(Reason.CONTRADICTORY_SPELLINGS, member,
+                "The " + parameterName + " parameter and the payload's " + member
+                + " both state which key was pressed, and they name different keys. One terminal "
+                + "interaction presents one attention identifier, so the two cannot disagree; and "
+                + "because " + parameterName + " carries the byte itself while " + member + " carries a "
+                + "token folded from it, honouring either would select a key the caller did not "
+                + "unambiguously send. Send " + parameterName + " alone, or send a " + member + " that "
+                + "is the token that byte stores, or leave " + member + " blank or LOW-VALUES. Neither "
+                + "stated key is echoed here.");
     }
 
     /**
@@ -403,122 +604,10 @@ public final class ScreenInputRejectedException extends IllegalArgumentException
             final int high) {
         Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
         Objects.requireNonNull(what, "A statement of what the item is is required");
-        return new ScreenInputRejectedException(member, "The value supplied for " + member + " is "
+        return new ScreenInputRejectedException(Reason.OUTSIDE_RANGE, member,
+                "The value supplied for " + member + " is "
                 + "outside " + low + " to " + high + ", which is what " + what + " can hold, so no "
                 + "terminal could have presented it. Narrowing it silently would select a value the "
                 + "caller never sent. The rejected value is not echoed here.");
-    }
-
-    /**
-     * Refuses a payload whose screen key member names a different record from the URI.
-     *
-     * <p>Neither value is echoed, for the reason the class documents: these key spans hold account
-     * identifiers, card numbers and user identifiers.
-     *
-     * @param member the payload member's name, as the caller sent it; must not be {@code null}
-     * @param width  the member's declared {@code PICTURE} width
-     * @return the refusal, never {@code null}
-     * @throws NullPointerException if {@code member} is {@code null}
-     */
-    public static ScreenInputRejectedException conflictingKey(final String member, final int width) {
-        Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
-        return new ScreenInputRejectedException(member, "The URI names one record and the payload's "
-                + member + " names another, so the request states its key twice and disagrees with "
-                + "itself. A 3270 screen has one key field and no URI, so there is no COBOL behaviour "
-                + "to be faithful to here, and honouring one value would silently discard the other. "
-                + "Send " + member + " as the URI's key at its declared PIC X(" + width + ") width, or "
-                + "leave it blank or LOW-VALUES and let the URI state the key alone. Neither rejected "
-                + "value is echoed here.");
-    }
-
-    /**
-     * Requires a payload's screen key member to agree with the key the URI names, and refuses it when
-     * it contradicts it.
-     *
-     * <p>Four kinds of input agree and are accepted, because on a terminal each of them means "the
-     * operator typed nothing here, so the key comes from elsewhere" or "the operator typed exactly this
-     * key":
-     *
-     * <ol>
-     *   <li>{@code null} - the member did not arrive at all;</li>
-     *   <li>all spaces or all {@code LOW-VALUES} at the declared width - which is what BMS leaves in an
-     *       input field that was never modified, and what every one of these routes paints into the key
-     *       member on a cold start;</li>
-     *   <li>any image the screen itself reads as "no criterion supplied", passed in by the caller. The
-     *       account and card screens paint {@code '*'} into their key field when nothing was supplied
-     *       [{@code app/cbl/COACTVWC.cbl:563}, {@code app/cbl/COCRDSLC.cbl:543,549}] and read
-     *       {@code = '*'} back as exactly that [{@code COACTVWC:628}, {@code COACTUPC:1051},
-     *       {@code COCRDSLC:615,622}], so an asterisk names no record and a client echoing that painted
-     *       screen must not be refused;</li>
-     *   <li>the URI's key itself, brought to the declared width by the {@code PIC X} move rule - which
-     *       is what a client echoing a <em>populated</em> painted screen sends back.</li>
-     * </ol>
-     *
-     * <p>Anything else is two different keys in one request and is refused by
-     * {@link #conflictingKey(String, int)}. Every comparison is made <em>at the declared width</em>, so
-     * {@code "USER1"} and {@code "USER1   "} are the same key rather than a conflict - the field is
-     * {@code PIC X(n)} and a short value is space padded on a terminal too, and a one-character literal
-     * like {@code '*'} is space extended before it is compared exactly as COBOL extends it.
-     *
-     * @param member            the payload member's name, as the caller sent it; must not be
-     *                          {@code null}
-     * @param uriKey            the key the URI names, already required to fit; must not be {@code null}
-     * @param bodyValue         the member as it arrived, of any length, or {@code null}
-     * @param width             the member's declared {@code PICTURE} width
-     * @param codec             the codec carrying the {@code PIC X} move rule; must not be {@code null}
-     * @param alsoMeaningNoKey  further images this screen reads as "no criterion supplied", each
-     *                          compared at {@code width}; none for a screen that has none
-     * @throws NullPointerException         if {@code member}, {@code uriKey}, {@code codec} or any
-     *                                      element of {@code alsoMeaningNoKey} is {@code null}
-     * @throws ScreenInputRejectedException if the member names a different record from the URI
-     */
-    public static void requireKeyAgreement(final String member,
-            final String uriKey,
-            final String bodyValue,
-            final int width,
-            final FixedWidthCodec codec,
-            final String... alsoMeaningNoKey) {
-        Objects.requireNonNull(member, "The payload member's name is required to name it in the answer");
-        Objects.requireNonNull(uriKey, "The key the URI names is required to compare against");
-        Objects.requireNonNull(codec, "A FixedWidthCodec is required: a PIC X comparison is made at the "
-                + "declared width, never by trimming");
-        Objects.requireNonNull(alsoMeaningNoKey, "A no-criterion image array is required, possibly empty");
-        if (bodyValue == null) {
-            return;
-        }
-        final String supplied = codec.movePicX(bodyValue, width);
-        if (isEvery(supplied, ' ') || isEvery(supplied, '\u0000')) {
-            return;
-        }
-        for (final String noCriterion : alsoMeaningNoKey) {
-            Objects.requireNonNull(noCriterion, "A no-criterion image must not be null");
-            if (supplied.equals(codec.movePicX(noCriterion, width))) {
-                return;
-            }
-        }
-        if (supplied.equals(codec.movePicX(uriKey, width))) {
-            return;
-        }
-        throw conflictingKey(member, width);
-    }
-
-    /**
-     * Whether every character of a value is the given one, which is how COBOL reads {@code EQUAL SPACES}
-     * and {@code EQUAL LOW-VALUES} over a fixed-width item.
-     *
-     * @param value     the value, already at its declared width
-     * @param character the character to test for
-     * @return {@code true} when the value is not empty and every character is {@code character}
-     */
-    private static boolean isEvery(final String value, final char character) {
-        if (value.isEmpty()) {
-            return false;
-        }
-        for (int position = 0; position < value.length(); position++) {
-            if (value.charAt(position) != character) {
-                return false;
-            }
-        }
-        return true;
     }
 }

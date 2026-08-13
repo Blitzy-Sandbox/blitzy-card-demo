@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.common;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.vsergeychik.carddemo.account.AccountUpdateService;
 import com.vsergeychik.carddemo.account.dto.AccountUpdateRequest;
@@ -96,6 +98,12 @@ class NoSensitiveDisclosureTest {
 
     /** A sentinel embossed name. */
     private static final String SENTINEL_EMBOSSED = "PERCIVAL QUATERMASS";
+
+    /**
+     * A sentinel eight-character password image; obviously fake, and never a credential or an
+     * environment secret.
+     */
+    private static final String SENTINEL_PASSWORD = "PWQUATER";
 
     /** Every sentinel that must never appear in any rendering. */
     private static final Map<String, String> FORBIDDEN = forbidden();
@@ -265,13 +273,21 @@ class NoSensitiveDisclosureTest {
         }
 
         @Test
-        @DisplayName("the sign-on response withholds the carried context")
+        @DisplayName("the sign-on response withholds the carried context and the PASSWDO span")
         void theSignOnResponseWithholdsTheCarriedContext() {
+            // The password is a component because COSGN0AO REDEFINES COSGN0AI makes PASSWDO the span the
+            // receive filled and the send transmits, so it is on the wire by parity. It is still absent
+            // from every rendering, which is the split this suite exists to hold.
             String rendering = new SignOnResponse("CC00", "t1", "d", "COSGN00C", "t2", "t", "CICS",
-                    "CICS", "ADMIN001", "", "A", "COADM01C", "COADM01", "COADM1A", populatedContext())
+                    "CICS", "ADMIN001", SENTINEL_PASSWORD, "", "A", "COADM01C", "COADM01", "COADM1A",
+                    "", populatedContext())
                     .toString();
 
             disclosesNothing("SignOnResponse", rendering);
+            assertThat(rendering)
+                    .as("the PASSWDO span reaches a 3270 as dark field data; a log line is not a 3270")
+                    .doesNotContain(SENTINEL_PASSWORD)
+                    .contains(SensitiveDiagnostics.REDACTED);
             assertThat(rendering)
                     .as("the operator id and the resolved role are the point of this response")
                     .contains("ADMIN001")
@@ -605,6 +621,49 @@ class NoSensitiveDisclosureTest {
         // recorded them as PASS, so probing them would extend this checkpoint's scope rather than close a
         // finding; they are carried in the resolution report as out-of-scope observations.
 
+        /**
+         * The screen DTOs that classify their own diagnostic rendering, and the item each must withhold.
+         *
+         * <p>The third discovery arm. {@code allRecords()} walks {@code type.isRecord()} and
+         * {@code allSpanAddressedTypes()} walks classes holding a {@link FixedWidthRecord}; a screen DTO is
+         * neither - it is a plain {@code final class} holding a map or a field per BMS item - so both
+         * missed every one of these, and {@code AccountUpdateResponse} and {@code TransactionListResponse}
+         * were rendering a social-security number and a page of transaction keys with nothing watching.
+         *
+         * <p>Selection is structural: a class declaring a {@code disclosureOf} method is, by this module's
+         * own convention, a type that classifies its own rendering. Every one discovered must appear here
+         * with a name it is required to withhold, so a new screen DTO cannot be added - or an existing
+         * one's classification quietly emptied - without somebody choosing what it withholds.
+         *
+         * <p>The value is a field or item name the type must NOT render as stored. For an enum-keyed
+         * classifier it is the {@code ScreenField} constant's name; for a string-keyed one it is the
+         * symbolic-map item name.
+         */
+        private static final Map<String, String> CLASSIFIED_RENDERINGS = Map.of(
+                "com.vsergeychik.carddemo.account.dto.AccountUpdateResponse", "ACTSSN1",
+                "com.vsergeychik.carddemo.transaction.dto.TransactionListResponse", "TRNID01O",
+                "com.vsergeychik.carddemo.transaction.dto.TransactionViewResponse", "ACTIDIN",
+                "com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest", "ACTIDIN",
+                "com.vsergeychik.carddemo.card.dto.CardListResponse", "CRDNUM1",
+                "com.vsergeychik.carddemo.card.dto.CardSelectRequest", "CARDSID",
+                "com.vsergeychik.carddemo.card.dto.CardUpdateRequest", "CARDSID");
+
+        /** The method name that marks a type as classifying its own diagnostic rendering. */
+        private static final String CLASSIFIER_METHOD = "disclosureOf";
+
+        /**
+         * Compiled classes exempted from the loadability requirement, each with its reason.
+         *
+         * <p><strong>Empty, and that is the finding.</strong> Every class compiled into this module
+         * loads, so nothing needs excusing - and the sweep now says so out loud instead of discovering
+         * it silently one class at a time. An entry here is admissible only when a class genuinely
+         * cannot be loaded in this JVM <em>and</em> a per-type disclosure test asserts its rendering
+         * instead, and the reason belongs in a comment beside it. {@link #assertEveryClassLoaded(Map)}
+         * also rejects an exemption that has stopped applying, so a stale entry cannot sit here
+         * excusing a class it was never written for.
+         */
+        private static final Set<String> UNLOADABLE_EXEMPT = Set.of();
+
         /** A short sentinel that fits any {@code PIC X} field and appears in no fixture. */
         private static final String PROBE = "ZQX7";
 
@@ -725,7 +784,27 @@ class NoSensitiveDisclosureTest {
                                     StandardCharsets.US_ASCII);
                     daly.moveDalytranCardNum(atWidth(PROBE + "CARDNUM", 16));
                     return new ProbeCase(daly, List.of(PROBE + "CARDNUM"));
-                });
+                },
+
+                "com.vsergeychik.carddemo.user.dto.SignOnResponse",
+                () -> new ProbeCase(
+                        // COSGN00.CPY output widths in declaration order - 4, 40, 8, 8, 40, 9, 8, 8, 8,
+                        // 8, 78 - then role at one, the navigation triple, the eighty-byte plain text and
+                        // the communication area. The generic probe cannot build this type: role is
+                        // PIC X(01), narrower than the sentinel, and the context component is not a
+                        // String. The password is the field the policy has an opinion about, and it is
+                        // here because COSGN0AO REDEFINES COSGN0AI puts the received image in the span
+                        // the SEND transmits.
+                        new com.vsergeychik.carddemo.user.dto.SignOnResponse(
+                                atWidth(PROBE, 4), atWidth("", 40), atWidth("", 8), atWidth("", 8),
+                                atWidth("", 40), atWidth("", 9), atWidth("", 8), atWidth("", 8),
+                                atWidth(PROBE + "ID", 8), atWidth(PROBE + "PW", 8), atWidth("", 78),
+                                "A", atWidth("", 8), atWidth("", 7), atWidth("", 7),
+                                atWidth("", 80), populatedContext()),
+                        // USERIDO is legible by design - it is the identifier a sign-on parity failure is
+                        // diagnosed from, and the program echoes it to the terminal - so the bare probe
+                        // is not forbidden there. The PASSWDO span is.
+                        List.of(PROBE + "PW")));
 
         /**
          * Pads or truncates a value to a declared {@code PIC X} width, on the right as COBOL does.
@@ -846,21 +925,76 @@ class NoSensitiveDisclosureTest {
             assertThat(java.nio.file.Files.isDirectory(classes))
                     .as("the compiled main output must be a directory to walk: %s", classes).isTrue();
             List<Class<?>> found = new java.util.ArrayList<>();
+            Map<String, String> unloadable = new java.util.TreeMap<>();
             try (java.util.stream.Stream<java.nio.file.Path> walk =
                          java.nio.file.Files.walk(classes)) {
                 for (java.nio.file.Path f : walk.filter(x -> x.toString().endsWith(".class")).toList()) {
                     String binary = classes.relativize(f).toString()
                             .replace(java.io.File.separatorChar, '.').replaceAll("\\.class$", "");
-                    try {
-                        found.add(Class.forName(binary, false,
-                                NavigationContext.class.getClassLoader()));
-                    } catch (Throwable unloadable) {
-                        // A class that cannot be initialised cannot render anything either.
-                    }
+                    loadOrRecord(binary, found, unloadable);
                 }
             }
+            assertEveryClassLoaded(unloadable);
             assertThat(found).as("the compiled output must contain classes to walk").isNotEmpty();
             return found;
+        }
+
+        /**
+         * Loads one compiled class, or records why it could not be loaded.
+         *
+         * <p>Split out of {@link #allCompiledTypes()} so the recording and the enforcement can each be
+         * exercised on their own - see {@code aClassThatCannotBeLoadedIsRecorded} and
+         * {@code anUnloadableClassFailsTheSweep}. A guard that skips what it cannot inspect has no way
+         * to prove it inspected anything, so its recording path has to be testable.
+         *
+         * @param binary     the binary class name derived from the file path
+         * @param loaded     accumulates successfully loaded classes
+         * @param unloadable accumulates binary name to sanitised reason for the ones that failed
+         */
+        private static void loadOrRecord(String binary, List<Class<?>> loaded,
+                                         Map<String, String> unloadable) {
+            try {
+                loaded.add(Class.forName(binary, false, NavigationContext.class.getClassLoader()));
+            } catch (Throwable failure) {
+                // Recorded, never dropped. Class.forName can fail with an Error as readily as an
+                // Exception - NoClassDefFoundError for an absent supertype, UnsupportedClassVersionError
+                // for output from a newer release - so Throwable is the right width to catch. What was
+                // wrong before was not the width of the catch but that the body was empty.
+                //
+                // The reason goes through the same redaction policy the parity harness uses, because a
+                // linkage error names the type it could not resolve and this text lands in a build log.
+                unloadable.put(binary, com.vsergeychik.carddemo.parity.ParityCase.Redaction
+                        .describeThrowable(failure));
+            }
+        }
+
+        /**
+         * Requires every compiled class to have been loadable, bar the documented exemptions.
+         *
+         * <p>This sweep's whole claim is completeness - it exists because a hand-written list of types
+         * missed two. A class silently dropped because it would not load is a hole in exactly that
+         * claim, and it is the worst kind: it widens on its own. A type that gains an unresolvable
+         * supertype disappears from the sweep and the sweep still passes, so a disclosure added to it
+         * afterwards is never seen. Failing closed converts that into a build failure naming the class.
+         *
+         * @param unloadable binary name to sanitised reason, empty when every class loaded
+         */
+        private static void assertEveryClassLoaded(Map<String, String> unloadable) {
+            Map<String, String> unexplained = new java.util.TreeMap<>(unloadable);
+            unexplained.keySet().removeAll(UNLOADABLE_EXEMPT);
+            assertThat(unexplained)
+                    .as("every class compiled into this module must be loadable for this sweep to be "
+                            + "complete. A class that cannot be loaded is not inspected, and a class "
+                            + "that is not inspected is not vouched for - so each one here must either "
+                            + "be made loadable or be admitted to UNLOADABLE_EXEMPT with the reason "
+                            + "and a per-type disclosure test standing in for it.")
+                    .isEmpty();
+            assertThat(UNLOADABLE_EXEMPT)
+                    .as("an exemption that no longer applies has to go, or it starts excusing a "
+                            + "different class than the one it was written for")
+                    .allSatisfy(exempt -> assertThat(unloadable)
+                            .as("%s is exempted from loading but loaded fine", exempt)
+                            .containsKey(exempt));
         }
 
         /**
@@ -1032,6 +1166,162 @@ class NoSensitiveDisclosureTest {
                 // appends a log entry of the writer's choosing after it - CWE-117.
                 assertThat(rendered.lines()).as("%s must render on one line", name).hasSize(1);
             });
+        }
+
+        /**
+         * Every class in this module that classifies its own diagnostic rendering.
+         *
+         * <p>Structural, for the reason given on {@link #CLASSIFIED_RENDERINGS}: neither of the other two
+         * discovery arms can see a screen DTO, and a hand-written list is what let two of them render
+         * cardholder data unwatched. A declared {@code disclosureOf} method is this module's own marker
+         * for the shape, so the discovery follows the marker rather than a remembered list.
+         *
+         * @return every type declaring a single-argument {@value #CLASSIFIER_METHOD}
+         * @throws Exception if the compiled output cannot be walked
+         */
+        private static List<Class<?>> allClassifiedRenderings() throws Exception {
+            List<Class<?>> found = new java.util.ArrayList<>();
+            for (Class<?> type : allCompiledTypes()) {
+                boolean classifies = java.util.Arrays.stream(type.getDeclaredMethods())
+                        .anyMatch(method -> CLASSIFIER_METHOD.equals(method.getName())
+                                && method.getParameterCount() == 1
+                                && method.getReturnType()
+                                == SensitiveDiagnostics.Disclosure.class);
+                if (classifies) {
+                    found.add(type);
+                }
+            }
+            return found;
+        }
+
+        /**
+         * Invokes a type's own {@value #CLASSIFIER_METHOD} for one field or item name.
+         *
+         * @param type      the classifying type
+         * @param fieldName the {@code ScreenField} constant name or symbolic-map item name, or
+         *                  {@code null} to exercise the safe default
+         * @return the classification the type returned
+         * @throws Exception if the method cannot be invoked
+         */
+        @SuppressWarnings("unchecked")
+        private static SensitiveDiagnostics.Disclosure classify(Class<?> type, String fieldName)
+                throws Exception {
+            java.lang.reflect.Method classifier = java.util.Arrays.stream(type.getDeclaredMethods())
+                    .filter(method -> CLASSIFIER_METHOD.equals(method.getName())
+                            && method.getParameterCount() == 1)
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(type.getName() + " declares no "
+                            + CLASSIFIER_METHOD));
+            classifier.setAccessible(true);
+            Class<?> parameter = classifier.getParameterTypes()[0];
+            Object argument = null;
+            if (fieldName != null) {
+                argument = parameter == String.class
+                        ? fieldName
+                        : Enum.valueOf((Class<Enum>) parameter.asSubclass(Enum.class), fieldName);
+            }
+            return (SensitiveDiagnostics.Disclosure) classifier.invoke(null, argument);
+        }
+
+        @Test
+        @DisplayName("every screen DTO that classifies its own rendering is discovered and registered")
+        void everyClassifiedRenderingIsRegistered() throws Exception {
+            List<String> discovered = allClassifiedRenderings().stream()
+                    .map(Class::getName).sorted().toList();
+
+            assertThat(discovered)
+                    .as("the third discovery arm must be live - a module with no classifying DTO would "
+                            + "make this whole guard vacuous")
+                    .isNotEmpty();
+            assertThat(discovered)
+                    .as("a screen DTO that classifies its rendering must say what it withholds. The two "
+                            + "this checkpoint added - AccountUpdateResponse and TransactionListResponse "
+                            + "- were rendering a social-security number and a page of transaction keys "
+                            + "with neither of the other two discovery arms able to see them.")
+                    .containsExactlyInAnyOrderElementsOf(
+                            new java.util.TreeSet<>(CLASSIFIED_RENDERINGS.keySet()));
+        }
+
+        @Test
+        @DisplayName("each one withholds the item it is registered against, and defaults to withholding")
+        void eachClassifiedRenderingWithholdsWhatItRegistered() throws Exception {
+            for (Class<?> type : allClassifiedRenderings()) {
+                String mustWithhold = CLASSIFIED_RENDERINGS.get(type.getName());
+
+                assertThat(classify(type, mustWithhold))
+                        .as("%s must not render %s as stored", type.getName(), mustWithhold)
+                        .isNotEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+                assertThat(classify(type, null))
+                        .as("%s must withhold a field nobody classified rather than publish it - a "
+                                + "disclosure decision has to fail closed", type.getName())
+                        .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
+            }
+        }
+
+        @Test
+        @DisplayName("the two response types this checkpoint fixed withhold their values in the rendering")
+        void theTwoFixedResponsesWithholdInTheRendering() {
+            // The classification asserted above decides what SHOULD be withheld; this asserts the
+            // rendering actually applies it, which is the part a build log sees.
+            String rendered = com.vsergeychik.carddemo.account.dto.AccountUpdateResponse.initial()
+                    .withValue(com.vsergeychik.carddemo.account.dto.AccountUpdateResponse
+                            .ScreenField.ACTSSN1, PROBE.substring(0, 3))
+                    .withValue(com.vsergeychik.carddemo.account.dto.AccountUpdateResponse
+                            .ScreenField.ACSGOVT, PROBE.repeat(5))
+                    .toString();
+            assertThat(rendered)
+                    .as("AccountUpdateResponse: the social-security part and the government identifier "
+                            + "must not survive into the rendering")
+                    .doesNotContain(PROBE.repeat(5))
+                    .contains("ACTSSN1='" + SensitiveDiagnostics.REDACTED + "'");
+
+            com.vsergeychik.carddemo.transaction.dto.TransactionListResponse list =
+                    new com.vsergeychik.carddemo.transaction.dto.TransactionListResponse();
+            list.setTrnid01O("00000000000ZQX7");
+            assertThat(list.toString())
+                    .as("TransactionListResponse: a transaction key is a TRANSACT key and the record it "
+                            + "opens carries TRAN-CARD-NUM, so it is masked to its trailing characters")
+                    .doesNotContain("00000000000ZQX7")
+                    .contains("TRNID01O='" + SensitiveDiagnostics
+                            .maskIdentifier(list.getTrnid01O()) + "'");
+        }
+
+        @Test
+        @DisplayName("a class that cannot be loaded is recorded with a sanitised reason, not dropped")
+        void aClassThatCannotBeLoadedIsRecorded() {
+            List<Class<?>> loaded = new java.util.ArrayList<>();
+            Map<String, String> unloadable = new java.util.TreeMap<>();
+
+            // A name no class file backs, which is the same failure shape as a class whose supertype
+            // has gone: Class.forName throws and the type never reaches the sweep.
+            loadOrRecord("com.vsergeychik.carddemo.NoSuchTypeExistsHere", loaded, unloadable);
+
+            assertThat(loaded).as("nothing was loaded, so nothing may be claimed as inspected")
+                    .isEmpty();
+            assertThat(unloadable)
+                    .as("the failure is written down against the class it happened to")
+                    .containsOnlyKeys("com.vsergeychik.carddemo.NoSuchTypeExistsHere");
+            assertThat(unloadable.values().iterator().next())
+                    .as("and the reason names the throwable's type, so a reader can act on it")
+                    .contains(ClassNotFoundException.class.getName());
+        }
+
+        @Test
+        @DisplayName("an unloadable class fails the sweep rather than shrinking it")
+        void anUnloadableClassFailsTheSweep() {
+            // The enforcement, exercised directly. Before this checkpoint the equivalent of this map
+            // was discarded, so this assertion had nothing to fail on and the sweep quietly covered
+            // fewer types than it reported.
+            assertThatThrownBy(() -> assertEveryClassLoaded(Map.of(
+                    "com.vsergeychik.carddemo.account.model.AccountRecord", "linkage error")))
+                    .as("a class the sweep could not inspect must break the build, naming the class")
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessageContaining("com.vsergeychik.carddemo.account.model.AccountRecord")
+                    .hasMessageContaining("UNLOADABLE_EXEMPT");
+
+            assertThatCode(() -> assertEveryClassLoaded(Map.of()))
+                    .as("and the real state of this module - nothing unloadable - passes")
+                    .doesNotThrowAnyException();
         }
 
         @Test

@@ -1,15 +1,18 @@
 package com.vsergeychik.carddemo.user;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.user.SignOnService.CursorField;
+import com.vsergeychik.carddemo.user.SignOnService.MapInputArea;
 import com.vsergeychik.carddemo.user.SignOnService.SignOnInput;
 import com.vsergeychik.carddemo.user.SignOnService.SignOnOutcome;
 import com.vsergeychik.carddemo.user.dto.SignOnRequest;
@@ -25,6 +28,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -170,6 +174,53 @@ public class SignOnController {
      */
     public static final String SIGNON_PATH = "/api/signon";
 
+    /**
+     * The payload member carrying the attention identifier, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller whose body states the key knows which member contradicted the
+     * raw byte it also sent. Its value is the one-character {@code EIBAID} image - see
+     * {@link #toEibAid(String)} - not the folded {@code CCARD-AID} token.
+     */
+    static final String AID_MEMBER = "aid";
+
+    /**
+     * Query parameter carrying the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value.
+     *
+     * <p>The name is {@link AidRequestParameter#CANONICAL_NAME}, shared with every other online route.
+     * This is the authoritative form and the only one that can distinguish the twelve folded pairs:
+     * {@code app/cbl/COSGN00C.cbl:85} evaluates {@code EIBAID} itself, and {@code WHEN DFHPF3} at
+     * {@code :88} is an equality against one byte that {@code DFHPF15} does not satisfy.
+     *
+     * <p>It is a query parameter and not a body member because it is not a credential and not a screen
+     * field; the two members that are credentials stay in the body, which is why this route is
+     * {@code POST}.
+     */
+    public static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /** The accepted alternate spelling of {@value #EIBAID_PARAM} - {@link AidRequestParameter}. */
+    public static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
+
+    /** The lowest value an {@code EIBAID} byte can take, stated unsigned. */
+    static final int AID_MIN = 0;
+
+    /** The highest value an {@code EIBAID} byte can take, stated unsigned. */
+    static final int AID_MAX = 255;
+
+    /**
+     * The width of the raw {@code EIBAID} form of the payload's {@code aid} member: one character.
+     *
+     * <p>{@link SignOnRequest#AID_LENGTH} is the width of the {@code CCARD-AID} token the responses
+     * publish, which is five; this is the width of the byte itself.
+     */
+    static final int RAW_AID_LENGTH = 1;
+
+    /**
+     * The highest code point an attention identifier can hold: {@code U+00FF}.
+     *
+     * <p>{@code EIBAID} is one byte, so the whole AID space is {@code U+0000} to {@code U+00FF}.
+     */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
+
     // =================================================================================================
     // Configuration keys for the two EXEC CICS ASSIGN values. See the fields they populate.
     // =================================================================================================
@@ -179,7 +230,8 @@ public class SignOnController {
      *
      * <p>{@code app/cbl/COSGN00C.cbl:198-200} obtains this field from {@code EXEC CICS ASSIGN
      * APPLID(...)}, a CICS region property with no Java equivalent, so it is bound from configuration
-     * rather than computed. Defaults to spaces - see {@link #applId}.
+     * rather than computed. <strong>Required, with no default</strong> - see
+     * {@link #requireRegionIdentity(String, String, String)}.
      */
     public static final String APPLID_PROPERTY = "carddemo.cics.applid";
 
@@ -187,9 +239,15 @@ public class SignOnController {
      * Configuration key supplying {@code SYSIDO} - {@code carddemo.cics.sysid}.
      *
      * <p>{@code app/cbl/COSGN00C.cbl:202-204} obtains this field from {@code EXEC CICS ASSIGN
-     * SYSID(...)}, likewise a region property. Defaults to spaces - see {@link #sysId}.
+     * SYSID(...)}, likewise a region property, and likewise required with no default.
      */
     public static final String SYSID_PROPERTY = "carddemo.cics.sysid";
+
+    /** The environment variable {@code application.yml} reads {@link #APPLID_PROPERTY} from. */
+    public static final String APPLID_ENVIRONMENT_VARIABLE = "CARDDEMO_CICS_APPLID";
+
+    /** The environment variable {@code application.yml} reads {@link #SYSID_PROPERTY} from. */
+    public static final String SYSID_ENVIRONMENT_VARIABLE = "CARDDEMO_CICS_SYSID";
 
     /**
      * The code page applied to the {@code PIC X} move rule, {@link StandardCharsets#US_ASCII}.
@@ -227,39 +285,6 @@ public class SignOnController {
     // literal cannot drift out of step with the enum - which also preserves the two trailing spaces on
     // PA1 and PA2 that a hand-typed 'PA1' would silently lose.
     // =================================================================================================
-
-    /**
-     * The primary {@code EIBAID} byte behind each {@code CCARD-AID} token.
-     *
-     * <p><strong>The token representation is lossy for the twelve folded keys, and the loss is
-     * inherited rather than introduced here.</strong> {@code app/cpy/CSSTRPFY.cpy} maps {@code DFHPF3}
-     * and {@code DFHPF15} both onto {@code 'PFK03'}, so a token cannot distinguish them - and the
-     * distinction matters to this program, because {@code :88} tests {@code WHEN DFHPF3} specifically
-     * and {@code DFHPF15} would fall to {@code WHEN OTHER}. This table resolves each token to the
-     * <em>primary</em> key of its pair, {@code DFHPF3} for {@code 'PFK03'}, which is the only choice
-     * available once a caller has narrowed the byte to a token. A client that must distinguish the two
-     * has to send the byte, and {@link SignOnService#handle(SignOnInput)} accepts exactly that - it is
-     * reachable directly, without this decode in the path.
-     */
-    private static final Map<String, Byte> EIBAID_BY_AID_TOKEN = Map.ofEntries(
-            // CSSTRPFY.cpy L22-L29 - ENTER, CLEAR and the two PA keys the copybook tests.
-            Map.entry(PfKeyResolver.AidKey.ENTER.token(), CicsAid.DFHENTER),
-            Map.entry(PfKeyResolver.AidKey.CLEAR.token(), CicsAid.DFHCLEAR),
-            Map.entry(PfKeyResolver.AidKey.PA1.token(), CicsAid.DFHPA1),
-            Map.entry(PfKeyResolver.AidKey.PA2.token(), CicsAid.DFHPA2),
-            // CSSTRPFY.cpy L30-L53 - PF1..PF12, the primary key of each folded pair.
-            Map.entry(PfKeyResolver.AidKey.PFK01.token(), CicsAid.DFHPF1),
-            Map.entry(PfKeyResolver.AidKey.PFK02.token(), CicsAid.DFHPF2),
-            Map.entry(PfKeyResolver.AidKey.PFK03.token(), CicsAid.DFHPF3),
-            Map.entry(PfKeyResolver.AidKey.PFK04.token(), CicsAid.DFHPF4),
-            Map.entry(PfKeyResolver.AidKey.PFK05.token(), CicsAid.DFHPF5),
-            Map.entry(PfKeyResolver.AidKey.PFK06.token(), CicsAid.DFHPF6),
-            Map.entry(PfKeyResolver.AidKey.PFK07.token(), CicsAid.DFHPF7),
-            Map.entry(PfKeyResolver.AidKey.PFK08.token(), CicsAid.DFHPF8),
-            Map.entry(PfKeyResolver.AidKey.PFK09.token(), CicsAid.DFHPF9),
-            Map.entry(PfKeyResolver.AidKey.PFK10.token(), CicsAid.DFHPF10),
-            Map.entry(PfKeyResolver.AidKey.PFK11.token(), CicsAid.DFHPF11),
-            Map.entry(PfKeyResolver.AidKey.PFK12.token(), CicsAid.DFHPF12));
 
     // =================================================================================================
     // The two cursor targets, named by their DFHMDF label.
@@ -324,12 +349,15 @@ public class SignOnController {
      * than dropped - it is one of the eleven named {@code DFHMDF} fields, and this is the only screen
      * in the application that carries it.
      *
-     * <p>The default is <strong>spaces</strong>, not an invented region name. A deployment that has an
-     * identifier supplies it through {@value #APPLID_PROPERTY}; one that has none reports a blank
-     * field, which is honest, whereas a plausible-looking literal would be fabricated data appearing in
-     * a field-for-field diff. Brought to the declared width by the {@code PIC X} rule, so a short
-     * configured value is padded on the right and an over-long one is truncated on the right, exactly
-     * as a {@code MOVE} into {@code PIC X(8)} behaves.
+     * <p><strong>There is no default, and spaces are not accepted.</strong> A deployment states its
+     * region through {@value #APPLID_PROPERTY}, and one that states nothing is refused at startup
+     * rather than serving a blank field: this is one of the eleven fields a field-for-field diff
+     * compares, every {@code COSGN00C} parity case expects a real region name in it, and a blank is
+     * indistinguishable on the wire from a region that answered nothing - so a silent default would
+     * turn a missing deployment input into a wrong screen nobody notices. An invented literal is
+     * equally out of the question: that is fabricated data in a compared field. Brought to the declared
+     * width by the {@code PIC X} rule, so a short configured value is padded on the right and an
+     * over-long one is truncated on the right, exactly as a {@code MOVE} into {@code PIC X(8)} behaves.
      */
     private final String applId;
 
@@ -337,10 +365,12 @@ public class SignOnController {
      * {@code SYSIDO}, exactly {@value SignOnResponse#SYSID_LENGTH} characters.
      *
      * <p>From {@code EXEC CICS ASSIGN SYSID(SYSIDO OF COSGN0AO)} at
-     * {@code app/cbl/COSGN00C.cbl:202-204}, and handled exactly as {@link #applId} is, through
-     * {@value #SYSID_PROPERTY}. Note that {@code app/bms/COSGN00.bms:89-93} declares this field
-     * {@code INITIAL='        '} - eight spaces - so a blank default is also the mapset's own initial
-     * state.
+     * {@code app/cbl/COSGN00C.cbl:202-204}, and handled exactly as {@link #applId} is - required, with
+     * no default - through {@value #SYSID_PROPERTY}. {@code app/bms/COSGN00.bms:89-93} does declare this
+     * field {@code INITIAL='        '}, eight spaces, but that is the <em>unpainted</em> state of the
+     * map before the program runs, not what {@code ASSIGN} puts there: the paragraph that sends the
+     * screen always overwrites it, so spaces on a painted screen would describe a region that does not
+     * exist.
      */
     private final String sysId;
 
@@ -367,19 +397,25 @@ public class SignOnController {
     /**
      * The bean constructor, applying {@link #DEFAULT_WORKING_STORAGE_CHARSET}.
      *
+     * <p>Both identifiers are bound with a <strong>bare placeholder</strong>, so a deployment that
+     * declares neither the property nor its environment variable fails the refresh naming the exact key
+     * - the same treatment {@code CobolCharsetConfig} gives the three code pages, and for the same
+     * reason: a value that decides what a compared field contains must never be defaulted.
+     *
      * @param signOnService the translated {@code COSGN00C}; must not be {@code null}
      * @param clock         the source of {@code FUNCTION CURRENT-DATE}; must not be {@code null}
-     * @param applId        {@code EXEC CICS ASSIGN APPLID}, from {@value #APPLID_PROPERTY}, defaulting
-     *                      to spaces
-     * @param sysId         {@code EXEC CICS ASSIGN SYSID}, from {@value #SYSID_PROPERTY}, defaulting to
-     *                      spaces
-     * @throws NullPointerException if any argument is {@code null}
+     * @param applId        {@code EXEC CICS ASSIGN APPLID}, from {@value #APPLID_PROPERTY}; required,
+     *                      and must hold text
+     * @param sysId         {@code EXEC CICS ASSIGN SYSID}, from {@value #SYSID_PROPERTY}; required, and
+     *                      must hold text
+     * @throws NullPointerException  if any argument is {@code null}
+     * @throws IllegalStateException if either identifier holds no text
      */
     @Autowired
     public SignOnController(final SignOnService signOnService,
             final Clock clock,
-            @Value("${" + APPLID_PROPERTY + ":}") final String applId,
-            @Value("${" + SYSID_PROPERTY + ":}") final String sysId) {
+            @Value("${" + APPLID_PROPERTY + "}") final String applId,
+            @Value("${" + SYSID_PROPERTY + "}") final String sysId) {
         this(signOnService, clock, applId, sysId, DEFAULT_WORKING_STORAGE_CHARSET);
     }
 
@@ -389,14 +425,16 @@ public class SignOnController {
      * @param signOnService         the translated {@code COSGN00C}; must not be {@code null}
      * @param clock                 the source of {@code FUNCTION CURRENT-DATE}; must not be
      *                              {@code null}
-     * @param applId                the application identifier; must not be {@code null}, and is brought
-     *                              to {@value SignOnResponse#APPLID_LENGTH} characters by the
-     *                              {@code PIC X} rule
-     * @param sysId                 the system identifier; must not be {@code null}, and is brought to
-     *                              {@value SignOnResponse#SYSID_LENGTH} characters the same way
+     * @param applId                the application identifier; must not be {@code null}, must hold
+     *                              text, and is brought to {@value SignOnResponse#APPLID_LENGTH}
+     *                              characters by the {@code PIC X} rule
+     * @param sysId                 the system identifier; must not be {@code null}, must hold text, and
+     *                              is brought to {@value SignOnResponse#SYSID_LENGTH} characters the
+     *                              same way
      * @param workingStorageCharset the code page applied to screen and message text; must not be
      *                              {@code null}, and is never defaulted from the platform
-     * @throws NullPointerException if any argument is {@code null}
+     * @throws NullPointerException  if any argument is {@code null}
+     * @throws IllegalStateException if either identifier holds no text
      */
     public SignOnController(final SignOnService signOnService,
             final Clock clock,
@@ -410,16 +448,51 @@ public class SignOnController {
                 "A Clock is required: POPULATE-HEADER-INFO at app/cbl/COSGN00C.cbl:177-204 renders the "
                         + "date and time header, and reading the wall clock directly would make that "
                         + "header impossible to assert byte for byte");
-        Objects.requireNonNull(applId, "An APPLID image is required; a region that reports none supplies "
-                + "spaces, which is a value, not an absence");
-        Objects.requireNonNull(sysId, "A SYSID image is required; a region that reports none supplies "
-                + "spaces, which is a value, not an absence");
+        requireRegionIdentity(applId, APPLID_PROPERTY, APPLID_ENVIRONMENT_VARIABLE);
+        requireRegionIdentity(sysId, SYSID_PROPERTY, SYSID_ENVIRONMENT_VARIABLE);
         Objects.requireNonNull(workingStorageCharset, "A code page is required for the PIC X move rule; "
                 + "it is never the platform default");
         this.codec = new FixedWidthCodec(workingStorageCharset);
         this.applId = this.codec.movePicX(applId, SignOnResponse.APPLID_LENGTH);
         this.sysId = this.codec.movePicX(sysId, SignOnResponse.SYSID_LENGTH);
         this.coldStartRequest = coldStartRequest(this.codec);
+    }
+
+    /**
+     * Refuses a region identifier that is absent or blank, naming what to set.
+     *
+     * <p>The check is here, in the one constructor both paths run through, rather than only on the
+     * {@code @Value} path - so there is no seam through which a blank identifier can reach a painted
+     * screen. It refuses <em>blank</em> as well as absent because the two are the same failure wearing
+     * different clothes: an environment variable exported empty, a YAML key left with nothing after the
+     * colon, and a placeholder that resolved to the empty string all arrive here as text with no
+     * content, and all of them would put spaces in a field the parity harness compares against a real
+     * region name.
+     *
+     * <p>What it does <strong>not</strong> police is width or spelling. An over-long value is truncated
+     * on the right by the {@code PIC X} move rule that follows, because that is what {@code MOVE} into
+     * {@code PIC X(8)} does and a deployment whose region name is longer than the map's field is a
+     * parity question rather than a configuration error.
+     *
+     * @param identity            the configured value; may be {@code null}, which is refused
+     * @param property            the property that supplies it
+     * @param environmentVariable the environment variable {@code application.yml} reads it from
+     * @throws NullPointerException  if {@code identity} is {@code null}
+     * @throws IllegalStateException if {@code identity} holds no text
+     */
+    static void requireRegionIdentity(final String identity, final String property,
+            final String environmentVariable) {
+        Objects.requireNonNull(identity, "A CICS region identity is required for " + property
+                + "; supply it through the environment variable " + environmentVariable + '.');
+        if (identity.isBlank()) {
+            throw new IllegalStateException("The CICS region identity " + property + " is configured "
+                    + "but holds no text, so the sign-on screen would paint spaces in a field every "
+                    + "COSGN00C parity case expects a region name in. Set " + property + " - normally "
+                    + "through the environment variable " + environmentVariable + " - to the value "
+                    + "EXEC CICS ASSIGN would have reported. There is deliberately no default: this "
+                    + "field is compared byte for byte, so neither a blank nor an invented literal is "
+                    + "an acceptable stand-in.");
+        }
     }
 
     /**
@@ -488,15 +561,31 @@ public class SignOnController {
      * <p>Always answers {@code 200 OK} - see the class notes on why a refused sign-on is a message
      * rather than a {@code 4xx}.
      *
+     * <p><strong>The key arrives as its raw byte, and that byte is what {@code :85} is given.</strong>
+     * Both spellings of {@link AidRequestParameter} bind, and either carries the whole of
+     * {@code EIBAID}: all 256 values, so {@code PF15} is distinguishable from {@code PF3}. That matters
+     * here because {@code COSGN00C} never copied {@code app/cpy/CSSTRPFY.cpy} - it tests {@code EIBAID}
+     * inline against {@code DFHENTER} and {@code DFHPF3} at {@code :85-95} and has no clause for
+     * {@code DFHPF15}, so on the mainframe {@code PF15} reaches {@code WHEN OTHER}. The five-character
+     * token in the payload cannot say that, because the copybook folds {@code PF15} onto {@code 'PFK03'};
+     * a caller restricted to the token could only ever get the PF3 arm. A request that sends neither
+     * parameter keeps the token decode it always had, unchanged.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
+     * @param eibaid  the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value, or
+     *                {@code null} when the request names no key
+     * @param eibAid  the accepted alternate spelling of the same parameter
      * @return the painted screen and, beside it rather than inside it, the presentation metadata this
      *         program sets - the cursor request and the full-repaint instruction, neither of which is a
      *         {@code DFHMDF} field; never {@code null}
      */
     @PostMapping(path = SIGNON_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public ScreenResponse<SignOnResponse> signOn(
-            @Valid @RequestBody(required = false) final SignOnRequest request) {
-        return performSignOn(Objects.requireNonNullElse(request, coldStartRequest));
+            @Valid @RequestBody(required = false) final SignOnRequest request,
+            @RequestParam(name = EIBAID_PARAM, required = false) final Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) final Integer eibAid) {
+        return performSignOn(Objects.requireNonNullElse(request, coldStartRequest),
+                AidRequestParameter.resolve(eibaid, eibAid));
     }
 
     /**
@@ -515,9 +604,48 @@ public class SignOnController {
      *                              {@code null} would mean the absent-body default was bypassed
      */
     ScreenResponse<SignOnResponse> performSignOn(final SignOnRequest received) {
+        return performSignOn(received, null);
+    }
+
+    /**
+     * Runs one invocation of {@code COSGN00C}, with the raw attention identifier the request stated.
+     *
+     * <p>The overload the request mapping calls, and the one a test drives when the distinction between
+     * {@code PF3} and {@code PF15} is the point. {@link #performSignOn(SignOnRequest)} delegates here
+     * with {@code null}, which is "the request named no raw byte" and leaves the payload's token as the
+     * only statement of the key - exactly the behaviour that existed before the parameter did.
+     *
+     * @param received  the inbound payload; a {@code null} communication area inside it still means
+     *                  {@code EIBCALEN = 0}
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when the
+     *                  request named no key
+     * @return the projected screen and its metadata, never {@code null}
+     * @throws NullPointerException if {@code received} is {@code null}
+     */
+    ScreenResponse<SignOnResponse> performSignOn(final SignOnRequest received,
+            final Integer statedAid) {
         Objects.requireNonNull(received, "A payload is required here; an absent body is represented by "
                 + "the cold-start request, whose communication area is null, and not by a null payload");
-        final SignOnOutcome outcome = signOnService.handle(toInput(received));
+        return performSignOn(received, resolveEibAid(statedAid, received.aid()));
+    }
+
+    /**
+     * Runs one invocation of {@code COSGN00C} with the attention identifier supplied separately.
+     *
+     * <p>The overload a test drives when it holds the raw byte already. Both forms above reach it: the
+     * request mapping through the {@code Integer} overload, which narrows the stated value and
+     * cross-checks any statement of the same key in the payload, and
+     * {@link #performSignOn(SignOnRequest)} through the payload's own one-character {@code aid} image.
+     *
+     * @param received the inbound payload; must not be {@code null}
+     * @param eibAid   the raw {@code EIBAID} byte {@code :85} evaluates
+     * @return the projected screen and its metadata, never {@code null}
+     * @throws NullPointerException if {@code received} is {@code null}
+     */
+    ScreenResponse<SignOnResponse> performSignOn(final SignOnRequest received, final byte eibAid) {
+        Objects.requireNonNull(received, "A payload is required here; an absent body is represented by "
+                + "the cold-start request, whose communication area is null, and not by a null payload");
+        final SignOnOutcome outcome = signOnService.handle(toInput(received, eibAid));
         return ScreenResponse.of(toResponse(outcome), toMetadata(outcome));
     }
 
@@ -545,9 +673,10 @@ public class SignOnController {
      *       Neither value is trimmed, upper-cased or padded; {@code MOVE FUNCTION UPPER-CASE} at
      *       {@code :132-137} belongs to the service, which applies it unconditionally and in the source's
      *       own order.</li>
-     *   <li>The attention identifier is decoded from its token to the raw byte {@code :85} compares -
-     *       see {@link #toEibAid(String)}. Nothing else about it is interpreted; the {@code WHEN}
-     *       selection remains the service's.</li>
+     *   <li>The attention identifier is the raw byte {@code :85} compares, taken from the query
+     *       parameter or from the payload's one-character {@code aid} image - see
+     *       {@link #toEibAid(String)}. Nothing else about it is interpreted; the {@code WHEN} selection
+     *       remains the service's.</li>
      * </ul>
      *
      * @param received the inbound payload
@@ -555,42 +684,101 @@ public class SignOnController {
      * @throws NullPointerException if {@code received} is {@code null}
      */
     SignOnInput toInput(final SignOnRequest received) {
+        return toInput(received, null);
+    }
+
+    /**
+     * Translates the inbound payload into the three values {@code COSGN00C} consults, taking the
+     * attention identifier from the raw byte when the request stated one.
+     *
+     * @param received  the inbound payload
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when the
+     *                  request named no key
+     * @return the service input, never {@code null}
+     * @throws NullPointerException if {@code received} is {@code null}
+     */
+    SignOnInput toInput(final SignOnRequest received, final Integer statedAid) {
+        Objects.requireNonNull(received, "A payload is required to build a sign-on invocation");
+        return toInput(received, resolveEibAid(statedAid, received.aid()));
+    }
+
+    /**
+     * The same translation with the attention identifier supplied separately from the payload.
+     *
+     * @param received the inbound payload; must not be {@code null}
+     * @param eibAid   the raw {@code EIBAID} byte {@code :85} evaluates
+     * @return the service input, never {@code null}
+     * @throws NullPointerException if {@code received} is {@code null}
+     */
+    SignOnInput toInput(final SignOnRequest received, final byte eibAid) {
         Objects.requireNonNull(received, "A payload is required to build a sign-on invocation");
         final NavigationContext inboundCommarea = received.navigationContext();
         return new SignOnInput(inboundCommarea,
-                toEibAid(received.aid()),
+                eibAid,
                 received.userId(),
                 received.passwd());
     }
 
     /**
-     * Decodes the five-character {@code CCARD-AID} token the payload carries into the raw
-     * {@code EIBAID} byte that {@code app/cbl/COSGN00C.cbl:85} compares.
+     * Chooses which of the two statements of the key the request made is acted on: the raw byte when it
+     * is there, the payload's own image otherwise.
      *
-     * <p>The token is brought to {@value PfKeyResolver#AID_TOKEN_LENGTH} characters by the {@code PIC X}
-     * rule before it is looked up, so a caller that sent {@code 'PA1'} matches
-     * {@link PfKeyResolver.AidKey#PA1}, whose copybook literal is {@code 'PA1  '} with two trailing
-     * spaces. That is not leniency added for convenience: {@code CCARD-AID} is {@code PIC X(5)} and a
-     * COBOL comparison of a shorter operand against it pads with spaces, so padding first is what makes
-     * this behave as the copybook does.
+     * <p>The byte wins because it is the lossless one - see {@link AidRequestParameter} - and because
+     * this program tests {@code EIBAID} inline, so a folded token would give {@code PF15} the
+     * {@code PF3} arm. An image stated beside a disagreeing byte is refused rather than dropped.
      *
-     * <p><strong>An unknown or absent token yields {@link CicsAid#DFHNULL}</strong>, a byte
-     * {@code app/cpy/CSSTRPFY.cpy} does not test and {@link PfKeyResolver#resolve(byte)} therefore maps
-     * to no key. It is neither {@code DFHENTER} nor {@code DFHPF3}, so it lands on the
-     * {@code WHEN OTHER} arm at {@code :91-94} - the same arm an unmapped key reaches, which is exactly
-     * where "no key was resolved" belongs. No default of {@code DFHENTER} is substituted: guessing that
-     * a caller pressed ENTER would run the whole validate-and-read path on a request that asked for
-     * nothing.
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when absent
+     * @param aidImage  the payload's one-character {@code aid} image, or {@code null} when absent
+     * @return the raw EBCDIC attention-identifier byte {@code :85} is given
+     */
+    byte resolveEibAid(final Integer statedAid, final String aidImage) {
+        if (statedAid == null) {
+            return toEibAid(aidImage);
+        }
+        return AidRequestParameter.requireStatedAid(AID_MEMBER, statedAid, aidImage, codec);
+    }
+
+    /**
+     * Reads the raw {@code EIBAID} byte out of the payload's {@code aid} member.
      *
-     * @param aidToken the token as it arrived, or {@code null} when the payload omitted it
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention
+     * identifier, so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF3} as {@code U+00F3},
+     * and {@code app/cbl/COSGN00C.cbl:85}'s {@code EVALUATE EIBAID} compares exactly that. The same byte
+     * may instead be stated as an unsigned {@code 0}-{@code 255} integer on the
+     * {@value #EIBAID_PARAM} query parameter, which takes precedence when both are supplied.
+     *
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK03'} stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}. Decoding it
+     * had to choose, and choosing {@code DFHPF3} sent a PF15 press down {@code :88-90}'s
+     * {@code WHEN DFHPF3} arm - the thank-you message and a terminating {@code SEND TEXT} - where the
+     * source takes {@code WHEN OTHER} at {@code :91-94} and repaints the screen with the invalid-key
+     * message. {@code COSGN00C} does not copy {@code CSSTRPFY}: it compares {@code EIBAID} itself, so
+     * the fold is not its behaviour and there is nothing to invert. The token survives as derived
+     * metadata on the way out, which is where {@link PfKeyResolver#resolve(byte)} produces it.
+     *
+     * <p><strong>Any other width, and an absent value, yield {@link CicsAid#DFHNULL}</strong>, a byte
+     * {@code CSSTRPFY} does not test and {@link PfKeyResolver#resolve(byte)} maps to no key. It is
+     * neither {@code DFHENTER} nor {@code DFHPF3}, so it lands on the {@code WHEN OTHER} arm at
+     * {@code :91-94} - the same arm an unmapped key reaches, which is exactly where "no key I can
+     * identify" belongs. No default of {@code DFHENTER} is substituted: guessing that a caller pressed
+     * ENTER would run the whole validate-and-read path on a request that asked for nothing.
+     *
+     * @param aidImage the {@code aid} member as it arrived, or {@code null} when the payload omitted it
      * @return the raw EBCDIC attention-identifier byte; never throws
      */
-    byte toEibAid(final String aidToken) {
-        if (aidToken == null) {
+    byte toEibAid(final String aidImage) {
+        if (aidImage == null || aidImage.length() != RAW_AID_LENGTH) {
             return CicsAid.DFHNULL;
         }
-        return EIBAID_BY_AID_TOKEN.getOrDefault(
-                codec.movePicX(aidToken, PfKeyResolver.AID_TOKEN_LENGTH), CicsAid.DFHNULL);
+        char stated = aidImage.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            // EIBAID is one byte, so the whole AID space is U+0000 to U+00FF. A narrowing cast of
+            // anything wider keeps the low eight bits, and U+01F3 would narrow onto 0xF3 - DFHPF3, the
+            // key :88 acts on. Reported as no key rather than folded onto one the caller never pressed.
+            return CicsAid.DFHNULL;
+        }
+        return (byte) stated;
     }
 
     /**
@@ -601,11 +789,38 @@ public class SignOnController {
      * read against {@code app/cpy-bms/COSGN00.CPY} without following a loop.
      *
      * <p><strong>The reset comes for free.</strong> {@link SignOnResponse#empty()} starts from the
-     * space-filled initial state and every member is then assigned unconditionally, which is
+     * unpainted initial state and every member the program writes is then assigned, which is
      * structurally {@code MOVE LOW-VALUES TO COSGN0AO} at {@code :81} followed by the paint: no field
      * can retain a value, because there is nowhere for a value to have come from. The outcome's own
      * reset signal is still reported, in {@link #toMetadata(SignOnOutcome)}, so a client clears its
      * rendered screen on the same path the program does.
+     *
+     * <p><strong>A field is painted only where the program sent it.</strong> Two of the three exits
+     * transmit no map at all - {@code SEND-PLAIN-TEXT} at {@code :162-172} sends unformatted text, and
+     * the {@code EXEC CICS XCTL} pair at {@code :231-239} transfers control without sending anything -
+     * so on those two paths every map member is left at the image {@link SignOnResponse#empty()} gives
+     * it and only the navigation members, the communication area and (on PF3) the transmitted text are
+     * populated. An earlier revision painted the eight header fields and the error line on all three
+     * exits, which claimed a screen the program never sent; the header comes from
+     * {@code POPULATE-HEADER-INFO}, which is the first statement of {@code SEND-SIGNON-SCREEN} at
+     * {@code :147} and runs nowhere else.
+     *
+     * <p><strong>The PF3 transmission is eighty bytes, and it is not the error line.</strong>
+     * {@code EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE)} sends the whole of
+     * {@code WS-MESSAGE PIC X(80)} ({@code :38}) as unformatted text. Projecting it into
+     * {@code ERRMSGO PIC X(78)} - as an earlier revision did - lost the two rightmost characters and
+     * reported a map field for a send that had no map. {@link SignOnResponse#plainText()} carries it at
+     * its own width instead.
+     *
+     * <p><strong>{@code USERIDO} and {@code PASSWDO} are painted by the receive, not by a {@code MOVE}.
+     * </strong> {@code app/cpy-bms/COSGN00.CPY:85} declares {@code 01 COSGN0AO REDEFINES COSGN0AI}, so
+     * {@code USERIDI} and {@code USERIDO} are one eight-byte span and {@code PASSWDI} and
+     * {@code PASSWDO} are another. {@code EXEC CICS RECEIVE MAP} at {@code :110-115} writes them and the
+     * {@code SEND MAP ... FROM(COSGN0AO)} at {@code :151-157} then transmits them, which is why an error
+     * repaint comes back with the typed identifier still in the field. The service reports the two spans
+     * on {@link SignOnOutcome#mapInputArea()} and they are transcribed here; the images are
+     * the raw received values, because {@code MOVE FUNCTION UPPER-CASE} at {@code :132-137} writes
+     * {@code WS-USER-ID} and {@code WS-USER-PWD} and never writes back into the spans.
      *
      * <p><strong>Three widenings and one truncation happen here, and each is deliberate.</strong>
      * Every value is put through {@link FixedWidthCodec#movePicX} at its declared width rather than
@@ -626,11 +841,6 @@ public class SignOnController {
      *   <li>{@link #applId} and {@link #sysId} were brought to width once, at construction.</li>
      * </ul>
      *
-     * <p><strong>{@code USERIDO} is left at spaces, on purpose.</strong> {@code COSGN00C} never writes
-     * it: it only ever reads {@code USERIDI}, at {@code :118} and {@code :132}, and repositions the
-     * cursor with {@code MOVE -1 TO USERIDL}. {@link SignOnResponse} offers no {@code withUserId} for
-     * precisely that reason. Echoing the submitted identifier would be a new behaviour.
-     *
      * <p><strong>The navigation triple is how a stateless client tells the program's three exits
      * apart</strong>, and it needs no member beyond the ones the screen already declares.
      * {@code EXEC CICS SEND MAP} at {@code :151-157} names {@code MAPSET('COSGN00')} and
@@ -647,7 +857,8 @@ public class SignOnController {
      *   <tr><td>PF3 - {@code SEND TEXT} then a bare {@code EXEC CICS RETURN} with no {@code TRANSID}
      *           ({@code :164-172})</td>
      *       <td>spaces</td><td>spaces - the conversation has <strong>ended</strong>; there is no map to
-     *           render and no transaction to return to</td></tr>
+     *           render and no transaction to return to, and the eighty transmitted bytes travel in
+     *           {@link SignOnResponse#plainText()}</td></tr>
      *   <tr><td>signed on - {@code EXEC CICS XCTL} ({@code :231-239})</td>
      *       <td>{@code COADM01C} or {@code COMEN01C}</td>
      *       <td>spaces - control transferred, and the target program paints its own map</td></tr>
@@ -659,11 +870,12 @@ public class SignOnController {
      * {@code 'COMEN01C'} otherwise, and the client issues the follow-up call. There is no server-side
      * forward, no redirect and no session affinity.
      *
-     * <p>Four outcome members are intentionally not projected, because the screen has no field for
+     * <p>Three outcome members are intentionally not projected, because the screen has no field for
      * them: {@code errorFlag} is {@code WS-ERR-FLG}, program-internal working storage;
      * {@code screenPainted} and {@code plainTextSent} are the transmission facts the navigation triple
-     * above already expresses; and {@code receive} carries the {@code RESP} and {@code RESP2} codes that
-     * {@code :110-115} captures and <strong>never tests</strong>.
+     * and {@link SignOnResponse#plainText()} already express between them; and {@code receive} carries
+     * the {@code RESP} and {@code RESP2} codes that {@code :110-115} captures and <strong>never
+     * tests</strong>.
      *
      * @param outcome the result of running the program
      * @return the response payload, never {@code null}
@@ -671,19 +883,49 @@ public class SignOnController {
      */
     SignOnResponse toResponse(final SignOnOutcome outcome) {
         Objects.requireNonNull(outcome, "An outcome is required to project the sign-on screen");
-        // :179 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA - read once, from the injected clock, so
-        // the date and the time renderings cannot straddle a second boundary.
-        final DateHeader header = DateHeader.from(codec, clock);
         // :151-157 EXEC CICS SEND MAP('COSGN0A') MAPSET('COSGN00') names the map only where it
         // transmits, which is what makes the three exits distinguishable. See the table above.
         final boolean screenPainted = outcome.screenPainted();
-        final String nextMapset = screenPainted
-                ? SignOnResponse.MAPSET_NAME
-                : codec.movePicX(SPACES, SignOnResponse.NEXT_MAPSET_LENGTH);
-        final String nextMap = screenPainted
-                ? SignOnResponse.MAP_NAME
-                : codec.movePicX(SPACES, SignOnResponse.NEXT_MAP_LENGTH);
+        if (!screenPainted) {
+            // Neither remaining exit transmits the map. :162-172 SEND TEXT sends unformatted text and
+            // then returns with no TRANSID; :231-239 XCTL transfers control and sends nothing. So no
+            // screen field is painted from those paths, and POPULATE-HEADER-INFO is not performed
+            // either, because :147 performs it from inside SEND-SIGNON-SCREEN and nowhere else. The one
+            // exception is the error line, which :78 blanks before the EVALUATE on every path.
+            final SignOnResponse unsent = SignOnResponse.empty()
+                    // :78 MOVE SPACES TO WS-MESSAGE, ERRMSGO OF COSGN0AO. That statement is at the head
+                    // of MAIN-PARA, before the EVALUATE, so it writes the error line on every path
+                    // including these two. The other ten items are left unpainted: nothing writes them
+                    // and nothing is transmitted.
+                    .withErrMsg(codec.movePicX(SPACES, SignOnResponse.ERRMSG_LENGTH))
+                    // :224-240 - the role, the XCTL target and the area handed on, all decided already.
+                    // The mapset and map stay blank: there is no map for a client to render.
+                    .withNavigation(outcome.role(),
+                            outcome.nextProgram(),
+                            codec.movePicX(SPACES, SignOnResponse.NEXT_MAPSET_LENGTH),
+                            codec.movePicX(SPACES, SignOnResponse.NEXT_MAP_LENGTH),
+                            outcome.navigationContext());
+            if (!outcome.plainTextSent()) {
+                // The XCTL path: navigation and the communication area, and nothing else.
+                return unsent;
+            }
+            // :164-169 EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE) - the whole
+            // PIC X(80), not the PIC X(78) of ERRMSGO, because a SEND TEXT has no map field to narrow
+            // into.
+            return unsent.withPlainText(
+                    codec.movePicX(outcome.message(), SignOnResponse.PLAIN_TEXT_LENGTH));
+        }
+        // :179 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA - read once, from the injected clock, so
+        // the date and the time renderings cannot straddle a second boundary. Read here rather than
+        // above, because POPULATE-HEADER-INFO runs from inside SEND-SIGNON-SCREEN only: the two exits
+        // that send no map consult no clock.
+        final DateHeader header = DateHeader.from(codec, clock);
+        final MapInputArea mapArea = outcome.mapInputArea();
         return SignOnResponse.empty()
+                // :110-115 EXEC CICS RECEIVE MAP wrote USERIDI and PASSWDI, and COSGN0AO REDEFINES
+                // COSGN0AI (CPY :85) makes those the very spans :151-157 transmits. Raw images: :132-137
+                // upper-cases into WS-USER-ID and WS-USER-PWD, never back into the map.
+                .withReceivedMapArea(mapArea.useridi(), mapArea.passwdi())
                 // POPULATE-HEADER-INFO, :177-204. TRANID and PROGRAM_NAME are the same literals as
                 // WS-TRANID (:37) and WS-PGMNAME (:36), which :183-184 move into the map.
                 .withHeader(codec.movePicX(SignOnResponse.TRANID, SignOnResponse.TRNNAME_LENGTH),
@@ -699,8 +941,8 @@ public class SignOnController {
                 // :224-240 - the role, the XCTL target and the area handed on, all decided already.
                 .withNavigation(outcome.role(),
                         outcome.nextProgram(),
-                        nextMapset,
-                        nextMap,
+                        SignOnResponse.MAPSET_NAME,
+                        SignOnResponse.MAP_NAME,
                         outcome.navigationContext());
     }
 

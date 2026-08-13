@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -144,6 +145,17 @@ import java.util.Objects;
  * <p>Its inbound counterpart is {@code TransactionAddRequest}, the projection of these same bytes
  * through the {@code xxxI} items; the two must agree field for field.
  */
+@JsonPropertyOrder({
+        // The twenty-one xxxI items in the order app/cpy-bms/COTRN01.CPY declares them, which is the
+        // order app/bms/COTRN01.bms writes them down the screen: the header six, the two identifier
+        // fields, the transaction body, the merchant block, then the message line. Left implicit,
+        // reflection led with the three XCTL targets and moved every renamed member behind them.
+        "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "trnidin", "trnid",
+        "cardnum", "ttypcd", "tcatcd", "trnsrc", "tdesc", "trnamt", "torigdt", "tprocdt", "mid",
+        "mname", "mcity", "mzip", "errmsg",
+        // Transport extensions after the map: the target named through CDEMO-TO-PROGRAM, the
+        // CARDDEMO-COMMAREA and the CT01 browse state COTRN01C carries between turns.
+        "nextProgram", "nextMapset", "nextMap", "navigationContext", "ct01Info"})
 public final class TransactionAddResponse {
 
     // =================================================================================================

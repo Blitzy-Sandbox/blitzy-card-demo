@@ -553,6 +553,12 @@ public class StatementGenerationJobB {
     private static final int KEYED_READ_ROW_LIMIT = 2;
 
     /**
+     * One row: all the unreadable-row probe needs, because it asks a yes-or-no question. Whether a dataset
+     * holds one unreadable row or fifty does not change what a keyed read reports.
+     */
+    private static final int UNREADABLE_ROW_PROBE_LIMIT = 1;
+
+    /**
      * Compile-time-adjacent assertion that the declared field geometry actually sums to
      * {@link #AREA_LENGTH}.
      *
@@ -2081,6 +2087,40 @@ public class StatementGenerationJobB {
         }
 
         /**
+         * Reads, at most one row, the rows of <em>this DD's</em> dataset whose record-image column holds
+         * nothing.
+         *
+         * <p>Composed per access path deliberately: each {@code DatasetAccess} owns its own relation, so
+         * the four DD names this subprogram dispatches over each prove their own dataset. A probe over one
+         * of them would say nothing about the other three.
+         *
+         * <p>The same creator and extractor shape as {@link #rowsByKey(String)}, so the probe cannot drift
+         * from the read it qualifies and exercises no code path the reads do not. It binds no parameter:
+         * the predicate is {@code IS NULL} over the record-image column, which names no key.
+         *
+         * @return the rows found, at most one; or {@code null} if the template yielded no result at all
+         * @throws DataAccessException if the backend refused
+         */
+        private List<byte[]> rowsWithNoImage() {
+            Statements sql = resolveStatements();
+            PreparedStatementCreator creator = connection -> {
+                PreparedStatement prepared = connection.prepareStatement(sql.probeUnreadableRows());
+                prepared.setMaxRows(UNREADABLE_ROW_PROBE_LIMIT);
+                prepared.setFetchSize(UNREADABLE_ROW_PROBE_LIMIT);
+                return prepared;
+            };
+            ResultSetExtractor<List<byte[]>> extractor = resultSet -> {
+                List<byte[]> images = new ArrayList<>(UNREADABLE_ROW_PROBE_LIMIT);
+                while (images.size() < UNREADABLE_ROW_PROBE_LIMIT && resultSet.next()) {
+                    images.add(recordImageForm.readImage(resultSet,
+                            DatasetRelation.RECORD_IMAGE_COLUMN_INDEX, codec.charset()));
+                }
+                return images;
+            };
+            return jdbcTemplate.query(creator, extractor);
+        }
+
+        /**
          * The {@code MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) TO <RECORD KEY>} of
          * {@code app/cbl/CBSTM03B.CBL:189} and {@code :214}.
          *
@@ -2152,7 +2192,8 @@ public class StatementGenerationJobB {
                 resolved = new Statements(
                         relation.selectAllAscending(column),
                         relation.selectAfterAscending(column),
-                        relation.selectByKey(column));
+                        relation.selectByKey(column),
+                        relation.selectUnreadableRows(column));
                 this.statements = resolved;
             }
             return resolved;
@@ -2183,7 +2224,8 @@ public class StatementGenerationJobB {
      *                     returned, which is what makes a browse advance one record per read
      * @param selectByKey  the keyed read, taking an escaped {@code LIKE} pattern confined to the key span
      */
-    private record Statements(String browseFirst, String browseAfter, String selectByKey) {
+    private record Statements(String browseFirst, String browseAfter, String selectByKey,
+                             String probeUnreadableRows) {
     }
 
     /**
@@ -2654,8 +2696,15 @@ public class StatementGenerationJobB {
             }
             if (rows.isEmpty()) {
                 // INVALID KEY. A normal branch; app/cbl/CBSTM03A.CBL takes it to its OTHER arm and abends,
-                // but that is the caller's decision and not ours.
-                status = FileStatus.NOT_FOUND;
+                // but that is the caller's decision and not ours. Reported only once the absence has been
+                // PROVED: every RECORD KEY this subprogram reads on lives INSIDE the record image
+                // (FD-CUST-ID at app/cbl/CBSTM03B.CBL:46, FD-ACCT-ID at :52), so a row whose record-image
+                // column holds nothing has no knowable key and the keyed LIKE cannot match it - SQL
+                // evaluates every comparison against a null as UNKNOWN. Both statuses reach the same OTHER
+                // arm in the caller, but they do not mean the same thing: '23' says the dataset does not
+                // hold this customer or account, and saying that while an unreadable row sits in the
+                // dataset reports a record that is present as absent.
+                status = provenAbsenceStatus();
                 return currentFldt;
             }
             if (rows.size() > 1) {
@@ -2693,6 +2742,73 @@ public class StatementGenerationJobB {
             // length does not conform reports '04', and CBSTM03A's two keyed-read guards accept only
             // '00', so this is the status that decides whether the caller abends.
             return area;
+        }
+
+        /**
+         * The status for a keyed read that matched no row: {@code '23'} once the absence is established,
+         * and the permanent-error status while it is not.
+         *
+         * <h2>Why an absence has to be proved</h2>
+         * <p>Both {@code RECORD KEY}s this subprogram reads on live <em>inside</em> the record image -
+         * {@code FD-CUST-ID} is the leading nine bytes of the {@value #CUSTFILE_DD} record
+         * ({@code app/cbl/CBSTM03B.CBL:46}) and {@code FD-ACCT-ID} the leading eleven of the
+         * {@value #ACCTFILE_DD} record ({@code :52}). SQL evaluates every comparison against a null as
+         * {@code UNKNOWN}, so the keyed {@code LIKE} cannot match a row whose record-image column holds
+         * nothing, and such a row leaves the read with no matching row: on the face of it {@code '23'}.
+         *
+         * <p>{@code CBSTM03A} sends both {@code '23'} and the permanent-error status to the same
+         * {@code WHEN OTHER} arm ({@code :379-386}, {@code :403-410}), so the caller's behaviour is
+         * identical either way - but the two statuses do not <em>mean</em> the same thing, and it is the
+         * meaning that is reproduced here. {@code '23'} asserts the dataset holds no such customer or
+         * account; asserting that while an unreadable row sits in the dataset reports a record that is
+         * present as absent, which is exactly what {@link #accept(byte[], String)} already refuses to do
+         * for a row the read could see. Keeping them apart also keeps this class's own contract honest for
+         * the four datasets it owns, rather than resting on one caller's arms happening to coincide.
+         *
+         * <p>The proof is one row-limited read against <em>this DD's own</em> dataset, on the not-found path
+         * only. A read that found its record is untouched: a VSAM {@code READ} of a key that resolves does
+         * not fail because another record in the cluster is damaged.
+         *
+         * @return {@link FileStatus#NOT_FOUND} when the absence is established, otherwise
+         *         {@link StatementGenerationJobB#PERMANENT_ERROR_STATUS}
+         */
+        private String provenAbsenceStatus() {
+            List<byte[]> unreadable;
+            try {
+                unreadable = access.rowsWithNoImage();
+            } catch (DataAccessException translated) {
+                // The probe established nothing, so the absence stays unproved. Reported on the arm a
+                // refused read is reported on rather than as '23'.
+                LOG.error("Could not establish that " + access.ddName + " holds no unreadable row before "
+                        + "reporting a key as absent - " + BackendDiagnostic.of(translated).describe()
+                        + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " rather than reporting a record that may exist as absent");
+                return PERMANENT_ERROR_STATUS;
+            }
+            // No IllegalArgumentException arm, and deliberately none: the probe's predicate is
+            // IS NULL over the record-image column, and RecordImageForm answers a null column with null
+            // rather than decoding it - so the probe never reaches a stored character it could refuse. A
+            // catch here would read as a condition that can occur and could never be exercised.
+            if (unreadable == null) {
+                // As on the keyed read: a template that yielded no result object has told us nothing, and
+                // nothing does not establish an absence.
+                LOG.error("The " + access.ddName + " unreadable-row probe yielded no result object at all, "
+                        + "so a keyed read's INVALID KEY could not be established; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " rather than reporting a record that may exist as absent");
+                return PERMANENT_ERROR_STATUS;
+            }
+            if (unreadable.isEmpty()) {
+                // A genuine INVALID KEY: nothing matched the key and no row of this dataset is unreadable.
+                return FileStatus.NOT_FOUND;
+            }
+            LOG.error("A keyed read of " + access.ddName + " matched no row, but the dataset holds a row "
+                    + "with no record image at column position "
+                    + DatasetRelation.RECORD_IMAGE_COLUMN_INDEX + " - and the RECORD KEY is part of that "
+                    + "image, so that row's key cannot be known; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + " rather than reporting as absent a record that may well be present");
+            return PERMANENT_ERROR_STATUS;
         }
 
         /**

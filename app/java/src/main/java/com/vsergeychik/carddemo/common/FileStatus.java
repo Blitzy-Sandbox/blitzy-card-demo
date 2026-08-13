@@ -212,6 +212,33 @@ public final class FileStatus {
     public static final String NOT_FOUND = "23";
 
     /**
+     * Open attempted in a mode the file's attributes will not support, COBOL {@code '37'}.
+     *
+     * <p><strong>Reached by exactly one statement in the estate:</strong>
+     * {@code OPEN OUTPUT TRANSACT-FILE} at {@code app/cbl/CBTRN02C.cbl:256}. An {@code OPEN OUTPUT} of
+     * an {@code ORGANIZATION IS INDEXED} file ({@code :34-38}) is VSAM <em>load mode</em>, and load mode
+     * requires an empty base cluster. {@code app/jcl/POSTTRAN.jcl:28-29} binds {@code TRANFILE} to the
+     * existing {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} with {@code DISP=SHR}, and
+     * {@code app/catlg/LISTCAT.txt:3593-3597} records that cluster as {@code NOREUSE} holding
+     * {@code REC-TOTAL 311}. A {@code NOREUSE} cluster is not reset by the open, so load mode cannot
+     * begin: the open fails, {@code :257-261} leaves {@code APPL-RESULT} at 12, and {@code :262-268}
+     * displays {@code 'ERROR OPENING TRANSACTION FILE'} and abends - before a single {@code DALYTRAN}
+     * record is read.
+     *
+     * <p>The other {@code OPEN OUTPUT} over a file named {@code TRANSACT-FILE},
+     * {@code app/cbl/CBACT04C.cbl:309}, is <em>not</em> this case: that program's {@code SELECT} declares
+     * {@code ORGANIZATION IS SEQUENTIAL} ({@code :53-56}) over
+     * {@code app/jcl/INTCALC.jcl:37-41}'s brand-new {@code SYSTRAN(+1)} generation, which is a sequential
+     * open of an empty dataset and reports {@link #OK}.
+     *
+     * <p>No program in {@code app/cbl} compares against the literal {@code '37'}. It does not need to:
+     * every open guard in the estate is {@code IF <file>-STATUS = '00'} with an {@code ELSE} that abends,
+     * so the value's only job is to be something other than {@link #OK}. It is named here rather than
+     * left as a bare literal so the reason the open fails is stated once, with its evidence.
+     */
+    public static final String OPEN_MODE_CONFLICT = "37";
+
+    /**
      * Width of a COBOL {@code FILE STATUS} field, in characters: exactly {@code 2}.
      *
      * <p>Fixed by the declaration {@code 05 IO-STAT1 PIC X. 05 IO-STAT2 PIC X.} - two

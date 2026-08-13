@@ -1276,11 +1276,12 @@ public class CardSelectController {
      * @param eibaid   the same value under {@link AidRequestParameter#CANONICAL_NAME}, the spelling
      *                 every online route shares. At most one of the two need be sent; sending both with
      *                 different values is refused, because a terminal presents one attention identifier
-     * @param eibcalen {@code EIBCALEN} - the length of the passed commarea, and therefore either
-     *                 {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH} and nothing else.
+     * @param eibcalen {@code EIBCALEN} - the length of the area that arrived, which is
+     *                 {@value NavigationContext#COMMAREA_LENGTH} from the card list and
+     *                 {@value #WS_COMMAREA_LENGTH} from this program's own {@code COMMON-RETURN}.
      *                 Absent is derived from the carrier, and a stated value that contradicts the
-     *                 carrier is refused rather than believed. The distinction is load-bearing at
-     *                 {@code :268}
+     *                 carrier is refused rather than believed. Only the zero test is acted on, and it is
+     *                 load-bearing at {@code :268}
      * @return the painted screen and its metadata: the fifteen fields, the next-screen triple, the
      *         commarea, the 12-byte trailer and the attribute quads, all in the body so nothing is
      *         retained server-side
@@ -1313,7 +1314,10 @@ public class CardSelectController {
                 resolveAttentionIdentifier(AidRequestParameter.resolve(eibaid, eibAid));
 
         CardSelectResponse painted = handle(received, commareaLength, attentionIdentifier);
-        return ResponseEntity.ok(ScreenResponse.of(painted, painted.screenMetadata()));
+        // The input area is passed to the projection because half the attribute layer is on it:
+        // 1300 writes ACCTSIDA and CARDSIDA of CCRDSLAI at :507-511, and reading only the output
+        // group's never-written xxxP reported x'00' for every field on every path.
+        return ResponseEntity.ok(ScreenResponse.of(painted, painted.screenMetadata(received)));
     }
 
     /**
@@ -1359,15 +1363,18 @@ public class CardSelectController {
      *         {@code CDEMO-CARD-NUM} both set from the path; never {@code null}
      * @throws IllegalArgumentException if the path value is wider than {@code CARDSID}
      *
-     * <h4>The payload's own key field must not contradict the URI</h4>
-     * This route states the record's key twice - in the URI and in {@code CARDSIDI}, the field the URI
-     * binds - and a terminal has only one. The payload's member is therefore required to agree before it
-     * is overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
-     * refused at the boundary by
-     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
-     * Overwriting it silently, which is what happened before, discarded the operator's own typed card
-     * number with no message. A client that echoes a painted screen agrees with the URI and never reaches
-     * the refusal.
+     * <h4>The URI seeds a first entry and is ignored on a re-entry</h4>
+     * A 3270 screen has one key field and no URI. {@code COCRDSLC} reads {@code CARDSIDI} only on the turn it
+     * receives the map - :597-627 dispatches on CDEMO-PGM-CONTEXT and only the re-entry arm performs
+     * 2100-RECEIVE-MAP; :615-622 then reads CARDSIDI - so the path value is
+     * written into that field on a first entry, meaning a payload carrying no communication area or one
+     * whose context is not re-entry, and on a re-entry the received field is left <strong>exactly as it
+     * arrived</strong>.
+     *
+     * <p>That is what keeps three source behaviours reachable on a re-entry: a card number the operator
+     * typed over the painted screen, a field the operator blanked, and the {@code '*'} image the screen
+     * itself paints when no criterion was supplied. Overwriting any of them from the URI would discard
+     * the operator's own input, and refusing them would answer a state the legacy screen produces.
      */
     CardSelectRequest bind(String cardNum, CardSelectRequest request) {
         if (cardNum.length() > CardSelectRequest.CARDSID_LENGTH) {
@@ -1377,9 +1384,9 @@ public class CardSelectController {
         }
 
         CardSelectRequest received = request == null ? coldStartRequest() : new CardSelectRequest(request);
-        ScreenInputRejectedException.requireKeyAgreement(CARDSID_MEMBER, cardNum,
-                received.getCardsid(), CardSelectRequest.CARDSID_LENGTH, codec, NO_CRITERION_IMAGE);
-        received.setCardsid(codec.movePicX(cardNum, CardSelectRequest.CARDSID_LENGTH));
+        if (!isReentry(received)) {
+            received.setCardsid(codec.movePicX(cardNum, CardSelectRequest.CARDSID_LENGTH));
+        }
 
         // The communication area's own card number, the one :343 reads. Projected only when an area was
         // actually passed: a null context is EIBCALEN = 0, which :268 branches on, and fabricating one
@@ -1404,6 +1411,22 @@ public class CardSelectController {
         received.setAcctsid(codec.movePicX(acctsid, CardSelectRequest.ACCTSID_LENGTH));
         return received;
     }
+
+    /**
+     * Whether this turn is one on which {@code COCRDSLC} performs an {@code EXEC CICS RECEIVE MAP} and reads
+     * the operator's own typed key.
+     *
+     * <p>An absent communication area is {@code EIBCALEN = 0}, which the program treats as no
+     * conversation at all, and a context that is not {@value NavigationContext#PGM_CONTEXT_REENTER} is a
+     * turn the program answers by painting rather than by receiving.
+     *
+     * @param received the payload as it arrived
+     * @return {@code true} when the source would read the map's own key on this turn
+     */
+    private static boolean isReentry(CardSelectRequest received) {
+        return received.hasNavigationContext() && received.getNavigationContext().isReenter();
+    }
+
 
     /**
      * The URI's card number as {@code CDEMO-CARD-NUM PIC 9(16)} holds it.
@@ -1453,51 +1476,49 @@ public class CardSelectController {
     }
 
     /**
-     * Resolves {@code EIBCALEN} from the stated value and the carrier, and refuses any statement the
-     * carrier does not support.
+     * Resolves {@code EIBCALEN} - the length of the area that arrived, tested for zero and nothing else.
      *
-     * <h4>Why a caller may not simply declare it</h4>
-     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
-     * actually passed. It selects the arm at {@code :268} that decides whether the operator's typed
-     * criteria and the calling program's identity survive the turn, so a caller that could state it
-     * freely could discard state that was sent, or claim state that was not.
+     * <h4>Zero versus non-zero is the whole of what the source asks</h4>
+     * {@code app/cbl/COCRDSLC.cbl:268} tests {@code EIBCALEN} against zero and never against any other
+     * value: zero means the transaction was typed at a clear screen and there is no conversation, and
+     * anything else means an area arrived and its first 160 bytes are {@code CARDDEMO-COMMAREA}.
+     * So this method preserves the length that arrived and branches on zero versus non-zero, exactly as
+     * the source does.
      *
-     * <h4>Why the two accepted values are 0 and {@value #PASSED_COMMAREA_LENGTH}</h4>
-     * {@code :268} tests the value against zero and nothing else, and the only other thing the program
-     * does with the passed area is read exactly {@value #PASSED_COMMAREA_LENGTH} bytes out of it -
-     * {@code DFHCOMMAREA(1:160)} at {@code :274-275} and {@code DFHCOMMAREA(161:12)} at {@code :276-278}.
-     * The projected request carries precisely those two areas, so it is in one of exactly two states:
-     * absent, or complete at {@value #PASSED_COMMAREA_LENGTH} bytes. The byte count a real terminal would
-     * report is not one number - {@code COCRDLIC} transfers control passing {@code CARDDEMO-COMMAREA}
-     * alone [{@code app/cbl/COCRDLIC.cbl:538-540}] while this program's own {@code COMMON-RETURN} passes
-     * {@code WS-COMMAREA}, declared {@code PIC X(2000)} [{@code app/cbl/COCRDSLC.cbl:205}] - and since
-     * none of those numbers is tested for anything but zero, reproducing the terminal-dependent count
-     * would add a distinction the program does not make. The parameter states the presence of the area
-     * the program reads, at the length it reads.
+     * <h4>Why no set of accepted lengths is enumerated</h4>
+     * Because the real lengths are several and all of them are legitimate. {@code COCRDLIC} transfers control
+     * passing {@code CARDDEMO-COMMAREA} alone [{@code app/cbl/COCRDLIC.cbl:538-540}], and
+     * this program's own {@code COMMON-RETURN} passes {@code WS-COMMAREA}, declared {@code PIC X(2000)} - so a
+     * client continuing the pseudo-conversation faithfully reports 2000 while one
+     * arriving from the menu reports 160. An earlier revision accepted only zero and one
+     * synthetic length and answered {@code 400} to both of those real values, which refused the very
+     * payload this API's own response tells a client to send back. Any non-negative length is therefore
+     * accepted and carried through unchanged; only the zero test is acted on, because only the zero test
+     * exists in the source.
      *
-     * <p>So: absent is derived from the carrier, a stated value must be one of the two lengths, and it
-     * must agree with what actually arrived.
+     * <p>A stated value must still agree with what actually arrived: {@code EIBCALEN} describes the area
+     * CICS passed, so a payload carrying a communication area cannot report zero and a payload carrying
+     * none cannot report a length. That is not an invented rule but the one relation the parameter has to
+     * the body, and {@code :268} branches on it.
      *
-     * @param eibcalen the stated value, or {@code null}
+     * @param eibcalen the stated value, or {@code null} to derive it from the carrier
      * @param request  the bound request, whose commarea presence is the carrier
-     * @return {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH}
-     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
+     * @return zero when no communication area arrived, otherwise the length that arrived
+     * @throws IllegalArgumentException if the stated value is negative, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, CardSelectRequest request) {
-        int carried = request.hasNavigationContext() ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
+        boolean carried = request.hasNavigationContext();
         if (eibcalen == null) {
-            return carried;
+            return carried ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
         }
         int stated = eibcalen;
-        if (stated != NO_COMMAREA_LENGTH && stated != PASSED_COMMAREA_LENGTH) {
+        if (stated < NO_COMMAREA_LENGTH) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
-                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
-                    + "program is either " + NO_COMMAREA_LENGTH + " or " + PASSED_COMMAREA_LENGTH
-                    + ", CARDDEMO-COMMAREA plus WS-THIS-PROGCOMMAREA.");
+                    + ", and EIBCALEN is the length of the area CICS passed, which cannot be negative.");
         }
-        if (stated != carried) {
+        if ((stated == NO_COMMAREA_LENGTH) == carried) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
-                    + " but the payload carries " + (carried == NO_COMMAREA_LENGTH ? "no" : "a")
+                    + " but the payload carries " + (carried ? "a" : "no")
                     + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
                     + "because app/cbl/COCRDSLC.cbl:268 uses it to decide whether the conversation's "
                     + "state survives the turn.");

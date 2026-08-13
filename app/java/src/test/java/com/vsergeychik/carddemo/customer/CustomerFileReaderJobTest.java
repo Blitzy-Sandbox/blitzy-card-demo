@@ -41,6 +41,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -247,14 +248,21 @@ class CustomerFileReaderJobTest {
         sysout.display(CustomerService.END_OF_EXECUTION);
     }
 
+    /**
+     * A service that streams a clean run's line sequence to the destination it is handed and reports the
+     * record count, which is the shape the tasklet actually calls.
+     *
+     * <p>The lines are emitted through a streaming {@link Sysout} over the supplied sink rather than
+     * written to it directly, so the emission code below is the same code the capturing overloads use -
+     * {@code displayCustomerRecord} included - and the duplicate image of {@code L96} then {@code L78}
+     * cannot be faked into existence by the stub.
+     */
     private static CustomerService serviceReturning(List<String> records) {
         CustomerService service = mock(CustomerService.class);
-        Execution execution = new Execution(successfulLines(records),
-                AbendException.RETURN_CODE_OK, records.size());
-        when(service.readAndPrintCustomerFile(any(Sysout.class))).thenAnswer(invocation -> {
-            Sysout sysout = invocation.getArgument(0, Sysout.class);
-            emitSuccessfulRun(sysout, records);
-            return execution;
+        when(service.readAndPrintCustomerFileTo(any(SysoutSink.class))).thenAnswer(invocation -> {
+            SysoutSink sink = invocation.getArgument(0, SysoutSink.class);
+            emitSuccessfulRun(new Sysout(sink), records);
+            return records.size();
         });
         return service;
     }
@@ -266,11 +274,18 @@ class CustomerFileReaderJobTest {
                 CustomerService.ABENDING_PROGRAM);
     }
 
+    /**
+     * A service that streams the three lines a fatal read emits and then abends.
+     *
+     * <p>The lines reach the sink <em>before</em> the throw, which is what proves the streaming tasklet
+     * needs no {@code finally} to keep a failing run's output: on the mainframe those {@code DISPLAY}s
+     * are already spooled when {@code CEE3ABD} terminates the run.
+     */
     private static CustomerService serviceThrowing(AbendException abend) {
         CustomerService service = mock(CustomerService.class);
-        when(service.readAndPrintCustomerFile(any(Sysout.class))).thenAnswer(invocation -> {
-            Sysout sysout = invocation.getArgument(0, Sysout.class);
-            abendLines().forEach(sysout::display);
+        when(service.readAndPrintCustomerFileTo(any(SysoutSink.class))).thenAnswer(invocation -> {
+            SysoutSink sink = invocation.getArgument(0, SysoutSink.class);
+            abendLines().forEach(sink::write);
             throw abend;
         });
         return service;
@@ -594,16 +609,48 @@ class CustomerFileReaderJobTest {
         }
 
         @Test
-        @DisplayName("absence of a sink bean resolves the service-owned standard-output sink")
+        @DisplayName("absence of a sink bean resolves the service-owned standard-output sink, in the "
+                + "code page the service reads the customer master in")
         void standardOutputIsTheDeterministicFallback() {
+            // The service owns the code page, so the fallback is asked of the service rather than built
+            // here: a displayed record is the dataset's own 500 bytes (CBCUS01C:L78,L96), so the line has
+            // to be encoded in the code page the record was read in (practice B8). System.out is bound to
+            // file.encoding - a property of the JVM, not of the program - so it is not the stream
+            // underneath.
+            CustomerService service = mock(CustomerService.class);
+            when(service.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
+            when(service.standardOutputSysoutSink()).thenCallRealMethod();
             CustomerFileReaderJob subject = subject(mockedScaffolding(jobContracts()),
-                    mock(CustomerService.class), new AbsentBean<>());
+                    service, new AbsentBean<>());
 
             // READCUST.jcl:L11 assigns DISPLAY output to SYSOUT.
             assertThat(subject.sysoutSink())
                     .isInstanceOf(CustomerService.PrintStreamSysoutSink.class);
-            assertThat(((CustomerService.PrintStreamSysoutSink) subject.sysoutSink()).stream())
-                    .isSameAs(System.out);
+            PrintStream stream =
+                    ((CustomerService.PrintStreamSysoutSink) subject.sysoutSink()).stream();
+            assertThat(stream.charset()).isEqualTo(StandardCharsets.US_ASCII);
+            assertThat(stream).isNotSameAs(System.out);
+
+            // The code page is asked for rather than assumed, and it is asked of the layer that decodes
+            // the dataset bytes - this class accepts no Charset of its own. Taking System.out instead
+            // would have taken whatever encoding the JVM picked for it, re-encoding every displayed
+            // record; the resolved stream is therefore deliberately not that global.
+            verify(service, times(1)).datasetCharset();
+        }
+
+        @Test
+        @DisplayName("the fallback sink is resolved once, in the constructor, not per record")
+        void theFallbackSinkIsResolvedOnce() {
+            CustomerService service = mock(CustomerService.class);
+            when(service.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
+            when(service.standardOutputSysoutSink()).thenCallRealMethod();
+            CustomerFileReaderJob subject = subject(mockedScaffolding(jobContracts()),
+                    service, new AbsentBean<>());
+
+            // Two reads of the accessor are two reads of one settled field, so the destination cannot
+            // change between two records of a run.
+            assertThat(subject.sysoutSink()).isSameAs(subject.sysoutSink());
+            verify(service, times(1)).datasetCharset();
         }
     }
 
@@ -669,8 +716,79 @@ class CustomerFileReaderJobTest {
                         .isEqualTo(records.get(record))
                         .isEqualTo(sink.lines().get(firstImage + 1));
             }
-            verify(service, times(1)).readAndPrintCustomerFile(any(Sysout.class));
+            verify(service, times(1)).readAndPrintCustomerFileTo(any(SysoutSink.class));
             verifyNoMoreInteractions(service);
+        }
+
+        @Test
+        @DisplayName("the published capturing surface still runs the program without a JobLauncher")
+        void theCapturingSurfaceStillDelegates() {
+            List<String> records = fixtureRows();
+            Execution expected = new Execution(successfulLines(records),
+                    AbendException.RETURN_CODE_OK, records.size());
+            CustomerService service = mock(CustomerService.class);
+            when(service.readAndPrintCustomerFile(any(Sysout.class))).thenReturn(expected);
+            Sysout sysout = new Sysout();
+
+            Execution actual = subject(service, new CapturedSysout())
+                    .readAndPrintCustomerFile(sysout);
+
+            // G51: the program is reachable from this job's own surface, capturing form included, so a
+            // caller that needs the line sequence does not have to launch a job to get it. The tasklet
+            // deliberately does not use this shape - it would retain the sequence - but the surface
+            // stays published and is a pure delegation.
+            assertThat(actual).isSameAs(expected);
+            verify(service, times(1)).readAndPrintCustomerFile(sysout);
+            verifyNoMoreInteractions(service);
+        }
+
+        @Test
+        @DisplayName("the tasklet streams to SYSOUT and retains no line sequence")
+        void theTaskletRetainsNothing() {
+            String source = moduleSource(JOB_SOURCE);
+
+            // READCUST.jcl puts no ceiling on the customer master and each record contributes two
+            // 500-character lines, so the run must not hold the sequence: the streaming entry point is
+            // called, and nothing here creates a capturing Sysout, reads its accumulated lines, or
+            // spools after end-of-file.
+            assertThat(source)
+                    .contains("customerService.readAndPrintCustomerFileTo(sysoutSink)")
+                    .doesNotContain("new Sysout()")
+                    .doesNotContain(".lines()")
+                    .doesNotContain("private void spool(");
+
+            // No field and no local of the tasklet accumulates: the only per-run value it holds is the
+            // record count it reports as step metadata.
+            assertThat(Arrays.stream(CustomerFileReaderJob.class.getDeclaredFields())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .map(field -> field.getGenericType().getTypeName()))
+                    .noneMatch(typeName -> typeName.contains("List")
+                            || typeName.contains("Collection")
+                            || typeName.contains("Sysout>"));
+        }
+
+        @Test
+        @DisplayName("a failing run's lines are already at the destination when the abend arrives")
+        void aFailingRunsLinesAreAlreadySpooled() {
+            AbendException abend = AbendException.standard(CustomerService.PROGRAM_ID,
+                    AbendException.RETURN_CODE_IO_ERROR,
+                    CustomerService.ERROR_READING_CUSTOMER_FILE);
+            CustomerService service = serviceThrowing(abend);
+            CapturedSysout sink = new CapturedSysout();
+            Tasklet tasklet = subject(service, sink).customerFileDisplayTasklet();
+            TaskletCall call = taskletCall();
+
+            // The stub writes its three lines and then throws, so anything the sink holds afterwards was
+            // written during the run rather than recovered from a retained copy - which is exactly why
+            // the tasklet needs no finally block to reproduce CEE3ABD leaving prior DISPLAYs spooled.
+            AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> tasklet.execute(call.contribution(), call.chunkContext()));
+
+            assertThat(thrown).isSameAs(abend);
+            assertThat(sink.lines()).containsExactlyElementsOf(abendLines());
+            assertThat(call.contribution().getReadCount())
+                    .as("an abending run publishes no read count, as it did not reach the return")
+                    .isZero();
         }
     }
 
@@ -694,7 +812,7 @@ class CustomerFileReaderJobTest {
             assertThat(executed.batchConfig().precedingExitCodeZeroDecider()
                     .decide(executed.jobExecution(), executed.stepExecution()))
                     .isEqualTo(BatchConfig.PROCEED);
-            verify(service, times(1)).readAndPrintCustomerFile(any(Sysout.class));
+            verify(service, times(1)).readAndPrintCustomerFileTo(any(SysoutSink.class));
         }
 
         @Test
@@ -720,7 +838,7 @@ class CustomerFileReaderJobTest {
             assertThat(sink.lines())
                     .containsExactlyElementsOf(abendLines())
                     .doesNotContain(CustomerService.END_OF_EXECUTION);
-            verify(service, times(1)).readAndPrintCustomerFile(any(Sysout.class));
+            verify(service, times(1)).readAndPrintCustomerFileTo(any(SysoutSink.class));
         }
 
         @Test

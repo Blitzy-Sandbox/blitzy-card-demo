@@ -62,6 +62,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -284,10 +285,10 @@ class CardUpdateControllerTest {
      * moves {@code CCUP-OLD-ACCTID} and {@code CCUP-OLD-CARDID} into {@code CDEMO-ACCT-ID PIC 9(11)}
      * and {@code CDEMO-CARD-NUM PIC 9(16)}, so an initialised - blank - snapshot is eleven spaces
      * arriving at a zoned {@code DISPLAY} receiver. CICS would never reach {@code 'S'} without having
-     * fetched first, so there is no COBOL behaviour to be faithful to there; a hand-built payload that
-     * does is refused as {@link ScreenInputRejectedException} by
-     * {@link CardUpdateController#requireFetchedKey}, ahead of the two {@code MOVE}s, rather than
-     * abending the transaction over the caller's own input. See {@link CommareaConsistency}.
+     * fetched first, and the source puts no guard in front of those two {@code MOVE}s: it performs
+     * them, and the resulting data exception is caught by the {@code EXEC CICS HANDLE ABEND}
+     * declarative at {@code :370-372}, which runs {@code ABEND-ROUTINE}. See
+     * {@link CommareaConsistency}.
      *
      * @param action the state byte to carry
      * @return the trailer as the previous turn would have returned it
@@ -658,6 +659,35 @@ class CardUpdateControllerTest {
 
             verify(service).writeProcessing(any(), any(), any(), anyString(), any());
             assertThat(task.changeAction().isChangesOkayedAndDone()).isTrue();
+        }
+
+        @Test
+        @DisplayName("the write is handed the injected dataset codec, never the static literal one")
+        void theWriteUsesTheInjectedCodePage() {
+            // PIC_X_CODEC exists only for this class's static members - literal padding and the three
+            // figurative-constant tests - all of which count characters and cannot see a code page. The
+            // codec that reaches 9200-WRITE-PROCESSING, and therefore the record that is rewritten, is
+            // the injected one. An earlier revision also swept every received field against the static
+            // US-ASCII codec before the flow began, which measured terminal input against a page the
+            // deployment does not use; that judgement now happens once, at the JSON boundary.
+            ArgumentCaptor<FixedWidthCodec> passed = ArgumentCaptor.forClass(FixedWidthCodec.class);
+            when(service.writeProcessing(any(), any(), any(), anyString(), any()))
+                    .thenReturn(writeResult(WriteOutcome.CHANGES_OKAYED_AND_DONE));
+            Conversation task = task(reentered(), ChangeAction.changesOkNotConfirmed());
+            task.setOldDetails(oldDetails());
+            task.setNewDetails(newDetails());
+            task.ccWorkArea.setCcardAidCondition(AidKey.PFK05);
+
+            controller.decideAction2000(task);
+
+            verify(service).writeProcessing(any(), any(), any(), anyString(), passed.capture());
+            assertThat(passed.getValue()).isSameAs(controller.codec());
+            assertThat(passed.getValue().charset()).isEqualTo(CHARSET);
+
+            // And the page follows the injection rather than a constant.
+            Charset ebcdic = Charset.forName("IBM037");
+            assertThat(new CardUpdateController(repository, service, FIXED_CLOCK, ebcdic)
+                    .codec().charset()).isEqualTo(ebcdic);
         }
 
         /**
@@ -1067,10 +1097,20 @@ class CardUpdateControllerTest {
             task.wsEditCardexpyearFlag = CardUpdateController.FLG_FILTER_ISVALID;
         }
 
+        /**
+         * The input map area the last {@link #paint(Conversation)} left behind.
+         *
+         * <p>Kept because half the attribute layer lives there: {@code 3300} writes every field's
+         * {@code xxxA} byte into {@code CCRDUPAI}, so a test about protection or brightness has to read
+         * the area the paragraph wrote rather than the one it sent.
+         */
+        private CardUpdateRequest paintedInputArea;
+
         /** Paints the screen for a task in the given state, returning what the map holds. */
         private CardUpdateResponse paint(Conversation task) {
             CardUpdateRequest request = request("", "", task.carddemoCommarea, CommArea.initialised());
             controller.sendMap3000(request, response, task);
+            paintedInputArea = request;
             return response;
         }
 
@@ -1648,7 +1688,8 @@ class CardUpdateControllerTest {
             task.setOldDetails(oldDetails());
             paint(task);
 
-            ScreenMetadata metadata = controller.screenMetadataOf(response, task.cursorField);
+            ScreenMetadata metadata =
+                    controller.screenMetadataOf(response, paintedInputArea, task.cursorField);
 
             assertThat(metadata.fields()).hasSize(17)
                     .containsKeys(CardUpdateResponse.FKEYS, CardUpdateResponse.FKEYSC);
@@ -1656,6 +1697,114 @@ class CardUpdateControllerTest {
                     .as(":1053 always moves LOW-VALUES and :1333 always sends ERASE")
                     .isTrue();
             assertThat(metadata.cursorField()).isEqualTo(task.cursorField);
+        }
+
+        /**
+         * {@code :1171-1208} - the protection byte {@code 3300} computed has to reach the client.
+         *
+         * <p>It is written into {@code xxxA OF CCRDUPAI}, so a projection that read the output group's
+         * {@code xxxP} instead reported {@code x'00'} for all seventeen fields on every path: protected
+         * and typeable fields became indistinguishable.
+         */
+        @ParameterizedTest(name = "{0}: keys {1}, details {2}")
+        @CsvSource({"NOT_FETCHED, FSE, PRF", "SHOW_DETAILS, PRF, FSE", "NOT_OK, PRF, FSE",
+            "NOT_CONFIRMED, PRF, PRF", "OKAYED_AND_DONE, PRF, PRF"})
+        @DisplayName("the metadata reports the real xxxA protection byte, per 3300 arm")
+        void metadataReportsTheProtectionByteOfEachArm(String state, String keys, String details) {
+            Conversation task = task(reentered(), changeActionNamed(state));
+            task.setOldDetails(oldDetails());
+            allFieldFlagsValid(task);
+            paint(task);
+
+            ScreenMetadata metadata =
+                    controller.screenMetadataOf(response, paintedInputArea, task.cursorField);
+
+            int expectedKeys = BmsAttributes.unsigned(attributeNamed(keys));
+            int expectedDetails = BmsAttributes.unsigned(attributeNamed(details));
+            assertThat(metadata.fields().get(CardUpdateResponse.ACCTSID).protection())
+                    .isEqualTo(expectedKeys);
+            assertThat(metadata.fields().get(CardUpdateResponse.CARDSID).protection())
+                    .isEqualTo(expectedKeys);
+            for (String field : List.of(CardUpdateResponse.CRDNAME, CardUpdateResponse.CRDSTCD,
+                    CardUpdateResponse.EXPMON, CardUpdateResponse.EXPYEAR)) {
+                assertThat(metadata.fields().get(field).protection())
+                        .as(field + " in state " + state)
+                        .isEqualTo(expectedDetails);
+            }
+
+            // :1178, :1185, :1197 and :1205 comment EXPDAYA out on every arm, so the day field keeps the
+            // LOW-VALUES the area was initialised with. Preserved (B5), and observable as such.
+            assertThat(metadata.fields().get(CardUpdateResponse.EXPDAY).protection()).isZero();
+        }
+
+        /**
+         * {@code :1309-1317} - the two brightness decisions, which are also {@code xxxA} bytes.
+         */
+        @Test
+        @DisplayName("the metadata reports the dark/bright message line and the confirmation key line")
+        void metadataReportsBrightnessAndTheConfirmationKeyLine() {
+            // :1309-1317 is driven directly rather than through the whole paint, because 3250 decides
+            // WS-INFO-MSG for itself and the empty state is not reachable from a task that has details on
+            // the screen - showing details always prompts for changes.
+            Conversation quiet = task(reentered(), ChangeAction.showDetails());
+            quiet.wsInfoMsg = CardUpdateController.WS_INFO_MSG_SPACES;
+            CardUpdateRequest quietArea =
+                    request("", "", quiet.carddemoCommarea, CommArea.initialised());
+            controller.messageAttributes3300(quietArea, quiet);
+
+            ScreenMetadata dark = controller.screenMetadataOf(response, quietArea, null);
+            assertThat(dark.fields().get(CardUpdateResponse.INFOMSG).protection())
+                    .as(":1310 hides the message line when there is no message")
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMDAR));
+            assertThat(dark.fields().get(CardUpdateResponse.FKEYSC).protection())
+                    .as(":1315-1317 leaves FKEYSC alone unless confirmation is being requested")
+                    .isZero();
+
+            // A message that asks for confirmation: :1312 brightens the line, :1316 the key legend.
+            Conversation prompting = task(reentered(), ChangeAction.changesOkNotConfirmed());
+            prompting.wsInfoMsg = CardUpdateController.PROMPT_FOR_CONFIRMATION;
+            CardUpdateRequest promptArea =
+                    request("", "", prompting.carddemoCommarea, CommArea.initialised());
+            controller.messageAttributes3300(promptArea, prompting);
+
+            ScreenMetadata bright = controller.screenMetadataOf(response, promptArea, null);
+            assertThat(bright.fields().get(CardUpdateResponse.INFOMSG).protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMBRY));
+            assertThat(bright.fields().get(CardUpdateResponse.FKEYSC).protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMBRY));
+        }
+
+        /** The projection refuses to run without either area, because each holds half the answer. */
+        @Test
+        @DisplayName("screenMetadataOf needs both map areas")
+        void metadataNeedsBothAreas() {
+            paint(task(reentered(), ChangeAction.showDetails()));
+
+            assertThatThrownBy(() -> controller.screenMetadataOf(null, paintedInputArea, null))
+                    .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> controller.screenMetadataOf(response, null, null))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        /** The {@code ChangeAction} the parameterised name stands for. */
+        private ChangeAction changeActionNamed(String state) {
+            return switch (state) {
+                case "NOT_FETCHED" -> ChangeAction.initial();
+                case "SHOW_DETAILS" -> ChangeAction.showDetails();
+                case "NOT_OK" -> ChangeAction.changesNotOk();
+                case "NOT_CONFIRMED" -> ChangeAction.changesOkNotConfirmed();
+                case "OKAYED_AND_DONE" -> ChangeAction.changesOkayedAndDone();
+                default -> throw new IllegalArgumentException("Unknown state " + state);
+            };
+        }
+
+        /** The attribute constant the parameterised name stands for. */
+        private byte attributeNamed(String name) {
+            return switch (name) {
+                case "FSE" -> BmsAttributes.DFHBMFSE;
+                case "PRF" -> BmsAttributes.DFHBMPRF;
+                default -> throw new IllegalArgumentException("Unknown attribute " + name);
+            };
         }
 
         /** Reads back an {@code xxxA} attribute item as the byte the {@code MOVE} put there. */
@@ -4042,139 +4191,91 @@ class CardUpdateControllerTest {
     }
 
     @Nested
-    @DisplayName("A value a RECEIVE MAP could not have delivered is the caller's error, not an abend")
+    @DisplayName("The code-page judgement is the JSON boundary's, not this program's")
     class ScreenInputRefusal {
 
         @Test
-        @DisplayName("An unrepresentable character is refused rather than routed to ABEND-ROUTINE by "
-                + "the HANDLE ABEND declarative at :370-372")
-        void anUnrepresentableCharacterIsNotAnAbend() {
+        @DisplayName("A character the code page cannot represent is NOT refused here: COCRDUPC has no "
+                + "such test, and a sweep placed in the flow ran ahead of the outer EVALUATE at "
+                + ":429-543, five of whose arms never receive a map at all")
+        void anUnrepresentableCharacterIsNotRefusedByTheProgram() {
             CardUpdateRequest received =
                     request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
             received.setCrdname("JOS\u00C9 MU\u00D1OZ");
 
-            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .isNotInstanceOf(AbendException.class);
+            // The value reaches the program and is edited by 1200-EDIT-MAP-INPUTS like any other, which
+            // is what the source does with whatever the terminal sent. The refusal for a value the code
+            // page cannot carry exists once, at the JSON boundary, against the ACTIVE page - see
+            // config.ScreenTextDeserializerTest.
+            assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
         }
 
         @Test
-        @DisplayName("It names the offending field and its xxxI item, and echoes no value")
-        void itNamesTheFieldAndNotTheValue() {
-            CardUpdateRequest received =
-                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
-            received.setCrdname("JOS\u00C9");
-
-            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .satisfies(thrown -> {
-                        ScreenInputRejectedException rejected = (ScreenInputRejectedException) thrown;
-                        assertThat(rejected.member()).contains("crdname");
-                        assertThat(rejected.getMessage()).contains("CRDNAMEI").contains("U+00C9");
-                    });
-        }
-
-        @Test
-        @DisplayName("The sweep runs before the repository is touched, so nothing partial is written")
-        void theSweepPrecedesEveryDatasetAccess() {
-            CardUpdateRequest received =
-                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), fetchedTrailer(ChangeAction.showDetails()));
-            received.setCrdname("JOS\u00C9");
-
-            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
-                    .isInstanceOf(ScreenInputRejectedException.class);
-
-            verifyNoInteractions(repository, service);
-        }
-
-        @Test
-        @DisplayName("A representable payload passes the sweep untouched")
+        @DisplayName("A representable payload behaves identically, so nothing about an accepted value "
+                + "changed with the sweep's removal")
         void aRepresentablePayloadIsUntouched() {
             CardUpdateRequest received =
+                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
+            CardUpdateRequest reference =
                     request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
             received.setCrdname("JOHN Q PUBLIC");
 
             assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
+
+            // "Untouched" asserted rather than assumed. A non-null return says only that the sweep did
+            // not refuse the payload; it says nothing about whether the sweep left the payload alone,
+            // which is the whole claim of the display name.
+            assertThat(received.getCrdname())
+                    .as("the embossed name the sweep examined must come back exactly as it was set")
+                    .isEqualTo("JOHN Q PUBLIC");
+            assertThat(received.getCardsid())
+                    .as("and no neighbouring field moved either")
+                    .isEqualTo(reference.getCardsid());
+            assertThat(received.getAcctsid()).isEqualTo(reference.getAcctsid());
+            assertThat(received.getCrdstcd()).isEqualTo(reference.getCrdstcd());
+            assertThat(received.getExpmon()).isEqualTo(reference.getExpmon());
+            assertThat(received.getExpyear()).isEqualTo(reference.getExpyear());
         }
     }
 
     @Nested
-    @DisplayName("requireFetchedKey - a commarea the program itself could not have written")
+    @DisplayName(":671-672 is unconditional, and a blank snapshot is answered by ABEND-ROUTINE")
     class CommareaConsistency {
 
         @Test
-        @DisplayName("A blank CCUP-OLD-ACCTID with a processing action is refused as the caller's "
-                + "error: the only writer of that member is :1006-1007, which writes eleven digits")
-        void aBlankFetchedAccountKeyIsRefused() {
-            assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
-                    "           ", CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid",
-                    "the eleven digits of the fetched account identifier"))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .isNotInstanceOf(AbendException.class)
-                    .satisfies(thrown -> assertThat(((ScreenInputRejectedException) thrown).member())
-                            .contains("commArea.oldDetails.acctid"));
-        }
-
-        @Test
-        @DisplayName("An absent value is refused the same way, because a PIC 9 receiver cannot hold it "
-                + "either")
-        void anAbsentFetchedKeyIsRefused() {
-            assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
-                    null, CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid", "eleven digits"))
-                    .isInstanceOf(ScreenInputRejectedException.class);
-        }
-
-        @Test
-        @DisplayName("A non-digit anywhere in the span is refused, at the front, the middle and the end")
-        void aNonDigitAnywhereIsRefused() {
-            for (String value : new String[] {"A0000000001", "00000A00001", "0000000000A"}) {
-                assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
-                        value, CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid", "digits"))
-                        .as("value %s", value)
-                        .isInstanceOf(ScreenInputRejectedException.class);
-            }
-        }
-
-        @Test
-        @DisplayName("The digits a real fetch leaves behind pass, so the guard costs a genuine "
-                + "conversation nothing")
-        void theDigitsARealFetchLeavesBehindPass() {
-            CardUpdateController.requireFetchedKey(ACCOUNT_NUMBER, CardDetails.ACCTID_LENGTH,
-                    "commArea.oldDetails.acctid", "eleven digits");
-            CardUpdateController.requireFetchedKey(CARD_NUMBER, CardDetails.CARDID_LENGTH,
-                    "commArea.oldDetails.cardid", "sixteen digits");
-        }
-
-        @Test
-        @DisplayName("A short value is zero-... no: a short value is space-padded by the PIC X move and "
-                + "so is refused, because eleven digits is what the member holds")
-        void aShortValueIsRefusedBecausePicXPadsWithSpaces() {
-            assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
-                    "11", CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid", "eleven digits"))
-                    .isInstanceOf(ScreenInputRejectedException.class);
-        }
-
-        @Test
-        @DisplayName("Driven through 1200-EDIT-MAP-INPUTS' card-data path: a blank snapshot answers the "
-                + "caller's refusal rather than the 500 the abend handler would otherwise produce")
-        void drivenThroughEditMapInputsItIsARefusalNotAnAbend() {
+        @DisplayName("A blank CCUP-OLD-ACCTID reaches the MOVE and raises a data exception there, "
+                + "because :671-672 has no guard in front of it")
+        void aBlankFetchedAccountKeyReachesTheMove() {
             // The card-data path at :668-714, reached because the state is not CCUP-DETAILS-NOT-FETCHED,
-            // is where :671-672 moves the two snapshot keys into the PIC 9 commarea items. The snapshot
-            // here is CommArea.initialised()'s - blank - which is the state a hand-built payload asking
-            // for a processing action without having fetched arrives in.
+            // is where :671-672 moves the two snapshot keys into CDEMO-ACCT-ID PIC 9(11) and
+            // CDEMO-CARD-NUM PIC 9(16). The snapshot here is CommArea.initialised()'s - blank - which is
+            // the state a hand-built payload asking for a processing action without having fetched
+            // arrives in. CICS would never reach 'S' without a fetch, so the source has no arm for it:
+            // it performs the MOVE and the zoned receiver ends up holding data that is not a number.
             Conversation task = taskWithValidKeys(ChangeAction.showDetails());
             task.setOldDetails(CardDetails.initialised(DetailGroup.OLD));
 
             assertThatThrownBy(() -> controller.editMapInputs1200(task))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .isNotInstanceOf(AbendException.class)
-                    .satisfies(thrown -> assertThat(((ScreenInputRejectedException) thrown).member())
-                            .contains("commArea.oldDetails.acctid"));
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .isNotInstanceOf(ScreenInputRejectedException.class)
+                    .isNotInstanceOf(AbendException.class);
         }
 
         @Test
-        @DisplayName("The same path with the digits a real fetch left behind proceeds normally, so the "
-                + "guard changes nothing for a genuine conversation")
+        @DisplayName("Through handle(), that data exception is answered by the HANDLE ABEND declarative "
+                + "at :370-372 - an abend, which is what the source does with it")
+        void throughHandleItIsTheAbendTheDeclarativeProduces() {
+            CardUpdateRequest received = typedRequest(reentered(),
+                    CommArea.initialised().withChangeAction(ChangeAction.showDetails()));
+
+            assertThatThrownBy(() -> controller.handle(received, CardUpdateController.WS_COMMAREA_LENGTH,
+                    CicsAid.DFHENTER))
+                    .isInstanceOf(AbendException.class);
+        }
+
+        @Test
+        @DisplayName("The same path with the digits a real fetch left behind proceeds normally, so "
+                + "nothing about a genuine conversation changed")
         void theSamePathWithARealSnapshotProceeds() {
             Conversation task = taskWithValidKeys(ChangeAction.showDetails());
             task.setOldDetails(oldDetails());

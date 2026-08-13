@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -192,7 +194,9 @@ import java.util.stream.Collectors;
     "expectedReturnCode",
     "expectedMessages",
     "normalisations",
-    "expectedDatasets"
+    "expectedDatasets",
+    "unitStimulus",
+    "expectedOperations"
 })
 public record ParityCase(
     @JsonProperty("program") String program,
@@ -208,7 +212,9 @@ public record ParityCase(
     @JsonProperty("expectedReturnCode") Integer expectedReturnCode,
     @JsonProperty("expectedMessages") List<EmittedMessage> expectedMessages,
     @JsonProperty("normalisations") List<DatasetNormalisation> normalisations,
-    @JsonProperty("expectedDatasets") List<ExpectedDataset> expectedDatasets) {
+    @JsonProperty("expectedDatasets") List<ExpectedDataset> expectedDatasets,
+    @JsonProperty("unitStimulus") UnitStimulus unitStimulus,
+    @JsonProperty("expectedOperations") List<ExpectedOperation> expectedOperations) {
 
     /**
      * A COBOL program name: upper case, alphanumeric, beginning with a letter, and exactly eight
@@ -410,6 +416,73 @@ public record ParityCase(
         expectedMessages = freezeExpectedMessages(expectedMessages);
         normalisations = freezeNormalisations(normalisations, inputs);
         expectedDatasets = freezeExpectedDatasets(expectedDatasets);
+        unitStimulus = unitStimulus == null ? UnitStimulus.NONE : unitStimulus;
+        expectedOperations = freezeExpectedOperations(expectedOperations);
+    }
+
+    /**
+     * The shape of a case that declares no stimulus beyond its seeded data: the fourteen members that
+     * existed before {@link #unitStimulus()} did.
+     *
+     * <p>Most cases are this shape - their whole stimulus is the rows they seed - so the member
+     * normalises to {@link UnitStimulus#NONE} and no case file has to carry an empty object.
+     *
+     * @param program the eight-character upper-case COBOL program name
+     * @param caseId {@code case01} through {@code case20}
+     * @param description what the case exercises, in prose
+     * @param unitKind how the harness must reach the unit
+     * @param inputs the datasets to seed, keyed by binding key
+     * @param jobParameters the batch job parameters, only for a batch case
+     * @param screenRequest the online invocation, only for a controller case
+     * @param expectedResponse the online response, only for a controller case
+     * @param expectedWrites the records expected to be written, in write order
+     * @param expectedFinalState what each dataset is expected to hold afterwards
+     * @param expectedReturnCode the expected {@code RETURN-CODE}; mandatory
+     * @param expectedMessages the lines expected to be emitted, in order
+     * @param normalisations the seed-time width normalisations
+     * @param expectedDatasets the dataset-level expectations
+     */
+    public ParityCase(String program, String caseId, String description, UnitKind unitKind,
+                      Map<String, DatasetInput> inputs, Map<String, String> jobParameters,
+                      ScreenRequest screenRequest, ExpectedResponse expectedResponse,
+                      List<ExpectedRecord> expectedWrites, List<ExpectedRecord> expectedFinalState,
+                      Integer expectedReturnCode, List<EmittedMessage> expectedMessages,
+                      List<DatasetNormalisation> normalisations,
+                      List<ExpectedDataset> expectedDatasets) {
+        this(program, caseId, description, unitKind, inputs, jobParameters, screenRequest,
+            expectedResponse, expectedWrites, expectedFinalState, expectedReturnCode,
+            expectedMessages, normalisations, expectedDatasets, UnitStimulus.NONE, List.of());
+    }
+
+    /**
+     * The shape of a case that declares a stimulus but no operation sequence.
+     *
+     * @param program the eight-character upper-case COBOL program name
+     * @param caseId {@code case01} through {@code case20}
+     * @param description what the case exercises, in prose
+     * @param unitKind how the harness must reach the unit
+     * @param inputs the datasets to seed, keyed by binding key
+     * @param jobParameters the batch job parameters, only for a batch case
+     * @param screenRequest the online invocation, only for a controller case
+     * @param expectedResponse the online response, only for a controller case
+     * @param expectedWrites the records expected to be written, in write order
+     * @param expectedFinalState what each dataset is expected to hold afterwards
+     * @param expectedReturnCode the expected {@code RETURN-CODE}; mandatory
+     * @param expectedMessages the lines expected to be emitted, in order
+     * @param normalisations the seed-time width normalisations
+     * @param expectedDatasets the dataset-level expectations
+     * @param unitStimulus the stimulus applied beyond the seeded rows
+     */
+    public ParityCase(String program, String caseId, String description, UnitKind unitKind,
+                      Map<String, DatasetInput> inputs, Map<String, String> jobParameters,
+                      ScreenRequest screenRequest, ExpectedResponse expectedResponse,
+                      List<ExpectedRecord> expectedWrites, List<ExpectedRecord> expectedFinalState,
+                      Integer expectedReturnCode, List<EmittedMessage> expectedMessages,
+                      List<DatasetNormalisation> normalisations,
+                      List<ExpectedDataset> expectedDatasets, UnitStimulus unitStimulus) {
+        this(program, caseId, description, unitKind, inputs, jobParameters, screenRequest,
+            expectedResponse, expectedWrites, expectedFinalState, expectedReturnCode,
+            expectedMessages, normalisations, expectedDatasets, unitStimulus, List.of());
     }
 
     /**
@@ -470,7 +543,9 @@ public record ParityCase(
             + ", expectedReturnCode=" + expectedReturnCode
             + ", expectedMessages=" + expectedMessages.size()
             + ", normalisations=" + normalisations.size()
-            + ", expectedDatasets=" + expectedDatasets.size() + ']';
+            + ", expectedDatasets=" + expectedDatasets.size()
+            + ", unitStimulus=" + (unitStimulus.isEmpty() ? "none" : unitStimulus.toString())
+            + ", expectedOperations=" + expectedOperations.size() + ']';
     }
 
     // -------------------------------------------------------------------------------------------
@@ -1257,6 +1332,561 @@ public record ParityCase(
                 throw new IllegalArgumentException("ForcedOutcome.resp2 is " + resp2
                     + "; a CICS RESP2 value is never negative");
             }
+        }
+    }
+
+    /**
+     * The stimulus a case applies to its unit beyond its seeded data: the statuses a named call site
+     * reports, the operations a called subprogram is asked to perform, the linkage values it is handed,
+     * the condition codes preceding job steps left behind, and the environmental variants the program
+     * runs under.
+     *
+     * <h2>Why this is a schema member and not adapter code</h2>
+     * <p>Everything here used to live in Java, selected by {@code caseId} inside the test class: a
+     * {@code switch} over {@code case01}..{@code case20} returning a private scenario record. Two things
+     * were wrong with that, and both are the reason this type exists.
+     *
+     * <p><strong>The case file did not state its own inputs.</strong> A reader of
+     * {@code parity/CBACT02C/case18.json} could see the fixture rows and the expected lines but not that
+     * the {@code CLOSE} was arranged to be refused, so the file read as though it described an ordinary
+     * full-file pass. The declarative gate is only declarative if the declaration is complete.
+     *
+     * <p><strong>{@link ParityCase#caseId()} is identity, not input.</strong> Once an adapter branches on
+     * it, renumbering a case silently changes what the case does, two cases that differ only in Java
+     * look identical in review - which is exactly how four duplicate pairs went unnoticed - and a case
+     * file added without a matching Java arm either throws or, worse, falls into a default and asserts
+     * the wrong run.
+     *
+     * <p>Every member is optional and normalises to empty, because most cases need none of it: their
+     * whole stimulus is their seed. A case that needs one names it, and the name is validated here
+     * rather than interpreted by the adapter.
+     *
+     * @param callSiteOutcomes the outcome each named call site reports, keyed by the call site's name -
+     *     upper case with hyphens or underscores, as in {@code READ-XREFFILE} or {@code CLOSE_TRNXFILE}.
+     *     This is how a case reaches a {@code WHEN OTHER} arm no arrangement of seeded rows can produce:
+     *     a refused {@code OPEN}, a {@code FILE STATUS '37'} on a sequential read, a {@code '38'} from a
+     *     {@code CLOSE}. Never {@code null}; empty for a case whose data reaches its own arms
+     * @param operationScript the operations a called data-access subprogram is asked to perform, in the
+     *     order the caller issues them. {@code CBSTM03B} is the reason it is a list: its whole contract
+     *     is a DD name plus a one-character operation code, and the sequence of those calls is the
+     *     behaviour under test. Never {@code null}; empty for a unit that is not driven this way
+     * @param linkage the named values a case hands its unit across a linkage boundary - {@code LS-DATE}
+     *     and {@code LS-DATE-FORMAT} for {@code CSUTLDTC}, {@code CCUP-OLD-DETAILS} and
+     *     {@code CCUP-NEW-DETAILS} for {@code COCRDUPC}'s {@code 9200-WRITE-PROCESSING}. Keys are COBOL
+     *     data names, so they are upper case and hyphenated, and values are the images the COBOL would
+     *     hold. Never {@code null}; empty for a unit taking no linkage
+     * @param stepStatuses the condition code each preceding job step left behind, keyed by step name.
+     *     {@code app/jcl/CREASTMT.JCL} gates its steps with {@code COND=(0,NE)}, so "the step before this
+     *     one ended with 8" is an input to the run and not a property of the data. Never {@code null}
+     * @param environment the environmental variants the run is subject to, keyed by one of
+     *     {@link #PERMITTED_ENVIRONMENT_KEYS}. A closed key set rather than a free bag: an unrecognised
+     *     key would be a control the adapter silently ignores, which is the failure mode this whole type
+     *     exists to remove. Never {@code null}
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    @JsonPropertyOrder({
+        "callSiteOutcomes", "operationScript", "linkage", "stepStatuses", "environment"})
+    public record UnitStimulus(
+        @JsonProperty("callSiteOutcomes") Map<String, CallSiteOutcome> callSiteOutcomes,
+        @JsonProperty("operationScript") List<ScriptedOperation> operationScript,
+        @JsonProperty("linkage") Map<String, String> linkage,
+        @JsonProperty("stepStatuses") Map<String, Integer> stepStatuses,
+        @JsonProperty("environment") Map<String, String> environment) {
+
+        /**
+         * The environment keys a case may name.
+         *
+         * <p>Each is here because exactly one program's behaviour turns on it and no seeded row can
+         * express it:
+         * <ul>
+         *   <li>{@code NULL_UCB_DDS} - the DD names whose TIOT entry carries no unit control block, which
+         *       {@code CBSTM03A}'s control-block walk at {@code app/cbl/CBSTM03A.CBL:L262-L291} reports
+         *       with a different literal. A comma-separated list of DD names.</li>
+         *   <li>{@code MENU_TABLE_VARIANT} - which option table {@code COADM01C} or {@code COMEN01C} runs
+         *       over, since the {@code OCCURS} slots past the populated range are storage rather than
+         *       data and their content is not seeded from any dataset.</li>
+         *   <li>{@code DATABASE_VARIANT} - the shape of the relational backing a case needs, for the
+         *       programs whose repositories are reached through a real {@code JdbcTemplate} rather than a
+         *       stub.</li>
+         *   <li>{@code RECORDS_BEFORE_FAILURE} - how many records a browse delivers before the scripted
+         *       failure, when the failing site is a loop rather than a single call.</li>
+         * </ul>
+         */
+        public static final Set<String> PERMITTED_ENVIRONMENT_KEYS = Set.of(
+            "NULL_UCB_DDS", "MENU_TABLE_VARIANT", "DATABASE_VARIANT", "RECORDS_BEFORE_FAILURE");
+
+        /** A call-site name: upper case, alphanumeric, hyphen or underscore separated. */
+        private static final Pattern CALL_SITE_NAME =
+            Pattern.compile("[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)*");
+
+        /** A COBOL data name as a linkage key - upper case, alphanumeric, hyphen separated. */
+        private static final Pattern LINKAGE_NAME = Pattern.compile("[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*");
+
+        /** A JCL step name: upper case, alphanumeric, at most eight characters. */
+        private static final Pattern STEP_NAME = Pattern.compile("[A-Z][A-Z0-9]{0,7}");
+
+        /** The stimulus a case that declares none carries, so no consumer null-checks the member. */
+        public static final UnitStimulus NONE =
+            new UnitStimulus(Map.of(), List.of(), Map.of(), Map.of(), Map.of());
+
+        /**
+         * Validates every member and freezes every collection.
+         *
+         * @throws IllegalArgumentException if a call-site name, linkage name, step name or environment
+         *     key is malformed, if an environment key is not one of
+         *     {@link #PERMITTED_ENVIRONMENT_KEYS}, or if a condition code is negative
+         */
+        @JsonCreator
+        public UnitStimulus {
+            callSiteOutcomes = freezeCallSiteOutcomes(callSiteOutcomes);
+            operationScript = operationScript == null
+                ? List.of()
+                : List.copyOf(operationScript);
+            linkage = freezeNamedValues(linkage, LINKAGE_NAME, "linkage",
+                "a COBOL data name, upper case and hyphen separated, as the copybook spells it");
+            stepStatuses = freezeStepStatuses(stepStatuses);
+            environment = freezeEnvironment(environment);
+        }
+
+        /**
+         * Whether this stimulus declares nothing at all.
+         *
+         * <p>Not a JSON member: it is derived from the five that are, and a bean-named boolean is exactly
+         * the kind of accessor Jackson would otherwise write out as {@code "empty": true} and then refuse
+         * to read back, because deserialisation here is strict by design.
+         *
+         * @return {@code true} when every member is empty
+         */
+        @JsonIgnore
+        public boolean isEmpty() {
+            return callSiteOutcomes.isEmpty() && operationScript.isEmpty() && linkage.isEmpty()
+                && stepStatuses.isEmpty() && environment.isEmpty();
+        }
+
+        /**
+         * The outcome a named call site is scripted to report.
+         *
+         * @param callSite the call-site name
+         * @return that site's scripted outcome, or empty when the case scripts nothing there
+         */
+        public Optional<CallSiteOutcome> callSite(String callSite) {
+            return Optional.ofNullable(callSiteOutcomes.get(callSite));
+        }
+
+        /**
+         * A linkage value by its COBOL data name.
+         *
+         * @param name the COBOL data name
+         * @return the declared image, or empty when the case declares none
+         */
+        public Optional<String> linkageValue(String name) {
+            return Optional.ofNullable(linkage.get(name));
+        }
+
+        /**
+         * An environment value by its key.
+         *
+         * @param key one of {@link #PERMITTED_ENVIRONMENT_KEYS}
+         * @return the declared value, or empty when the case declares none
+         * @throws IllegalArgumentException if {@code key} is not a permitted key, so a typo in a
+         *     consumer fails as loudly as a typo in a case file
+         */
+        public Optional<String> environmentValue(String key) {
+            if (!PERMITTED_ENVIRONMENT_KEYS.contains(key)) {
+                throw new IllegalArgumentException("Environment key '" + key + "' is not one of "
+                    + new TreeSet<>(PERMITTED_ENVIRONMENT_KEYS) + ". Reading a key no case file may "
+                    + "declare would always return empty, which is a control that silently does "
+                    + "nothing.");
+            }
+            return Optional.ofNullable(environment.get(key));
+        }
+
+        /**
+         * The condition code a named preceding step left behind.
+         *
+         * @param stepName the JCL step name
+         * @return that step's condition code, or empty when the case declares none
+         */
+        public OptionalInt stepStatus(String stepName) {
+            Integer declared = stepStatuses.get(stepName);
+            return declared == null ? OptionalInt.empty() : OptionalInt.of(declared);
+        }
+
+        /**
+         * Renders the stimulus by shape rather than by value.
+         *
+         * <p>Hand-written for the same reason {@link ParityCase#toString()} is: {@link #linkage} carries
+         * record images, and a {@code CCUP-OLD-DETAILS} image is customer data.
+         *
+         * @return the declared keys and counts, never a value
+         */
+        @Override
+        public String toString() {
+            return "UnitStimulus[callSites=" + callSiteOutcomes.keySet()
+                + ", operations=" + operationScript.size()
+                + ", linkage=" + linkage.keySet()
+                + ", steps=" + stepStatuses.keySet()
+                + ", environment=" + environment.keySet() + ']';
+        }
+
+        /**
+         * Validates and freezes the call-site outcomes.
+         *
+         * @param source the declared map, possibly {@code null}
+         * @return an unmodifiable copy preserving declaration order
+         */
+        private static Map<String, CallSiteOutcome> freezeCallSiteOutcomes(
+                Map<String, CallSiteOutcome> source) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, CallSiteOutcome> frozen = new LinkedHashMap<>(source.size());
+            for (Map.Entry<String, CallSiteOutcome> entry : source.entrySet()) {
+                String name = requireName(entry.getKey(), CALL_SITE_NAME, "callSiteOutcomes",
+                    "the call site's name, upper case, as in READ-XREFFILE or CLOSE_TRNXFILE");
+                frozen.put(name, Objects.requireNonNull(entry.getValue(),
+                    "UnitStimulus.callSiteOutcomes['" + name + "'] is null. A call site named with no "
+                        + "outcome scripts nothing, which reads as though it did."));
+            }
+            return Collections.unmodifiableMap(frozen);
+        }
+
+        /**
+         * Validates and freezes a map of COBOL-named string values.
+         *
+         * @param source the declared map, possibly {@code null}
+         * @param shape the pattern every key must match
+         * @param member the member name, quoted in a failure
+         * @param expected what a well-formed key looks like, quoted in a failure
+         * @return an unmodifiable copy preserving declaration order
+         */
+        private static Map<String, String> freezeNamedValues(Map<String, String> source,
+                                                             Pattern shape,
+                                                             String member,
+                                                             String expected) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, String> frozen = new LinkedHashMap<>(source.size());
+            for (Map.Entry<String, String> entry : source.entrySet()) {
+                String name = requireName(entry.getKey(), shape, member, expected);
+                frozen.put(name, Objects.requireNonNull(entry.getValue(),
+                    "UnitStimulus." + member + "['" + name + "'] is null. A declared name with no "
+                        + "value is indistinguishable from one the case never declared; omit the "
+                        + "entry or give it the image the COBOL holds - the empty string is a legal "
+                        + "image and says something different from absent."));
+            }
+            return Collections.unmodifiableMap(frozen);
+        }
+
+        /**
+         * Validates and freezes the preceding-step condition codes.
+         *
+         * @param source the declared map, possibly {@code null}
+         * @return an unmodifiable copy preserving declaration order
+         */
+        private static Map<String, Integer> freezeStepStatuses(Map<String, Integer> source) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, Integer> frozen = new LinkedHashMap<>(source.size());
+            for (Map.Entry<String, Integer> entry : source.entrySet()) {
+                String name = requireName(entry.getKey(), STEP_NAME, "stepStatuses",
+                    "a JCL step name, upper case and at most eight characters");
+                Integer code = Objects.requireNonNull(entry.getValue(),
+                    "UnitStimulus.stepStatuses['" + name + "'] is null; state the condition code the "
+                        + "step ended with, which is 0 for a step that succeeded");
+                if (code < 0) {
+                    throw new IllegalArgumentException("UnitStimulus.stepStatuses['" + name + "'] is "
+                        + code + "; a JCL condition code is never negative");
+                }
+                frozen.put(name, code);
+            }
+            return Collections.unmodifiableMap(frozen);
+        }
+
+        /**
+         * Validates and freezes the environment, refusing any key outside the closed set.
+         *
+         * @param source the declared map, possibly {@code null}
+         * @return an unmodifiable copy preserving declaration order
+         */
+        private static Map<String, String> freezeEnvironment(Map<String, String> source) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, String> frozen = new LinkedHashMap<>(source.size());
+            for (Map.Entry<String, String> entry : source.entrySet()) {
+                String key = entry.getKey();
+                if (key == null || !PERMITTED_ENVIRONMENT_KEYS.contains(key)) {
+                    throw new IllegalArgumentException("UnitStimulus.environment declares '" + key
+                        + "', which is not one of " + new TreeSet<>(PERMITTED_ENVIRONMENT_KEYS)
+                        + ". The key set is closed on purpose: an unrecognised control is one the "
+                        + "adapter ignores in silence, and a case whose stimulus is ignored passes "
+                        + "for the wrong reason. Add the key to PERMITTED_ENVIRONMENT_KEYS in the "
+                        + "same change that teaches an adapter to honour it.");
+                }
+                frozen.put(key, Objects.requireNonNull(entry.getValue(),
+                    "UnitStimulus.environment['" + key + "'] is null; omit the key or give it a "
+                        + "value"));
+            }
+            return Collections.unmodifiableMap(frozen);
+        }
+
+        /**
+         * Requires a map key to be present and to match its declared shape.
+         *
+         * @param value the key
+         * @param shape the pattern it must match
+         * @param member the member name, quoted in a failure
+         * @param expected what a well-formed key looks like, quoted in a failure
+         * @return the key, stripped
+         */
+        private static String requireName(String value, Pattern shape, String member,
+                                          String expected) {
+            String name = value == null ? "" : value.strip();
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("UnitStimulus." + member + " has a blank key; "
+                    + "each key is " + expected);
+            }
+            if (!shape.matcher(name).matches()) {
+                throw new IllegalArgumentException("UnitStimulus." + member + " declares key '" + name
+                    + "', which is not " + expected + ". Case files and adapters agree on these "
+                    + "names, so an unconventional spelling is a control that reaches nothing.");
+            }
+            return name;
+        }
+    }
+
+    /**
+     * What one named call site reports when the case reaches it.
+     *
+     * <p>Four members rather than one status, because a call site fails in more than one way and the
+     * differences are behavioural. A dataset that cannot be opened at all takes a different arm from one
+     * whose {@code OPEN} reports a non-zero response; a browse that fails on its fourth read has already
+     * displayed three records, and those three lines are part of the expectation.
+     *
+     * @param status the two-character {@code FILE STATUS} the site reports - {@code "00"}, {@code "10"},
+     *     {@code "23"}, {@code "37"}, {@code "38"} - or {@code null} when the site reports a CICS
+     *     {@code RESP} instead
+     * @param resp the CICS {@code RESP} value the site reports, or {@code null} when it reports a
+     *     {@code FILE STATUS}. {@code common.FileStatus} names the conventional values
+     * @param refused {@code true} when the site is refused outright rather than reporting a status - an
+     *     unreachable dataset, which is not the same observable event as an open that reports one.
+     *     {@code null} normalises to {@code false}
+     * @param afterRecords how many records the site delivers before it reports, for a site inside a
+     *     loop; {@code null} for a site that reports on its first call
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    @JsonPropertyOrder({"status", "resp", "refused", "afterRecords"})
+    public record CallSiteOutcome(
+        @JsonProperty("status") String status,
+        @JsonProperty("resp") Integer resp,
+        @JsonProperty("refused") Boolean refused,
+        @JsonProperty("afterRecords") Integer afterRecords) {
+
+        /** A COBOL {@code FILE STATUS}: exactly two characters, digits or upper-case letters. */
+        private static final Pattern FILE_STATUS = Pattern.compile("[0-9A-Z]{2}");
+
+        /**
+         * Validates the outcome.
+         *
+         * @throws IllegalArgumentException if the status is not two characters, if a response code or a
+         *     record count is negative, or if the site declares nothing at all
+         */
+        @JsonCreator
+        public CallSiteOutcome {
+            if (status != null && !FILE_STATUS.matcher(status).matches()) {
+                throw new IllegalArgumentException("CallSiteOutcome.status is '" + status
+                    + "'; a COBOL FILE STATUS is exactly two characters, as in 00, 10, 23, 37 or 38");
+            }
+            if (resp != null && resp < 0) {
+                throw new IllegalArgumentException("CallSiteOutcome.resp is " + resp
+                    + "; a CICS RESP value is never negative");
+            }
+            if (afterRecords != null && afterRecords < 0) {
+                throw new IllegalArgumentException("CallSiteOutcome.afterRecords is " + afterRecords
+                    + "; a record count is never negative");
+            }
+            refused = refused != null && refused;
+            if (status == null && resp == null && !refused) {
+                throw new IllegalArgumentException("CallSiteOutcome declares neither a status, nor a "
+                    + "RESP, nor a refusal, so it scripts nothing. Omit the call site instead: a "
+                    + "site named with no outcome reads as though the case arranged something there.");
+            }
+        }
+
+        /**
+         * Whether the site was refused outright.
+         *
+         * <p>Not a JSON member of its own: {@code refused} is already a component, and a second
+         * bean-named accessor for the same name is a serialisation conflict waiting to happen.
+         *
+         * @return {@code true} for an unreachable dataset
+         */
+        @JsonIgnore
+        public boolean isRefused() {
+            return Boolean.TRUE.equals(refused);
+        }
+
+        /**
+         * How many records precede the report.
+         *
+         * @return the declared count, or zero when the site reports on its first call
+         */
+        public int recordsBefore() {
+            return afterRecords == null ? 0 : afterRecords;
+        }
+    }
+
+    /**
+     * One operation in a called subprogram's script: the DD name, the operation code, and the key it is
+     * given.
+     *
+     * <p>{@code CBSTM03B} is why this exists. Its whole contract is
+     * {@code 01 LK-M03B-AREA} - a DD name, a one-character operation code with six {@code 88}-level
+     * spellings, a two-character return code, a key and a key length - and
+     * {@code PROCEDURE DIVISION USING LK-M03B-AREA} dispatches on the DD name. The sequence of calls is
+     * the behaviour under test, so it belongs in the case file rather than in a Java table keyed by
+     * case identifier.
+     *
+     * @param dd the DD name the operation addresses, as {@code LK-M03B-DD} carries it; required
+     * @param operation the operation code, one of the {@code 88}-level spellings {@code O}, {@code C},
+     *     {@code R}, {@code K}, {@code W} or {@code Z}; required
+     * @param key the key the operation is given, as {@code LK-M03B-KEY} carries it; {@code null} for an
+     *     operation that takes none
+     * @param keyLength the key length, as {@code LK-M03B-KEY-LN} carries it; {@code null} for an
+     *     operation that takes no key
+     * @param status the two-character value the caller hands in as {@code LK-M03B-RC} before issuing the
+     *     call, or {@code null} to carry forward whatever the previous call returned. The distinction is
+     *     load-bearing rather than cosmetic: the subroutine's three fall-through exits at
+     *     {@code app/cbl/CBSTM03B.cbl:151-152}, {@code :200-201} and their siblings move the DD's own
+     *     {@code FILE STATUS} area into {@code LK-M03B-RC} whatever happened, so a call that carries a
+     *     stale value in is the only way to observe an exit that assigns nothing new
+     * @param primesRecordArea whether the caller issues {@code MOVE SPACES TO WS-M03B-FLDT} before the
+     *     call, as {@code app/cbl/CBSTM03A.CBL:L350}, {@code :L745} and {@code :L834} do and
+     *     {@code :L857-860} conspicuously does not; {@code null} means it does not, which is the reading
+     *     that makes "at end of file the record area is returned unchanged" an assertion with content.
+     *     Two dimensions rather than one because the two are independent in the source: a caller may
+     *     prime the status and keep the record area, which is exactly what {@code :L857-860} does
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    @JsonPropertyOrder({"dd", "operation", "key", "keyLength", "status", "primesRecordArea"})
+    public record ScriptedOperation(
+        @JsonProperty("dd") String dd,
+        @JsonProperty("operation") String operation,
+        @JsonProperty("key") String key,
+        @JsonProperty("keyLength") Integer keyLength,
+        @JsonProperty("status") String status,
+        @JsonProperty("primesRecordArea") Boolean primesRecordArea) {
+
+        /** The six operation codes {@code CBSTM03B}'s {@code 88}-levels declare. */
+        public static final Set<String> PERMITTED_OPERATIONS = Set.of("O", "C", "R", "K", "W", "Z");
+
+        /** A DD name: upper case, alphanumeric, at most eight characters. */
+        private static final Pattern DD_NAME = Pattern.compile("[A-Z][A-Z0-9]{0,7}");
+
+        /**
+         * Validates the operation.
+         *
+         * @throws IllegalArgumentException if the DD name is malformed, if the operation code is not one
+         *     of {@link #PERMITTED_OPERATIONS}, if the key length is not positive, or if the status is
+         *     not two characters
+         */
+        @JsonCreator
+        public ScriptedOperation {
+            String name = dd == null ? "" : dd.strip();
+            if (!DD_NAME.matcher(name).matches()) {
+                throw new IllegalArgumentException("ScriptedOperation.dd is '" + dd + "'; a DD name is "
+                    + "upper case, alphanumeric and at most eight characters, as LK-M03B-DD carries it");
+            }
+            dd = name;
+            String code = operation == null ? "" : operation.strip();
+            if (!PERMITTED_OPERATIONS.contains(code)) {
+                throw new IllegalArgumentException("ScriptedOperation.operation is '" + operation
+                    + "'; the six codes CBSTM03B declares are O (open), C (close), R (read), K (keyed "
+                    + "read), W (write) and Z (rewrite)");
+            }
+            operation = code;
+            if (keyLength != null && keyLength <= 0) {
+                throw new IllegalArgumentException("ScriptedOperation.keyLength is " + keyLength
+                    + "; LK-M03B-KEY-LN is the length of a key, so it is at least one. Omit it for an "
+                    + "operation that takes no key.");
+            }
+            if (status != null && status.length() != 2) {
+                throw new IllegalArgumentException("ScriptedOperation.status is '" + status
+                    + "'; LK-M03B-RC is exactly two characters");
+            }
+        }
+
+        /**
+         * Whether the caller blanks the record area before this call.
+         *
+         * <p>Declared as a boxed {@code Boolean} so a case file may omit it, and read through this
+         * accessor so every consumer sees the same reading of an omission: the caller does <em>not</em>
+         * blank it, and the area arrives holding whatever the previous call returned.
+         *
+         * @return {@code true} only when the case declares it
+         */
+        public boolean primesRecordAreaOrDefault() {
+            return Boolean.TRUE.equals(primesRecordArea);
+        }
+    }
+
+    /**
+     * One repository operation a case expects the run to issue, against the record it names.
+     *
+     * <h2>Why an ordered operation expectation exists at all</h2>
+     * <p>A fingerprint records what each dataset held afterwards. It cannot distinguish a record removed
+     * by the keyless {@code EXEC CICS DELETE} of {@code app/cbl/COUSR03C.cbl:307-311} - which acts on
+     * whatever the task is holding from a preceding {@code READ ... UPDATE} - from the same record
+     * removed by a delete-by-key, an operation no program in this application performs. The end state is
+     * identical and the behaviour is not, so the <em>sequence</em> has to be an expectation of its own.
+     *
+     * <p>It is a declared expectation rather than a Java-side list for the same reason every other
+     * expectation is: a case that stated its sequence in Java would be a case whose file did not describe
+     * what it asserts.
+     *
+     * @param dataset the binding key of the dataset the operation addresses; required
+     * @param operation which operation, named with the same vocabulary a forced outcome uses; required
+     * @param key the key of the record the operation addressed, or {@code null} for an operation that
+     *     carries none - a browse start, or the keyless delete of a held record, whose identity is stated
+     *     by the read that preceded it
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    @JsonPropertyOrder({"dataset", "operation", "key"})
+    public record ExpectedOperation(
+        @JsonProperty("dataset") String dataset,
+        @JsonProperty("operation") RepositoryOperation operation,
+        @JsonProperty("key") String key) {
+
+        /**
+         * Validates the operation.
+         *
+         * @throws IllegalArgumentException if the dataset is not a binding key
+         * @throws NullPointerException if the operation is absent
+         */
+        @JsonCreator
+        public ExpectedOperation {
+            dataset = requireDatasetKey(dataset, "expectedOperations.dataset");
+            operation = Objects.requireNonNull(operation, "ExpectedOperation.operation is required: "
+                + "name one of the RepositoryOperation constants, so the case and the repository agree "
+                + "on what operation is being expected");
+            key = requireNullOrText(key, "expectedOperations.key");
+        }
+
+        /**
+         * Renders the operation without disclosing the key.
+         *
+         * <p>The key of a {@code USRSEC} record is a user id rather than a credential, but the rule is
+         * applied uniformly: no expectation type in this model prints a value.
+         *
+         * @return the dataset and the operation
+         */
+        @Override
+        public String toString() {
+            return "ExpectedOperation[" + dataset + '.' + operation.key()
+                + (key == null ? "" : ", keyed") + ']';
         }
     }
 
@@ -2663,9 +3293,9 @@ public record ParityCase(
          *
          * <p>The type is the part a reader acts on, and it is safe by construction: a class name
          * carries no data. The message is the part that is not safe, so it goes through
-         * {@link #sanitiseDiagnostic(String)}. The throwable itself is still chained as the
-         * {@code cause} by every caller here, so a developer running the suite locally loses no
-         * detail; what changes is that the harness's own rendered text never repeats it raw.
+         * {@link #sanitiseDiagnostic(String)}. What is chained as the {@code cause} is a
+         * {@link SanitisedCause} surrogate rather than the throwable itself, so the type and the throw
+         * site survive for a reader while neither rendering repeats the message raw.
          *
          * @param failure the throwable; may be {@code null}
          * @return a description naming the type and the sanitised message
@@ -2675,6 +3305,81 @@ public record ParityCase(
                 return NO_MESSAGE;
             }
             return failure.getClass().getName() + ": " + sanitiseDiagnostic(failure.getMessage());
+        }
+
+        /**
+         * A stand-in for a throwable raised inside a unit under test, safe to chain as a
+         * {@code cause}.
+         *
+         * <p>Chaining the original throwable is what this exists to stop. The harness's own message
+         * goes through {@link #sanitiseDiagnostic(String)}, but a chained cause is rendered by the test
+         * runner independently: {@code trimStackTrace} is {@code false} in {@code app/java/pom.xml} -
+         * deliberately, so a parity difference is traceable to the translation decision that caused it
+         * - and with it surefire prints the whole {@code Caused by:} chain <em>including the original
+         * message, raw</em>. A repository failure routinely quotes the record it was handed, which for a
+         * customer row is five hundred bytes of names, address and social-security number and for a
+         * {@code USRSEC} row is the legacy plaintext password. Sanitising one rendering and leaving the
+         * other raw sanitises nothing (CWE-532).
+         *
+         * <p>What a reader actually needs from a cause survives intact:
+         * <ul>
+         *   <li>the original <strong>type</strong>, named in this surrogate's message. A class name
+         *       carries no data, and it is the part a reader acts on;</li>
+         *   <li>the original <strong>stack trace</strong>, copied frame for frame. A frame is a class
+         *       name, a method name and a line number - it locates the throw site exactly and carries
+         *       no record content;</li>
+         *   <li>the original <strong>message</strong>, scrubbed and bounded by the same policy the
+         *       harness's own text uses.</li>
+         * </ul>
+         *
+         * <p>What does not survive is the original object, and that is the point: it is neither chained
+         * nor suppressed here, so there is no path by which the runner can reach its raw message. A
+         * developer who needs the unscrubbed text runs the failing unit directly, where the throwable is
+         * never intercepted.
+         */
+        public static final class SanitisedCause extends RuntimeException {
+
+            /** Serialisation identity, required because {@link RuntimeException} is serialisable. */
+            private static final long serialVersionUID = 1L;
+
+            /** The original throwable's fully qualified type name, retained as metadata. */
+            private final String originalType;
+
+            /**
+             * @param original the throwable to stand in for; never {@code null}
+             */
+            private SanitisedCause(Throwable original) {
+                // No cause argument, deliberately: chaining the original is the disclosure this type
+                // exists to prevent. The explicit null also disables writableStackTrace's default
+                // fillInStackTrace, which would otherwise report THIS constructor's frames rather than
+                // the original throw site.
+                super(describeThrowable(original), null, true, true);
+                this.originalType = original.getClass().getName();
+                setStackTrace(original.getStackTrace());
+            }
+
+            /**
+             * The type of the throwable this stands in for.
+             *
+             * @return the fully qualified class name, never {@code null}
+             */
+            public String originalType() {
+                return originalType;
+            }
+        }
+
+        /**
+         * Wraps a throwable in a {@link SanitisedCause} so it can be chained without disclosing its
+         * message.
+         *
+         * @param failure the throwable raised by a unit under test; never {@code null}
+         * @return a surrogate carrying the type, the stack frames and the sanitised message
+         * @throws NullPointerException if {@code failure} is {@code null}
+         */
+        public static SanitisedCause sanitisedCause(Throwable failure) {
+            Objects.requireNonNull(failure, "A throwable is required: there is nothing to sanitise "
+                + "otherwise, and a null cause is spelled by passing no cause at all");
+            return new SanitisedCause(failure);
         }
 
         /** Replaces every occurrence of every known credential value with {@link #MASK}. */
@@ -3296,6 +4001,28 @@ public record ParityCase(
      * @return an unmodifiable list in declaration order, empty when nothing was declared
      * @throws IllegalArgumentException if any element is {@code null} or repeats a dataset and channel
      */
+    /**
+     * Validates and freezes the expected operation sequence.
+     *
+     * @param source the declared list, possibly {@code null}
+     * @return an unmodifiable copy in declaration order, which is the order the run must issue them in
+     * @throws IllegalArgumentException if an entry is {@code null}
+     */
+    private static List<ExpectedOperation> freezeExpectedOperations(
+            List<ExpectedOperation> source) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        for (int index = 0; index < source.size(); index++) {
+            if (source.get(index) == null) {
+                throw new IllegalArgumentException("ParityCase.expectedOperations[" + index
+                    + "] is null. The list is ordered and positional, so a hole in it would shift "
+                    + "every operation after it onto the wrong expectation.");
+            }
+        }
+        return List.copyOf(source);
+    }
+
     private static List<ExpectedDataset> freezeExpectedDatasets(List<ExpectedDataset> source) {
         if (source == null || source.isEmpty()) {
             return List.of();

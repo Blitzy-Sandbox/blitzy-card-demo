@@ -68,11 +68,20 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       the 28 programs - truncating on the right for alphanumeric receivers and on the left for
  *       numeric ones - padding is the dominant parity risk in the whole codebase, well ahead of
  *       arithmetic. A differ that trimmed would be blind to most of it.</li>
- *   <li><strong>Signed fields compare numerically, through the codec.</strong> The zoned
- *       {@code DISPLAY} form overpunches the sign into the trailing byte, so two different images can
- *       denote the same value and reporting a difference between them would be wrong. The arithmetic
- *       is pinned against real fixture bytes below, because it is easy to get wrong by a factor of
- *       ten.</li>
+ *   <li><strong>Signed fields: the stored byte form decides, and the decoded number explains.</strong>
+ *       The zoned {@code DISPLAY} form overpunches the sign into the trailing byte, so the differ
+ *       decodes through the codec - which lets a case state its expectation as {@code "194.00"} and
+ *       match the canonical stored image {@code 00000001940&#123;}, and which is what puts a readable
+ *       quantity in the explanation. What the decoding does <em>not</em> do is make two different byte
+ *       images equal. The unsigned zone-F rendering {@code 000000019400} denotes the same quantity and
+ *       is still reported as a difference, because a COBOL store into {@code PIC S9(10)V99} always
+ *       overpunches and so that image is one no program in the codebase writes; a judge that accepted
+ *       it would be blind to the very defect overpunching exists to expose. The bytes are the record
+ *       contract; the number is the diagnosis. Both halves are pinned below -
+ *       {@link SignedZonedFields#theStoredOverpunchImageDenotesTheDocumentedValue()} for the decoding,
+ *       {@link SignedZonedFields#twoImagesOfTheSameValueAreStillADifference()} for the authority - and
+ *       the arithmetic is checked against real fixture bytes because it is easy to get wrong by a
+ *       factor of ten.</li>
  *   <li><strong>Total record width, and therefore {@code FILLER}.</strong> Omitting a {@code FILLER}
  *       span shifts every offset after it; a width check is the cheapest way to catch that and it is
  *       asserted to report once, against the record, rather than as a cascade of field noise.</li>
@@ -838,12 +847,15 @@ class FieldDifferSelfJudgedTest {
 
 
     // =================================================================================================
-    // 5. PIC S9(p)V99 - decoded through the codec's overpunch reader and compared as BigDecimal
-    //    at scale 2 with RoundingMode.DOWN (gates G23, G24).
+    // 5. PIC S9(p)V99 - decoded through the codec's overpunch reader into BigDecimal at scale 2 with
+    //    RoundingMode.DOWN (gates G23, G24). The decoding is what makes a decimal expectation matchable
+    //    and what makes an explanation readable; it is not a licence to treat two different stored
+    //    images as equal. Parity is decided on the bytes.
     // =================================================================================================
 
     @Nested
-    @DisplayName("Signed zoned fields compare numerically, sign overpunch and all")
+    @DisplayName("Signed zoned fields - the stored byte form is authoritative, the decoded number "
+            + "explains it")
     class SignedZonedFields {
 
         @Test

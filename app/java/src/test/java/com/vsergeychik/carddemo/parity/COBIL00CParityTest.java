@@ -486,6 +486,27 @@ class COBIL00CParityTest {
     /** {@code ACTIDINI} - the account-number entry item of {@code app/cpy-bms/COBIL00.CPY:60}. */
     private static final String ACTIDIN_INPUT = "ACTIDINI";
 
+    /** {@code CURBALI} - the current-balance item of {@code app/cpy-bms/COBIL00.CPY}, inbound as well as out. */
+    private static final String CURBAL_INPUT = "CURBALI";
+
+    /** {@code CDEMO-CB00-TRN-SELECTED PIC X(16)} - {@code app/cbl/COBIL00C.cbl:72}. */
+    private static final String TRN_SELECTED_FIELD = "CDEMO-CB00-TRN-SELECTED";
+
+    /** {@code CDEMO-CB00-TRN-SEL-FLG PIC X(01)} - {@code app/cbl/COBIL00C.cbl:71}. */
+    private static final String TRN_SEL_FLG_FIELD = "CDEMO-CB00-TRN-SEL-FLG";
+
+    /** {@code CDEMO-CB00-TRNID-FIRST PIC X(16)} - {@code app/cbl/COBIL00C.cbl:65}. */
+    private static final String TRNID_FIRST_FIELD = "CDEMO-CB00-TRNID-FIRST";
+
+    /** {@code CDEMO-CB00-TRNID-LAST PIC X(16)} - {@code app/cbl/COBIL00C.cbl:66}. */
+    private static final String TRNID_LAST_FIELD = "CDEMO-CB00-TRNID-LAST";
+
+    /** {@code CDEMO-CB00-PAGE-NUM PIC 9(08)} - {@code app/cbl/COBIL00C.cbl:67}. */
+    private static final String PAGE_NUM_FIELD = "CDEMO-CB00-PAGE-NUM";
+
+    /** {@code CDEMO-CB00-NEXT-PAGE-FLG PIC X(01)} - {@code app/cbl/COBIL00C.cbl:68}. */
+    private static final String NEXT_PAGE_FLG_FIELD = "CDEMO-CB00-NEXT-PAGE-FLG";
+
     /** {@code CONFIRMI} - the one-byte confirmation item of {@code app/cpy-bms/COBIL00.CPY:72}. */
     private static final String CONFIRM_INPUT = "CONFIRMI";
 
@@ -815,19 +836,44 @@ class COBIL00CParityTest {
      * <p>The single seam between the gate and the cases. The twenty are declared here and constructed
      * through {@link ParityCase}'s own canonical constructor, so each is validated exactly as a shipped
      * {@code src/test/resources/parity/COBIL00C/caseNN.json} fixture would be; should that directory
-     * ever be shipped, {@code ParityHarness.casesOf(PROGRAM)} substitutes here and nothing else in this
-     * class changes.
+     * cases are loaded through {@code ParityHarness.casesOf(PROGRAM)}, which refuses anything but exactly
+     * {@code case01.json} through {@code case20.json}, so a file added to that directory is executed the
+     * moment it exists and one missing from it fails the class before a single case runs.
      *
      * @return the twenty scenarios, in ascending case order
      * @throws IllegalStateException if the set is not exactly the twenty, in order, all naming this
      *     program
      */
     static List<ParityScenario> cases() {
-        List<ParityScenario> scenarios = List.of(case01(), case02(), case03(), case04(), case05(),
-                case06(), case07(), case08(), case09(), case10(), case11(), case12(), case13(),
-                case14(), case15(), case16(), case17(), case18(), case19(), case20());
+        List<ParityScenario> scenarios = ParityHarness.casesOf(PROGRAM).stream()
+                .map(COBIL00CParityTest::bind)
+                .toList();
         requireCompleteCaseSet(scenarios);
         return scenarios;
+    }
+
+    /**
+     * Binds one loaded case to the adapter that reaches the unit the case declares.
+     *
+     * <p>The dispatch is on {@link ParityCase#unitKind()} - the case's own declaration - and never on its
+     * identifier. That distinction is the point: an identifier names a case, and a suite that read
+     * behaviour out of one made renumbering a case a change in what the case did, made two cases that
+     * differ only in Java look identical in review, and left a case file added without a matching Java
+     * arm asserting nothing at all.
+     *
+     * @param parityCase one of the twenty loaded cases
+     * @return that case bound to its adapter
+     * @throws IllegalStateException if the case declares a unit kind this program has no unit for
+     */
+    private static ParityScenario bind(ParityCase parityCase) {
+        return switch (parityCase.unitKind()) {
+            case SERVICE -> serviceCase(parityCase);
+            case CONTROLLER_POJO -> controllerCase(parityCase);
+            case BATCH_JOB, COMPONENT -> throw new IllegalStateException("Case " + PROGRAM + '/'
+                    + parityCase.caseId() + " declares unitKind " + parityCase.unitKind()
+                    + ", which COBIL00C has no unit for: it is a CICS online program, so its units are "
+                    + "BillPaymentController (CONTROLLER_POJO) and BillPaymentService (SERVICE).");
+        };
     }
 
     /**
@@ -949,7 +995,7 @@ class COBIL00CParityTest {
         when(crossReference.readByAccountIdViaAltIndex(anyString()))
                 .thenReturn(crossReferenceReadOutcome(invocation, charset));
 
-        TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+        TransactionRepository.Browse browse = positionedBrowse();
         when(browse.readPrev()).thenReturn(highestTransactionOf(seededTransactions, charset));
         TransactionRepository transactions = mock(TransactionRepository.class);
         when(transactions.startBrowse(BrowseDirection.BACKWARD)).thenReturn(browse);
@@ -966,6 +1012,13 @@ class COBIL00CParityTest {
                 invocation.mapFields().get(CONFIRM_INPUT), commareaOf(invocation));
 
         UnitOutcome.Builder recorder = invocation.recorder();
+        // BOTH DATASETS ARE OBSERVED ON EVERY CASE, including the arms that reject before reaching
+        // either. app/csd/CARDDEMO.CSD defines ACCTDAT and TRANSACT with STATUS(ENABLED)
+        // OPENTIME(FIRSTREF), so the files are available to the transaction whether or not a path
+        // touches them - the program issues no OPEN and has none to fail - which makes "nothing was
+        // written and the rows are exactly as seeded" an assertion available to every case rather than a
+        // silence. Recorded unconditionally and compared afterwards: what a run produced must never be
+        // selected by what the case expects of it.
         recordTransactionChannel(recorder, seededTransactions, addedTransaction.get(),
                 writeOutcome.isWritten());
         recordAccountChannel(recorder, seededAccounts, rewrittenAccount.get(),
@@ -973,6 +1026,13 @@ class COBIL00CParityTest {
         for (String line : state.displays()) {
             recorder.display(line);
         }
+        // WS-MESSAGE PIC X(80) - app/cbl/COBIL00C.cbl:52 - is deliberately NOT recorded as an emitted
+        // message. An online program emits nothing: :299 moves WS-MESSAGE into ERRMSGO and the value
+        // leaves through EXEC CICS SEND MAP, which observedServiceResponse below pins field for field at
+        // the seventy-eight-byte width the symbolic map declares - the width at which the two-byte tail
+        // of an over-long message is lost, and therefore the width at which it is observable. Recording
+        // the eighty-byte working-storage value as though it had been emitted would assert a channel this
+        // program has none of, and would double every message that is already pinned in the send.
         recorder.response(observedServiceResponse(state));
 
         // COBIL00C never touches RETURN-CODE - the identifier does not appear in the source at all - so
@@ -1390,7 +1450,7 @@ class COBIL00CParityTest {
         when(crossReference.readByAccountIdViaAltIndex(anyString()))
                 .thenReturn(crossReferenceReadOutcome(invocation, charset));
 
-        TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+        TransactionRepository.Browse browse = positionedBrowse();
         when(browse.readPrev()).thenReturn(highestTransactionOf(seededTransactions, charset));
         TransactionRepository transactions = mock(TransactionRepository.class);
         when(transactions.startBrowse(BrowseDirection.BACKWARD)).thenReturn(browse);
@@ -1400,7 +1460,7 @@ class COBIL00CParityTest {
                 invocation.clock(), privateUnitOfWork());
         BillPaymentController controller = new BillPaymentController(service, invocation.clock());
 
-        BillPaymentResponse payload = controller.payBill(requestOf(invocation)).screen();
+        BillPaymentResponse payload = controller.payBill(requestOf(invocation), null, null).screen();
 
         UnitOutcome.Builder recorder = invocation.recorder();
         recorder.response(observedControllerResponse(payload));
@@ -1416,10 +1476,9 @@ class COBIL00CParityTest {
      * copies the area only when there is one, so a payload with no area is exactly the cold-start state
      * and is not the same thing as a payload carrying an area of all spaces.
      *
-     * <p>The AID travels as a five-character token rather than as a byte, because that is the shape the
-     * payload carries and {@link PfKeyResolver.AidKey} defines. {@link #aidTokenOf(String)} maps the
-     * {@code DFHAID} mnemonic a case declares onto it through {@link CicsAid}'s own table, so the two
-     * cannot drift apart.
+     * <p>The AID travels as the one character whose code point is the {@code EIBAID} byte, which is the
+     * shape the payload carries. {@link #aidTokenOf(String)} maps the {@code DFHAID} mnemonic a case
+     * declares onto it through {@link CicsAid}'s own table, so the two cannot drift apart.
      *
      * @param invocation the case's invocation
      * @return the request
@@ -1432,7 +1491,58 @@ class COBIL00CParityTest {
         request.setAid(aidTokenOf(invocation.aid()));
         request.setActIdIn(invocation.mapFields().get(ACTIDIN_INPUT));
         request.setConfirm(invocation.mapFields().get(CONFIRM_INPUT));
+        // CURBALI. app/cpy-bms/COBIL00.CPY declares it as an input item as well as an output one, and
+        // :293-299's invalid-key arm re-sends the screen without recomputing it, so what the terminal
+        // returned is what comes back. Dropping it here would paint LOW-VALUES over a balance the
+        // operator can see, which is a difference in the send rather than in the arm.
+        request.setCurBal(invocation.mapFields().get(CURBAL_INPUT));
+        applyTransactionSelection(request, invocation.commarea());
         return request;
+    }
+
+    /**
+     * Copies the {@code CDEMO-CB00-INFO} extension the case declares onto the request.
+     *
+     * <p>{@code app/cbl/COBIL00C.cbl:64-72} appends this group inside {@code CARDDEMO-COMMAREA}, and two
+     * of its members are behaviour rather than decoration: {@code :116-119} test
+     * {@code CDEMO-CB00-TRN-SELECTED} against {@code SPACES AND LOW-VALUES} and, when a value was
+     * carried, move it into {@code ACTIDINI} - which is the only path on which a <em>first</em> entry
+     * performs {@code PROCESS-ENTER-KEY}. A case declaring the extension while the adapter dropped it
+     * would run the cold-start paint instead and report a difference in every field of the send.
+     *
+     * <p>Every member is copied rather than only the two that are read, because "declared and never read"
+     * is a property of the program that the request has to be able to carry for it to stay observable
+     * (practice B5).
+     *
+     * @param request  the request being built
+     * @param declared the case's inbound commarea fields
+     */
+    private static void applyTransactionSelection(BillPaymentRequest request,
+                                                  Map<String, String> declared) {
+        String selected = declared.get(TRN_SELECTED_FIELD);
+        if (selected != null) {
+            request.setTrnSelected(selected);
+        }
+        String selectionFlag = declared.get(TRN_SEL_FLG_FIELD);
+        if (selectionFlag != null) {
+            request.setTrnSelFlg(selectionFlag);
+        }
+        String first = declared.get(TRNID_FIRST_FIELD);
+        if (first != null) {
+            request.setTrnIdFirst(first);
+        }
+        String last = declared.get(TRNID_LAST_FIELD);
+        if (last != null) {
+            request.setTrnIdLast(last);
+        }
+        String pageNumber = declared.get(PAGE_NUM_FIELD);
+        if (pageNumber != null) {
+            request.setPageNum(Integer.parseInt(pageNumber.trim()));
+        }
+        String nextPage = declared.get(NEXT_PAGE_FLG_FIELD);
+        if (nextPage != null) {
+            request.setNextPageFlg(nextPage);
+        }
     }
 
     /**
@@ -1518,17 +1628,21 @@ class COBIL00CParityTest {
     }
 
     /**
-     * The five-character payload token for a {@code DFHAID} mnemonic.
+     * The one-character payload image for a {@code DFHAID} mnemonic - the byte {@code EIBAID} carries.
      *
-     * <p>Resolved through {@link CicsAid#mnemonicsByAid()} and then {@link PfKeyResolver#resolve(byte)},
-     * so the mnemonic a case declares, the byte {@code EIBAID} would carry and the token the payload
-     * carries are one chain with no transcription in it. A mnemonic the resolver does not recognise -
-     * every {@code DFHPF13} and above, and the attention keys beyond {@code DFHPA2} - yields no token,
-     * which the controller reads as {@code DFHNULL} and which therefore reaches the {@code WHEN OTHER}
-     * arm at {@code :138}.
+     * <p>Resolved through {@link CicsAid#mnemonicsByAid()} and rendered by
+     * {@link PfKeyResolver#aidImage(byte)}, so the mnemonic a case declares and the byte {@code :125}
+     * evaluates are one chain with no transcription in it.
+     *
+     * <p>Not the five-character {@code CCARD-AID} token: {@code CSSTRPFY} folds
+     * {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, and {@code COBIL00C} does not
+     * copy {@code CSSTRPFY} - it compares {@code EIBAID} itself. Carrying the byte also lets a case name
+     * any key at all, including the high function keys and the attention keys beyond {@code DFHPA2},
+     * which the token form could not express; each of those matches none of the program's three named
+     * values and so reaches the {@code WHEN OTHER} arm at {@code :138}.
      *
      * @param mnemonic the mnemonic the case declared, or {@code null} where it declared none
-     * @return the token, or {@code null} for an absent or unresolvable key
+     * @return the one-character image, or {@code null} where the case declared no key
      */
     private static String aidTokenOf(String mnemonic) {
         if (mnemonic == null) {
@@ -1536,7 +1650,7 @@ class COBIL00CParityTest {
         }
         for (Map.Entry<Byte, String> entry : CicsAid.mnemonicsByAid().entrySet()) {
             if (entry.getValue().equals(mnemonic)) {
-                return PfKeyResolver.resolve(entry.getKey()).map(AidKey::token).orElse(null);
+                return PfKeyResolver.aidImage(entry.getKey());
             }
         }
         throw new IllegalArgumentException('"' + mnemonic + "\" is not a DFHAID mnemonic that "
@@ -1898,802 +2012,6 @@ class COBIL00CParityTest {
     // between them, which is the faithful equivalent of the generic pair and covers strictly more.
     // =================================================================================================
 
-    /**
-     * {@code case01} - the whole payment, seeded entirely from the shipped fixtures. {@code SERVICE}.
-     *
-     * <p>{@code app/data/ASCII/acctdata.txt} row 0 carries account {@code 00000000001} at
-     * {@code 194.00}, and {@code app/data/ASCII/cardxref.txt} row 48 is the one cross-reference row
-     * whose {@code XREF-ACCT-ID} is that account, so this case is production-shaped data end to end.
-     *
-     * <p>The sequence at {@code :210-235} in order: read the cross-reference for the card number, move
-     * {@code HIGH-VALUES} to the identifier, browse backwards for the highest one, increment it, assemble
-     * the 350-byte record, add it, <em>then</em> compute the new balance and only then rewrite the
-     * account. The order matters and is asserted by the write channels: a translation that rewrote the
-     * balance before adding the transaction would have done something different.
-     *
-     * <p>{@code 194.00} is under one billion, so {@code MOVE ACCT-CURR-BAL TO TRAN-AMT} at {@code :224}
-     * loses nothing and {@code :234} computes exactly zero. Two sends, because the {@code WRITE}'s
-     * success arm sends at {@code :532} and {@code :242} sends again unconditionally - an inherited quirk
-     * of the program, preserved.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case01() {
-        DatasetInput crossReference = fixtureCrossReference();
-        String confirmation = successMessage(NEXT_TRAN_ID);
-        return serviceCase(new ParityCase(PROGRAM, "case01",
-                "The complete bill payment on fixture data. app/data/ASCII/acctdata.txt row 0 holds "
-                        + "account 00000000001 at 194.00 and app/data/ASCII/cardxref.txt row 48 is its "
-                        + "cross-reference row, padded from 36 to 50 bytes at seed time. CONFIRMI is 'Y', "
-                        + "so :176 sets CONF-PAY-YES and :211-235 run in full: the card number comes from "
-                        + "CXACAIX, the identifier is the master's highest plus one, the 350-byte "
-                        + "transaction is added first, and only then does :234 compute "
-                        + "194.00 - 194.00 = 0.00 and :235 rewrite the account. Both write channels are "
-                        + "pinned at full width, so the FILLER X(20) of CVTRA05Y and the FILLER X(178) of "
-                        + "CVACT01Y are proved to have been emitted as spaces.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation))),
-                List.of(record(TRANSACT, 0, transactionFields(NEXT_TRAN_ID, FIXTURE_BALANCE),
-                                transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE, CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        image(TRANSACT, 1, transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE,
-                                CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 1, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 2, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case02} - the store truncates downwards, and a nearest-value rule would not.
-     * {@code SERVICE}.
-     *
-     * <p>The stored balance is {@code 194.007}. {@code ACCT-CURR-BAL} is {@code PIC S9(10)V99}, so the
-     * two fraction digits are all it has and the remaining seven thousandths are discarded - and
-     * discarded <em>downwards</em>, because the keyword {@code ROUNDED} appears exactly zero times in all
-     * 28 programs, which makes truncation the only faithful rule. The stored balance is therefore
-     * {@code 194.00}, the payment is {@code 194.00} and the debited balance is {@code 0.00}.
-     *
-     * <p>The sharpness is the point: seven thousandths is more than half a cent, so a rule that rounded
-     * to the nearest value would have produced {@code 194.01} and would differ in three separate
-     * places - the zoned image of the stored balance, the zoned image of {@code TRAN-AMT}, and the
-     * edited {@code CURBALI}. {@link #theTruncationCaseIsSharpEnoughToRejectANearestValueRule()} states
-     * that independently.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case02() {
-        DatasetInput crossReference = fixtureCrossReference();
-        String confirmation = successMessage(NEXT_TRAN_ID);
-        return serviceCase(new ParityCase(PROGRAM, "case02",
-                "A balance of 194.007 reaching PIC S9(10)V99. The picture holds two fraction digits, so "
-                        + "the remaining seven thousandths are discarded downwards - ROUNDED appears zero "
-                        + "times in any of the 28 programs, so RoundingMode.DOWN is the only faithful "
-                        + "choice and CobolDecimal is the only place that names it. The stored balance is "
-                        + "194.00, so :224 moves 194.00 into TRAN-AMT and :234 computes 0.00. A "
-                        + "nearest-value rule would have carried to 194.01 and would differ in the "
-                        + "stored balance, the transaction amount and the edited CURBALI alike.",
-                UnitKind.SERVICE,
-                datasets(accountHolding(SUB_CENT_BALANCE), crossReference,
-                        masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation))),
-                List.of(record(TRANSACT, 0, transactionFields(NEXT_TRAN_ID, FIXTURE_BALANCE),
-                                transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE, CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        image(TRANSACT, 1, transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE,
-                                CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 1, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 2, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case03} - the headline trap: the amount is a digit narrower than the balance.
-     * {@code SERVICE}.
-     *
-     * <p>The stored balance is {@code 9999999999.99}, the largest {@code PIC S9(10)V99} can hold.
-     * {@code MOVE ACCT-CURR-BAL TO TRAN-AMT} at {@code :224} moves it into {@code PIC S9(09)V99}, and a
-     * numeric receiver is aligned on its implied decimal point - so the digit that does not fit is the
-     * <strong>high-order</strong> one and the payment is {@code 999999999.99}, a billion short of the
-     * balance. {@code :234} therefore computes {@code 9000000000.00} and the account is left holding it.
-     *
-     * <p>This is the one case in the twenty where the payment does not settle the account, and it exists
-     * because a translation that used plain assignment for that {@code MOVE} - or that widened
-     * {@code TRAN-AMT} to match its sender - would compute zero here and be wrong by nine billion while
-     * passing every other case in the set.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case03() {
-        DatasetInput crossReference = fixtureCrossReference();
-        String confirmation = successMessage(NEXT_TRAN_ID);
-        return serviceCase(new ParityCase(PROGRAM, "case03",
-                "The maximum representable balance, 9999999999.99, against TRAN-AMT's PIC S9(09)V99. "
-                        + ":224 aligns the receiver on its implied decimal point and discards the "
-                        + "high-order digit, so the payment is 999999999.99 rather than the whole "
-                        + "balance, and :234 computes 9000000000.00 - the discarded digit, times one "
-                        + "billion. The receiver of that COMPUTE is itself PIC S9(10)V99 and the "
-                        + "statement carries no ON SIZE ERROR, so the result fits exactly and no second "
-                        + "truncation occurs. A translation that treated the cross-width MOVE as a Java "
-                        + "assignment would compute zero here.",
-                UnitKind.SERVICE,
-                datasets(accountHolding(MAX_BALANCE), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation))),
-                List.of(record(TRANSACT, 0, transactionFields(NEXT_TRAN_ID, MAX_PAYMENT),
-                                transactionImage(NEXT_TRAN_ID, MAX_PAYMENT, CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(MAX_DEBITED_BALANCE),
-                                accountImage(MAX_DEBITED_BALANCE))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        image(TRANSACT, 1, transactionImage(NEXT_TRAN_ID, MAX_PAYMENT, CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(MAX_DEBITED_BALANCE),
-                                accountImage(MAX_DEBITED_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 1, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 2, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case04} - the smallest balance that pays, on a master that holds nothing.
-     * {@code SERVICE}.
-     *
-     * <p>Two properties in one case, because they belong at the same extreme. The balance is
-     * {@code 0.01}: one cent is the smallest value the {@code ACCT-CURR-BAL <= ZEROS} guard at
-     * {@code :198} lets through, so this is the boundary of that condition from the paying side, and it
-     * proves the comparison is against zero rather than against a rounded-to-nothing scale-2 zero.
-     *
-     * <p>The master is declared empty, so the {@code READPREV} reports {@code DFHRESP(ENDFILE)} and the
-     * arm at {@code :487-488} moves zeros into the record identification field - no flag, no message, no
-     * send. {@code :217} then increments from zero, so the very first payment on an empty master is
-     * transaction one.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case04() {
-        DatasetInput crossReference = fixtureCrossReference();
-        String confirmation = successMessage(FIRST_TRAN_ID);
-        return serviceCase(new ParityCase(PROGRAM, "case04",
-                "A balance of one cent against an empty TRANSACT master. 0.01 is the smallest value the "
-                        + "ACCT-CURR-BAL <= ZEROS guard at :198 admits, so this is that condition's "
-                        + "boundary from the paying side. The empty master makes the READPREV report "
-                        + "DFHRESP(ENDFILE), whose arm at :487-488 moves ZEROS to TRAN-ID with no flag, "
-                        + "no message and no send, so :217 increments from zero and the payment is "
-                        + "transaction 0000000000000001. The master afterwards holds exactly that one "
-                        + "row.",
-                UnitKind.SERVICE,
-                datasets(accountHolding(MINIMUM_BALANCE), crossReference, emptyMaster()),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation))),
-                List.of(record(TRANSACT, 0, transactionFields(FIRST_TRAN_ID, MINIMUM_BALANCE),
-                                transactionImage(FIRST_TRAN_ID, MINIMUM_BALANCE, CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                List.of(image(TRANSACT, 0, transactionImage(FIRST_TRAN_ID, MINIMUM_BALANCE,
-                                CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 1, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case05} - a balance below zero: the sign, its overpunch, and the guard that rejects it.
-     * {@code SERVICE}.
-     *
-     * <p>The stored balance is {@code -1234.56}, which the {@code ACCT-CURR-BAL <= ZEROS} guard at
-     * {@code :198} rejects with {@code 'You have nothing to pay...'}, the cursor at
-     * {@code ACTIDINL} and one send. Nothing is written anywhere, and the account is left holding exactly
-     * the bytes it started with - including the negative overpunch on the low-order digit of
-     * {@code ACCT-CURR-BAL}, which the pinned 300-byte image asserts.
-     *
-     * <p>{@code CURBALI} nevertheless comes back holding {@code -0000001234.56}, and that is not an
-     * oversight in the expectation. The two moves at {@code :193-194} - {@code MOVE ACCT-CURR-BAL TO
-     * WS-CURR-BAL} and then to {@code CURBALI} - sit <em>inside</em> the {@code :169} block and
-     * <em>above</em> the guard, so they run on every path that read a record, this refusal included. The
-     * screen therefore displays the balance it is declining to pay, sign and all, which is also where the
-     * edited picture's {@code -} sign position is exercised - every other case in the set leaves it a
-     * plus.
-     *
-     * <p>Why the sign is asserted <em>here</em> rather than on a negative result: a negative result is
-     * <strong>unreachable</strong> in this program, and saying so is more useful than inventing a path to
-     * it. {@code :224} makes the payment equal to the truncation of the balance, so the payment can never
-     * exceed it and {@code :234} can never go below zero from a positive balance - while a balance that
-     * is already below zero is stopped by this guard before any payment is assembled. The one place a
-     * negative monetary span reaches a record in {@code COBIL00C} is therefore the stored balance it
-     * refuses to pay, and that is what this case pins.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case05() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case05",
-                "A stored balance of -1234.56. The compound condition at :198-199 is true - the balance "
-                        + "is at or below zero and ACTIDINI is neither spaces nor low-values - so :200-204 "
-                        + "sets the error flag, moves 'You have nothing to pay...', positions the cursor "
-                        + "at ACTIDINL and sends once. Nothing is written and the account keeps every "
-                        + "byte it had, negative overpunch included: the low-order digit of "
-                        + "ACCT-CURR-BAL carries the sign, because no copybook in app/cpy declares COMP-3 "
-                        + "and every stored monetary span is therefore zoned DISPLAY. A negative RESULT "
-                        + "is unreachable in this program, since :224 makes the payment equal to the "
-                        + "truncation of the balance and can never exceed it, so this guard is the only "
-                        + "place a negative monetary span reaches a record here.",
-                UnitKind.SERVICE,
-                datasets(accountHolding(NEGATIVE_BALANCE), crossReference,
-                        masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, editedBalance(NEGATIVE_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_NOTHING_TO_PAY))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(NEGATIVE_BALANCE),
-                                accountImage(NEGATIVE_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case06} - a balance of exactly zero: the other half of the guard, and the zero payment.
-     * {@code SERVICE}.
-     *
-     * <p>{@code IF ACCT-CURR-BAL <= ZEROS} is an inclusive comparison, so a balance of exactly
-     * {@code 0.00} is rejected as surely as a negative one - which means a payment of zero cannot be
-     * assembled at all, and "no transaction is written for a settled account" is the behaviour rather
-     * than an omission.
-     *
-     * <p>{@code CURBALI} comes back as {@code +0000000000.00} for the reason {@code case05} sets out: the
-     * stale-balance moves at {@code :193-194} run above the guard, so the screen shows the settled
-     * balance while refusing to pay it. Here it also pins the edited picture's other sign position - the
-     * {@code +} that a value of exactly zero produces, since the mask emits a plus for zero and above.
-     *
-     * <p>The comparison is asserted here because it is easy to get wrong in Java for a reason that has
-     * nothing to do with COBOL: {@link BigDecimal#equals(Object)} is scale-sensitive, so a scale-2 zero
-     * is not equal to {@link BigDecimal#ZERO}, and a translation written with {@code equals} would
-     * invert this branch and let a zero-balance account pay.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case06() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case06",
-                "A stored balance of exactly 0.00. :198 compares with <=, so zero is rejected on the "
-                        + "same arm as a negative balance and no payment of zero can be assembled: the "
-                        + "message is 'You have nothing to pay...', the cursor goes to ACTIDINL, one "
-                        + "screen is sent and neither dataset changes. The comparison has to be on the "
-                        + "value rather than on the representation - a scale-2 zero is not equal to "
-                        + "BigDecimal.ZERO - which is why a translation using equals rather than a "
-                        + "signum comparison would invert this branch.",
-                UnitKind.SERVICE,
-                datasets(accountHolding(ZERO_BALANCE), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, editedBalance(ZERO_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_NOTHING_TO_PAY))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(ZERO_BALANCE), accountImage(ZERO_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case07} - the account is not there. {@code SERVICE}.
-     *
-     * <p>{@code ACCTDAT} is declared empty, so the keyed read for update at {@code :345-354} reports
-     * {@code DFHRESP(NOTFND)} and the arm at {@code :359-364} rejects with
-     * {@code 'Account ID NOT found...'}, the cursor at {@code ACTIDINL} and one send.
-     *
-     * <p>Exactly one send, and that is the interesting part. The failure is raised <em>inside</em> the
-     * guard at {@code :169}, so the two guards that follow at {@code :197} and {@code :208} both find the
-     * flag on and neither runs - no balance check, no payment, no second send. Compare {@code case08},
-     * where the failure is raised inside the {@code :208} block and the payment therefore proceeds
-     * anyway.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case07() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case07",
-                "An ACCTDAT that exists and holds no row, so the keyed read for update at :345-354 "
-                        + "reports DFHRESP(NOTFND) and :359-364 moves 'Account ID NOT found...', "
-                        + "positions the cursor at ACTIDINL and sends. The failure is raised inside the "
-                        + ":169 guard, so :197 and :208 both find the error flag on and neither runs: one "
-                        + "send, no payment, no write, and no display line - the NOTFND arm has no "
-                        + "DISPLAY, unlike WHEN OTHER.",
-                UnitKind.SERVICE,
-                datasets(absentAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, BLANK_BALANCE, CONFIRM_YES,
-                                BillPaymentService.MSG_ACCOUNT_ID_NOT_FOUND))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 0,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case08} - the cross-reference is not there, and the payment goes ahead anyway.
-     * {@code SERVICE}.
-     *
-     * <p>This is an inherited defect, preserved exactly. {@code READ-CXACAIX-FILE} is performed at
-     * {@code :211}, <em>inside</em> the {@code IF NOT ERR-FLG-ON} block that opened at {@code :208}, and
-     * there is <strong>no further test of the flag between {@code :211} and {@code :235}</strong>. So the
-     * {@code DFHRESP(NOTFND)} arm at {@code :423-428} sets the flag, moves
-     * {@code 'Account ID NOT found...'} and sends - and then {@code :212} onwards runs regardless: the
-     * transaction is assembled and added, the balance is computed and the account is rewritten.
-     *
-     * <p>The consequence is visible in the stored bytes. {@code MOVE XREF-CARD-NUM TO TRAN-CARD-NUM} at
-     * {@code :225} moves a record area no read ever filled, so the sixteen bytes of
-     * {@code TRAN-CARD-NUM} are {@code LOW-VALUES} rather than a card number, and the pinned 350-byte
-     * image says so. Three sends: the rejection, the {@code WRITE}'s own success arm at {@code :532}, and
-     * the unconditional one at {@code :242}.
-     *
-     * <p>Fixing this would be a behaviour change and is not this migration's business. Pinning it is: a
-     * translation that added a guard here would produce a cleaner program and a failing case.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case08() {
-        String blankCard = lowValues(CardXrefRecord.XREF_CARD_NUM_LENGTH);
-        String confirmation = successMessage(NEXT_TRAN_ID);
-        Map<String, String> written = new LinkedHashMap<>();
-        written.put(TranRecord.TRAN_ID.name(), NEXT_TRAN_ID);
-        written.put(TranRecord.TRAN_AMT.name(), FIXTURE_BALANCE);
-        written.put(TranRecord.TRAN_CARD_NUM.name(), blankCard);
-        return serviceCase(new ParityCase(PROGRAM, "case08",
-                "A CXACAIX that exists and holds no row. The alternate-index read at :410-418 reports "
-                        + "DFHRESP(NOTFND) and :423-428 rejects - but the read is performed at :211, "
-                        + "inside the :208 block, and nothing between :211 and :235 tests the flag again, "
-                        + "so the payment proceeds on the rejected path. The transaction is added with "
-                        + "TRAN-CARD-NUM at LOW-VALUES, because :225 moves a record area no read ever "
-                        + "filled, and the balance is still debited and rewritten. Three sends: the "
-                        + "rejection, the WRITE's success arm at :532, and :242. An inherited defect, "
-                        + "preserved rather than repaired.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), absentCrossReference(), masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, editedBalance(FIXTURE_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_ACCOUNT_ID_NOT_FOUND),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation))),
-                List.of(record(TRANSACT, 0, written,
-                                transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE, blankCard)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        image(TRANSACT, 1, transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE, blankCard)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                0, List.of(), List.of(),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 1, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 2, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case09} - the transaction is refused, and the balance is debited anyway. {@code SERVICE}.
-     *
-     * <p>A forced {@code WHEN OTHER} on the {@code WRITE}, which no arrangement of seeded rows can
-     * produce: the arm at {@code :540-546} exists for a genuine I/O refusal - a closed file, an invalid
-     * request, a length error - and forcing the outcome is the only way to drive it.
-     *
-     * <p>Two behaviours are pinned together. The arm displays before it rejects, so a line reaches
-     * {@code SYSOUT}: {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} at {@code :541}, with
-     * {@code WS-RESP-CD} unreported because this refusal has no single CICS counterpart. And - the same
-     * missing guard as {@code case08} - {@code :234} and {@code :235} still run, so the account is
-     * debited for a transaction that was never stored. The writes channels say exactly that: nothing on
-     * {@code TRANSACT}, one row on {@code ACCTDAT}.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case09() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case09",
-                "A forced WHEN OTHER on the WRITE at :512-520, which no seeded row can produce. The arm "
-                        + "at :540-546 displays 'RESP:' and 'REAS:' first and then moves 'Unable to Add "
-                        + "Bill pay Transaction...', so one line reaches SYSOUT with WS-RESP-CD "
-                        + "unreported. Nothing lands on TRANSACT - and :234 and :235 still run, because "
-                        + "nothing between :211 and :235 re-tests the error flag, so the account is "
-                        + "debited for a transaction that was never stored. Two sends: the rejection and "
-                        + ":242.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES,
-                        Map.of(RepositoryOperation.WRITE,
-                                new ForcedOutcome(FileStatus.Outcome.OTHER, null, null))),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, editedBalance(FIXTURE_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_UNABLE_TO_ADD_TRANSACTION),
-                        send(ACCOUNT_ID, editedBalance(FIXTURE_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_UNABLE_TO_ADD_TRANSACTION))),
-                List.of(record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                        accountImage(SETTLED_BALANCE))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                0,
-                List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE,
-                        UNREPORTED_RESP_DISPLAY_LINE)),
-                normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case10} - the identifier is already taken. {@code SERVICE}.
-     *
-     * <p>{@code DFHRESP(DUPKEY)} and {@code DFHRESP(DUPREC)} share one body at {@code :533-539}: two
-     * {@code WHEN} clauses, no statement between them, so either condition falls into the same
-     * rejection. That is why one {@code DUPLICATE} outcome reaches it, and why the arm carries
-     * <strong>no</strong> {@code DISPLAY} - unlike the {@code WHEN OTHER} beneath it, which does. The
-     * absence of a display line is asserted by declaring none.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case10() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case10",
-                "A forced duplicate on the WRITE. DFHRESP(DUPKEY) and DFHRESP(DUPREC) are two WHEN "
-                        + "clauses over one body at :533-539, so either reaches 'Tran ID already "
-                        + "exist...' with the cursor at ACTIDINL. The arm carries no DISPLAY, so no line "
-                        + "is emitted - which is what distinguishes it from the WHEN OTHER below it and "
-                        + "is asserted by expecting none. As on every rejected path inside the :208 "
-                        + "block, the balance is still debited.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES,
-                        Map.of(RepositoryOperation.WRITE,
-                                new ForcedOutcome(FileStatus.Outcome.DUPLICATE, null, null))),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, editedBalance(FIXTURE_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_TRAN_ID_ALREADY_EXIST),
-                        send(ACCOUNT_ID, editedBalance(FIXTURE_BALANCE), CONFIRM_YES,
-                                BillPaymentService.MSG_TRAN_ID_ALREADY_EXIST))),
-                List.of(record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                        accountImage(SETTLED_BALANCE))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(SETTLED_BALANCE),
-                                accountImage(SETTLED_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 1, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case11} - the rewrite is refused after the transaction has already landed.
-     * {@code SERVICE}.
-     *
-     * <p>A forced {@code WHEN OTHER} on the {@code REWRITE} at {@code :396-402}. The transaction was
-     * added successfully first, so the master keeps it while the account keeps its old balance - the two
-     * halves of the payment end up out of step, which is exactly what the ordering at {@code :233-235}
-     * makes possible and what a case has to be able to state.
-     *
-     * <p>The colour is the subtle part. {@code :526} moved {@code DFHGREEN} into {@code ERRMSGC} on the
-     * {@code WRITE}'s success arm, and nothing in this program ever moves anything else there - the
-     * first-entry {@code MOVE LOW-VALUES TO COBIL0AO} at {@code :114} is the only thing that clears the
-     * output map, and this path is a re-entry. So the failure message that follows is transmitted with
-     * the confirmation's green attribute still set, on all three sends. Preserved, not tidied.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case11() {
-        DatasetInput crossReference = fixtureCrossReference();
-        String confirmation = successMessage(NEXT_TRAN_ID);
-        return serviceCase(new ParityCase(PROGRAM, "case11",
-                "A forced WHEN OTHER on the REWRITE at :379-385. The transaction is added first at "
-                        + ":233, so it stays on the master while the account keeps its old 194.00 - the "
-                        + "two halves of the payment end up out of step, which is what the :233-235 "
-                        + "ordering allows. :397 displays the response codes and :399 moves 'Unable to "
-                        + "Update Account...'. All three sends carry ERRMSGC at DFHGREEN, because :526 "
-                        + "set it on the WRITE's success arm and nothing in this program ever clears it "
-                        + "on a re-entry - the failure message is transmitted in the confirmation's "
-                        + "colour.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES,
-                        Map.of(RepositoryOperation.REWRITE,
-                                new ForcedOutcome(FileStatus.Outcome.OTHER, null, null))),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, confirmation),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM,
-                                BillPaymentService.MSG_UNABLE_TO_UPDATE_ACCOUNT),
-                        greenSend(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM,
-                                BillPaymentService.MSG_UNABLE_TO_UPDATE_ACCOUNT))),
-                List.of(record(TRANSACT, 0, transactionFields(NEXT_TRAN_ID, FIXTURE_BALANCE),
-                        transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE, CARD_NUMBER))),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        image(TRANSACT, 1, transactionImage(NEXT_TRAN_ID, FIXTURE_BALANCE,
-                                CARD_NUMBER)),
-                        record(ACCTDAT, 0, balanceField(FIXTURE_BALANCE),
-                                accountImage(FIXTURE_BALANCE))),
-                0,
-                List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE,
-                        UNREPORTED_RESP_DISPLAY_LINE)),
-                normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 1, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 2, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case12} - the account read is refused. {@code SERVICE}.
-     *
-     * <p>A forced {@code WHEN OTHER} on the read for update at {@code :365-371}: it displays the response
-     * codes and rejects with {@code 'Unable to lookup Account...'}, which is a different literal from the
-     * {@code NOTFND} arm's above it and is asserted as such.
-     *
-     * <p>The account row is seeded and left untouched, which is the assertion the empty-dataset shape of
-     * {@code case07} cannot make: a refused read means the record is still there, unchanged, and the
-     * pinned 300-byte image proves it. One send, because the failure is inside the {@code :169} guard.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case12() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case12",
-                "A forced WHEN OTHER on the keyed read for update. :366 displays 'RESP:' and 'REAS:' and "
-                        + ":368 moves 'Unable to lookup Account...' - a different literal from the NOTFND "
-                        + "arm's 'Account ID NOT found...' two lines above it. The account row is seeded "
-                        + "and stays exactly as seeded, which an empty dataset could not assert, and the "
-                        + "failure is raised inside the :169 guard so there is one send and no payment.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_YES,
-                        Map.of(RepositoryOperation.READ_FOR_UPDATE,
-                                new ForcedOutcome(FileStatus.Outcome.OTHER, null, null))),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(ACCOUNT_ID, BLANK_BALANCE, CONFIRM_YES,
-                                BillPaymentService.MSG_UNABLE_TO_LOOKUP_ACCOUNT))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(FIXTURE_BALANCE),
-                                accountImage(FIXTURE_BALANCE))),
-                0,
-                List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE,
-                        UNREPORTED_RESP_DISPLAY_LINE)),
-                normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case13} - no account number was typed. {@code SERVICE}.
-     *
-     * <p>The first arm of the ordered {@code EVALUATE TRUE} at {@code :158-167}:
-     * {@code WHEN ACTIDINI OF COBIL0AI = SPACES OR LOW-VALUES} rejects with
-     * {@code 'Acct ID can NOT be empty...'}, positions the cursor at {@code ACTIDINL} and sends.
-     *
-     * <p>Nothing after it runs at all. The flag is set before the {@code :169} guard is reached, so
-     * {@code :170-194} never execute - which means the balance is never even edited into
-     * {@code CURBALI}, and the screen goes back with that field exactly as the terminal sent it. That
-     * distinguishes this path from every other rejection in the set, all of which pass through
-     * {@code :193-194} first.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case13() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case13",
-                "ACTIDINI arrives as eleven spaces, which the first arm of the ordered EVALUATE TRUE at "
-                        + ":158-167 rejects with 'Acct ID can NOT be empty...' and the cursor at "
-                        + "ACTIDINL. The flag is set before the :169 guard, so :170-194 never run and "
-                        + "CURBALI is returned exactly as it arrived - unlike every other rejection here, "
-                        + "which passes through :193-194 first. Neither dataset is touched and no line is "
-                        + "displayed.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(BLANK_ACCOUNT_ID, BLANK_CONFIRM, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM,
-                                BillPaymentService.MSG_ACCT_ID_EMPTY))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(FIXTURE_BALANCE),
-                                accountImage(FIXTURE_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case14} - the confirmation is neither yes nor no. {@code SERVICE}.
-     *
-     * <p>{@code WHEN OTHER} of the ordered {@code EVALUATE CONFIRMI} at {@code :185-190}. The four
-     * preceding {@code WHEN} clauses name {@code 'Y'}, {@code 'y'}, {@code 'N'}, {@code 'n'},
-     * {@code SPACES} and {@code LOW-VALUES}, and anything else falls here:
-     * {@code 'Invalid value. Valid values are (Y/N)...'} with the cursor at {@code CONFIRML} rather than
-     * at {@code ACTIDINL}, because it is the confirmation field that is wrong.
-     *
-     * <p>No file is read on this arm, so {@code :193-194} edit the balance out of an untouched record
-     * area - the stale-balance quirk - and the payment never begins.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case14() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case14",
-                "CONFIRMI arrives as 'X', which reaches WHEN OTHER of the ordered EVALUATE at :185-190: "
-                        + "'Invalid value. Valid values are (Y/N)...' with the cursor at CONFIRML, not "
-                        + "ACTIDINL, because it is the confirmation that is wrong. No file is read on "
-                        + "this arm, so the send carries CURBALI as it arrived and neither dataset "
-                        + "changes.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_INVALID, Map.of()),
-                enterKeyResponse(CURSOR_CONFIRM, List.of(
-                        send(ACCOUNT_ID, BLANK_BALANCE, CONFIRM_INVALID,
-                                BillPaymentService.MSG_INVALID_CONFIRM_VALUE))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(FIXTURE_BALANCE),
-                                accountImage(FIXTURE_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case15} - the account is looked up and the user is asked to confirm. {@code SERVICE}.
-     *
-     * <p>{@code WHEN SPACES} at {@code :182-184} performs the read but does <strong>not</strong> set
-     * {@code CONF-PAY-YES}, so the balance is fetched and edited into {@code CURBALI} - this is the one
-     * path where the {@code :193-194} move does what it looks like it does - and then {@code :237-239}
-     * prompts with {@code 'Confirm to make a bill payment...'} and the cursor at {@code CONFIRML}.
-     *
-     * <p>Note what is <em>absent</em>: this arm sets no error flag. It is a prompt, not a rejection, and
-     * the difference is observable - the flag being off is why {@code :242} reaches its send at all.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case15() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case15",
-                "CONFIRMI arrives as a space, which is WHEN SPACES at :182-184: the account is read but "
-                        + "CONF-PAY-YES is not set, so :193-194 edit the real balance into CURBALI as "
-                        + "+0000000194.00 and :237-239 prompt with 'Confirm to make a bill payment...' "
-                        + "and the cursor at CONFIRML. This arm sets no error flag - it is a prompt, not "
-                        + "a rejection - which is precisely why :242 reaches its send. No payment is "
-                        + "assembled and neither dataset changes.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, BLANK_CONFIRM, Map.of()),
-                enterKeyResponse(CURSOR_CONFIRM, List.of(
-                        send(ACCOUNT_ID, editedBalance(FIXTURE_BALANCE), BLANK_CONFIRM,
-                                BillPaymentService.MSG_CONFIRM_TO_PAY))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(FIXTURE_BALANCE),
-                                accountImage(FIXTURE_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
-    /**
-     * {@code case16} - the user declines, and the screen is cleared. {@code SERVICE}.
-     *
-     * <p>{@code WHEN 'n'} at {@code :179-181}, the lower-case half of a pair of {@code WHEN} clauses
-     * sharing one body. It performs {@code CLEAR-CURRENT-SCREEN}, which is
-     * {@code INITIALIZE-ALL-FIELDS} followed by a send - so all three entry fields and the message go
-     * back blank and the cursor to {@code ACTIDINL} - and <em>then</em> sets the error flag at
-     * {@code :181}, in that order.
-     *
-     * <p>The order is what makes the send blank: the flag is set after the send, so the screen the user
-     * sees is the cleared one, and the flag then stops {@code :197} and {@code :208} from running. A
-     * translation that set the flag first would send the same fields but would have changed the sequence
-     * the state records.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case16() {
-        DatasetInput crossReference = fixtureCrossReference();
-        return serviceCase(new ParityCase(PROGRAM, "case16",
-                "CONFIRMI arrives as 'n', the lower-case half of the WHEN pair at :178-181. "
-                        + "CLEAR-CURRENT-SCREEN runs INITIALIZE-ALL-FIELDS and then sends, so all three "
-                        + "entry fields and the message go back blank with the cursor at ACTIDINL, and "
-                        + "only then does :181 set the error flag - which is why the screen the user sees "
-                        + "is the cleared one and why :197 and :208 do not run. No file is read at all on "
-                        + "this arm and neither dataset changes.",
-                UnitKind.SERVICE,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                enterKeyRequest(ACCOUNT_ID, CONFIRM_NO_LOWER, Map.of()),
-                enterKeyResponse(CURSOR_ACTIDIN, List.of(
-                        send(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM, ""))),
-                List.of(),
-                List.of(image(TRANSACT, 0, seededTransactionRow(HIGHEST_TRAN_ID)),
-                        record(ACCTDAT, 0, balanceField(FIXTURE_BALANCE),
-                                accountImage(FIXTURE_BALANCE))),
-                0, List.of(), normalisationsFor(crossReference),
-                List.of(channel(TRANSACT, DatasetChannel.WRITES, 0, TranRecord.RECORD_LENGTH),
-                        channel(TRANSACT, DatasetChannel.FINAL_STATE, 1, TranRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.WRITES, 0, AccountRecord.RECORD_LENGTH),
-                        channel(ACCTDAT, DatasetChannel.FINAL_STATE, 1,
-                                AccountRecord.RECORD_LENGTH))));
-    }
-
     // =================================================================================================
     // The four controller cases. What is asserted here is the payload MAIN-PARA returns: the ten screen
     // items at their symbolic-map widths, the sixteen communication-area spans, the cursor, the mapset
@@ -2776,189 +2094,6 @@ class COBIL00CParityTest {
         fields.put("CONFIRMO", confirm);
         fields.put("ERRMSGO", errMsg);
         return new ScreenSend(fields, Map.of());
-    }
-
-    /**
-     * {@code case17} - the first-ever invocation, with no communication area at all.
-     * {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code IF EIBCALEN = 0} at {@code :107} is true, so {@code :108} moves {@code 'COSGN00C'} into
-     * {@code CDEMO-TO-PROGRAM} and {@code :109} performs {@code RETURN-TO-PREV-SCREEN}, which stamps the
-     * area with this transaction and this program, resets the context to {@code ENTER} and transfers
-     * control at {@code :281-284}.
-     *
-     * <p>No screen is painted. {@code SEND-BILLPAY-SCREEN} is never performed on this arm, so
-     * {@code POPULATE-HEADER-INFO} never runs and no mapset or map is named - which is what distinguishes
-     * an {@code XCTL} from a {@code RETURN TRANSID} in the payload, and why the sends list is empty and
-     * the cursor is unset.
-     *
-     * <p>Statelessness is the substance of this case. The {@code XCTL} becomes a {@code nextProgram}
-     * field the client resolves, and the whole 160-byte area travels back with it - stamped, comparable,
-     * and held nowhere on the server.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case17() {
-        return controllerCase(new ParityCase(PROGRAM, "case17",
-                "EIBCALEN is zero, so :107 is true: :108 moves 'COSGN00C' to CDEMO-TO-PROGRAM and :109 "
-                        + "performs RETURN-TO-PREV-SCREEN, which stamps CDEMO-FROM-TRANID with CB00, "
-                        + "CDEMO-FROM-PROGRAM with COBIL00C and CDEMO-PGM-CONTEXT with zeros before the "
-                        + "XCTL at :281-284. No screen is painted, because SEND-BILLPAY-SCREEN is not "
-                        + "performed on this arm and POPULATE-HEADER-INFO is its only caller - so no "
-                        + "mapset, no map, no send and no cursor, which is exactly how an XCTL differs "
-                        + "from a RETURN TRANSID in the payload. The transfer is a response field the "
-                        + "client resolves and the whole communication area travels with it, so nothing "
-                        + "is held on the server.",
-                UnitKind.CONTROLLER_POJO,
-                Map.of(),
-                Map.of(),
-                new ScreenRequest(EIBCALEN_COLD_START, null, PINNED_CLOCK, CHARSET_NAME, Map.of(),
-                        Map.of(), Map.of()),
-                new ExpectedResponse(SIGN_ON_PROGRAM, null, null,
-                        navigationOf(NavigationContext.empty()
-                                .withToProgram(SIGN_ON_PROGRAM)
-                                .withFromTranid(TRANSACTION_ID)
-                                .withFromProgram(PROGRAM)
-                                .withPgmEnter()),
-                        List.of(), null, Termination.XCTL),
-                List.of(), List.of(), 0, List.of(), List.of(), List.of()));
-    }
-
-    /**
-     * {@code case18} - the first entry, painting a cleared screen. {@code CONTROLLER_POJO}.
-     *
-     * <p>An area travelled and {@code CDEMO-PGM-REENTER} is not set, so {@code :112-122} runs:
-     * {@code :113} sets the re-entry flag for next time, {@code :114} clears the whole output map with
-     * {@code MOVE LOW-VALUES TO COBIL0AO}, {@code :115} positions the cursor at {@code ACTIDINL}, the
-     * {@code CDEMO-CB00-TRN-SELECTED} test at {@code :116} finds nothing carried in, and {@code :122}
-     * sends.
-     *
-     * <p>Three details are pinned that nothing else in the set pins. The three entry items come back at
-     * {@code LOW-VALUES} rather than spaces, because {@code :114} clears the map with {@code X'00'} and
-     * BMS does not transmit a field whose data is null - a screen cleared to low-values and one cleared
-     * to spaces do not look the same at the terminal. {@code ERRMSGO}, by contrast, comes back as
-     * seventy-eight <em>spaces</em>, because {@code :293} moves the eighty-space {@code WS-MESSAGE} over
-     * it on the way out. And the context returns as {@code REENTER}, which is what makes the next
-     * invocation take the other arm.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case18() {
-        return controllerCase(new ParityCase(PROGRAM, "case18",
-                "A first entry: an area travelled and CDEMO-PGM-REENTER is not set, so :113 sets it, "
-                        + ":114 clears the output map with LOW-VALUES, :115 puts the cursor at ACTIDINL, "
-                        + ":116's CDEMO-CB00-TRN-SELECTED test finds nothing and :122 sends. The ten "
-                        + "items come back at their symbolic-map widths with the header painted from the "
-                        + "pinned clock; the three entry items are LOW-VALUES rather than spaces, because "
-                        + "BMS does not transmit a null field and a map cleared to X'00' does not look "
-                        + "like one cleared to X'20'; and ERRMSGO is seventy-eight spaces because :293 "
-                        + "moves the eighty-space WS-MESSAGE over it on the way out. The context returns "
-                        + "as REENTER, which is what makes the next invocation take the other arm.",
-                UnitKind.CONTROLLER_POJO,
-                Map.of(),
-                Map.of(),
-                new ScreenRequest(EIBCALEN_WITH_COMMAREA, null, PINNED_CLOCK, CHARSET_NAME,
-                        Map.of(NavigationContext.PGM_CONTEXT_FIELD, PGM_CONTEXT_ENTER), Map.of(),
-                        Map.of()),
-                new ExpectedResponse(null, MAPSET, MAP,
-                        navigationOf(NavigationContext.empty().withPgmReenter()),
-                        List.of(paintedScreen(lowValues(BillPaymentResponse.ACT_ID_IN_LENGTH),
-                                lowValues(BillPaymentResponse.CUR_BAL_LENGTH),
-                                lowValues(BillPaymentResponse.CONFIRM_LENGTH),
-                                " ".repeat(BillPaymentResponse.ERR_MSG_LENGTH))),
-                        CURSOR_ACTIDIN, Termination.RETURN_TRANSID),
-                List.of(), List.of(), 0, List.of(), List.of(), List.of()));
-    }
-
-    /**
-     * {@code case19} - a re-entry on {@code ENTER}, reaching {@code PROCESS-ENTER-KEY} through the
-     * controller. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code CDEMO-PGM-REENTER} is set, so {@code :124-125} receives the map and evaluates
-     * {@code EIBAID}; the first {@code WHEN} is {@code DFHENTER} and it performs
-     * {@code PROCESS-ENTER-KEY} at {@code :127}. The account number arrives blank, so the paragraph
-     * rejects at {@code :159-164} and the screen comes back carrying
-     * {@code 'Acct ID can NOT be empty...'} with the cursor at {@code ACTIDINL}.
-     *
-     * <p>This is the {@code REENTER} half of the {@code ENTER}/{@code REENTER} pair - {@code case18} is
-     * the other - and it is where the two differ observably: the map is <em>received</em> rather than
-     * cleared, so the entry items come back at the values the paragraph left rather than at
-     * {@code LOW-VALUES}, and the error message is present rather than blank. Note also what does not
-     * happen: no field-level highlight is applied, because {@code COBIL00C} does not copy
-     * {@code CSSETATY} at all - its one attribute assignment is the {@code DFHGREEN} of the success arm,
-     * which this path never reaches.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case19() {
-        DatasetInput crossReference = fixtureCrossReference();
-        Map<String, String> mapFields = new LinkedHashMap<>();
-        mapFields.put(ACTIDIN_INPUT, BLANK_ACCOUNT_ID);
-        mapFields.put(CONFIRM_INPUT, BLANK_CONFIRM);
-        return controllerCase(new ParityCase(PROGRAM, "case19",
-                "A re-entry on ENTER. CDEMO-PGM-REENTER is set, so :124 receives the map and the first "
-                        + "WHEN of the EVALUATE EIBAID at :126 performs PROCESS-ENTER-KEY. The account "
-                        + "number arrives blank, so :159-164 rejects with 'Acct ID can NOT be empty...' "
-                        + "and the cursor at ACTIDINL. This is the REENTER half of the pair case18 opens: "
-                        + "the map is received rather than cleared, so the entry items come back at the "
-                        + "values the paragraph left rather than at LOW-VALUES. No field-level highlight "
-                        + "is applied on any path here, because COBIL00C does not copy CSSETATY - its "
-                        + "only attribute assignment is the DFHGREEN of the WRITE success arm, which this "
-                        + "path never reaches.",
-                UnitKind.CONTROLLER_POJO,
-                datasets(fixtureAccount(), crossReference, masterHolding(HIGHEST_TRAN_ID)),
-                Map.of(),
-                new ScreenRequest(EIBCALEN_WITH_COMMAREA, AID_ENTER, PINNED_CLOCK, CHARSET_NAME,
-                        Map.of(NavigationContext.PGM_CONTEXT_FIELD, PGM_CONTEXT_REENTER), mapFields,
-                        Map.of()),
-                new ExpectedResponse(null, MAPSET, MAP,
-                        navigationOf(NavigationContext.empty().withPgmReenter()),
-                        List.of(paintedScreen(BLANK_ACCOUNT_ID, BLANK_BALANCE, BLANK_CONFIRM,
-                                picX(BillPaymentService.MSG_ACCT_ID_EMPTY,
-                                        BillPaymentResponse.ERR_MSG_LENGTH))),
-                        CURSOR_ACTIDIN, Termination.RETURN_TRANSID),
-                List.of(), List.of(), 0, List.of(), normalisationsFor(crossReference), List.of()));
-    }
-
-    /**
-     * {@code case20} - a re-entry on PF3, with nothing to go back to. {@code CONTROLLER_POJO}.
-     *
-     * <p>The second {@code WHEN} of the {@code EVALUATE EIBAID}, at {@code :128-135}. It tests
-     * {@code CDEMO-FROM-PROGRAM}: blank here, so {@code :130} moves {@code 'COMEN01C'} - the main menu -
-     * into {@code CDEMO-TO-PROGRAM} rather than echoing an origin, and {@code RETURN-TO-PREV-SCREEN}
-     * transfers to it.
-     *
-     * <p>Two of the three {@code XCTL} shapes this program has are now covered between {@code case17} and
-     * this case: the hard-coded {@code 'COSGN00C'} of the no-commarea guard and the conditional main-menu
-     * fallback of the PF3 arm. Both become a {@code nextProgram} field, both leave the mapset and map
-     * unnamed because no screen is transmitted, and both re-stamp the area with this program before
-     * handing it back - which is the same three lines at {@code :278-280} in each case.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case20() {
-        return controllerCase(new ParityCase(PROGRAM, "case20",
-                "A re-entry on PF3 with CDEMO-FROM-PROGRAM blank, which is the second WHEN of the "
-                        + "EVALUATE EIBAID at :128-135. The blank origin sends :130 rather than :132, so "
-                        + "CDEMO-TO-PROGRAM becomes 'COMEN01C' - the main menu - and RETURN-TO-PREV-SCREEN "
-                        + "transfers there after stamping the area at :278-280. No screen is transmitted, "
-                        + "so there is no mapset, no map, no send and no cursor, and the transfer travels "
-                        + "as a response field for the client to resolve.",
-                UnitKind.CONTROLLER_POJO,
-                Map.of(),
-                Map.of(),
-                new ScreenRequest(EIBCALEN_WITH_COMMAREA, AID_PF3, PINNED_CLOCK, CHARSET_NAME,
-                        Map.of(NavigationContext.PGM_CONTEXT_FIELD, PGM_CONTEXT_REENTER), Map.of(),
-                        Map.of()),
-                new ExpectedResponse(MAIN_MENU_PROGRAM, null, null,
-                        navigationOf(NavigationContext.empty()
-                                .withPgmReenter()
-                                .withToProgram(MAIN_MENU_PROGRAM)
-                                .withFromTranid(TRANSACTION_ID)
-                                .withFromProgram(PROGRAM)
-                                .withPgmEnter()),
-                        List.of(), null, Termination.XCTL),
-                List.of(), List.of(), 0, List.of(), List.of(), List.of()));
     }
 
     // =================================================================================================
@@ -3324,7 +2459,7 @@ class COBIL00CParityTest {
         CardXrefRepository crossReference = mock(CardXrefRepository.class);
         when(crossReference.readByAccountIdViaAltIndex(anyString())).thenReturn(xref);
 
-        TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+        TransactionRepository.Browse browse = positionedBrowse();
         when(browse.readPrev()).thenReturn(prev);
         TransactionRepository transactions = mock(TransactionRepository.class);
         when(transactions.startBrowse(BrowseDirection.BACKWARD)).thenReturn(browse);
@@ -3435,7 +2570,7 @@ class COBIL00CParityTest {
      */
     private static ObservedResponse paintedBy(BillPaymentController controller,
                                               BillPaymentRequest request) {
-        return observedControllerResponse(controller.payBill(request).screen());
+        return observedControllerResponse(controller.payBill(request, null, null).screen());
     }
 
     /**
@@ -3493,17 +2628,17 @@ class COBIL00CParityTest {
         }
 
         assertThat(aidTokenOf(AID_ENTER))
-                .describedAs("the payload token for the ENTER arm")
-                .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHENTER).map(AidKey::token).orElseThrow());
+                .describedAs("the payload image for the ENTER arm is the byte :126 compares")
+                .isEqualTo(PfKeyResolver.aidImage(CicsAid.DFHENTER));
         assertThat(aidTokenOf(AID_PF3))
-                .describedAs("the payload token for the PF3 arm")
-                .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF3).map(AidKey::token).orElseThrow());
+                .describedAs("the payload image for the PF3 arm is the byte :128 compares")
+                .isEqualTo(PfKeyResolver.aidImage(CicsAid.DFHPF3));
         assertThat(aidTokenOf(AID_PF4))
-                .describedAs("the payload token for the PF4 arm")
-                .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF4).map(AidKey::token).orElseThrow());
+                .describedAs("the payload image for the PF4 arm is the byte :136 compares")
+                .isEqualTo(PfKeyResolver.aidImage(CicsAid.DFHPF4));
         assertThat(aidTokenOf(AID_NO_MATCH))
-                .describedAs("PF5 resolves, but to a token none of the three arms names")
-                .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF5).map(AidKey::token).orElseThrow());
+                .describedAs("PF5 arrives as itself, and is none of the three bytes the arms name")
+                .isEqualTo(PfKeyResolver.aidImage(CicsAid.DFHPF5));
 
         assertThat(PfKeyResolver.resolve(CicsAid.DFHPF13).orElseThrow())
                 .describedAs("CSSTRPFY.cpy:L54-55 folds DFHPF13 back onto PFK01, and the tokens are "
@@ -3952,4 +3087,27 @@ class COBIL00CParityTest {
                 .describedAs("and for the alternate-index path")
                 .isEqualTo(BillPaymentService.WS_CXACAIX_FILE.trim());
     }
+
+    /**
+     * A mocked {@code TRANSACT} browse whose {@code STARTBR} positioned successfully.
+     *
+     * <p>{@link TransactionRepository#startBrowse(TransactionRepository.BrowseDirection)} issues the
+     * position as a real operation and reports what it found, so a handle carries a positioning outcome
+     * that its caller's {@code EVALUATE WS-RESP-CD} branches on. A bare mock reports {@code null} for it,
+     * which is not a state a real handle can be in - so every mock is built here with the successful arm
+     * stubbed, and a test that wants {@code NOTFND} or {@code WHEN OTHER} re-stubs it.
+     *
+     * @return the mock; never {@code null}
+     */
+    private static TransactionRepository.Browse positionedBrowse() {
+        TransactionRepository.Browse handle = mock(TransactionRepository.Browse.class);
+        when(handle.positioningResult()).thenReturn(
+                TransactionRepository.ReadResult.found(TransactionRepository.CICS_FILE_NAME,
+                        new com.vsergeychik.carddemo.transaction.model.TranRecord(
+                                java.nio.charset.StandardCharsets.US_ASCII)));
+        when(handle.positioningOutcome()).thenReturn(FileStatus.Outcome.OK);
+        when(handle.isStarted()).thenReturn(true);
+        return handle;
+    }
+
 }

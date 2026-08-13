@@ -24,8 +24,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -1168,6 +1171,79 @@ class TranCatBalRepositoryTest {
             assertThat(result.isFound()).isFalse();
             assertThat(result.isEndOfFile()).isFalse();
             assertThat(result.isOther()).isFalse();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: an unreadable row is not reported as '23', which would authorise a WRITE")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            // A row the dataset holds and cannot present. All three components of TRAN-CAT-KEY live inside
+            // the record image, so SQL evaluates the keyed LIKE against it as UNKNOWN and the read matches
+            // nothing - which looks exactly like INVALID KEY and is not. '23' here is an INSTRUCTION:
+            // 2700-UPDATE-TCATBAL falls through to 2700-A-CREATE-TCATBAL-REC and WRITEs a record whose key
+            // may already be present.
+            List<String> withUnreadable = new ArrayList<>(fixtureRows());
+            withUnreadable.add(null);
+
+            ReadResult result = repository(seeded(withUnreadable))
+                    .readByKey(ABSENT_ACCT_ID, "ZZ", 9999);
+
+            assertThat(result.isNotFound())
+                    .as("the unreadable row's key cannot be known, so no absence can be asserted")
+                    .isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.cicsResp())
+                    .as("the same arm the visible form of this condition already reports")
+                    .hasValue(FileStatus.INVREQ);
+            assertThat(result.isOkOrNotFound())
+                    .as("CBTRN02C's L481 ladder must NOT see this as normal, or it would create the record")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key still reports '23' and still authorises the create")
+        void aGenuinelyAbsentKeyIsStillNotFound() {
+            // No row of the dataset is unreadable, so the absence is established rather than assumed and
+            // the create at app/cbl/CBTRN02C.cbl:L503-L524 is still the right next step.
+            ReadResult result = repository(seeded(fixtureRows()))
+                    .readByKey(ABSENT_ACCT_ID, "ZZ", 9999);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
+            assertThat(result.isOkOrNotFound()).isTrue();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a read that found its record is unaffected by an unreadable row")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            List<String> withUnreadable = new ArrayList<>(fixtureRows());
+            withUnreadable.add(null);
+
+            // A VSAM READ of a key that resolves does not fail because another record in the cluster is
+            // damaged, so the proof is confined to the not-found path.
+            assertThat(repository(seeded(withUnreadable))
+                    .readByKey(2L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD).isFound()).isTrue();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a refused probe is reported rather than reported as absent")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() {
+            JdbcTemplate refusingTheProbe = Mockito.spy(seeded(fixtureRows()));
+            // The keyed read is answered for real; the very next creator-bound query - the probe - is not.
+            Mockito.doCallRealMethod()
+                    .doThrow(new DataAccessResourceFailureException("the probe cannot be answered"))
+                    .when(refusingTheProbe).query(Mockito.any(PreparedStatementCreator.class),
+                            Mockito.<RowMapper<Object>>any());
+
+            ReadResult result = repository(refusingTheProbe).readByKey(ABSENT_ACCT_ID, "ZZ", 9999);
+
+            assertThat(result.isNotFound())
+                    .as("the probe established nothing, so the absence stays unproved")
+                    .isFalse();
+            assertThat(result.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.diagnostic())
+                    .as("the driver's own diagnosis reaches the caller")
+                    .isPresent();
         }
 
         @Test

@@ -15,10 +15,13 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Controller;
 import org.springframework.stereotype.Repository;
 import org.springframework.test.context.ActiveProfiles;
@@ -45,9 +48,11 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -352,17 +357,98 @@ class CardDemoApplicationTest {
      * The two Micrometer registry types that must have no bean, even though their API jars are on the
      * classpath.
      *
-     * <p>The jars are non-optional transitives of {@code spring-boot-starter-web} and
-     * {@code spring-boot-starter-batch}, both of which the plan mandates: the observation API is
-     * referenced from {@code AbstractJob} and {@code AbstractStep}, the base classes of every Spring
-     * Batch job and step, so excluding them would stop the module loading rather than slim it.
-     * {@code app/java/pom.xml} records that conflict in full. What the exclusion actually asks for -
-     * nothing collected, nothing exported, no observability stack operated - is what is asserted
-     * here, at the only place it can be: the bean graph.
+     * <p>Three jars - {@code micrometer-observation}, {@code micrometer-commons} and
+     * {@code micrometer-core} - are irreducible transitives of {@code spring-boot-starter-web} and
+     * {@code spring-boot-starter-batch}, both of which the plan mandates: {@code AbstractJob} and
+     * {@code AbstractStep}, the base classes of every Spring Batch job and step, declare fields and
+     * public setters typed on these two registry interfaces, so excluding them would stop the module
+     * loading rather than slim it. {@code app/java/pom.xml} records that conflict in full. What the
+     * exclusion actually asks for - nothing collected, nothing exported, no observability stack
+     * operated - is what is asserted here, at the only place it can be: the bean graph.
      */
     private static final List<String> ABSENT_REGISTRY_TYPES = List.of(
             "io.micrometer.observation.ObservationRegistry",
             "io.micrometer.core.instrument.MeterRegistry");
+
+    /**
+     * Jar-name prefixes of the <em>only</em> artifacts from the excluded observability family that may
+     * appear on the runtime classpath - the three the mandated starters make irreducible.
+     *
+     * <p>A fourth {@code micrometer-*} artifact appearing here is a regression, whether it arrives by
+     * a new declaration or by a starter's transitive graph shifting under a version bump, and
+     * {@link TheExcludedTechnologyBoundary} fails the build when one does. Prefixes rather than exact
+     * filenames, so a managed version change is not mistaken for a new artifact.
+     */
+    private static final List<String> IRREDUCIBLE_OBSERVABILITY_JAR_PREFIXES = List.of(
+            "micrometer-observation-",
+            "micrometer-commons-",
+            "micrometer-core-");
+
+    /**
+     * Jar-name prefixes {@code app/java/pom.xml} excludes from {@code spring-boot-starter-batch}, and
+     * which must therefore be absent from the runtime classpath.
+     *
+     * <p>Both are runtime-scope dependencies of {@code micrometer-core} reached from exactly two of its
+     * classes - {@code AbstractTimer} for pause detection and {@code TimeWindowPercentileHistogram} for
+     * percentile storage - neither of which is reachable without a registered {@code MeterRegistry}, and
+     * {@link #ABSENT_REGISTRY_TYPES} asserts there is none. They are the removable part of the excluded
+     * surface, so they are removed; this list is what keeps them removed.
+     */
+    private static final List<String> REMOVED_OBSERVABILITY_JAR_PREFIXES = List.of(
+            "HdrHistogram-",
+            "LatencyUtils-");
+
+    /**
+     * The marker types of the two removed artifacts, checked by resolution as well as by jar name.
+     *
+     * <p>The two checks are complementary rather than redundant: jar-name enumeration reads manifests
+     * and would under-report an artifact that carried none, while type resolution is blind to an
+     * artifact that is present but whose classes are never named. Together they close both gaps.
+     */
+    private static final List<String> REMOVED_OBSERVABILITY_TYPES = List.of(
+            "org.HdrHistogram.Histogram",
+            "org.LatencyUtils.PauseDetector");
+
+    /**
+     * Types whose mere presence would mean an observability stack had been introduced - a registry
+     * implementation, an exporter, a tracing bridge or Actuator itself.
+     *
+     * <p>{@link #ABSENT_REGISTRY_TYPES} proves nothing is <em>wired</em>; this proves there is nothing
+     * to wire. Every entry is a family AAP 0.5.6 excludes by name (Micrometer registries, Prometheus,
+     * Jaeger and the tracing bridges that feed them) or the management surface that would expose them.
+     */
+    private static final Map<String, String> ABSENT_OBSERVABILITY_TYPES = Map.of(
+            "Micrometer Prometheus registry", "io.micrometer.prometheusmetrics.PrometheusMeterRegistry",
+            "Micrometer tracing", "io.micrometer.tracing.Tracer",
+            "Micrometer Jakarta 9 instrumentation", "io.micrometer.jakarta9.instrument.jms.JmsInstrumentation",
+            "Spring Boot Actuator", "org.springframework.boot.actuate.health.HealthIndicator",
+            "Actuator metrics auto-configuration",
+            "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
+            "OpenTelemetry", "io.opentelemetry.api.OpenTelemetry",
+            "Brave", "brave.Tracing",
+            "Zipkin", "zipkin2.Span");
+
+    /** The resource every jar on the classpath carries, and the handle used to enumerate them. */
+    private static final String MANIFEST_RESOURCE = "META-INF/MANIFEST.MF";
+
+    /** Separates a jar URL's archive part from the entry inside it. */
+    private static final String JAR_ENTRY_SEPARATOR = "!/";
+
+    /**
+     * Jars the classpath enumeration must find for its result to be trusted, and the floor on how many
+     * it must see in total.
+     *
+     * <p>Surefire runs the suite through a manifest-only booter jar, so an enumeration that silently saw
+     * only that one entry would let every absence assertion below pass over an empty search. These two
+     * self-checks fail loudly instead: one jar from the mandated web/batch stack, one from the very
+     * family under audit, and a count no partial view could reach.
+     */
+    private static final List<String> CLASSPATH_PROBE_ANCHORS = List.of(
+            "spring-core-",
+            "micrometer-core-");
+
+    /** The smallest jar count a complete view of this module's test classpath can have. */
+    private static final int CLASSPATH_PROBE_FLOOR = 20;
 
     /**
      * The test-only package that holds the stereotyped fixtures, and the one package under the root
@@ -384,6 +470,10 @@ class CardDemoApplicationTest {
     /** Extracts the {@code mainClass} the Spring Boot plugin is configured with. */
     private static final Pattern MAIN_CLASS =
             Pattern.compile("<mainClass>\\s*([^<\\s]+)\\s*</mainClass>");
+
+    /** Extracts the repackage layout, which decides which launcher the jar's manifest names. */
+    private static final Pattern LAYOUT =
+            Pattern.compile("<layout>\\s*([^<\\s]+)\\s*</layout>");
 
     /** The started context, injected through the constructor so this class holds no mutable state. */
     private final ApplicationContext context;
@@ -947,12 +1037,13 @@ class CardDemoApplicationTest {
         @Test
         @DisplayName("no metrics or observation registry bean exists, so nothing is ever collected")
         void noObservabilityRegistryIsWired() {
-            // This is the one exclusion whose letter cannot hold, and it is asserted honestly rather
-            // than falsely. The Micrometer observation and core jars ARE on the classpath: they are
-            // non-optional transitives of spring-boot-starter-web and spring-boot-starter-batch, both
-            // mandated by the plan, and they are referenced from AbstractJob and AbstractStep - the
-            // base classes of every Spring Batch job and step - so excluding them would stop the module
-            // loading rather than slim it. app/java/pom.xml records that conflict in full.
+            // This is the one exclusion whose letter cannot fully hold, and it is asserted honestly
+            // rather than falsely. Three Micrometer jars ARE on the classpath - observation, commons and
+            // core - because they are irreducible transitives of spring-boot-starter-web and
+            // spring-boot-starter-batch, both mandated by the plan: AbstractJob and AbstractStep, the
+            // base classes of every Spring Batch job and step, declare fields and public setters typed
+            // on these two registry interfaces, so excluding them would stop the module loading rather
+            // than slim it. app/java/pom.xml records that conflict in full.
             //
             // What the exclusion actually asks for is that no telemetry is collected or exported, and
             // that is exactly what is asserted: no registry bean of either kind, no Actuator, no
@@ -964,6 +1055,70 @@ class CardDemoApplicationTest {
                             .as("%s must have no bean: nothing is collected, aggregated or exported",
                                     registryType)
                             .isEmpty());
+        }
+
+        @Test
+        @DisplayName("the excluded observability surface is exactly the three irreducible jars, and no more")
+        void theObservabilitySurfaceIsBoundedToWhatCannotBeRemoved() {
+            // The bean-graph assertion above proves nothing is collected. This proves the graph itself is
+            // cut back to the artifacts that genuinely cannot leave it, which is the part a comment
+            // cannot keep true: a starter's transitive set shifts under a version bump, and an excluded
+            // family creeps back in without anybody declaring it.
+            //
+            // First prove the instrument. Surefire runs this suite through a manifest-only booter jar, so
+            // an enumeration that saw one entry and stopped would make every absence assertion below
+            // pass over an empty search - the worst kind of green.
+            List<String> classpathJars = runtimeClasspathJarNames();
+            assertThat(classpathJars)
+                    .as("the classpath enumeration must see the whole test classpath, not just the "
+                            + "surefire booter jar, or the absence assertions below prove nothing")
+                    .hasSizeGreaterThanOrEqualTo(CLASSPATH_PROBE_FLOOR);
+            CLASSPATH_PROBE_ANCHORS.forEach(anchor ->
+                    assertThat(classpathJars)
+                            .as("the enumeration must find %s, which is known to be on this classpath",
+                                    anchor)
+                            .anyMatch(jar -> jar.startsWith(anchor)));
+
+            // The two removable members of the excluded surface are excluded in app/java/pom.xml, so
+            // they must be gone - checked by jar name and again by type resolution, because the two
+            // techniques fail in opposite directions.
+            REMOVED_OBSERVABILITY_JAR_PREFIXES.forEach(removed ->
+                    assertThat(classpathJars)
+                            .as("%s* is excluded from spring-boot-starter-batch in app/java/pom.xml and "
+                                    + "must not be back on the classpath", removed)
+                            .noneMatch(jar -> jar.startsWith(removed)));
+            REMOVED_OBSERVABILITY_TYPES.forEach(removedType ->
+                    assertThat(typeIsOnClasspath(removedType))
+                            .as("%s belongs to an excluded artifact this module removes, so it must not "
+                                    + "resolve", removedType)
+                            .isFalse());
+
+            // Nothing that could collect, export or trace may be present at all - this is the half of
+            // AAP 0.5.6 that IS fully achievable, so it is asserted as an absolute.
+            ABSENT_OBSERVABILITY_TYPES.forEach((family, type) ->
+                    assertThat(typeIsOnClasspath(type))
+                            .as("%s is excluded by AAP 0.5.6, so %s must not be resolvable",
+                                    family, type)
+                            .isFalse());
+
+            // Finally the upper bound: the Micrometer footprint is exactly the three irreducible API
+            // jars. A fourth one fails here rather than being discovered in a dependency tree later.
+            List<String> micrometerJars = classpathJars.stream()
+                    .filter(jar -> jar.startsWith("micrometer-"))
+                    .sorted()
+                    .toList();
+            assertThat(micrometerJars)
+                    .as("only the irreducible Micrometer API jars may be present: %s",
+                            IRREDUCIBLE_OBSERVABILITY_JAR_PREFIXES)
+                    .hasSameSizeAs(IRREDUCIBLE_OBSERVABILITY_JAR_PREFIXES)
+                    .allMatch(jar -> IRREDUCIBLE_OBSERVABILITY_JAR_PREFIXES.stream()
+                            .anyMatch(jar::startsWith));
+            IRREDUCIBLE_OBSERVABILITY_JAR_PREFIXES.forEach(irreducible ->
+                    assertThat(micrometerJars)
+                            .as("%s* is irreducible under the mandated starters, so its absence would "
+                                    + "mean the module can no longer load a job or serve a request",
+                                    irreducible)
+                            .anyMatch(jar -> jar.startsWith(irreducible)));
         }
 
         @Test
@@ -1206,6 +1361,31 @@ class CardDemoApplicationTest {
         }
 
         @Test
+        @DisplayName("the jar is packaged so a deployment-supplied JDBC driver can be loaded into it")
+        void theBuildPackagesALoadableArchive() throws IOException {
+            // The module pins no JDBC driver coordinate by design (risk R-E), so the driver is never
+            // inside carddemo.jar - and the default JAR layout names JarLauncher, which builds the
+            // application class loader from BOOT-INF alone and ignores -cp entirely. That combination is
+            // unshippable: every deployment would refuse to start with "the JDBC driver class is not on
+            // the classpath" while the driver sat on the machine. ZIP names PropertiesLauncher instead,
+            // which reads loader.path / LOADER_PATH. Asserted from the descriptor because Maven holds it
+            // as a plain string outside the compiler's symbol graph, exactly as it holds mainClass.
+            String pom = Files.readString(moduleDescriptor(), StandardCharsets.UTF_8);
+            Matcher matcher = LAYOUT.matcher(pom);
+
+            assertThat(matcher.find())
+                    .as("spring-boot-maven-plugin must declare a repackage <layout>")
+                    .isTrue();
+            assertThat(matcher.group(1))
+                    .as("ZIP is the layout whose launcher honours LOADER_PATH; the default JAR layout "
+                            + "cannot load a driver that was not packaged")
+                    .isEqualTo("ZIP");
+            assertThat(matcher.find())
+                    .as("<layout> must be configured exactly once")
+                    .isFalse();
+        }
+
+        @Test
         @DisplayName("main is the only public method, and is public static void(String[])")
         void mainIsTheOnlyPublicMethod() throws NoSuchMethodException {
             assertThat(authored(CardDemoApplication.class.getDeclaredMethods()).stream()
@@ -1260,6 +1440,171 @@ class CardDemoApplicationTest {
             assertThat(CardDemoApplication.class.getInterfaces()).isEmpty();
             assertThat(CardDemoApplication.class.getSuperclass()).isEqualTo(Object.class);
         }
+    }
+
+    @Nested
+    @DisplayName("The launch mode - a JCL submission is a one-shot process, not a web application")
+    class LaunchMode {
+
+        /** A process with neither the system property nor the environment variable set. */
+        private static final UnaryOperator<String> NOTHING_EXTERNAL = name -> null;
+
+        /** The job name a submission would carry, and one this module really publishes. */
+        private static final String A_PUBLISHED_JOB = "accountBalanceJob";
+
+        /** The command-line form of the job-name property. */
+        private static final String JOB_NAME_FLAG =
+                "--" + BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY + "=";
+
+        @Test
+        @DisplayName("with no job name anywhere the online service starts, so the 17 screens are served")
+        void noJobNameMeansTheOnlineService() {
+            assertThat(CardDemoApplication.webApplicationTypeFor(new String[0], NOTHING_EXTERNAL))
+                    .isEqualTo(WebApplicationType.SERVLET);
+            assertThat(CardDemoApplication.webApplicationTypeFor(
+                    new String[] {"--spring.profiles.active=test", "--server.port=0" },
+                    NOTHING_EXTERNAL))
+                    .as("an unrelated argument is not a submission")
+                    .isEqualTo(WebApplicationType.SERVLET);
+        }
+
+        @Test
+        @DisplayName("a job name on the command line starts a non-web process, so no port is bound for "
+                + "work that has nothing to do with HTTP")
+        void aJobNameOnTheCommandLineMeansAOneShotProcess() {
+            assertThat(CardDemoApplication.webApplicationTypeFor(
+                    new String[] {JOB_NAME_FLAG + A_PUBLISHED_JOB }, NOTHING_EXTERNAL))
+                    .isEqualTo(WebApplicationType.NONE);
+        }
+
+        @Test
+        @DisplayName("the flag counts even with an empty value: the submission must fail without having "
+                + "bound a port")
+        void aFlagWithNoValueStillCountsAsASubmission() {
+            // BatchConfig.JclJobLauncher's constructor refuses a blank job name, so this invocation ends
+            // in a startup failure either way. What is asserted is that it fails as a batch process:
+            // starting a servlet container first would take the online surface up, bind 8080, and only
+            // then refuse the job.
+            assertThat(CardDemoApplication.webApplicationTypeFor(
+                    new String[] {JOB_NAME_FLAG }, NOTHING_EXTERNAL))
+                    .isEqualTo(WebApplicationType.NONE);
+        }
+
+        @Test
+        @DisplayName("a job name supplied outside the command line counts too, which is how a container "
+                + "or a scheduler passes it")
+        void aJobNameSuppliedOutsideTheCommandLineCountsToo() {
+            assertThat(CardDemoApplication.webApplicationTypeFor(new String[0],
+                    name -> BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY.equals(name)
+                            ? A_PUBLISHED_JOB
+                            : null))
+                    .isEqualTo(WebApplicationType.NONE);
+        }
+
+        @Test
+        @DisplayName("a value exported empty outside the command line is not a submission, so an unset "
+                + "variable cannot silently take the online service down")
+        void aBlankValueSuppliedOutsideTheCommandLineIsNotASubmission() {
+            assertThat(CardDemoApplication.webApplicationTypeFor(new String[0], name -> "   "))
+                    .isEqualTo(WebApplicationType.SERVLET);
+        }
+
+        @Test
+        @DisplayName("the property looked for is the launcher's own, so the two halves cannot disagree")
+        void theDetectedPropertyIsTheLauncherOwn() {
+            // Compile-checked rather than spelled out: BatchConfig.JclJobLauncher's own
+            // @ConditionalOnProperty names this constant, so a rename moves both halves together.
+            assertThat(BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY)
+                    .isEqualTo("carddemo.batch.job-name");
+            assertThat(CardDemoApplication.isJclSubmission(
+                    new String[] {"--" + BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY + "="
+                            + A_PUBLISHED_JOB },
+                    NOTHING_EXTERNAL))
+                    .isTrue();
+            assertThat(CardDemoApplication.isJclSubmission(new String[0], NOTHING_EXTERNAL)).isFalse();
+        }
+
+        @Test
+        @DisplayName("the application carries the chosen mode, and nothing else is configured on it")
+        void theApplicationCarriesTheChosenMode() {
+            assertThat(CardDemoApplication
+                    .springApplicationFor(new String[0], NOTHING_EXTERNAL)
+                    .getWebApplicationType())
+                    .isEqualTo(WebApplicationType.SERVLET);
+            assertThat(CardDemoApplication
+                    .springApplicationFor(new String[] {JOB_NAME_FLAG + A_PUBLISHED_JOB },
+                            NOTHING_EXTERNAL)
+                    .getWebApplicationType())
+                    .isEqualTo(WebApplicationType.NONE);
+        }
+
+        @Test
+        @DisplayName("the system property is preferred over the environment, which is Spring's own order")
+        void theSystemPropertyIsPreferredOverTheEnvironment() {
+            String name = BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY;
+            assertThat(System.getenv(CardDemoApplication.environmentVariableFor(name)))
+                    .as("this suite does not run with the submission variable exported")
+                    .isNull();
+            assertThat(CardDemoApplication.processValueOf(name))
+                    .as("with neither source carrying it, nothing is resolved")
+                    .isNull();
+
+            System.setProperty(name, A_PUBLISHED_JOB);
+            try {
+                assertThat(CardDemoApplication.processValueOf(name)).isEqualTo(A_PUBLISHED_JOB);
+            } finally {
+                System.clearProperty(name);
+            }
+            assertThat(System.getProperty(name))
+                    .as("the property is removed again, so no later test inherits a submission")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the environment spelling is the relaxed one Spring maps back to the canonical name")
+        void theEnvironmentSpellingIsTheRelaxedOne() {
+            assertThat(CardDemoApplication.environmentVariableFor(
+                    BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY))
+                    .isEqualTo("CARDDEMO_BATCH_JOB_NAME");
+            assertThat(CardDemoApplication.environmentVariableFor("spring.profiles.active"))
+                    .isEqualTo("SPRING_PROFILES_ACTIVE");
+        }
+
+        @Test
+        @DisplayName("an explicit spring.main.web-application-type still wins, because Boot binds "
+                + "spring.main.* after this setter has run")
+        void anExplicitModeOverridesTheChoice() {
+            // Asserted by starting one, because the claim is about Spring Boot's own ordering rather than
+            // about this module's code. The subject is a bare @Configuration with no auto-configuration,
+            // so nothing of the application graph is built: what is proved is that a SERVLET application
+            // asked outright for none does not create a servlet context - and therefore binds no port.
+            SpringApplication application = new SpringApplication(LaunchProbe.class);
+            application.setWebApplicationType(WebApplicationType.SERVLET);
+
+            try (ConfigurableApplicationContext started = application.run(
+                    "--spring.main.web-application-type=none",
+                    "--spring.main.banner-mode=off")) {
+                assertThat(started.getClass().getName())
+                        .as("a servlet context would be an AnnotationConfigServletWebServerApplicationContext")
+                        .doesNotContain("Servlet");
+                assertThat(started.getEnvironment().getProperty("spring.main.web-application-type"))
+                        .isEqualTo("none");
+            }
+        }
+    }
+
+    /**
+     * The subject of the override proof: a configuration source with nothing in it.
+     *
+     * <p>Deliberately not {@link CardDemoApplication}. Starting the real application here would build
+     * the whole graph a second time and need a {@code DataSource}; what the test is about is Spring
+     * Boot's binding order, which any configuration source demonstrates. It carries no
+     * {@code @EnableAutoConfiguration}, so no starter contributes anything, and it sits in the root
+     * package, which {@code scanBasePackages} deliberately does not include - so it can never be
+     * picked up by the application's own scan.
+     */
+    @Configuration
+    static class LaunchProbe {
     }
 
     // =================================================================================================
@@ -1355,6 +1700,42 @@ class CardDemoApplicationTest {
         } catch (ClassNotFoundException | LinkageError absent) {
             return false;
         }
+    }
+
+    /**
+     * The file names of every jar on this run's classpath, enumerated rather than parsed from a property.
+     *
+     * <p>{@code java.class.path} is not usable for this: Surefire launches the suite through a
+     * manifest-only booter jar, so the property names one entry and the real classpath lives in that
+     * jar's {@code Class-Path} manifest attribute. Enumerating {@value #MANIFEST_RESOURCE} through the
+     * class loader follows that attribute and yields the whole set, which is why the caller's first
+     * assertions check the result is a complete view before drawing any conclusion from an absence.
+     *
+     * <p>Classpath entries that are directories - this module's own {@code target/classes} and
+     * {@code target/test-classes} - carry no jar URL and are skipped; only archives are reported.
+     *
+     * @return the jar file names, one per archive, in enumeration order
+     */
+    private List<String> runtimeClasspathJarNames() {
+        List<String> jarNames = new ArrayList<>();
+        try {
+            Enumeration<URL> manifests = getClass().getClassLoader().getResources(MANIFEST_RESOURCE);
+            while (manifests.hasMoreElements()) {
+                String location = manifests.nextElement().toString();
+                int entrySeparator = location.indexOf(JAR_ENTRY_SEPARATOR);
+                if (entrySeparator < 0) {
+                    continue;
+                }
+                String archive = location.substring(0, entrySeparator);
+                jarNames.add(archive.substring(archive.lastIndexOf('/') + 1));
+            }
+        } catch (IOException enumerationFailed) {
+            throw new IllegalStateException(
+                    "the classpath could not be enumerated through " + MANIFEST_RESOURCE
+                            + ", so the excluded-dependency boundary cannot be proved either way",
+                    enumerationFailed);
+        }
+        return jarNames;
     }
 
     /**

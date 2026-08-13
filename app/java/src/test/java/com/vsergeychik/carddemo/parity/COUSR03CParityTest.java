@@ -12,7 +12,6 @@ import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
-import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.user.SecUserRepository;
 import com.vsergeychik.carddemo.user.SecUserRepository.HeldRecord;
@@ -31,7 +30,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -453,7 +451,7 @@ class COUSR03CParityTest {
                 .as("the USRSEC operations %s issued, in order - a keyless DELETE is only ever "
                         + "correct against a record a preceding READ ... UPDATE left held",
                         scenario.caseId())
-                .containsExactlyElementsOf(scenario.expectedTrace());
+                .containsExactlyElementsOf(scenario.parityCase().expectedOperations());
     }
 
     /**
@@ -468,9 +466,9 @@ class COUSR03CParityTest {
      * @return the twenty scenarios; never {@code null}
      */
     private static List<ParityScenario> cases() {
-        List<ParityScenario> scenarios = List.of(case01(), case02(), case03(), case04(), case05(),
-                case06(), case07(), case08(), case09(), case10(), case11(), case12(), case13(),
-                case14(), case15(), case16(), case17(), case18(), case19(), case20());
+        List<ParityScenario> scenarios = ParityHarness.casesOf(PROGRAM).stream()
+                .map(ParityScenario::new)
+                .toList();
         requireCompleteCaseSet(scenarios);
         return scenarios;
     }
@@ -654,8 +652,13 @@ class COUSR03CParityTest {
                 .as("the hold the first request took died with it; a hold that outlived a request "
                         + "would be a lock nobody releases")
                 .isPresent();
-        assertThat(unit.trace()).containsExactly("readForUpdate(USER0002)", "deleteHeld(USER0002)",
-                "readForUpdate(USER0003)");
+        assertThat(unit.trace()).containsExactly(
+                new ParityCase.ExpectedOperation(USRSEC,
+                        ParityCase.RepositoryOperation.READ_FOR_UPDATE, "USER0002"),
+                new ParityCase.ExpectedOperation(USRSEC,
+                        ParityCase.RepositoryOperation.DELETE, "USER0002"),
+                new ParityCase.ExpectedOperation(USRSEC,
+                        ParityCase.RepositoryOperation.READ_FOR_UPDATE, "USER0003"));
     }
 
     /**
@@ -682,32 +685,23 @@ class COUSR03CParityTest {
     }
 
     // =================================================================================================
-    // The scenario: a case plus the one thing a fingerprint cannot carry - the order the dataset was
-    // reached in.
+    // The scenario: one loaded case, wrapped only so the parameterized test can print a short label.
     // =================================================================================================
 
     /**
-     * One case and the {@code USRSEC} operations it must produce, in order.
+     * One loaded case.
      *
-     * <p>The trace exists because ordering is behaviour that has no home in a fingerprint. A
-     * fingerprint records what the dataset held afterwards; it cannot distinguish a record removed by
-     * the keyless {@code DELETE} of {@code app/cbl/COUSR03C.cbl:307-311} - which acts on what the
-     * task holds - from the same record removed by a delete-by-key, an operation no program in this
-     * application performs. The trace names each operation with the record's own key, so "read for
-     * update, then delete, same record" is asserted rather than assumed.
+     * <p>A wrapper rather than the {@link ParityCase} itself for one reason: the display name. A
+     * {@code ParityCase}'s own {@code toString} is deliberately redacting and long, and a parameterized
+     * test's label wants the identifier and one sentence.
      *
-     * @param parityCase    the case, validated by {@link ParityCase}'s own constructor
-     * @param expectedTrace the repository operations expected in order; empty for a path that touches
-     *                      no file
+     * <p>It carries nothing else. The operation order the gate asserts comes from
+     * {@link ParityCase#expectedOperations()} - the case file - so there is no expectation authored here
+     * for a reader to have to reconcile against the resource.
+     *
+     * @param parityCase the loaded case
      */
-    private record ParityScenario(ParityCase parityCase, List<String> expectedTrace) {
-
-        /**
-         * Freezes the trace so a scenario cannot be perturbed by the test that ran before it.
-         */
-        private ParityScenario {
-            expectedTrace = List.copyOf(expectedTrace);
-        }
+    private record ParityScenario(ParityCase parityCase) {
 
         /**
          * The case identifier, for a failure message that names the fixture.
@@ -750,14 +744,18 @@ class COUSR03CParityTest {
     private static final class Cousr03cUnit implements ParityHarness.ParityUnit {
 
         /** Every {@code USRSEC} operation the run issued, in order. */
-        private final List<String> trace = new ArrayList<>();
+        private final List<ParityCase.ExpectedOperation> trace = new ArrayList<>();
 
         /**
          * The operations issued so far, in order.
          *
+         * <p>Recorded as {@link ParityCase.ExpectedOperation} values rather than formatted strings, so
+         * that what the run did and what the case file declares are the <em>same</em> type and no
+         * rendering convention sits between them.
+         *
          * @return an immutable copy; never {@code null}
          */
-        List<String> trace() {
+        List<ParityCase.ExpectedOperation> trace() {
             return List.copyOf(trace);
         }
 
@@ -765,12 +763,12 @@ class COUSR03CParityTest {
          * Seeds the dataset, constructs the controller, calls {@code MAIN-PARA}, and records the
          * outcome.
          *
-         * <p>The AID is handed over the way CICS hands it over - as the raw {@code EIBAID} byte - so
-         * {@code PfKeyResolver} does the resolving that the twelve programs which do not copy
-         * {@code CSSTRPFY}, this one included, spell inline. A case that declares no AID reaches
-         * {@code MAIN-PARA} with an empty resolution, which is the honest projection of a path where
-         * {@code EIBAID} is never read: the cold start of lines 90 to 92 and the first entry of lines
-         * 95 to 105.
+         * <p>The AID is handed over the way CICS hands it over - as the raw {@code EIBAID} byte - and it
+         * is compared, never folded through a {@code CCARD-AID} token, which is how the twelve programs
+         * that do not copy {@code CSSTRPFY}, this one included, spell it inline. A case that declares no
+         * AID reaches {@code MAIN-PARA} as {@code DFHNULL}, a byte no {@code WHEN} clause names, which is
+         * the honest projection of a path where {@code EIBAID} is never read: the cold start of lines 90
+         * to 92 and the first entry of lines 95 to 105.
          *
          * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
          * @return the recorded outcome; never {@code null}
@@ -788,7 +786,7 @@ class COUSR03CParityTest {
             String usrSelected = invocation.commarea().get(CU03_USR_SELECTED);
 
             ProgramState state = invocation.aid() == null
-                    ? controller.mainPara(request, Optional.<AidKey>empty(), usrSelected)
+                    ? controller.mainPara(request, CicsAid.DFHNULL, usrSelected)
                     : controller.mainPara(request, aidByte(invocation.aid()), usrSelected);
 
             ParityHarness.UnitOutcome.Builder recorder = invocation.recorder();
@@ -857,7 +855,8 @@ class COUSR03CParityTest {
 
             when(repository.readForUpdate(anyString())).thenAnswer(call -> {
                 String key = call.getArgument(0);
-                trace.add("readForUpdate(" + key.strip() + ')');
+                trace.add(new ParityCase.ExpectedOperation(USRSEC,
+                        ParityCase.RepositoryOperation.READ_FOR_UPDATE, key.strip()));
                 if (forces(invocation, ParityCase.RepositoryOperation.READ_FOR_UPDATE)) {
                     return forcedRead(invocation.forcedOutcome(
                             ParityCase.RepositoryOperation.READ_FOR_UPDATE));
@@ -890,7 +889,8 @@ class COUSR03CParityTest {
             when(hold.record()).thenReturn(record);
             when(hold.datasetName()).thenReturn(USRSEC);
             when(hold.deleteHeld()).thenAnswer(call -> {
-                trace.add("deleteHeld(" + record.secUsrId().strip() + ')');
+                trace.add(new ParityCase.ExpectedOperation(USRSEC,
+                        ParityCase.RepositoryOperation.DELETE, record.secUsrId().strip()));
                 if (forces(invocation, ParityCase.RepositoryOperation.DELETE)) {
                     return forcedWrite(
                             invocation.forcedOutcome(ParityCase.RepositoryOperation.DELETE));
@@ -1126,19 +1126,15 @@ class COUSR03CParityTest {
     private static FieldDiffer.ObservedResponse observedResponse(ProgramState state,
                                                                  FixedWidthCodec codec) {
         UserDeleteResponse response = state.response();
+        // One observation per SEND, from the snapshot that send took. EXEC CICS SEND MAP ... FROM(COUSR3AO)
+        // transmits the whole map area, so every send carries all eleven xxxO items and they are not the
+        // same eleven each time: the fetch paints the record and the prompt, and the unconditional send that
+        // follows paints it again with the type resolved. Deriving the earlier sends from the FINAL screen
+        // buffer would report the last values for all of them and make a two-send path indistinguishable
+        // from a one-send path that ended the same way.
         List<FieldDiffer.ObservedSend> sends = new ArrayList<>(state.sendCount());
-        for (int index = 0; index < state.sendCount(); index++) {
-            Map<String, String> fields = observedHeader(response);
-            Map<String, String> attributes = Map.of();
-            if (index == state.sendCount() - 1) {
-                fields.put("USRIDINO", response.usrIdIn());
-                fields.put("FNAMEO", response.fName());
-                fields.put("LNAMEO", response.lName());
-                fields.put("USRTYPEO", response.usrType());
-                fields.put("ERRMSGO", response.errMsg());
-                attributes = Map.of(ERRMSGC, BmsAttributes.colourMnemonic(state.errMsgColour()));
-            }
-            sends.add(new FieldDiffer.ObservedSend(fields, attributes));
+        for (UserDeleteController.Send send : state.sends()) {
+            sends.add(new FieldDiffer.ObservedSend(send.fields(), send.attributes()));
         }
         return new FieldDiffer.ObservedResponse(blankToNull(response.nextProgram()),
                 blankToNull(response.nextMapset()),
@@ -1147,23 +1143,6 @@ class COUSR03CParityTest {
                 sends,
                 state.cursorField().map(CursorField::lengthItem).orElse(null),
                 termination(state));
-    }
-
-    /**
-     * The six header items {@code POPULATE-HEADER-INFO} repaints on every send.
-     *
-     * @param response the screen buffer
-     * @return a mutable map, so the last send can add the five variable items to it
-     */
-    private static Map<String, String> observedHeader(UserDeleteResponse response) {
-        Map<String, String> fields = new LinkedHashMap<>();
-        fields.put("TRNNAMEO", response.trnName());
-        fields.put("TITLE01O", response.title01());
-        fields.put("CURDATEO", response.curDate());
-        fields.put("PGMNAMEO", response.pgmName());
-        fields.put("TITLE02O", response.title02());
-        fields.put("CURTIMEO", response.curTime());
-        return fields;
     }
 
     /**
@@ -1336,26 +1315,6 @@ class COUSR03CParityTest {
         return null;
     }
 
-    /**
-     * The nine-digit zero-filled image of a {@code PIC S9(09) COMP} field as {@code DISPLAY} renders it.
-     *
-     * @param value the response or reason code
-     * @return nine digits
-     */
-    private static String nineDigits(int value) {
-        return String.format("%09d", value);
-    }
-
-    /**
-     * One {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} line - lines 294 and 330.
-     *
-     * @param resp the CICS response code
-     * @return the emitted line, twenty-eight characters
-     */
-    private static String displayLine(int resp) {
-        return "RESP:" + nineDigits(resp) + "REAS:" + nineDigits(FileStatus.NO_REASON_CODE);
-    }
-
     // =================================================================================================
     // Case construction. Every field name below is written out as the copybook spells it rather than
     // referenced from a constant on the production type, so a renamed field is a difference rather than
@@ -1415,52 +1374,6 @@ class COUSR03CParityTest {
     }
 
     /**
-     * The communication area of a first entry: context {@code 0}, with the identifier the user-list
-     * screen handed over.
-     *
-     * @param usrSelected the selected identifier, or spaces for a screen reached with no selection
-     */
-    private static Map<String, String> firstEntryCommarea(String usrSelected) {
-        return commareaImages("CU00", USER_LIST_PGM, PGMNAME, "0", usrSelected);
-    }
-
-    /**
-     * The communication area a cold start hands back: {@code WORKING-STORAGE}'s own initial state -
-     * spaces, zeros, and the {@code VALUE 'N'} of line 54 - with only the four items lines 91 and 202
-     * to 204 write.
-     *
-     * <p>The {@code MOVE DFHCOMMAREA(1:EIBCALEN)} at line 94 is not reached on this path, so nothing
-     * arrives to be carried forward. That is what makes the response the entire observable behaviour of
-     * the path, and why it is stated item by item here.
-     */
-    private static Map<String, String> coldStartNavigation() {
-        Map<String, String> images = new LinkedHashMap<>();
-        images.put("CDEMO-FROM-TRANID", TRANID);
-        images.put("CDEMO-FROM-PROGRAM", PGMNAME);
-        images.put("CDEMO-TO-TRANID", blanks(TRNNAME_WIDTH));
-        images.put("CDEMO-TO-PROGRAM", SIGNON_PGM);
-        images.put("CDEMO-USER-ID", blanks(EIGHT));
-        images.put("CDEMO-USER-TYPE", " ");
-        images.put("CDEMO-PGM-CONTEXT", "0");
-        images.put("CDEMO-CUST-ID", "000000000");
-        images.put("CDEMO-CUST-FNAME", blanks(25));
-        images.put("CDEMO-CUST-MNAME", blanks(25));
-        images.put("CDEMO-CUST-LNAME", blanks(25));
-        images.put("CDEMO-ACCT-ID", "00000000000");
-        images.put("CDEMO-ACCT-STATUS", " ");
-        images.put("CDEMO-CARD-NUM", "0000000000000000");
-        images.put("CDEMO-LAST-MAP", blanks(7));
-        images.put("CDEMO-LAST-MAPSET", blanks(7));
-        images.put(CU03_USRID_FIRST, blanks(EIGHT));
-        images.put(CU03_USRID_LAST, blanks(EIGHT));
-        images.put(CU03_PAGE_NUM, "00000000");
-        images.put(CU03_NEXT_PAGE_FLG, "N");
-        images.put(CU03_USR_SEL_FLG, " ");
-        images.put(CU03_USR_SELECTED, blanks(EIGHT));
-        return images;
-    }
-
-    /**
      * A map of field images from alternating names and values.
      *
      * <p>Hand-rolled rather than {@code Map.of}, for two reasons that both matter here: the received
@@ -1484,50 +1397,6 @@ class COUSR03CParityTest {
         return images;
     }
 
-    /**
-     * A communication area with named items replaced.
-     *
-     * @param base  the area to copy
-     * @param pairs alternating item name and image
-     * @return the copy
-     * @throws IllegalArgumentException if the pairs are not in twos
-     */
-    private static Map<String, String> with(Map<String, String> base, String... pairs) {
-        if (pairs.length % 2 != 0) {
-            throw new IllegalArgumentException("Field replacements come in name-and-image pairs; "
-                    + pairs.length + " value(s) were given");
-        }
-        Map<String, String> images = new LinkedHashMap<>(base);
-        for (int index = 0; index < pairs.length; index += 2) {
-            images.put(pairs[index], pairs[index + 1]);
-        }
-        return images;
-    }
-
-    /**
-     * The area after {@code RETURN-TO-PREV-SCREEN} - lines 199 to 208.
-     *
-     * <p>Four items change: the target, which this program has already resolved; the transaction and
-     * program control is coming from; and the context, reset to zero so the program being transferred
-     * to is entered fresh rather than as a re-entry.
-     *
-     * @param base   the area that arrived
-     * @param target {@code CDEMO-TO-PROGRAM} as the arm resolved it
-     * @return the area handed to the next program
-     */
-    private static Map<String, String> afterTransfer(Map<String, String> base, String target) {
-        return with(base,
-                "CDEMO-TO-PROGRAM", pad(target, EIGHT),
-                "CDEMO-FROM-TRANID", TRANID,
-                "CDEMO-FROM-PROGRAM", PGMNAME,
-                "CDEMO-PGM-CONTEXT", "0");
-    }
-
-    /** The area after {@code SET CDEMO-PGM-REENTER TO TRUE} at line 96 - the one item first entry writes. */
-    private static Map<String, String> afterFirstEntry(Map<String, String> base) {
-        return with(base, "CDEMO-PGM-CONTEXT", "1");
-    }
-
     /** The six header items every send repaints, as {@code POPULATE-HEADER-INFO} leaves them. */
     private static Map<String, String> headerFields() {
         Map<String, String> fields = new LinkedHashMap<>();
@@ -1537,55 +1406,6 @@ class COUSR03CParityTest {
         fields.put("PGMNAMEO", PGMNAME);
         fields.put("TITLE02O", TITLE02);
         fields.put("CURTIMEO", CUR_TIME);
-        return fields;
-    }
-
-    /**
-     * The five variable items of the last send, at their declared widths.
-     *
-     * @param usrIdIn the identifier field, {@code PIC X(8)}
-     * @param fName   the first name, {@code PIC X(20)}
-     * @param lName   the last name, {@code PIC X(20)}
-     * @param usrType the type, {@code PIC X(1)}
-     * @param message the message as {@code ERRMSGO PIC X(78)} holds it - the 80-byte {@code WS-MESSAGE}
-     *                truncated on the right by two bytes, which is the direction line 217 truncates in
-     * @return the five items
-     */
-    private static Map<String, String> unpaintedExcept(String message) {
-        Map<String, String> fields = new LinkedHashMap<>();
-        // MOVE LOW-VALUES TO COUSR3AO at :97 and nothing after it writes these four, because the guard
-        // at :99 is false and PROCESS-ENTER-KEY never runs. LOW-VALUES, not spaces: :97 moves X'00', and
-        // this expectation previously named the spaces image, which is a different byte. ERRMSGO IS
-        // painted, by MOVE WS-MESSAGE TO ERRMSGO inside SEND-USRDEL-SCREEN at :217.
-        fields.put("USRIDINO", ScreenFieldImage.unpainted(USRIDIN_WIDTH));
-        fields.put("FNAMEO", ScreenFieldImage.unpainted(NAME_WIDTH));
-        fields.put("LNAMEO", ScreenFieldImage.unpainted(NAME_WIDTH));
-        fields.put("USRTYPEO", ScreenFieldImage.unpainted(USRTYPE_WIDTH));
-        fields.put("ERRMSGO", pad(message, ERRMSG_WIDTH));
-        return fields;
-    }
-
-    /**
-     * The five variable items as one send painted them, each at its declared width.
-     *
-     * @param usrIdIn the identifier field
-     * @param fName   the first name
-     * @param lName   the last name
-     * @param usrType the type
-     * @param message the message as {@code ERRMSGO} holds it
-     * @return the five items
-     */
-    private static Map<String, String> painted(String usrIdIn,
-                                               String fName,
-                                               String lName,
-                                               String usrType,
-                                               String message) {
-        Map<String, String> fields = new LinkedHashMap<>();
-        fields.put("USRIDINO", pad(usrIdIn, USRIDIN_WIDTH));
-        fields.put("FNAMEO", pad(fName, NAME_WIDTH));
-        fields.put("LNAMEO", pad(lName, NAME_WIDTH));
-        fields.put("USRTYPEO", pad(usrType, USRTYPE_WIDTH));
-        fields.put("ERRMSGO", pad(message, ERRMSG_WIDTH));
         return fields;
     }
 
@@ -1620,34 +1440,6 @@ class COUSR03CParityTest {
     }
 
     /**
-     * The lines one invocation emitted: every {@code DISPLAY} in order, then the terminal
-     * {@code WS-MESSAGE} and the terminal {@code ERRMSGO}.
-     *
-     * <p>The last two are the same text on two channels of different widths, and that is the point.
-     * {@code MOVE WS-MESSAGE TO ERRMSGO} at line 217 moves eighty characters into a seventy-eight
-     * character receiver, so the screen field must hold the message's <em>first</em> seventy-eight
-     * characters. Pinning both is what makes the direction assertable: a move that truncated on the
-     * left would drop the first two characters of the text and the 78-byte expectation would fail
-     * while the 80-byte one still passed.
-     *
-     * @param message  the text {@code WS-MESSAGE} ended up holding, unpadded
-     * @param displays every {@code DISPLAY} line, in emission order
-     * @return the emitted lines
-     */
-    private static List<ParityCase.EmittedMessage> messages(String message, String... displays) {
-        List<ParityCase.EmittedMessage> emitted = new ArrayList<>(displays.length + 2);
-        for (String display : displays) {
-            emitted.add(new ParityCase.EmittedMessage(ParityCase.MessageChannel.DISPLAY_LINE,
-                    display));
-        }
-        emitted.add(new ParityCase.EmittedMessage(ParityCase.MessageChannel.WS_MESSAGE_80,
-                pad(message, WS_MESSAGE_WIDTH)));
-        emitted.add(new ParityCase.EmittedMessage(ParityCase.MessageChannel.SCREEN_ERRMSG_78,
-                pad(message, ERRMSG_WIDTH)));
-        return emitted;
-    }
-
-    /**
      * What {@code USRSEC} holds afterwards, row by row, as the 80-byte images {@code CSUSR01Y} declares.
      *
      * <p>Every row is pinned as a whole image rather than as a handful of fields: pinning
@@ -1664,30 +1456,6 @@ class COUSR03CParityTest {
                     padded(rows.get(rowIndex))));
         }
         return records;
-    }
-
-    /**
-     * The rows left after a record is deleted, in their surviving order.
-     *
-     * @param rows the seeded rows
-     * @param key  the identifier of the row the delete removed
-     * @return the surviving rows
-     * @throws IllegalArgumentException if no seeded row carries that identifier, which would make the
-     *                                  expectation describe a delete that could not have happened
-     */
-    private static List<String> without(List<String> rows, String key) {
-        String image = pad(key, USRIDIN_WIDTH);
-        List<String> surviving = new ArrayList<>(rows.size());
-        for (String row : rows) {
-            if (!row.startsWith(image)) {
-                surviving.add(row);
-            }
-        }
-        if (surviving.size() == rows.size()) {
-            throw new IllegalArgumentException("No seeded USRSEC row carries the identifier '" + key
-                    + "', so no delete of it could be observed. Seed the row the case deletes.");
-        }
-        return surviving;
     }
 
     /** The dataset-level expectation: {@code USRSEC} exists on the final-state channel at its width. */
@@ -1726,46 +1494,6 @@ class COUSR03CParityTest {
                 fields, forced);
     }
 
-    /** One forced outcome, with its {@code RESP} stated because the {@code WHEN OTHER} arms display it. */
-    private static Map<ParityCase.RepositoryOperation, ParityCase.ForcedOutcome> forced(
-            ParityCase.RepositoryOperation operation, FileStatus.Outcome outcome, int resp) {
-        return Map.of(operation,
-                new ParityCase.ForcedOutcome(outcome, resp, FileStatus.NO_REASON_CODE));
-    }
-
-    /**
-     * The response of a path that ended at {@code EXEC CICS RETURN TRANSID('CU03')} - lines 134 to 137.
-     *
-     * @param navigation  the communication area handed back
-     * @param sends       the screen sends
-     * @param cursorField the {@code xxxL} item that received {@code MOVE -1}, or {@code null}
-     * @return the expectation
-     */
-    private static ParityCase.ExpectedResponse pseudoConversationalReturn(
-            Map<String, String> navigation,
-            List<ParityCase.ScreenSend> sends,
-            String cursorField) {
-        return new ParityCase.ExpectedResponse(PGMNAME, MAPSET, MAP, navigation, sends, cursorField,
-                ParityCase.Termination.RETURN_TRANSID);
-    }
-
-    /**
-     * The response of a path that ended at {@code EXEC CICS XCTL} - lines 205 to 208.
-     *
-     * <p>No mapset and no map: {@code COUSR03C} sets neither {@code CDEMO-LAST-MAP} nor
-     * {@code CDEMO-LAST-MAPSET} anywhere, the program being transferred to owns its own map, and naming
-     * one here would be an invention. No send either - control leaves before the screen is painted.
-     *
-     * @param nextProgram the target the client is to call next
-     * @param navigation  the communication area handed over
-     * @return the expectation
-     */
-    private static ParityCase.ExpectedResponse transfer(String nextProgram,
-                                                        Map<String, String> navigation) {
-        return new ParityCase.ExpectedResponse(nextProgram, null, null, navigation, List.of(), null,
-                ParityCase.Termination.XCTL);
-    }
-
     /**
      * Assembles one case from its parts.
      *
@@ -1796,619 +1524,4 @@ class COUSR03CParityTest {
     // arms of EVALUATE EIBAID.
     // =================================================================================================
 
-    /**
-     * {@code MAIN-PARA}'s {@code EIBCALEN = 0} guard - lines 90 to 92.
-     *
-     * <p>No communication area was passed, so the program names {@value #SIGNON_PGM} and transfers
-     * immediately. Nothing is sent, nothing is read, and the area handed over is
-     * {@code WORKING-STORAGE}'s own initial state with the four items lines 91 and 202 to 204 write -
-     * which is why every one of the twenty-two is pinned here. No AID is declared, because
-     * {@code EIBAID} is never reached on this path and declaring a key would suggest it mattered.
-     */
-    private static ParityScenario case01() {
-        return new ParityScenario(parityCase("case01",
-                "MAIN-PARA's EIBCALEN = 0 guard at app/cbl/COUSR03C.cbl:90-92. The cold start transfers "
-                        + "to COSGN00C with no send and no file access, and the commarea handed over is "
-                        + "WORKING-STORAGE's initial state plus the four items lines 91 and 202-204 "
-                        + "write - including the VALUE 'N' of CDEMO-CU03-NEXT-PAGE-FLG at line 54.",
-                SEED_ROWS,
-                new ParityCase.ScreenRequest(EIBCALEN_NONE, null, PINNED_CLOCK, CHARSET, Map.of(),
-                        Map.of(), Map.of()),
-                transfer(SIGNON_PGM, coldStartNavigation()),
-                SEED_ROWS,
-                messages("")),
-                List.of());
-    }
-
-    /**
-     * First entry with nothing selected - lines 95 to 105 with the guard at line 99 false.
-     *
-     * <p>{@code CDEMO-CU03-USR-SELECTED} is blank, so no record is fetched: the screen is cleared to
-     * {@code LOW-VALUES}, the cursor is put on the only field that can be typed into, and the
-     * unconditional send at line 105 paints an empty screen. The guard is load-bearing - without it
-     * this path would read the file with a blank key.
-     *
-     * <p>"Empty" here means {@code LOW-VALUES} in the four data items and spaces in the error line, and
-     * the two are different bytes. Line 97's group {@code MOVE} writes {@code X'00'} and nothing on this
-     * path writes those four items afterwards; {@code ERRMSGO} is written, by
-     * {@code MOVE WS-MESSAGE TO ERRMSGO} inside {@code SEND-USRDEL-SCREEN} at line 217.
-     */
-    private static ParityScenario case02() {
-        return new ParityScenario(parityCase("case02",
-                "First entry with CDEMO-CU03-USR-SELECTED blank at app/cbl/COUSR03C.cbl:99-100. The "
-                        + "guard is false so PROCESS-ENTER-KEY is not performed and USRSEC is never "
-                        + "read; MOVE LOW-VALUES TO COUSR3AO at :97 clears the map, MOVE -1 TO USRIDINL "
-                        + "at :98 places the cursor, and the unconditional send at :105 paints one "
-                        + "empty screen. CDEMO-PGM-CONTEXT becomes 1 so the next call is a re-entry.",
-                SEED_ROWS,
-                screenRequest(null, Map.of(), firstEntryCommarea(blanks(USRIDIN_WIDTH)), Map.of()),
-                pseudoConversationalReturn(afterFirstEntry(firstEntryCommarea(blanks(USRIDIN_WIDTH))),
-                        sends(1, unpaintedExcept(""), DFHDFCOL),
-                        USRIDINL),
-                SEED_ROWS,
-                messages("")),
-                List.of());
-    }
-
-    /**
-     * First entry with a selected user that exists - the three-send path.
-     *
-     * <p>The count is the point. The read's {@code NORMAL} arm sends at line 286, line 168 sends again
-     * once the names have been painted, and line 105's send sits <em>outside</em> the guard and
-     * therefore runs as well. Each send re-derives the whole screen, so the terminal is left showing
-     * the confirmation prompt over a populated record - and a translation that collapsed three sends
-     * into one would have changed what the terminal saw.
-     */
-    private static ParityScenario case03() {
-        return new ParityScenario(parityCase("case03",
-                "First entry with CDEMO-CU03-USR-SELECTED naming ADMIN002 at app/cbl/COUSR03C.cbl:99-104. "
-                        + "The record is fetched through PROCESS-ENTER-KEY, so this path sends THREE "
-                        + "times: the read's NORMAL arm at :286, line :168 once the names are painted, "
-                        + "and the unconditional send at :105 which sits outside the guard. ERRMSGC is "
-                        + "DFHNEUTR from :285 and the prompt from :283-284 is what the terminal is left "
-                        + "showing.",
-                SEED_ROWS,
-                screenRequest(null, Map.of(), firstEntryCommarea("ADMIN002"), Map.of()),
-                pseudoConversationalReturn(afterFirstEntry(firstEntryCommarea("ADMIN002")),
-                        sends(3, painted("ADMIN002", "RUSSELL", "RUSSELL", "A", MSG_PRESS_PF5),
-                                DFHNEUTR),
-                        USRIDINL),
-                SEED_ROWS,
-                messages(MSG_PRESS_PF5)),
-                List.of("readForUpdate(ADMIN002)"));
-    }
-
-    /**
-     * ENTER on a user that exists, with all eleven map fields transmitted - the confirmation prompt.
-     *
-     * <p>Two things are pinned that no other case pins. The prompt of lines 283 to 284 is asserted
-     * byte-exactly as the seventy-eight character screen field holds it, which is the confirm half of
-     * the confirm-then-delete flow. And every one of the six header fields arrives carrying a stale
-     * value - a different transaction name, yesterday's date, another program's name - and every one is
-     * repainted by {@code POPULATE-HEADER-INFO} on the way out, which is how the screen a terminal
-     * echoes back cannot poison the screen it is sent.
-     */
-    private static ParityScenario case04() {
-        return new ParityScenario(parityCase("case04",
-                "ENTER on USER0003, which exists, with all eleven xxxI items transmitted including six "
-                        + "stale header values. PROCESS-ENTER-KEY at app/cbl/COUSR03C.cbl:142-169 reads "
-                        + "for update, the NORMAL arm at :281-286 moves 'Press PF5 key to delete this "
-                        + "user ...' and DFHNEUTR and sends, then :165-168 paints the record's names and "
-                        + "sends again - two sends. POPULATE-HEADER-INFO at :243-262 overwrites all six "
-                        + "received header fields.",
-                SEED_ROWS,
-                screenRequest("DFHENTER",
-                        fields(MAP_TRNNAME, "XX99",
-                                MAP_TITLE01, "STALE UPPER TITLE FROM A PRIOR SEND     ",
-                                MAP_CURDATE, "01/02/03",
-                                MAP_PGMNAME, "STALEPGM",
-                                MAP_TITLE02, "STALE LOWER TITLE FROM A PRIOR SEND     ",
-                                MAP_CURTIME, "01:02:03",
-                                MAP_USRIDIN, "USER0003",
-                                MAP_FNAME, "STALE FIRST NAME    ",
-                                MAP_LNAME, "STALE LAST NAME     ",
-                                MAP_USRTYPE, "X",
-                                MAP_ERRMSG, blanks(ERRMSG_WIDTH)),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted("USER0003", "LAURITZ", "ALME", "U", MSG_PRESS_PF5), DFHNEUTR),
-                        USRIDINL),
-                SEED_ROWS,
-                messages(MSG_PRESS_PF5)),
-                List.of("readForUpdate(USER0003)"));
-    }
-
-    /**
-     * ENTER on a user that does not exist - the read's {@code NOTFND} arm, lines 287 to 292.
-     *
-     * <p>The three record fields arrive populated and leave blank, and that is deliberate: lines 157 to
-     * 159 clear them <em>before</em> the read, so a lookup that fails cannot leave the previous user's
-     * name on the screen beside a not-found message. The error flag then stops the second
-     * {@code IF NOT ERR-FLG-ON} at line 164, so only one send happens.
-     */
-    private static ParityScenario case05() {
-        return new ParityScenario(parityCase("case05",
-                "ENTER on an identifier no USRSEC row carries - the read's NOTFND arm at "
-                        + "app/cbl/COUSR03C.cbl:287-292. 'User ID NOT found...' is issued, the cursor "
-                        + "returns to USRIDINL and one send follows. The names transmitted with the "
-                        + "request are blanked by :157-159 before the read, so a failed lookup leaves "
-                        + "no stale record on the screen, and the error flag stops the second "
-                        + "IF NOT ERR-FLG-ON at :164.",
-                SEED_ROWS,
-                screenRequest("DFHENTER",
-                        fields(MAP_USRIDIN, ABSENT_ID,
-                                MAP_FNAME, "LAWRENCE            ",
-                                MAP_LNAME, "THOMAS              ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted(ABSENT_ID, "", "", "", MSG_NOT_FOUND), DFHDFCOL),
-                        USRIDINL),
-                SEED_ROWS,
-                messages(MSG_NOT_FOUND)),
-                List.of("readForUpdate(" + ABSENT_ID + ')'));
-    }
-
-    /**
-     * ENTER with a blank identifier - {@code PROCESS-ENTER-KEY}'s first arm, lines 145 to 150.
-     *
-     * <p>The mirror image of {@code case05}: because the error flag is raised before line 156, the clear
-     * at lines 157 to 159 never runs and the transmitted names <strong>survive</strong> on the screen.
-     * The two cases together pin the paragraph's guard structure - two separate
-     * {@code IF NOT ERR-FLG-ON} statements rather than one - which is what makes
-     * {@code PROCESS-ENTER-KEY} stop where {@code DELETE-USER-INFO} does not.
-     */
-    private static ParityScenario case06() {
-        return new ParityScenario(parityCase("case06",
-                "ENTER with USRIDINI blank - PROCESS-ENTER-KEY's first arm at app/cbl/COUSR03C.cbl:145-150. "
-                        + "'User ID can NOT be empty...' is issued, the cursor goes to USRIDINL and one "
-                        + "send follows with no read at all. The error flag is already raised at :156, "
-                        + "so the clear at :157-159 does not run and the transmitted names survive - the "
-                        + "opposite of case05, and the reason the paragraph's two separate "
-                        + "IF NOT ERR-FLG-ON statements matter.",
-                SEED_ROWS,
-                screenRequest("DFHENTER",
-                        fields(MAP_USRIDIN, blanks(USRIDIN_WIDTH),
-                                MAP_FNAME, "STALE FIRST NAME    ",
-                                MAP_LNAME, "STALE LAST NAME     ",
-                                MAP_USRTYPE, "X"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted(blanks(USRIDIN_WIDTH), "STALE FIRST NAME", "STALE LAST NAME",
-                                "X", MSG_ID_EMPTY), DFHDFCOL),
-                        USRIDINL),
-                SEED_ROWS,
-                messages(MSG_ID_EMPTY)),
-                List.of());
-    }
-
-    /**
-     * ENTER where the read itself fails - the read's {@code WHEN OTHER} arm, lines 293 to 299.
-     *
-     * <p>Unreachable from seeded data, so the outcome is forced with an explicit {@code RESP} of
-     * {@code NOTOPEN}. Three things are asserted that no other arm produces: the {@code DISPLAY} at
-     * line 294 is live and emits the response pair, the message is
-     * {@value #MSG_UNABLE_TO_LOOKUP} rather than the not-found text, and the cursor goes to
-     * {@code FNAMEL} at line 298 - a field the map declares {@code ASKIP} and which therefore cannot be
-     * typed into. That last one is an oddity of the source and is reproduced rather than corrected.
-     */
-    private static ParityScenario case07() {
-        return new ParityScenario(parityCase("case07",
-                "ENTER where the read fails with an unenumerated response - the WHEN OTHER arm at "
-                        + "app/cbl/COUSR03C.cbl:293-299, forced with RESP 19 (NOTOPEN). The DISPLAY at "
-                        + ":294 is live and emits 'RESP:' and 'REAS:' with both nine-digit values, the "
-                        + "message is 'Unable to lookup User...', and MOVE -1 TO FNAMEL at :298 puts the "
-                        + "cursor on a field the map declares ASKIP - reproduced, not corrected.",
-                SEED_ROWS,
-                screenRequest("DFHENTER", fields(MAP_USRIDIN, "USER0001"), reentryCommarea(),
-                        forced(ParityCase.RepositoryOperation.READ_FOR_UPDATE,
-                                FileStatus.Outcome.OTHER, FileStatus.NOTOPEN)),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted("USER0001", "", "", "", MSG_UNABLE_TO_LOOKUP), DFHDFCOL),
-                        FNAMEL),
-                SEED_ROWS,
-                messages(MSG_UNABLE_TO_LOOKUP, displayLine(FileStatus.NOTOPEN))),
-                List.of("readForUpdate(USER0001)"));
-    }
-
-    /**
-     * PF5 on a user that exists - the delete, and the confirmation the operator is left with.
-     *
-     * <p>The whole contract of the program in one case. {@code DELETE-USER-INFO} reads for update at
-     * line 190, the {@code NORMAL} arm sends the prompt, and the keyless {@code DELETE} at lines 307 to
-     * 311 removes the record the read left held - which is why the trace is a read-for-update of
-     * {@code USER0002} followed by a delete of {@code USER0002} and nothing else. Then lines 315 to 322
-     * run in order: the screen is emptied, the message is blanked, {@code ERRMSGC} turns
-     * {@value #DFHGREEN}, and the {@code STRING} composes the confirmation from a
-     * {@code SEC-USER-DATA} that {@code INITIALIZE-ALL-FIELDS} did not touch. The row is gone from the
-     * final state, and the nine that remain are pinned as whole eighty-byte images.
-     */
-    private static ParityScenario case08() {
-        return new ParityScenario(parityCase("case08",
-                "PF5 on USER0002 - the successful delete. DELETE-USER-INFO at app/cbl/COUSR03C.cbl:188-192 "
-                        + "reads for update and then issues EXEC CICS DELETE at :307-311 with no RIDFLD, "
-                        + "so the record removed is the one the read left held. The NORMAL arm at "
-                        + ":314-322 empties the screen, blanks WS-MESSAGE, moves DFHGREEN to ERRMSGC and "
-                        + "composes 'User USER0002 has been deleted ...' from a SEC-USER-DATA that "
-                        + "INITIALIZE-ALL-FIELDS deliberately does not clear. Two sends, and nine rows "
-                        + "left.",
-                SEED_ROWS,
-                screenRequest("DFHPF5",
-                        fields(MAP_USRIDIN, "USER0002",
-                                MAP_FNAME, "AJITH               ",
-                                MAP_LNAME, "KUMAR               ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted(blanks(USRIDIN_WIDTH), "", "", "",
-                                MSG_USER_PREFIX + "USER0002" + MSG_DELETED_SUFFIX), DFHGREEN),
-                        USRIDINL),
-                without(SEED_ROWS, "USER0002"),
-                messages(MSG_USER_PREFIX + "USER0002" + MSG_DELETED_SUFFIX)),
-                List.of("readForUpdate(USER0002)", "deleteHeld(USER0002)"));
-    }
-
-    /**
-     * PF5 on a user whose identifier is shorter than its declared width -
-     * {@code STRING ... DELIMITED BY SPACE}.
-     *
-     * <p>The {@code STRING} at lines 318 to 321 delimits its middle operand <strong>by space, not by
-     * size</strong>, so an eight-character field holding {@code 'AB      '} contributes exactly two
-     * characters to the sentence. Every identifier in {@code DUSRSECJ.jcl} fills all eight, which makes
-     * this the only way to tell the two delimiters apart: a plain concatenation of the raw field would
-     * read {@code 'User AB       has been deleted ...'} and diverge on every short identifier.
-     */
-    private static ParityScenario case09() {
-        return new ParityScenario(parityCase("case09",
-                "PF5 on an identifier shorter than PIC X(08) - the STRING at app/cbl/COUSR03C.cbl:318-321 "
-                        + "delimits SEC-USR-ID BY SPACE, so 'AB      ' contributes two characters and "
-                        + "the message reads 'User AB has been deleted ...'. All ten DUSRSECJ.jcl "
-                        + "identifiers fill the field, so this case seeds an eleventh row to make the "
-                        + "delimiter observable; a concatenation of the raw field would embed six "
-                        + "spaces in the middle of the sentence.",
-                SEED_ROWS_WITH_SHORT_KEY,
-                screenRequest("DFHPF5", fields(MAP_USRIDIN, "AB"), reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted(blanks(USRIDIN_WIDTH), "", "", "",
-                                MSG_USER_PREFIX + "AB" + MSG_DELETED_SUFFIX), DFHGREEN),
-                        USRIDINL),
-                without(SEED_ROWS_WITH_SHORT_KEY, "AB"),
-                messages(MSG_USER_PREFIX + "AB" + MSG_DELETED_SUFFIX)),
-                List.of("readForUpdate(AB)", "deleteHeld(AB)"));
-    }
-
-    /**
-     * PF5 on a user that does not exist - <strong>the missing guard, and the preserved defect</strong>.
-     *
-     * <p>{@code DELETE-USER-INFO} wraps the read and the delete in one {@code IF NOT ERR-FLG-ON} at
-     * line 188 and places <em>no guard between them</em>. So the read reports not-found, sends, and the
-     * keyless {@code DELETE} is issued anyway - with nothing held it can name no record, CICS answers
-     * {@code INVREQ}, and the {@code WHEN OTHER} arm overwrites the not-found message with
-     * {@value #MSG_UNABLE_TO_UPDATE}. Two facts are pinned here and nowhere else: the trace shows a
-     * read-for-update and <strong>no delete of any kind</strong>, which is what "the delete acts on
-     * what is held" means when nothing is; and the surviving message says "Update" on the delete path,
-     * exactly as line 332 writes it. Contrast {@code PROCESS-ENTER-KEY}, whose two separate guards do
-     * stop.
-     */
-    private static ParityScenario case10() {
-        return new ParityScenario(parityCase("case10",
-                "PF5 on an identifier no USRSEC row carries - the missing guard at "
-                        + "app/cbl/COUSR03C.cbl:188-192. The read reports NOTFND and sends, then the "
-                        + "keyless DELETE at :307-311 is issued with nothing held: it can name no "
-                        + "record, so the outcome is INVREQ and the WHEN OTHER arm at :329-335 replaces "
-                        + "'User ID NOT found...' with 'Unable to Update User...' - the word 'Update' on "
-                        + "the delete path, a defect inherited from COUSR02C and preserved verbatim. "
-                        + "The transmitted names survive, because DELETE-USER-INFO never clears them.",
-                SEED_ROWS,
-                screenRequest("DFHPF5",
-                        fields(MAP_USRIDIN, ABSENT_ID,
-                                MAP_FNAME, "LAWRENCE            ",
-                                MAP_LNAME, "THOMAS              ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted(ABSENT_ID, "LAWRENCE", "THOMAS", "U", MSG_UNABLE_TO_UPDATE),
-                                DFHDFCOL),
-                        FNAMEL),
-                SEED_ROWS,
-                messages(MSG_UNABLE_TO_UPDATE, displayLine(FileStatus.INVREQ))),
-                List.of("readForUpdate(" + ABSENT_ID + ')'));
-    }
-
-    /**
-     * PF5 where the read succeeds and the delete fails - the delete's {@code WHEN OTHER} arm, lines 329
-     * to 335, reached with a record genuinely held.
-     *
-     * <p>The defect text again, by a different route: {@code case10} reaches it with nothing held, this
-     * case reaches it with the record held and the command itself refused. Two further details are
-     * pinned. {@code ERRMSGC} is still {@value #DFHNEUTR} - the read's {@code NORMAL} arm set it at
-     * line 285 and the delete's failure arm does not touch the colour - and the record is <em>still
-     * there</em> afterwards, which is what a refused delete means.
-     */
-    private static ParityScenario case11() {
-        return new ParityScenario(parityCase("case11",
-                "PF5 on USER0004 where the read succeeds and the delete is refused with RESP 19 "
-                        + "(NOTOPEN) - the delete's WHEN OTHER arm at app/cbl/COUSR03C.cbl:329-335 with "
-                        + "a record genuinely held. The DISPLAY at :330 emits the response pair, the "
-                        + "message is 'Unable to Update User...', the cursor goes to FNAMEL, ERRMSGC is "
-                        + "still DFHNEUTR from the read's :285 because this arm does not touch the "
-                        + "colour, and all ten rows remain.",
-                SEED_ROWS,
-                screenRequest("DFHPF5",
-                        fields(MAP_USRIDIN, "USER0004",
-                                MAP_FNAME, "AVERARDO            ",
-                                MAP_LNAME, "MAZZI               ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(),
-                        forced(ParityCase.RepositoryOperation.DELETE, FileStatus.Outcome.OTHER,
-                                FileStatus.NOTOPEN)),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted("USER0004", "AVERARDO", "MAZZI", "U", MSG_UNABLE_TO_UPDATE),
-                                DFHNEUTR),
-                        FNAMEL),
-                SEED_ROWS,
-                messages(MSG_UNABLE_TO_UPDATE, displayLine(FileStatus.NOTOPEN))),
-                List.of("readForUpdate(USER0004)", "deleteHeld(USER0004)"));
-    }
-
-    /**
-     * PF5 where the record disappears between the read and the delete - the delete's {@code NOTFND}
-     * arm, lines 323 to 328.
-     *
-     * <p>The only arm of the delete that is neither the success nor the defect text, and the only one
-     * that emits no {@code DISPLAY}: the message and the cursor target are the lookup's not-found arm's,
-     * and the colour byte is left as the read set it. Forced, because a record cannot be made to vanish
-     * mid-task from seeded data.
-     */
-    private static ParityScenario case12() {
-        return new ParityScenario(parityCase("case12",
-                "PF5 on USER0005 where the delete reports NOTFND - the arm at "
-                        + "app/cbl/COUSR03C.cbl:323-328, reachable when the record is removed between "
-                        + "the read at :190 and the delete at :191. 'User ID NOT found...' is issued and "
-                        + "the cursor returns to USRIDINL; unlike the WHEN OTHER arm beside it this one "
-                        + "emits no DISPLAY and leaves ERRMSGC as the read's DFHNEUTR.",
-                SEED_ROWS,
-                screenRequest("DFHPF5",
-                        fields(MAP_USRIDIN, "USER0005",
-                                MAP_FNAME, "LEE                 ",
-                                MAP_LNAME, "TING                ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(),
-                        forced(ParityCase.RepositoryOperation.DELETE, FileStatus.Outcome.NOT_FOUND,
-                                FileStatus.NOTFND)),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted("USER0005", "LEE", "TING", "U", MSG_NOT_FOUND), DFHNEUTR),
-                        USRIDINL),
-                SEED_ROWS,
-                messages(MSG_NOT_FOUND)),
-                List.of("readForUpdate(USER0005)", "deleteHeld(USER0005)"));
-    }
-
-    /**
-     * PF5 where the delete reports a duplicate - which is <strong>not</strong> one of the enumerated
-     * arms.
-     *
-     * <p>{@code EVALUATE WS-RESP-CD} at lines 313 to 336 tests {@code NORMAL} and {@code NOTFND} and
-     * nothing else, so a duplicate response falls to {@code WHEN OTHER} exactly as any other
-     * unenumerated one does. Worth its own case because the outcome has a name in the repository's
-     * vocabulary and none in the program's: a translation that added a duplicate arm here would be
-     * inventing an arm the source does not have.
-     */
-    private static ParityScenario case13() {
-        return new ParityScenario(parityCase("case13",
-                "PF5 on ADMIN003 where the delete reports DUPREC. EVALUATE WS-RESP-CD at "
-                        + "app/cbl/COUSR03C.cbl:313-336 enumerates only NORMAL and NOTFND, so a "
-                        + "duplicate response reaches WHEN OTHER like any other unenumerated one: the "
-                        + "DISPLAY at :330 emits RESP 14 and the message is 'Unable to Update User...'. "
-                        + "There is no duplicate arm in this program and adding one would invent "
-                        + "behaviour.",
-                SEED_ROWS,
-                screenRequest("DFHPF5",
-                        fields(MAP_USRIDIN, "ADMIN003",
-                                MAP_FNAME, "RAYMOND             ",
-                                MAP_LNAME, "WHITMORE            ",
-                                MAP_USRTYPE, "A"),
-                        reentryCommarea(),
-                        forced(ParityCase.RepositoryOperation.DELETE, FileStatus.Outcome.DUPLICATE,
-                                FileStatus.DUPREC)),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(2, painted("ADMIN003", "RAYMOND", "WHITMORE", "A", MSG_UNABLE_TO_UPDATE),
-                                DFHNEUTR),
-                        FNAMEL),
-                SEED_ROWS,
-                messages(MSG_UNABLE_TO_UPDATE, displayLine(FileStatus.DUPREC))),
-                List.of("readForUpdate(ADMIN003)", "deleteHeld(ADMIN003)"));
-    }
-
-    /**
-     * PF5 with a blank identifier - {@code DELETE-USER-INFO}'s own first arm, lines 177 to 182.
-     *
-     * <p>Textually identical to {@code PROCESS-ENTER-KEY}'s arm and reached by a different key, which is
-     * why both are pinned: the two paragraphs each carry their own copy of the check, and the file is
-     * never touched by either. Nothing is read, so nothing is held, so the keyless delete is never even
-     * reached - the trace is empty.
-     */
-    private static ParityScenario case14() {
-        return new ParityScenario(parityCase("case14",
-                "PF5 with USRIDINI blank - DELETE-USER-INFO's own first arm at "
-                        + "app/cbl/COUSR03C.cbl:177-182, which repeats PROCESS-ENTER-KEY's check "
-                        + "verbatim. 'User ID can NOT be empty...' is issued, the cursor goes to "
-                        + "USRIDINL, one send follows, and USRSEC is never opened - so neither the read "
-                        + "at :190 nor the delete at :191 happens.",
-                SEED_ROWS,
-                screenRequest("DFHPF5",
-                        fields(MAP_USRIDIN, blanks(USRIDIN_WIDTH),
-                                MAP_FNAME, "STALE FIRST NAME    ",
-                                MAP_LNAME, "STALE LAST NAME     ",
-                                MAP_USRTYPE, "X"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted(blanks(USRIDIN_WIDTH), "STALE FIRST NAME", "STALE LAST NAME",
-                                "X", MSG_ID_EMPTY), DFHDFCOL),
-                        USRIDINL),
-                SEED_ROWS,
-                messages(MSG_ID_EMPTY)),
-                List.of());
-    }
-
-    /**
-     * PF3 with a named predecessor - lines 111 to 118, the {@code else} of the line 112 test.
-     *
-     * <p>{@code CDEMO-FROM-PROGRAM} names the user-list screen, so that is where control goes. What
-     * this case pins is the <strong>absence</strong> of a delete: {@code COUSR02C}'s own PF3 arm
-     * performs {@code UPDATE-USER-INFO} first, and this program performs nothing at all. The asymmetry
-     * between the two sibling screens is the source's, and harmonising it would silently give the back
-     * key the power to delete a record.
-     */
-    private static ParityScenario case15() {
-        return new ParityScenario(parityCase("case15",
-                "PF3 with CDEMO-FROM-PROGRAM naming COUSR00C - app/cbl/COUSR03C.cbl:111-118. The test at "
-                        + ":112 is false so :115-116 carries the predecessor into CDEMO-TO-PROGRAM and "
-                        + "RETURN-TO-PREV-SCREEN transfers. No send, no read and above all NO DELETE: "
-                        + "COUSR02C performs UPDATE-USER-INFO on its own PF3 arm at :111-119 and this "
-                        + "program deliberately does not.",
-                SEED_ROWS,
-                screenRequest("DFHPF3", fields(MAP_USRIDIN, "USER0001"), reentryCommarea(), Map.of()),
-                transfer(USER_LIST_PGM, afterTransfer(reentryCommarea(), USER_LIST_PGM)),
-                SEED_ROWS,
-                messages("")),
-                List.of());
-    }
-
-    /**
-     * PF3 with no named predecessor - the {@code then} of the line 112 test.
-     *
-     * <p>A blank {@code CDEMO-FROM-PROGRAM} falls back to {@value #ADMIN_PGM} at line 113. Both arms of
-     * the test are now pinned, and the fallback is the reason the guard exists: a transfer to a blank
-     * program name would abend the task.
-     */
-    private static ParityScenario case16() {
-        return new ParityScenario(parityCase("case16",
-                "PF3 with CDEMO-FROM-PROGRAM blank - the true arm of the test at "
-                        + "app/cbl/COUSR03C.cbl:112, which falls back to 'COADM01C' at :113. Together "
-                        + "with case15 this pins both arms; the fallback is what stops a transfer to a "
-                        + "blank program name.",
-                SEED_ROWS,
-                screenRequest("DFHPF3", fields(MAP_USRIDIN, "USER0001"),
-                        commareaImages(blanks(TRNNAME_WIDTH), blanks(EIGHT), PGMNAME, "1",
-                                blanks(USRIDIN_WIDTH)),
-                        Map.of()),
-                transfer(ADMIN_PGM, afterTransfer(
-                        commareaImages(blanks(TRNNAME_WIDTH), blanks(EIGHT), PGMNAME, "1",
-                                blanks(USRIDIN_WIDTH)), ADMIN_PGM)),
-                SEED_ROWS,
-                messages("")),
-                List.of());
-    }
-
-    /**
-     * PF4 - {@code CLEAR-CURRENT-SCREEN}, lines 341 to 344.
-     *
-     * <p>Two performs and nothing else. A screen showing a record simply forgets it: the identifier,
-     * both names and the type are blanked, the cursor returns to the identifier, and no file is touched
-     * - so PF4 on a record the operator was about to delete is not a delete.
-     */
-    private static ParityScenario case17() {
-        return new ParityScenario(parityCase("case17",
-                "PF4 - CLEAR-CURRENT-SCREEN at app/cbl/COUSR03C.cbl:341-344. INITIALIZE-ALL-FIELDS "
-                        + "blanks USRIDINI, FNAMEI, LNAMEI, USRTYPEI and WS-MESSAGE at :351-356, the "
-                        + "cursor returns to USRIDINL, and one send paints the emptied screen. No file "
-                        + "is touched, so a screen showing a record simply forgets it.",
-                SEED_ROWS,
-                screenRequest("DFHPF4",
-                        fields(MAP_USRIDIN, "USER0002",
-                                MAP_FNAME, "AJITH               ",
-                                MAP_LNAME, "KUMAR               ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted(blanks(USRIDIN_WIDTH), "", "", "", ""), DFHDFCOL),
-                        USRIDINL),
-                SEED_ROWS,
-                messages("")),
-                List.of());
-    }
-
-    /**
-     * PF12 - lines 123 to 125.
-     *
-     * <p>{@value #ADMIN_PGM} unconditionally, with no test of the predecessor: PF3 asks where control
-     * came from and PF12 does not, so the two keys reach different targets from the same screen state.
-     * That difference is why both are pinned.
-     */
-    private static ParityScenario case18() {
-        return new ParityScenario(parityCase("case18",
-                "PF12 - app/cbl/COUSR03C.cbl:123-125. 'COADM01C' is moved into CDEMO-TO-PROGRAM "
-                        + "unconditionally, with no test of CDEMO-FROM-PROGRAM, so from the same screen "
-                        + "state PF12 and PF3 reach different targets - here the admin menu, in case15 "
-                        + "the user list.",
-                SEED_ROWS,
-                screenRequest("DFHPF12", fields(MAP_USRIDIN, "USER0001"), reentryCommarea(), Map.of()),
-                transfer(ADMIN_PGM, afterTransfer(reentryCommarea(), ADMIN_PGM)),
-                SEED_ROWS,
-                messages("")),
-                List.of());
-    }
-
-    /**
-     * A key the resolver knows and the program does not - {@code WHEN OTHER}, lines 126 to 129.
-     *
-     * <p>{@code DFHPF7} resolves cleanly to a function key; it simply is not one of the five this
-     * program handles. The invalid-key message is issued, no cursor is moved - this arm is the only one
-     * that moves none - and the received screen is echoed back untouched beneath the message.
-     */
-    private static ParityScenario case19() {
-        return new ParityScenario(parityCase("case19",
-                "PF7, a key the resolver recognises and EVALUATE EIBAID does not handle - WHEN OTHER at "
-                        + "app/cbl/COUSR03C.cbl:126-129. CCDA-MSG-INVALID-KEY is moved into the 80-byte "
-                        + "WS-MESSAGE from a PIC X(50) item and one send follows. This is the only arm "
-                        + "that moves no cursor at all, and the received screen is echoed back beneath "
-                        + "the message untouched.",
-                SEED_ROWS,
-                screenRequest("DFHPF7",
-                        fields(MAP_USRIDIN, "USER0001",
-                                MAP_FNAME, "LAWRENCE            ",
-                                MAP_LNAME, "THOMAS              ",
-                                MAP_USRTYPE, "U"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted("USER0001", "LAWRENCE", "THOMAS", "U", MSG_INVALID_KEY),
-                                DFHDFCOL),
-                        null),
-                SEED_ROWS,
-                messages(MSG_INVALID_KEY)),
-                List.of());
-    }
-
-    /**
-     * A key the resolver does not know at all - the same {@code WHEN OTHER}, reached differently.
-     *
-     * <p>{@code DFHPA3} is a real attention identifier that {@code CSSTRPFY} does not test, so
-     * {@code PfKeyResolver} reports no match and the dispatch has nothing to switch on. It must not be
-     * folded onto {@code ENTER}: doing so would perform a lookup the operator never asked for. Both
-     * kinds of unhandled key - recognised-but-unhandled in {@code case19} and unrecognised here - reach
-     * the same arm, and the fact that they reach it by different routes is what makes both worth
-     * pinning.
-     */
-    private static ParityScenario case20() {
-        return new ParityScenario(parityCase("case20",
-                "PA3, an attention identifier CSSTRPFY does not test, so PfKeyResolver reports no match "
-                        + "at all - the same WHEN OTHER arm at app/cbl/COUSR03C.cbl:126-129 reached by a "
-                        + "different route than case19's PF7. An unresolved key must not be folded onto "
-                        + "ENTER: that would perform a lookup the operator never asked for.",
-                SEED_ROWS,
-                screenRequest("DFHPA3",
-                        fields(MAP_USRIDIN, "ADMIN005",
-                                MAP_FNAME, "GRANVILLE           ",
-                                MAP_LNAME, "LACHAPELLE          ",
-                                MAP_USRTYPE, "A"),
-                        reentryCommarea(), Map.of()),
-                pseudoConversationalReturn(reentryCommarea(),
-                        sends(1, painted("ADMIN005", "GRANVILLE", "LACHAPELLE", "A", MSG_INVALID_KEY),
-                                DFHDFCOL),
-                        null),
-                SEED_ROWS,
-                messages(MSG_INVALID_KEY)),
-                List.of());
-    }
 }

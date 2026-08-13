@@ -21,8 +21,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -1078,12 +1080,70 @@ class SecUserRepositoryTest {
         }
 
         @Test
-        @DisplayName("a row whose column is null never satisfies a keyed predicate, so it is not found")
-        void aNullColumnNeverSatisfiesAKeyedPredicate() {
+        @DisplayName("finding DB-05: a row whose column is null cannot be matched, so NOTFND is not claimed")
+        void aNullColumnNeverSatisfiesAKeyedPredicateSoTheAbsenceIsNotClaimed() {
             List<String> withNull = new ArrayList<>();
             withNull.add(null);
-            // NULL LIKE 'ADMIN001%' is unknown, so SQL returns no row at all - the absence condition.
-            assertThat(repository(seeded(withNull)).read("ADMIN001").isNotFound()).isTrue();
+
+            ReadResult result = repository(seeded(withNull)).read("ADMIN001");
+
+            // NULL LIKE 'ADMIN001%' is UNKNOWN, so SQL returns no row at all - and that is exactly why the
+            // absence cannot be reported. SEC-USR-ID lives inside the record image, so the unreadable row
+            // has no knowable key and may be ADMIN001's own. Reporting NOTFND here would paint "User not
+            // found" for a user the dataset holds, and on COSGN00C's path would refuse a sign-on the
+            // legacy system allows.
+            assertThat(result.isNotFound())
+                    .as("the row's key cannot be known, so its absence cannot be asserted")
+                    .isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(SecUserRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.cicsResp())
+                    .as("the same arm the visible form of this condition already reports")
+                    .hasValue(FileStatus.INVREQ);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key is still reported as NOTFND")
+        void aGenuinelyAbsentKeyIsStillNotFound() {
+            // No row of this dataset is unreadable, so the absence is established rather than assumed and
+            // the NOTFND every consumer branches on is reported unchanged.
+            ReadResult result = repository(seeded(seedRows())).read("NOSUCHUS");
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a read that found its record is unaffected by an unreadable row")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            List<String> withNull = new ArrayList<>(seedRows());
+            withNull.add(null);
+
+            // A VSAM READ of a key that resolves does not fail because another record is damaged, so the
+            // probe is confined to the not-found path and never qualifies a successful read.
+            assertThat(repository(seeded(withNull)).read("ADMIN001").isFound()).isTrue();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a refused probe is reported rather than reported as absent")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() {
+            // The relation is dropped between the keyed read and the probe, so the read answers no row and
+            // the probe cannot be answered at all. An unproved absence must not become NOTFND.
+            JdbcTemplate refusingTheProbe = Mockito.spy(seeded(seedRows()));
+            // The keyed read is answered for real; the very next creator-bound query - the probe - is not.
+            Mockito.doCallRealMethod()
+                    .doThrow(new DataAccessResourceFailureException("the probe cannot be answered"))
+                    .when(refusingTheProbe).query(Mockito.any(PreparedStatementCreator.class),
+                            Mockito.<ResultSetExtractor<Object>>any());
+            SecUserRepository repository = repository(refusingTheProbe);
+
+            ReadResult result = repository.read("NOSUCHUS");
+
+            assertThat(result.isNotFound())
+                    .as("the probe established nothing, so the absence stays unproved")
+                    .isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(SecUserRepository.PERMANENT_ERROR_STATUS);
         }
 
         @Test
@@ -1201,9 +1261,27 @@ class SecUserRepositoryTest {
             SecUserRepository repository = repository(template);
             repository.read("ADMIN001");
             withUnitOfWork(() -> repository.readForUpdate("ADMIN001"));
-            assertThat(prepared).hasSize(2);
-            assertThat(prepared.get(0)).doesNotContain("FOR UPDATE");
-            assertThat(prepared.get(1)).contains("FOR UPDATE");
+
+            // Four statements, not two: this chain returns no rows, so each read then proves the absence
+            // before reporting it, and the probe is a second statement on that path. The lock belongs to
+            // the read alone - the probe asks whether any row of the dataset is unreadable, which is not a
+            // row the caller is about to update, so requesting a lock for it would hold a row no verb
+            // touches for the length of the enclosing unit of work.
+            assertThat(prepared).hasSize(4);
+            assertThat(prepared.get(0))
+                    .as("the plain read takes no lock")
+                    .doesNotContain("FOR UPDATE");
+            assertThat(prepared.get(1))
+                    .as("the plain read's absence proof")
+                    .endsWith(" IS NULL")
+                    .doesNotContain("FOR UPDATE");
+            assertThat(prepared.get(2))
+                    .as("READ ... UPDATE takes the row lock")
+                    .contains("FOR UPDATE");
+            assertThat(prepared.get(3))
+                    .as("the locking read's absence proof locks nothing")
+                    .endsWith(" IS NULL")
+                    .doesNotContain("FOR UPDATE");
         }
 
         /**
@@ -1270,9 +1348,14 @@ class SecUserRepositoryTest {
                 assertThat(cursor.openDiagnostic()).isEmpty();
                 assertThat(cursor.isOpen()).isFalse();
                 // The source guards both paging loops with IF NOT ERR-FLG-ON, so it never reads here. A
-                // caller that ignores the guard gets the open's own outcome back.
-                assertThat(cursor.readNext().isNotFound()).isTrue();
-                assertThat(cursor.readPrevious().isNotFound()).isTrue();
+                // caller that ignores the guard reads a browse that was never established, and CICS
+                // reports that as INVREQ - not as a repeat of the STARTBR's NOTFND, which would claim
+                // the READNEXT had itself searched for a key. Same answer as the ended-browse arm.
+                assertThat(cursor.readNext().cicsResp()).hasValue(FileStatus.INVREQ);
+                assertThat(cursor.readPrevious().cicsResp()).hasValue(FileStatus.INVREQ);
+                assertThat(cursor.openStatus())
+                        .as("the open's own outcome is still on the cursor, where callers branch on it")
+                        .isEqualTo(FileStatus.NOT_FOUND);
             }
         }
 
@@ -1284,9 +1367,11 @@ class SecUserRepositoryTest {
                 assertThat(cursor.openOutcome()).isEqualTo(Outcome.OTHER);
                 assertThat(cursor.openDiagnostic()).isPresent();
                 assertThat(cursor.isOpen()).isFalse();
+                // The diagnostic belongs to the OPEN, which is the operation that touched the relation
+                // and was refused. The read reports INVREQ: no browse was established for it to read.
                 ReadResult refused = cursor.readNext();
                 assertThat(refused.isOther()).isTrue();
-                assertThat(refused.diagnostic()).isPresent();
+                assertThat(refused.cicsResp()).hasValue(FileStatus.INVREQ);
             }
         }
 

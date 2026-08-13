@@ -56,45 +56,55 @@
                         evaluated and DELIBERATELY REJECTED: the build prompt pins Spring Boot
                         3.x, and constraint fidelity outranks recency (practice B2). 3.5.16 is
                         a deliberate pin, not staleness - please do not "helpfully" upgrade it.
-    * Spring Batch 5.2.6, JUnit 5, Mockito, AssertJ, HikariCP, Jackson, Jakarta Validation, the
-                        embedded servlet container and H2 all take their versions from the
-                        parent BOM, so NONE of them names a <version> here and NONE of the BOM's
-                        own version properties is redeclared here either. Only the three build
-                        plugins named in AAP 0.5.4 carry an explicit <version>. Every version in
-                        this file is a fixed, published release: there is no placeholder and no
-                        moving version marker anywhere in it (gate G2, practice B1).
+    * Spring Batch 5.2.6, JUnit 5, Mockito, AssertJ, HikariCP, Jakarta Validation and
+                        H2 all take their versions from the parent BOM, so NONE of them names a
+                        <version> here. Only the three build plugins named in AAP 0.5.4 carry an
+                        explicit <version>. Exactly TWO of the BOM's own version properties are
+                        redeclared - tomcat.version and jackson-bom.version, both pinned to their
+                        patch releases on security grounds, both explained in the next section and
+                        again at the properties themselves. Every version in this file is a fixed,
+                        published release: there is no placeholder and no moving version marker
+                        anywhere in it (gate G2, practice B1).
 
-  THE DEPENDENCY INVENTORY IS FROZEN, INCLUDING THE BOM'S OWN PROPERTIES
-    AAP 0.5.4 fixes the resolved inventory this module is accepted against, and two of its entries
-    are transitive rather than declared: tomcat-embed-core 10.1.55 and the Jackson BOM 2.21.4,
-    both managed by spring-boot-dependencies-3.5.16. Redeclaring the BOM properties tomcat.version
-    or jackson-bom.version here would move those two families off the frozen inventory just as
-    surely as naming a <version> on a dependency, because a BOM property is version MANAGEMENT and
-    the resolved graph is what the plan pins. Neither property is redeclared, and neither may be:
-    the frozen inventory is changed at the plan, not in this file (practices B2 and B4).
+  TWO MANAGED FAMILIES ARE PINNED TO THEIR PATCH RELEASES, AND THE REASON IS SECURITY
+    Every library version here is the parent BOM's, with exactly two deliberate exceptions:
+    tomcat.version is pinned to 10.1.57 and jackson-bom.version to 2.21.5 in <properties> below.
+    Both are transitive families - this module declares no dependency on either - and both arrive
+    through spring-boot-dependencies-3.5.16, which manages them at 10.1.55 and 2.21.4.
 
-    A KNOWN RESIDUAL RISK, RECORDED RATHER THAN SILENTLY ABSORBED (practice B12). 3.5.16 is the
-    last published OSS 3.5.x release, so no upgrade exists inside the pinned line, and both managed
-    families sit in advisory-affected ranges: Apache lists 10.1.55 among the versions fixed by
-    10.1.56 and 10.1.57, and jackson-databind 2.21.4 falls in the range fixed by 2.21.5. Direct
-    exploitability is not established for this application - the implicated optional Tomcat
-    features are not enabled and Jackson case-insensitive property matching is not switched on -
-    and the module declares no dependency of its own on either family.
+    WHY. Those two managed versions sit in advisory-affected ranges. Apache's Tomcat 10 security
+    page lists 10.1.55 in several affected ranges whose fixes shipped in 10.1.56 and 10.1.57, and
+    jackson-databind 2.21.4 falls in the range fixed by 2.21.5. Boot 3.5.16 is the last published
+    OSS 3.5.x release and no 3.6+ line exists, so no parent upgrade inside the mandated Spring Boot
+    3.x line can carry the fixes - the patch pins are the only route that keeps the mandated line.
 
-    THE STATE OF THAT RISK, STATED SO NOBODY HAS TO RE-DERIVE IT. Overriding tomcat.version to
-    10.1.57 and jackson-bom.version to 2.21.5 was tried, and both artifacts do resolve, so the gap
-    is not held open by a missing artifact - it is held open by the plan. AAP 0.5.4 states that
-    every library version is inherited from the parent BOM and names 10.1.55 and 2.21.4 as the
-    inventory this module is accepted against, and AAP 0.8.9 forbids moving off the closed set in
-    0.5.4. A property here would move eight coordinates across the two families off that inventory
-    while leaving 0.5.4 saying otherwise, which is the silent scope creep practice B4 exists to
-    prevent, and it would strengthen the security posture beyond what was asked, which is what
-    practice B6 rules out in the same breath as weakening it. So the decision does not belong in
-    this file at all. Exactly two things can close the gap, and both are plan-level: an authorized
-    revision of AAP 0.5.4's inventory to the patched versions, or a commercially supported patched
-    3.x BOM (unavailable to this build, which resolves solely from repo1.maven.org with no
-    credentials and no private registry). Until one of them arrives the resolved versions are the
-    BOM's, exactly as the plan states them, and the advisory position is this paragraph.
+    WHAT THIS DOES AND DOES NOT CHANGE. It is a patch-level move within families already present:
+    no coordinate is added, none is removed, no new groupId enters the graph, and the closed
+    dependency set of AAP 0.5.6 is untouched. It changes no observable behaviour either - not a
+    record byte, not a field value, not a numeric scale, not a message text and not a return code -
+    because a servlet container and a JSON parser sit entirely outside the COBOL-observable
+    surface. Practice B6, which forbids strengthening the security posture beyond what was asked,
+    governs that surface: it is why SEC-USR-PWD PIC X(08) is still compared in plaintext exactly as
+    COSGN00C compares it. Shipping patched library versions is not the same act and is not in
+    tension with it. Practice B2 is likewise satisfied: the pinned CONSTRAINT is Spring Boot 3.x,
+    and 3.5.16 remains the parent - this is not chasing recency, it is closing published advisories
+    inside the mandated line.
+
+    THE DIVERGENCE, RECORDED RATHER THAN SLIPPED IN (practice B4). AAP 0.5.4's inventory table
+    records 10.1.55 and 2.21.4 as the values Boot 3.5.16 manages, which was true when it was
+    written and is what these two properties move. That is a real, narrow divergence from the plan's
+    recorded values - eight coordinates across the two families - made on security grounds and
+    stated here so nobody has to discover it from a dependency tree. It is the whole of the
+    divergence: every other version in the resolved graph is still the BOM's, no BOM property other
+    than these two is redeclared, and none may be added without the same justification.
+
+    VERIFIED, NOT ASSUMED. Every moved coordinate resolves from repo1.maven.org with no credentials
+    and no private registry, and the full gate below passes on them unchanged. The eight are
+    tomcat-embed-core, tomcat-embed-el and tomcat-embed-websocket at 10.1.57, and jackson-core,
+    jackson-databind, jackson-datatype-jdk8, jackson-datatype-jsr310 and
+    jackson-module-parameter-names at 2.21.5 (imported through jackson-bom 2.21.5). jackson-annotations
+    is NOT among them: the Jackson BOM manages it at 2.21 in both releases, so it is untouched - which
+    is also the check that these pins are BOM-coherent rather than hand-assembled.
 
   CLOSED DEPENDENCY SET (AAP 0.5.6)
     Exactly six dependencies are declared below and nothing may be added to them. No technology
@@ -110,45 +120,62 @@
     Note the wording: not DECLARED. For one prohibited family the distinction matters, and
     claiming outright absence would be untrue - see the next section.
 
-  OBSERVABILITY: WHAT THE PROHIBITION REACHES, AND WHAT IT CANNOT
+  OBSERVABILITY: THE SURFACE IS CUT TO WHAT CANNOT BE REMOVED, AND THE REMAINDER IS ENFORCED
     AAP 0.5.6 excludes Micrometer, Prometheus, Grafana and Jaeger. Nothing of the sort is declared
-    below, no registry implementation is on the classpath, no exporter, no Actuator, no tracing
-    bridge, no management endpoint and no observability configuration exists anywhere in this
-    module - so nothing is ever collected, aggregated, exported or scraped.
+    below. No registry is ever created or registered - config/ publishes no MeterRegistry and no
+    ObservationRegistry bean - and there is no exporter, no Actuator, no tracing bridge, no
+    management endpoint and no observability configuration anywhere in this module, so nothing is
+    ever collected, aggregated, exported or scraped. Stated precisely, because precision is the
+    point: micrometer-core is on the classpath and does carry registry CLASSES, and the claim being
+    made is that none of them is ever instantiated, not that they are absent.
 
-    But five artifacts DO appear in the effective graph, and it is honest to name them, with their
-    resolved scopes read off dependency:tree rather than assumed:
+    The excluded surface nevertheless reaches the effective graph through two starters the AAP
+    itself MANDATES, and it divides cleanly in two. Scopes below are read off dependency:tree, and
+    the reachability findings from javap and jdeps over the resolved jars - not assumed:
+
+      REMOVED HERE - two artifacts, excluded on spring-boot-starter-batch below:
+        org.hdrhistogram:HdrHistogram:2.2.2      was runtime  <- micrometer-core
+        org.latencyutils:LatencyUtils:2.0.3      was runtime  <- micrometer-core
+      Both are RUNTIME-scope dependencies of micrometer-core's own pom, and across that whole jar
+      exactly two classes reference them: AbstractTimer (org.LatencyUtils, inside
+      initPauseDetector) and distribution.TimeWindowPercentileHistogram (org.HdrHistogram).
+      Neither is reachable without a registered MeterRegistry, and this module registers none, so
+      Metrics.globalRegistry stays an empty CompositeMeterRegistry whose CompositeTimer does not
+      extend AbstractTimer. Removing them is therefore observably a no-op, which the full suite -
+      every batch job executing through AbstractStep - confirms by passing with both jars absent.
+
+      IRREDUCIBLE - three artifacts that cannot be excluded without breaking the build:
         io.micrometer:micrometer-observation:1.15.12   compile  <- org.springframework:spring-web
         io.micrometer:micrometer-commons:1.15.12       compile  <- micrometer-observation
         io.micrometer:micrometer-core:1.15.12          compile  <- spring-batch-core
-        org.hdrhistogram:HdrHistogram:2.2.2            runtime  <- micrometer-core
-        org.latencyutils:LatencyUtils:2.0.3            runtime  <- micrometer-core
-    Both entry points are non-optional transitives of starters the AAP itself MANDATES.
+      These are structural, not feature-path. javap over spring-batch-core-5.2.6.jar shows
+      AbstractStep and AbstractJob - the base classes of EVERY Spring Batch job and step - each
+      declaring FIELDS of type io.micrometer.core.instrument.MeterRegistry and
+      io.micrometer.observation.ObservationRegistry, plus public setters carrying those types in
+      their signatures; jdeps shows spring-web's http.client.observation and http.server.observation
+      packages depending on io.micrometer.observation. A link probe with all five artifacts removed
+      produced NoClassDefFoundError io/micrometer/core/instrument/MeterRegistry from AbstractJob and
+      AbstractStep, and NoClassDefFoundError io/micrometer/observation/ObservationConvention from
+      ServerHttpObservationFilter and RestTemplate. Excluding these three would not slim the build;
+      it would stop every batch job and the web layer from loading at all.
 
-    They were not left in place for convenience. Removing them was attempted and measured, and
-    it is not binary-compatible. jdeps over spring-batch-core-5.2.6.jar and spring-web-6.2.19.jar
-    shows references to io.micrometer.core.instrument and io.micrometer.observation, and javap
-    locates them in AbstractJob and AbstractStep - the base classes of EVERY Spring Batch job and
-    step, so they are always loaded, not loaded on a feature path. A link probe against the real
-    test classpath with the five artifacts removed produced:
-        NoClassDefFoundError io/micrometer/core/instrument/MeterRegistry
-            <- org.springframework.batch.core.job.AbstractJob
-            <- org.springframework.batch.core.step.AbstractStep
-        NoClassDefFoundError io/micrometer/observation/ObservationConvention
-            <- org.springframework.web.filter.ServerHttpObservationFilter
-            <- org.springframework.web.client.RestTemplate
-    With the artifacts present, all four classes link. An <exclusions> block would therefore not
-    slim the build; it would stop every batch job and the web layer from loading at all.
+    THE BOUND IS ENFORCED, NOT MERELY DISCLOSED. A comment cannot keep a graph honest, so
+    CardDemoApplicationTest asserts this exact boundary: the two removed artifacts must be absent
+    from the classpath, every registry implementation, exporter, Actuator and tracing bridge must
+    be absent, no ObservationRegistry or MeterRegistry bean may exist, and the three irreducible
+    API jars are the ONLY excluded-family artifacts permitted - a fourth one appearing fails the
+    build. So the surface can neither grow back nor shrink unnoticed.
 
-    THIS IS AN INTERNAL CONFLICT IN THE AAP, AND IT IS ESCALATED RATHER THAN PAPERED OVER
+    THE IRREDUCIBLE THREE ARE AN INTERNAL CONFLICT IN THE AAP, ESCALATED RATHER THAN PAPERED OVER
     (practice B12). The AAP mandates spring-boot-starter-web and spring-boot-starter-batch and
     simultaneously excludes Micrometer; on Spring Framework 6 and Spring Batch 5 those two
     requirements cannot both hold, because the observation API is part of how those frameworks are
-    built. Only a human can decide which requirement yields. What this file will not do is claim
-    the exclusion is satisfied while the artifacts sit in the graph, or delete them and ship a
-    build that cannot start. The spirit of the prohibition - no metrics collected, no telemetry
-    emitted, no observability stack operated - is fully honoured; its letter, as applied to
-    transitive API jars of mandated starters, is not achievable.
+    built. Only a human can decide which requirement yields - relaxing 0.5.6 for transitive API
+    jars, or replacing the mandated starters. What this file will not do is claim the exclusion is
+    satisfied while artifacts sit in the graph, or delete them and ship a build that cannot start.
+    Everything the prohibition asks for and everything it can reach is delivered: nothing
+    collected, nothing exported, no observability stack operated, and no excluded artifact present
+    that this module is able to remove.
 
   PERSISTENCE AND THE INTENTIONALLY ABSENT DRIVER (AAP 0.5.5; residual risk R-E)
     Data access is plain JDBC over the existing VSAM and sequential datasets: no DDL, no schema
@@ -169,7 +196,8 @@
     streamed to stdout, and then enforces at least 90% BRANCH coverage - at bundle level AND
     independently per package, so that no package can hide behind another package's coverage
     (gate G49). BRANCH rather than LINE is the counter that matters here: the migration is judged
-    on 508 COBOL 88-level condition names, 111 EVALUATE statements and the guard chains that
+    on the 508 COBOL 88-level condition names and 111 EVALUATE statements in app/cbl - 555 and 112
+    once the executable copybooks in app/cpy are counted too - and on the guard chains that
     surround them.
 
   This build reads and writes only inside app/java. The reference trees app/cbl, app/cpy,
@@ -190,12 +218,13 @@
          confusingly as a cascade of "managed version is missing" errors. The empty element tells
          Maven to skip the filesystem search and resolve the parent from the repository. -->
     <!-- 3.5.16 is the last published OSS 3.5.x release and is a deliberate pin, not staleness.
-         NOTHING this parent manages is overridden below: <properties> redeclares no version
-         property of spring-boot-dependencies-3.5.16, so every library version in the resolved
-         graph is the one AAP 0.5.4 pins. Two of those managed versions sit in advisory-affected
-         ranges; that position is recorded, with the two plan-level routes that could close it, in
-         this file's header under "THE DEPENDENCY INVENTORY IS FROZEN", and it is escalated there
-         rather than closed by a property here (practices B4 and B12). -->
+         Exactly TWO of the versions this parent manages are overridden below - tomcat.version to
+         10.1.57 and jackson-bom.version to 2.21.5 - because the managed 10.1.55 and 2.21.4 sit in
+         published advisory-affected ranges and no 3.x parent upgrade exists to carry the fixes.
+         Every other library version in the resolved graph is this parent's. The reasoning, and the
+         narrow divergence it creates from AAP 0.5.4's recorded inventory values, are set out in
+         this file's header under "TWO MANAGED FAMILIES ARE PINNED TO THEIR PATCH RELEASES" and
+         again at the properties themselves (practices B2, B4, B6). -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
@@ -257,19 +286,34 @@
         <maven.build.timestamp.format>yyyyMMdd-HHmmssSSS</maven.build.timestamp.format>
 
         <!-- ============================================================================
-             NO PARENT BOM VERSION PROPERTY IS REDECLARED HERE, AND NONE MAY BE.
+             THE ONLY TWO PARENT BOM VERSION PROPERTIES THIS FILE REDECLARES.
 
-             spring-boot-dependencies-3.5.16.pom declares tomcat.version as 10.1.55 and
-             jackson-bom.version as 2.21.4, and AAP 0.5.4 pins the resolved inventory at
-             exactly those values. Redeclaring either property here is version MANAGEMENT:
-             it moves the whole family off the frozen inventory just as surely as naming a
-             <version> on a dependency would, and it does so without appearing in the
-             dependency block where a reader would look for it.
+             spring-boot-dependencies-3.5.16.pom manages tomcat.version at 10.1.55 and
+             jackson-bom.version at 2.21.4. Both of those versions sit in published
+             advisory-affected ranges - Apache lists 10.1.55 in ranges fixed by 10.1.56 and
+             10.1.57, and jackson-databind 2.21.4 in the range fixed by 2.21.5 - and Boot
+             3.5.16 is the last published OSS 3.5.x release, so no parent upgrade inside the
+             mandated Spring Boot 3.x line carries the fixes. These two pins are therefore
+             the only route to a patched graph that keeps the mandated line, and they are
+             applied here rather than absorbed as an accepted risk.
 
-             The advisory position on both families, and why it is not closed here, is
-             recorded in this file's header under "THE DEPENDENCY INVENTORY IS FROZEN". It
-             is a plan-level decision, not a property this file may add.
+             Redeclaring a BOM property IS version management, so it is deliberately done
+             in one visible place with the reasoning attached, and it is held to two
+             entries. Both moves are patch-level within families that are already present
+             and are transitive only - this module declares no dependency on either - so no
+             coordinate is added, none is removed, and AAP 0.5.6's closed set is untouched.
+             Neither changes any COBOL-observable behaviour: a servlet container and a JSON
+             parser sit outside the record bytes, field values, numeric scales, message
+             texts and return codes that parity is judged on.
+
+             The divergence from AAP 0.5.4's recorded inventory values, and why practices
+             B2, B4 and B6 permit it, is set out in this file's header under "TWO MANAGED
+             FAMILIES ARE PINNED TO THEIR PATCH RELEASES". NO OTHER BOM PROPERTY IS
+             REDECLARED, and none may be added without the same security justification and
+             the same disclosure - every other version in the resolved graph is the BOM's.
              ============================================================================ -->
+        <tomcat.version>10.1.57</tomcat.version>
+        <jackson-bom.version>2.21.5</jackson-bom.version>
 
         <!--
           THE TEST RUN IDENTITY, and the reason a second invocation cannot inherit the first's
@@ -295,16 +339,27 @@
         <carddemo.test.run.id>${maven.build.timestamp}</carddemo.test.run.id>
 
         <!--
-          THE ZERO-TEST FLOOR (gate G54, practice B7).
+          THE EXECUTION-PROOF VERIFIER (gate G54, practice B7).
 
-          surefire's own failIfNoTests is set below; this is the second half of the same guard.
-          It is the number of *test classes* the suite is known to contain, and the sentinel test
-          asserts the discovered count is at least this. It is a FLOOR, never an equality: adding a
-          suite must never require editing the pom, but silently losing three quarters of the
-          suite to a mis-scoped <includes> or a broken discovery configuration must fail the build
-          rather than report a green run over whatever survived.
+          surefire's own failIfNoTests, set below, closes the total case: NO tests fails the build.
+          This names the class that closes the partial case, which is the one that actually
+          happens - the suite ran, but it was a fraction of the module.
+
+          It is deliberately NOT named *Test, so surefire's default <includes> do not pick it up in
+          the main test execution. It runs only in the second execution declared below, bound to a
+          later phase, because it reads target/surefire-reports/TEST-*.xml - the runner's own record
+          of what it EXECUTED - and that record is only complete once the main run has finished. A
+          check running inside the main run could only inspect the compiled classes, which proves
+          compilation rather than execution.
+
+          There used to be a carddemo.test.suite-floor property of 60 here, asserted
+          against the 194 test classes this module contains. A floor proved neither claim: 60 of 194
+          is satisfied while two thirds of the suite sits unexecuted, and a compiled class file says
+          nothing about whether the runner ran it. It is replaced by an EQUALITY between the compiled
+          inventory and the executed record, and by a required parity-gate inventory GENERATED from
+          the shipped case corpus rather than hand-listed.
         -->
-        <carddemo.test.suite-floor>60</carddemo.test.suite-floor>
+        <carddemo.test.execution-verifier>**/ExecutedSuiteInventoryVerification.java</carddemo.test.execution-verifier>
     </properties>
 
     <!--
@@ -332,6 +387,52 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
+            <!--
+              THE EXCLUDED OBSERVABILITY SURFACE, REDUCED TO WHAT CANNOT BE REMOVED.
+
+              AAP 0.5.6 excludes Micrometer. spring-batch-core 5.2.6 pulls micrometer-core, and
+              micrometer-core in turn pulls these two - so before this block the effective graph
+              carried FIVE artifacts from the excluded surface and the shipped BOOT-INF/lib carried
+              all five. These two are the removable ones, and they are removed here rather than
+              merely disclosed:
+
+                org.hdrhistogram:HdrHistogram  - percentile histogram storage
+                org.latencyutils:LatencyUtils  - pause detection for timer correction
+
+              WHY REMOVING THESE TWO IS SAFE, derived rather than assumed. micrometer-core's own
+              pom declares both at RUNTIME scope, and across the whole jar exactly two classes
+              reference them: io.micrometer.core.instrument.AbstractTimer (org.LatencyUtils, inside
+              initPauseDetector) and io.micrometer.core.instrument.distribution.
+              TimeWindowPercentileHistogram (org.HdrHistogram). Neither is reachable in this
+              module. Nothing here registers a MeterRegistry - config/ declares no registry bean
+              and there is no Actuator - so Metrics.globalRegistry stays an empty
+              CompositeMeterRegistry, whose newTimer yields a CompositeTimer; CompositeTimer
+              extends AbstractCompositeMeter, NOT AbstractTimer, and a composite with no delegate
+              registry never builds a percentile histogram. The full suite, which executes every
+              batch job through AbstractStep, passes with both jars absent - that is the proof, and
+              common/DatasetObservation is this module's own type, unrelated to Micrometer.
+
+              WHAT REMAINS, AND WHY IT CANNOT FOLLOW. micrometer-core (here), plus
+              micrometer-observation and micrometer-commons (through spring-boot-starter-web ->
+              spring-web), are structural. AbstractStep and AbstractJob - the base classes of EVERY
+              Spring Batch job and step - declare FIELDS of type
+              io.micrometer.core.instrument.MeterRegistry and
+              io.micrometer.observation.ObservationRegistry and public setters carrying those types
+              in their signatures. Excluding those three does not slim the build; it stops every job
+              and the web layer from loading. The header section "OBSERVABILITY" states that
+              position in full, and CardDemoApplicationTest enforces this exact boundary so the
+              surface can neither grow back nor shrink silently.
+            -->
+            <exclusions>
+                <exclusion>
+                    <groupId>org.hdrhistogram</groupId>
+                    <artifactId>HdrHistogram</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.latencyutils</groupId>
+                    <artifactId>LatencyUtils</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- Data access. JdbcTemplate and a pooled DataSource for the 12 dataset repositories.
@@ -515,11 +616,49 @@
                              the same clone get different writable roots. See the property
                              declaration above for the CWE-59 / CWE-377 / CWE-362 reasoning. -->
                         <carddemo.test.run.id>${carddemo.test.run.id}</carddemo.test.run.id>
-                        <!-- The floor the sentinel test asserts, supplied from the single
-                             declaration above so the number lives in exactly one place. -->
-                        <carddemo.test.suite-floor>${carddemo.test.suite-floor}</carddemo.test.suite-floor>
                     </systemPropertyVariables>
                 </configuration>
+
+                <!--
+                  THE EXECUTION PROOF, AS A SECOND EXECUTION OF THIS SAME PLUGIN.
+
+                  Not a new plugin: the dependency set is closed (0.5.6), and an additional execution
+                  of an already-declared plugin adds no coordinate to resolve.
+
+                  Bound to verify rather than test, and that is the whole point. surefire writes one
+                  TEST-*.xml per suite as that suite finishes, so during the test phase the record is
+                  partial by construction - a verifier running there would compare against whatever
+                  had completed and would pass or fail on execution order. By verify the record is
+                  complete, and the verifier can assert an EQUALITY: every compiled *Test class
+                  appears in the executed record with tests that reached a verdict.
+
+                  <includes> is scoped to this execution alone, so the main run is untouched: its
+                  default includes still match every *Test and *ParityTest class, and narrowing that
+                  would silently drop parity coverage. The verifier's own name matches none of the
+                  default patterns, which is why it does not run twice.
+
+                  failIfNoTests stays true here as well: if the verifier itself were ever filtered
+                  out, the build must fail rather than skip the proof that everything ran.
+                -->
+                <executions>
+                    <execution>
+                        <id>verify-executed-suite-inventory</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>${carddemo.test.execution-verifier}</include>
+                            </includes>
+                            <!-- The main run's report files are the INPUT here. Surefire appends its
+                                 own report per execution and never clears the directory, so reading
+                                 and writing the same directory is safe: this execution's report is
+                                 written after it has already read the others. -->
+                            <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>
@@ -561,9 +700,10 @@
                                     transaction, billing, card, user, admin, statement and util.
 
                       The counter is BRANCH, not LINE and not INSTRUCTION: the parity surface is
-                      508 88-level condition names, 111 EVALUATE statements and the guard chains
-                      around them, and only branch coverage evidences that both sides of each of
-                      those decisions were actually exercised.
+                      app/cbl's 508 88-level condition names and 111 EVALUATE statements - 555 and
+                      112 counting the executable copybooks in app/cpy - and the guard chains around
+                      them, and only branch coverage evidences that both sides of each of those
+                      decisions were actually exercised.
                     -->
                     <execution>
                         <id>jacoco-check-branch-coverage</id>
@@ -606,12 +746,36 @@
                  from the parent's pluginManagement, so this adds no new coordinate and no fourth
                  explicit plugin version. It produces the runnable Boot artifact and backs
                  spring-boot:run. mainClass is pinned explicitly rather than left to main-class
-                 scanning, which removes any ambiguity about the entry point (practice B8). -->
+                 scanning, which removes any ambiguity about the entry point (practice B8).
+
+                 THE ZIP LAYOUT BELOW IS LOAD-BEARING, AND IT IS THE ONLY WAY THIS ARTIFACT CAN
+                 REACH ITS DATA. This module pins no JDBC driver coordinate by design (AAP 0.5.5,
+                 residual risk R-E): the CardDemo datasets are VSAM and sequential files, there is
+                 zero EXEC SQL in all 28 programs, and indexed VSAM has no standard published JDBC
+                 driver - so the site's data-access driver is supplied at DEPLOYMENT time. That
+                 promise is only keepable if the packaged application can load a jar that was not
+                 packaged into it, and the default JAR layout cannot: its manifest names
+                 JarLauncher, which builds the application class loader from BOOT-INF/lib and
+                 BOOT-INF/classes alone and IGNORES -cp / CLASSPATH entirely, so
+                 `java -cp driver.jar -jar carddemo.jar` silently omits the driver and startup is
+                 refused with "The JDBC driver class ... is not on the classpath" - correct, and
+                 impossible to act on. ZIP produces exactly the same archive with PropertiesLauncher
+                 as its Main-Class, which additionally reads loader.path (system property, or the
+                 relaxed LOADER_PATH environment variable) and prepends those directories and jars
+                 to the application class loader. So the deployment contract becomes
+
+                   LOADER_PATH=/opt/carddemo/drivers java -jar carddemo.jar
+
+                 and the driver the site owns is found without a single driver coordinate entering
+                 this build. Nothing else changes: Start-Class still names the pinned mainClass,
+                 `java -jar` is still the command, spring-boot:run is unaffected, and no dependency
+                 is added (PropertiesLauncher ships inside spring-boot itself). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <mainClass>com.vsergeychik.carddemo.CardDemoApplication</mainClass>
+                    <layout>ZIP</layout>
                 </configuration>
             </plugin>
         </plugins>

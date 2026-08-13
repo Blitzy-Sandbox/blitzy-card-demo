@@ -258,6 +258,17 @@ class CardXrefRepositoryTest {
     private static final String BASE_BROWSE_AFTER_SQL = "SELECT * FROM \"" + BASE_DS + "\" WHERE "
             + "(" + IMAGE + " > ? OR " + IMAGE + " IS NULL) ORDER BY " + IMAGE + " ASC";
 
+    /**
+     * The unreadable-row probe over the base cluster: what lets a keyed read of it <em>prove</em> an
+     * absence before reporting {@code NOTFND} (finding DB-05).
+     */
+    private static final String BASE_PROBE_SQL = "SELECT * FROM \"" + BASE_DS + "\" WHERE " + IMAGE
+            + " IS NULL";
+
+    /** The same probe over the alternate-index path, so a read through the path proves it against it. */
+    private static final String ALT_PROBE_SQL = "SELECT * FROM \"" + ALT_DS + "\" WHERE " + IMAGE
+            + " IS NULL";
+
     /** The first row of {@code app/data/ASCII/cardxref.txt}: card 0500024453765740, customer and account 50. */
     private static final String CARD_1 = "0500024453765740";
 
@@ -455,6 +466,20 @@ class CardXrefRepositoryTest {
         /** The datasets whose template yields no result object at all. */
         private final Set<String> yieldingNothing = new LinkedHashSet<>();
 
+        /**
+         * The datasets whose driver hands a matched row back with no value in the record-image column.
+         *
+         * <p>Off by default, because SQL says so: every comparison against a null is {@code UNKNOWN}, so
+         * {@code <image> LIKE ?} never matches a row whose record-image column holds nothing. That is the
+         * property finding DB-05 rests on - such a row is invisible to a keyed predicate, which is why an
+         * absence has to be proved with a separate probe - and a stub that matched nulls would make that
+         * whole path untestable.
+         *
+         * <p>It is switchable rather than absent because the repository keeps a defensive arm for a driver
+         * that hands over a null value for a row it did match, and that arm has to stay reachable.
+         */
+        private final Set<String> presentingUnreadableRowsToKeyedReads = new LinkedHashSet<>();
+
         /** Every statement sent, in order, so a test can assert what was composed. */
         private final List<String> statementsSent = new ArrayList<>();
 
@@ -484,6 +509,18 @@ class CardXrefRepositoryTest {
 
         Backend yieldingNothing(String dataset) {
             yieldingNothing.add(dataset);
+            return this;
+        }
+
+        /**
+         * Makes this dataset's keyed reads hand back a seeded {@code null} row as though the predicate had
+         * matched it - the driver-level defect the repository's defensive arm exists for.
+         *
+         * @param dataset the dataset to behave this way
+         * @return this backend
+         */
+        Backend presentingUnreadableRowsToKeyedReads(String dataset) {
+            presentingUnreadableRowsToKeyedReads.add(dataset);
             return this;
         }
 
@@ -532,6 +569,16 @@ class CardXrefRepositoryTest {
             if (yieldingNothing.contains(datasetOf(statement))) {
                 return null;
             }
+            if (statement.endsWith("IS NULL")) {
+                // The unreadable-row probe: DatasetRelation.selectUnreadableRows, which carries no
+                // parameter, no ordering and the predicate "<image> IS NULL". A real backend answers it
+                // with the rows whose record-image column holds nothing, so this does too - a seeded null
+                // is exactly such a row. The browse statements also mention IS NULL, inside an OR and
+                // followed by an ORDER BY, so ending with it is what tells the two apart.
+                ResultSetExtractor<?> probeExtractor = invocation.getArgument(1);
+                boolean anyUnreadable = rowsOf(statement).stream().anyMatch(row -> row == null);
+                return probeExtractor.extractData(oneRowResultSet(anyUnreadable, null));
+            }
             if (statement.contains("LIKE")) {
                 String pattern = captured.get(0);
                 patternsBound.add(pattern);
@@ -548,15 +595,29 @@ class CardXrefRepositoryTest {
                     oneRowResultSet(index >= 0, index >= 0 ? rows.get(index) : null));
         }
 
-        /** The rows a keyed pattern selects, up to the limit the repository asks for. */
+        /**
+         * The rows a keyed pattern selects, up to the limit the repository asks for.
+         *
+         * <p>A row whose record-image column holds nothing is <strong>not</strong> selected, because
+         * {@code <image> LIKE ?} evaluates to {@code UNKNOWN} against a null and SQL returns only rows the
+         * predicate evaluates true for. Such a row is therefore invisible to a keyed read and is found
+         * only by the unreadable-row probe - which is the whole reason the probe exists (finding DB-05).
+         * {@link #presentingUnreadableRowsToKeyedReads(String)} turns that off for the one dataset a test
+         * points at the repository's defensive arm.
+         *
+         * @param statement the keyed statement, which names the dataset
+         * @param pattern   the bound LIKE pattern
+         * @return the selected rows
+         */
         private List<String> keyedMatches(String statement, String pattern) {
             Pattern matcher = likeAsRegex(pattern);
+            boolean nullsMatch = presentingUnreadableRowsToKeyedReads.contains(datasetOf(statement));
             List<String> matches = new ArrayList<>();
             for (String row : rowsOf(statement)) {
                 if (matches.size() == DUPLICATE_DETECTION_LIMIT) {
                     break;
                 }
-                if (row == null || matcher.matcher(row).matches()) {
+                if (row == null ? nullsMatch : matcher.matcher(row).matches()) {
                     matches.add(row);
                 }
             }
@@ -920,6 +981,65 @@ class CardXrefRepositoryTest {
         }
 
         @Test
+        @DisplayName("A NOTFND is proved: the probe runs against the BASE cluster and finds nothing")
+        void anUnmatchedKeyIsProvedAgainstTheBaseCluster() {
+            // Finding DB-05. XREF-CARD-NUM lives inside the record image, so a row whose record-image
+            // column holds nothing has no knowable key and the keyed predicate cannot match it. A NOTFND
+            // is therefore a claim about the whole relation, and it is confirmed with one row-limited read
+            // before it is made.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_2, 27, 27L)));
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(backend.statementsSent())
+                    .as("the probe addresses the relation that reported nothing, and only on this path")
+                    .containsExactly(BASE_DESCRIBE_SQL, BASE_KEYED_SQL, BASE_PROBE_SQL);
+        }
+
+        @Test
+        @DisplayName("A present-but-unreadable row is NOT reported as absent: it is the WHEN OTHER arm")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            // The row the predicate cannot see. It is seeded as a null image - a row that exists and
+            // cannot be read - alongside no matching record, so the keyed read comes back empty and the
+            // absence cannot be established. Reporting '23' here would tell COACTVWC to paint "Account not
+            // found" and CBTRN02C to reject the transaction with reason 102 for a record that is present.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, Arrays.asList(image(CARD_2, 27, 27L), null));
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.record()).isEmpty();
+            assertThat(backend.statementsSent()).containsExactly(BASE_DESCRIBE_SQL, BASE_KEYED_SQL,
+                    BASE_PROBE_SQL);
+        }
+
+        @Test
+        @DisplayName("A read that FOUND its record is untouched by an unreadable row elsewhere")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            // The other half of the contract, and the reason the probe runs on the empty path only: a VSAM
+            // READ of a key that resolves does not fail because another record is damaged, so a successful
+            // read pays no round trip and reports exactly what it read.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, Arrays.asList(image(CARD_1, 50, 50L), null));
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.record().orElseThrow().xrefAcctId()).isEqualTo(50L);
+            assertThat(backend.statementsSent())
+                    .as("no probe: the read has its record")
+                    .containsExactly(BASE_DESCRIBE_SQL, BASE_KEYED_SQL);
+        }
+
+        @Test
         @DisplayName("Two records on one base key report DUPREC and hand back the first")
         void aDuplicateBaseKeyReportsDuprec() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
@@ -982,8 +1102,12 @@ class CardXrefRepositoryTest {
         @Test
         @DisplayName("A row whose record image is absent is WHEN OTHER, never silently skipped")
         void aNullRowImageIsAnIoDefect() {
+            // The defensive arm: a driver that hands back a matched row carrying no value. SQL itself
+            // cannot produce this - a LIKE against a null is UNKNOWN - so the backend is told to behave
+            // that way explicitly. The arm matters because the alternative is a silent skip.
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_DS, Arrays.asList(image(CARD_1, 50, 50L), null));
+            backend(jdbc).storing(BASE_DS, Arrays.asList(image(CARD_1, 50, 50L), null))
+                    .presentingUnreadableRowsToKeyedReads(BASE_DS);
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -1174,6 +1298,130 @@ class CardXrefRepositoryTest {
         }
 
         @Test
+        @DisplayName("Finding DB-04: the alternate read describes the PATH only, never the base cluster")
+        void theAlternateReadDescribesThePathOnly() {
+            // The two names are addressed separately by the deployment, so the availability of one is not
+            // a precondition of using the other. Before the split a read through the path described both
+            // relations, which paid a round trip against a cluster this read never touches and made the
+            // read fail when the BASE alone was unavailable.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(ALT_DS, List.of(image(CARD_1, 50, 50L)));
+
+            ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(backend.statementsSent()).containsExactly(ALT_DESCRIBE_SQL, ALT_KEYED_SQL);
+        }
+
+        @Test
+        @DisplayName("Finding DB-04: a read through the path survives a base cluster that is unreachable")
+        void theAlternateReadSurvivesAnUnreachableBaseCluster() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(ALT_DS, List.of(image(CARD_1, 50, 50L))).failing(BASE_DS);
+
+            ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
+
+            assertThat(result.isFound())
+                    .as("CXACAIX answered, so the read is satisfied; CCXREF was not asked")
+                    .isTrue();
+            assertThat(backend.statementsSent()).doesNotContain(BASE_DESCRIBE_SQL);
+        }
+
+        @Test
+        @DisplayName("Finding DB-04: a browse of the base cluster survives a path that is unreachable")
+        void theBrowseSurvivesAnUnreachablePath() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_1, 50, 50L))).failing(ALT_DS);
+
+            try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
+                assertThat(cursor.openStatus())
+                        .as("OPEN INPUT XREFFILE establishes XREFFILE; the path is another DD name")
+                        .isEqualTo(FileStatus.OK);
+                assertThat(cursor.readNext().isFound()).isTrue();
+            }
+            assertThat(backend.statementsSent()).doesNotContain(ALT_DESCRIBE_SQL);
+        }
+
+        @Test
+        @DisplayName("Finding DB-05: a NOTFND through the path is proved against the PATH's own rows")
+        void anUnmatchedAccountIsProvedAgainstThePath() {
+            // XREF-ACCT-ID lives inside the record image too, so the same proof is owed here - and it is
+            // owed against the path that answered, because that is the relation whose emptiness was
+            // reported. A base-cluster probe would answer a question about a relation this read never
+            // touched.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(ALT_DS, List.of(image(CARD_2, 27, 27L)));
+
+            ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(backend.statementsSent())
+                    .containsExactly(ALT_DESCRIBE_SQL, ALT_KEYED_SQL, ALT_PROBE_SQL);
+        }
+
+        @Test
+        @DisplayName("Finding DB-05: a probe the backend refuses is the WHEN OTHER arm, never NOTFND")
+        @SuppressWarnings("unchecked")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() {
+            // The probe establishes something, so a probe that could not run has established nothing. The
+            // read must not then fall back to '23' - that would be the very claim the probe exists to stop
+            // being made unsupported - so the refusal is reported on the arm a refused read is reported on.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
+                    .thenReturn(DESCRIBED_COLUMN);
+            when(jdbc.query(any(PreparedStatementCreator.class),
+                    ArgumentMatchers.<ResultSetExtractor<Object>>any()))
+                    .thenReturn(List.of())
+                    .thenThrow(new DataAccessResourceFailureException("the probe was refused"));
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("Finding DB-05: a probe that yields no result object leaves the NOTFND standing")
+        @SuppressWarnings("unchecked")
+        void aProbeThatYieldsNothingLeavesTheNotFoundStanding() {
+            // A template that answered with no result object has told us nothing about unreadable rows, and
+            // "nothing" is not evidence that one exists. The keyed read's own answer therefore stands: the
+            // predicate matched no row, which is the INVALID KEY condition every consumer already handles.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
+                    .thenReturn(DESCRIBED_COLUMN);
+            when(jdbc.query(any(PreparedStatementCreator.class),
+                    ArgumentMatchers.<ResultSetExtractor<Object>>any()))
+                    .thenReturn(List.of())
+                    .thenReturn(null);
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("Finding DB-05: an unreadable row on the path is the WHEN OTHER arm, not NOTFND")
+        void anUnreadableRowOnThePathIsNotAbsence() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(ALT_DS, Arrays.asList(image(CARD_2, 27, 27L), null));
+
+            ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.ddName()).isEqualTo(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+        }
+
+        @Test
         @DisplayName("The key is a PIC 9 MOVE: it is zero-filled on the LEFT, so account 50 is 00000000050")
         void theKeyIsZeroFilledOnTheLeft() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
@@ -1300,7 +1548,8 @@ class CardXrefRepositoryTest {
             assertThat(repository(nullResult).readByAccountIdViaAltIndex(50L).isOther()).isTrue();
 
             JdbcTemplate nullRow = mock(JdbcTemplate.class);
-            stubRows(nullRow, ALT_DS, Collections.singletonList(null));
+            backend(nullRow).storing(ALT_DS, Collections.singletonList(null))
+                    .presentingUnreadableRowsToKeyedReads(ALT_DS);
             ReadResult result = repository(nullRow).readByAccountIdViaAltIndex(50L);
             assertThat(result.isOther()).isTrue();
             assertThat(result.cicsResp()).isEqualTo(FileStatus.NOTOPEN);
@@ -1456,7 +1705,7 @@ class CardXrefRepositoryTest {
                 assertThat(warm.readNext().isFound()).isTrue();
                 assertThat(warm.readNext().isEndOfFile()).isTrue();
             }
-            assertThat(repository.resolvedStatements())
+            assertThat(repository.resolvedBaseStatements())
                     .as("the pass has resolved and memoised the statement text")
                     .isNotNull();
 
@@ -1509,24 +1758,26 @@ class CardXrefRepositoryTest {
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
                 assertThat(cursor.openStatus()).isEqualTo(FileStatus.OK);
                 assertThat(backend.statementsSent())
-                        .as("the open describes the dataset and transfers no row")
-                        .containsExactly(BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL);
+                        .as("the open describes THE DATASET IT OPENS and transfers no row: OPEN INPUT "
+                                + "XREFFILE establishes XREFFILE, and the alternate-index path is a DD "
+                                + "name this operation never reads (finding DB-04)")
+                        .containsExactly(BASE_DESCRIBE_SQL);
 
                 assertThat(cursor.readNext().record().orElseThrow().xrefCardNum()).isEqualTo(CARD_1);
                 assertThat(backend.statementsSent()).containsExactly(
-                        BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_BROWSE_SQL);
+                        BASE_DESCRIBE_SQL, BASE_BROWSE_SQL);
 
                 assertThat(cursor.readNext().record().orElseThrow().xrefCardNum()).isEqualTo(CARD_2);
                 assertThat(backend.statementsSent())
                         .as("every read after the first advances past the record it returned")
-                        .containsExactly(BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_BROWSE_SQL,
+                        .containsExactly(BASE_DESCRIBE_SQL, BASE_BROWSE_SQL,
                                 BASE_BROWSE_AFTER_SQL);
 
                 assertThat(cursor.readNext().isEndOfFile()).isTrue();
                 assertThat(cursor.readNext().isEndOfFile())
                         .as("the end of the pass is remembered, so it costs no further round trip")
                         .isTrue();
-                assertThat(backend.statementsSent()).hasSize(5);
+                assertThat(backend.statementsSent()).hasSize(4);
             }
         }
 
@@ -2592,17 +2843,19 @@ class CardXrefRepositoryTest {
             // The open describes and transfers nothing (finding BD-06), so the browse statement appears
             // when the first READ is issued - which is the point: the open opens and the reads read.
             //
-            // The open's own pair of describes is in this sequence deliberately. An OPEN INPUT proves the
-            // dataset is there on every call rather than on the strength of an earlier operation's success
-            // (QA finding A): when it reused the memoised statements, an open of a dataset that had gone
-            // away since reported '00' and the failure surfaced one line later under
-            // 'ERROR READING XREFFILE'. Two describes per open is the cost of the open's own message being
-            // the true one, and the COBOL opens once per run.
+            // Each describe sits immediately before the operation that needed it, and each names ONE
+            // relation (finding DB-04). The base read describes the base cluster; the alternate-index read
+            // describes the path; the open describes the base cluster again, because an OPEN INPUT proves
+            // the dataset is there on every call rather than on the strength of an earlier operation's
+            // success (QA finding A) - when it reused the memoised statements, an open of a dataset that
+            // had gone away since reported '00' and the failure surfaced one line later under
+            // 'ERROR READING XREFFILE'. One describe per open, of the file being opened, and the COBOL
+            // opens once per run.
             repository.openBrowse().readNext();
 
             assertThat(backend.statementsSent()).containsExactly(
-                    BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_KEYED_SQL, ALT_KEYED_SQL,
-                    BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_BROWSE_SQL);
+                    BASE_DESCRIBE_SQL, BASE_KEYED_SQL, ALT_DESCRIBE_SQL, ALT_KEYED_SQL,
+                    BASE_DESCRIBE_SQL, BASE_BROWSE_SQL);
             assertThat(backend.statementsSent()).allSatisfy(sql -> assertThat(sql)
                     // The dataset name is a delimited identifier, because a mainframe name carries
                     // periods and would otherwise be parsed as a qualified name.

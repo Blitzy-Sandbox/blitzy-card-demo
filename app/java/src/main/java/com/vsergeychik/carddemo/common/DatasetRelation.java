@@ -535,6 +535,30 @@ public final class DatasetRelation {
      * {@code MOVE 12 TO APPL-RESULT}, then {@code 'ERROR READING CARDFILE'} - and it is emphatically not
      * {@code NOTFND}.
      *
+     * <h2>The obligation this places on a keyed reader, and who carries it</h2>
+     * <p>This is not an optional diagnostic. Every keyed reader in this module runs this probe, with a
+     * one-row limit, on the <strong>empty-result path only</strong>, and reports the permanent-error /
+     * {@code INVREQ} arm it already has for a visibly unreadable row when the probe finds one. The
+     * consequences of skipping it are specific rather than cosmetic: a {@code TCATBALF} {@code '23'}
+     * authorises {@code 2700-A-CREATE-TCATBAL-REC} to <em>create</em> a balance record that may already
+     * exist ({@code app/cbl/CBTRN02C.cbl:495-510}), a {@code DISCGRP} {@code '23'} sends
+     * {@code 1200-GET-INTEREST-RATE} to the {@code DEFAULT} group and charges the wrong rate
+     * ({@code app/cbl/CBACT04C.cbl:417-430}), and a {@code USRSEC} or account {@code NOTFND} paints "not
+     * found" for a record that is sitting in the dataset.
+     *
+     * <p>The readers that carry it: {@code AccountRepository}, {@code CardRepository} (base cluster and
+     * alternate-index path), {@code CardXrefRepository} (both paths), {@code CustomerRepository},
+     * {@code TranCatBalRepository}, {@code TranTypeRepository}, {@code TranCategoryRepository},
+     * {@code TransactionRepository}, {@code SecUserRepository}, {@code StatementGenerationJobB} (per DD
+     * name) and {@code AccountInterestCalcJob}'s disclosure-group access. Where a dataset is reached by
+     * more than one name, the probe is composed <strong>per access path</strong>, so the relation asked to
+     * prove the absence is the one that reported it.
+     *
+     * <p>Successful reads are untouched: a corrupt row elsewhere in a dataset is no business of a read
+     * whose key resolved, and a VSAM {@code READ} does not fail because another record is damaged. So the
+     * cost is one round trip, on the not-found path only, and the only answer that changes is the one that
+     * would otherwise have been a claim the data cannot support.
+     *
      * @param recordImageColumnName the discovered column name
      * @return the statement selecting only the unreadable rows
      */

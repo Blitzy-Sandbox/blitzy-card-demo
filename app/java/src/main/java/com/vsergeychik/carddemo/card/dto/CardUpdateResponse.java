@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardDetails;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CommArea;
@@ -252,6 +253,19 @@ import java.util.Objects;
  * @see FieldAttributeSetter
  * @see FixedWidthCodec
  */
+@JsonPropertyOrder({
+        // The seventeen xxxI items in the order app/cpy-bms/COCRDUP.CPY declares them. Every one of
+        // the seventeen is renamed with @JsonProperty because the accessors carry COBOL's trailing
+        // 'O' (getTrnnameo for TRNNAMEO OF CCRDUPAO), and with the order left implicit Jackson
+        // derived it from java.lang.Class.getDeclaredMethods -- whose order the JVM does not
+        // specify. This class was observed publishing two different member orders in two different
+        // runs of the same build, so naming the order here is what makes the contract stable at all,
+        // not merely correct.
+        "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "acctsid", "cardsid",
+        "crdname", "crdstcd", "expmon", "expyear", "expday", "infomsg", "errmsg", "fkeys", "fkeysc",
+        // Transport extensions after the map: the commarea in both its shapes, CVCRD01Y's screen
+        // state, and the target COCRDUPC names through CDEMO-TO-PROGRAM at :474.
+        "commArea", "cardScreenState", "navigationContext", "nextProgram", "nextMapset", "nextMap"})
 public final class CardUpdateResponse {
 
     // =================================================================================================

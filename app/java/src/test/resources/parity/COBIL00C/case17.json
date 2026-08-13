@@ -1,7 +1,7 @@
 {
   "program": "COBIL00C",
   "caseId": "case17",
-  "description": "WHEN OTHER of the ordered EVALUATE WS-RESP-CD in READ-ACCTDAT-FILE at app/cbl/COBIL00C.cbl:356-372 - the arm at :365-371 that displays the response pair and then rejects with 'Unable to lookup Account...'. SERVICE, driving billing.BillPaymentService.processEnterKey directly through its own constructor: no MockMvc, no TestRestTemplate, no WebTestClient, no servlet container, no JobLauncher and no ApplicationContext anywhere in the path, because that is where the decision logic lives and a parity case must reach it with nothing in between (gate G51). THIS IS THE FIRST CASE IN THIS DIRECTORY TO ASSERT A COBOL DISPLAY LINE: case01 through case16 emit none, so the rendering convention fixed below is the one siblings case18, case19 and case20 must match at the remaining WHEN OTHER sites. WHICH ARM THIS FILE COVERS, AND WHY ONLY ONE. READ-ACCTDAT-FILE has exactly three arms and this file encodes the third. A ParityCase carries one screenRequest, which is one invocation, and :345-354 issues its EXEC CICS READ exactly once per invocation - :177 and :184 are two mutually exclusive arms of the EVALUATE CONFIRMI above it, not two reads - so the model has no member in which a second arm of the same EVALUATE could be stated and no ordered multi-step shape to state it in. One arm per file is therefore forced by the model rather than chosen, and this file says which one it is rather than leaving a reader to infer it. The WHEN OTHER arm is the one encoded here because it is the only arm that emits the DISPLAY at :366, and that diagnostic is this case's structural contribution: it cannot be relocated to a sibling without the convention being invented twice. THE OTHER TWO ARMS OF THIS SAME CALL SITE. DFHRESP(NORMAL) at :357-358 is already covered twice over - by case10, where WHEN SPACES reaches the read and the 300-byte record is decoded into the working area, and by case15, where the completed payment reads, debits and rewrites. DFHRESP(NOTFND) at :359-364 IS NOT COVERED BY THIS FILE AND IS NOT COVERED BY ANY OF case01 THROUGH case16: it needs a sibling, and gate G47 for this call site is not satisfied until one exists. That is stated plainly rather than glossed, and the missing arm's shape is fully determined, so whichever sibling adopts it has an exact contract. Seed ACCTDAT from acctdata.txt exactly as this file does and supply the same out-of-range ACTIDINI, but declare NO forced outcome at all; the keyed read then misses and :360 raises WS-ERR-FLG, :361-362 moves 'Account ID NOT found...' - twenty-three characters - into WS-MESSAGE, :363 moves -1 into ACTIDINL and :364 sends. That produces one send, NO DISPLAY line at all, ERRMSGO holding that literal left-justified in seventy-eight, cursorField ACTIDINL, termination RETURN_TRANSID, expectedWrites and expectedFinalState identical to this file's, and expectedReturnCode 0. IN SOURCE ORDER, AND THE ORDER IS THE BEHAVIOUR. :156 SET CONF-PAY-NO TO TRUE. :158-167 EVALUATE TRUE finds ACTIDINI is neither SPACES nor LOW-VALUES, so it takes WHEN OTHER / CONTINUE at :165-166 - a genuine no-op arm, and no error is raised. :169 IF NOT ERR-FLG-ON opens because the flag is still 'N'. :170-171 MOVE ACTIDINI OF COBIL0AI TO ACCT-ID / XREF-ACCT-ID - one MOVE with two receivers, which is the single place a screen field becomes a record identification field. :173-191 EVALUATE CONFIRMI matches 'Y' at :174, so :176 SET CONF-PAY-YES TO TRUE and :177 PERFORM READ-ACCTDAT-FILE. Inside that paragraph :345-354 issues the read and :356 evaluates the response, reaching :365-371: :366 DISPLAY, :367 MOVE 'Y' TO WS-ERR-FLG, :368-369 MOVE 'Unable to lookup Account...' TO WS-MESSAGE, :370 MOVE -1 TO ACTIDINL OF COBIL0AI, :371 PERFORM SEND-BILLPAY-SCREEN. Control returns to :193, which runs AFTER that send, and then :197 and :208 both test IF NOT ERR-FLG-ON and both find the flag on, so the whole payment sequence at :210-242 is never entered. GATE G30 - THE ARM ORDER. EVALUATE is ordered and the first matching WHEN wins, so :365 is reached only because :357 DFHRESP(NORMAL) did not match and :359 DFHRESP(NOTFND) did not match either. WHEN OTHER is last in the source and is last in the translation; a restructuring that hoisted it, or that tested NOTFND after it, would take this arm for a response that has a name and would report 'Unable to lookup Account...' where the program reports 'Account ID NOT found...'. Both preceding tests are therefore part of what this case asserts, not merely part of how it is reached. HOW THE ARM IS REACHED - THE INDUCTION, CONCRETELY. No arrangement of seeded rows can produce a non-NORMAL, non-NOTFND response from a keyed read: a row is either there or it is not. The arm is reachable only from a genuine I/O refusal, which is exactly what forcedOutcomes exists for, so this case declares readForUpdate with outcome OTHER. The chain is verified end to end rather than assumed. The gate hands the declared outcome to the ACCTDAT stub, which classifies it and builds a failed read carrying FileStatus.RECORD_LENGTH_CONFLICT, the two-character status '04'; CicsResponse.ofBatchStatus('04') then reports an EMPTY RESP, because FileStatus.cicsRespOfBatchStatus translates only '00', '10' and '23' into NORMAL, ENDFILE and NOTFND and has no CICS name for '04'; RESP2 stays at FileStatus.NO_REASON_CODE, which is zero. BillPaymentService.readAcctdatFile then stores RESP as FileStatus.RESP_NOT_REPORTED, finds the result neither found nor not-found, and falls through to the WHEN OTHER arm. Because '04' has no CICS counterpart, resp and resp2 are declared null here rather than given numbers: the outcome carries no reportable pair, and writing resp 19 or resp 16 would state a value the run cannot produce and would misstate the very line this case exists to pin. THE DISPLAY RENDERING CONVENTION, FIXED HERE FOR case18, case19 AND case20. :366 reads DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD - four operands, two five-character literals with no trailing space and no separator of any kind between the operands, so the line is the concatenation and nothing else. WS-RESP-CD and WS-REAS-CD are both PIC S9(09) COMP at :46-47, and DISPLAY renders a binary field at its declared nine digit positions: UNSIGNED, so no leading '+' or '-' appears even though the picture is signed, and ZERO-FILLED on the left to exactly nine characters. The line is therefore always 5 + 9 + 5 + 9 = 28 characters, which is what MessageChannel.DISPLAY_LINE documents. Where a code has no CICS value to report - the case here - it is rendered as NINE ASTERISKS by FileStatus.respNotReportedImage, deliberately not as nine zeros, because zero IS DFHRESP(NORMAL) and rendering an unreported response as zero would print a failed command as a successful one. So this case pins exactly 'RESP:' + nine '*' + 'REAS:' + nine '0'. A sibling whose refusal DOES map onto a CICS response prints digits in the same nine positions instead - the cross-reference read at :430 reports DFHRESP(NOTOPEN), which renders 'RESP:000000019REAS:000000000' - and that difference is behaviour and is asserted rather than normalised away. The six DISPLAY sites are :366 here, :397 in UPDATE-ACCTDAT-FILE, :430 in READ-CXACAIX-FILE, :461 in STARTBR-TRANSACT-FILE, :490 in READPREV-TRANSACT-FILE and :541 in WRITE-TRANSACT-FILE; all six are the same statement and all six render by this rule. WHY expectedMessages IS ORDERED THE WAY IT IS. The list is in emission order, and on this arm the order is observable: :366 displays BEFORE :368-369 fills WS-MESSAGE and before :371 sends, so the DISPLAY_LINE entry comes first and the WS_MESSAGE_80 entry second. Reversing them would claim the program had described a failure it had not yet classified. The two entries are two different channels with two different widths and are not interchangeable: DISPLAY_LINE is as wide as its operands, while WS_MESSAGE_80 is the eighty-byte WORKING-STORAGE field WS-MESSAGE PIC X(80) at :39, space-padded on the right. The screen field is deliberately NOT declared as a third SCREEN_ERRMSG_78 entry: screen text belongs in the send, where ERRMSGO is pinned, and stating it twice would create two opinions about one value. THE 80-TO-78 TRUNCATION, MEASURED NOT ASSUMED. 'Unable to lookup Account...' is twenty-seven characters - lower-case 'lookup', capital 'Account', exactly three trailing dots - and :368-369 moves it into WS-MESSAGE PIC X(80), which pads it right with fifty-three spaces. :293 then moves WS-MESSAGE into ERRMSGO, and the symbolic map declares ERRMSGI PIC X(78) in app/cpy-bms/COBIL00.CPY with 01 COBIL0AO REDEFINES COBIL0AI, so an eighty-byte alphanumeric source lands in a seventy-eight-byte alphanumeric receiver and COBOL discards the two rightmost bytes. Both of those bytes are spaces here, so the visible text is unchanged and the widths still differ: the WS_MESSAGE_80 entry is eighty characters and ERRMSGO is seventy-eight, twenty-seven of text plus fifty-one of padding. Every width in this file is taken from a declaration rather than counted by eye: ACTIDINI PIC X(11), CURBALI PIC X(14), CONFIRMI PIC X(1) and ERRMSGI PIC X(78) from app/cpy-bms/COBIL00.CPY; WS-MESSAGE PIC X(80) from COBIL00C.cbl:39; WS-RESP-CD and WS-REAS-CD PIC S9(09) COMP from :46-47; and the thirteen spans of the 300-byte record, FILLER X(178) included, from app/cpy/CVACT01Y.cpy. PROVENANCE OF 'Account ID NOT found...' - THREE CALL SITES, ONE TEXT. That sentence is moved into WS-MESSAGE from three distinct places: :361 in READ-ACCTDAT-FILE, :392 in UPDATE-ACCTDAT-FILE and :425 in READ-CXACAIX-FILE. The text is byte-identical at all three, so the message alone cannot tell them apart and only the surrounding side effects can. This file does not encode any of the three - it encodes the sibling arm at :365-371, whose literal is the distinguishable 'Unable to lookup Account...' - and the distinguishing marks are recorded here for the cases that do. The :361 site is the only one of the three at which NOTHING IS WRITTEN ANYWHERE: it fires before the :208 guard, so the payment sequence is never entered and both ACCTDAT and TRANSACT report zero rows written. The :425 site fires INSIDE the payment sequence at :211, which contains no guard of any kind, so the transaction at :233 is still written and the account at :235 is still rewritten after the rejection - the sibling that owns it reports one row on each writes channel. The :392 site is the rewrite's own failure at the very end of the sequence, so the transaction has already landed and only the account rewrite is refused. Same sentence, three completely different dataset outcomes. THE UNPOPULATED ACCOUNT-RECORD, AND WHY :193-194 CHANGES NOTHING HERE. A failed read fills nothing, so ACCOUNT-RECORD is left in the state it had on entry and ACCT-CURR-BAL was never assigned. :193 MOVE ACCT-CURR-BAL TO WS-CURR-BAL and :194 MOVE WS-CURR-BAL TO CURBALI OF COBIL0AI both sit inside the :169 block and both run AFTER :371 has already transmitted the screen, so whatever they produce never reaches a terminal on this path. What the send carries is therefore the field's pre-:194 content, and that is the fourteen spaces of WS-CURR-BAL PIC +9999999999.99 before any MOVE reaches it - one sign, ten integer digits, the decimal point and two fraction digits, fourteen positions. This is exactly the determination case12 made for the same unpopulated record on the invalid-confirmation arm, and it is reused here unchanged rather than re-derived differently. The service is also never handed a balance: its entry point takes the account identifier, the confirmation flag and the communication area and nothing else, so there is no route by which a received CURBALI could reach the send. THE RECEIVED FIELDS SURVIVE THE REJECTION, BECAUSE NOTHING CLEARS THEM. ACTIDINO is the identifier exactly as received, at its declared eleven characters, and CONFIRMO is the flag exactly as received, at one - both unchanged - because INITIALIZE-ALL-FIELDS at :560-566 is never invoked on this path. Only two places perform it: CLEAR-CURRENT-SCREEN at :552-555, which is reached from the 'N' arm at :180 and from the PF4 arm at :137, and the write's own success arm at :524. Neither is on this path, and neither failing arm of READ-ACCTDAT-FILE performs it either, so a rejection here leaves the operator's input on the screen. A translation that blanked the fields on rejection would be a different program. CONFIRMI is 'Y' by deliberate choice rather than convenience: it puts the invocation on the confirmed-payment branch at :174-177, so this case proves that a CONFIRMED payment is aborted outright by a failed account read - which a blank or an absent confirmation could not show, because those arms reach the read without ever setting CONF-PAY-YES. THE READ IS ISSUED WITH UPDATE, AND THAT IS PRESERVED. :351 states the UPDATE option, so the Java counterpart is readForUpdate and not a plain read, and it runs inside the unit of work the service opens - even on this arm, where the read fails, holds no record and locks nothing. Tidying it to a plain read because the arm fails would lose the fact that the source asks for a lock before it knows whether there is a record to lock. THE FOUR FIELDS THE SEND PINS, AND THE SIX IT DOES NOT. A SERVICE case pins the items this program's own paragraphs write - ACTIDINO, CURBALO, CONFIRMO and ERRMSGO. The header six are POPULATE-HEADER-INFO's at :319-338 and are the controller's projection, so a service case does not claim them; the CONTROLLER_POJO cases in this directory - case01, case03, case06 and case07 - are where they are asserted, together with nextMapset COBIL00 and nextMap COBIL0A from :296-297. Their values on this path are nevertheless fully determined by the pinned clock and are recorded here so nothing is left unstated: TRNNAMEO is 'CB00' in four, PGMNAMEO is 'COBIL00C' in eight, TITLE01O is CCDA-TITLE01 from app/cpy/COTTL01Y.cpy:18-19 which is six spaces then 'AWS Mainframe Modernization' then seven spaces in forty, TITLE02O is CCDA-TITLE02 from :20-22 which is fourteen spaces then 'CardDemo' then eighteen spaces in forty, CURDATEO is '07/19/22' in the MM/DD/YY form of WS-CURDATE-MM-DD-YY and CURTIMEO is '23:12:32' in the HH:MM:SS form of WS-CURTIME-HH-MM-SS. nextProgram, nextMapset and nextMap are absent from the response for the same reason: the two XCTL sites at :281-284 are performed only from MAIN-PARA, so naming a next target from a service invocation would claim a transfer that did not happen. termination is RETURN_TRANSID because :146-149 EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) is where this path ends and the pseudo-conversation continues with the area travelling in the payload (gates G6 and G37). attributes is empty: the only attribute assignment in all 572 lines is MOVE DFHGREEN TO ERRMSGC at :526, on the write's success arm, which this path never reaches. DETERMINISM. The clock is pinned to 2022-07-19T23:12:32 - the same instant as every other case in this directory, and the instant in the source's own version footer at :571 - and it is injected, never read from the host. No twenty-six-byte WS-TIMESTAMP is produced on this path at all: GET-CURRENT-TIMESTAMP at :249-267 is performed from :230, inside the payment sequence, which the raised error flag prevents :208 from entering. The rendered RESP and REAS images are fixed by the rule above and are not environment-dependent. Nothing in this file was captured from a running clock or a running process. WHAT THE DATASETS ASSERT. ACCTDAT is seeded from the real fixture - all fifty rows of fixtures/acctdata.txt, byte-identical to app/data/ASCII/acctdata.txt, at exactly three hundred bytes per row (gate G16). ACTIDINI is '00000000099', which is PROVABLY absent: the fifty keys ascend from '00000000001' to '00000000050' and none exceeds that, so no key in the file can match. That choice is deliberate beyond reaching the arm - it makes the case fail-safe. If the forced outcome were ever dropped, the seeded data would take the NOTFND arm at :359-364, which has a different literal and no DISPLAY line, so the case would fail loudly; it could never quietly degrade into asserting the NORMAL arm and reporting green. expectedWrites is EMPTY and both writes channels report zero rows, which is the whole point of this case: a refusal before the payment sequence aborts everything, because the :208 IF NOT ERR-FLG-ON guard is never satisfied. expectedFinalState pins the first and the last seeded rows, field by field and as complete three-hundred-byte images, so 'the account file is untouched' is asserted at both ends of the file rather than asserted about one row and assumed about forty-nine. Pinning the whole image is also what proves FILLER was emitted: a record missing its FILLER X(178) span is short by 178 bytes and the image comparison fails immediately. TRANSACT is not seeded and appears on both channels at zero rows, which positively states that it was opened and produced nothing rather than saying nothing about it. CXACAIX is absent from inputs entirely because READ-CXACAIX-FILE at :211 is never reached; sibling case18 owns that alternate-index finder, and normalisations is empty because the only fixture in this system needing a width pad is cardxref.txt at 36 bytes against the 50 its copybook declares, which this case does not use. NUMERIC POLICY, STATED EVEN THOUGH NO ARITHMETIC RUNS. The one COMPUTE in this program is at :234, ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT, and it is inside the unreached sequence, so this case exercises no arithmetic at all. The policy still governs the default ACCT-CURR-BAL that :193 reads: every PIC S9...V.. span in this system is held as BigDecimal at the scale its picture declares - scale 2 for ACCT-CURR-BAL PIC S9(10)V99 - and never as double or float, and every store truncates with RoundingMode.DOWN because the keyword ROUNDED appears zero times in all twenty-eight programs. HALF_UP and HALF_EVEN are both wrong here and neither appears (gates G22, G23 and G24). The record images are read and compared as US-ASCII, named explicitly and never left to a platform default; the twelve-character zoned images such as '00000001940{' carry their sign as the standard trailing overpunch, where '{' is a positive zero low-order digit. NOT APPLICABLE ON THIS PATH - DO NOT INVENT. There is no CSSETATY error highlight and no DFHRED: COBIL00C copies neither CSSETATY nor CSSTRPFY and the literal DFHRED does not appear in its 572 lines, so the MOVE -1 into ACTIDINL at :370 is the only emphasis the arm applies and the mapset's own COLOR=RED on the ERRMSG field stands unaltered. There is no CALL 'CEE3ABD' anywhere in the program and the identifier RETURN-CODE does not appear in it either, so expectedReturnCode is 0 as a positive statement about the failure path and not as a default - gate G35 does not apply to this program. G19 and G21 do not apply as write assertions because nothing is written; G24 and G28 do not apply because the :234 COMPUTE is unreached; G45 does not apply because the alternate-index finder is unreached; G32 does not apply because the program contains no GO TO; G39 does not apply because the program paginates nothing; G40 does not apply because no XCTL is reached from the service. PROVENANCE - STATICALLY DERIVED, NOT CAPTURED. Every expected value in this file was derived by reading app/cbl/COBIL00C.cbl:343-372, :193-194, :289-301 and :319-338 against app/cpy-bms/COBIL00.CPY, app/cpy/CVACT01Y.cpy, app/cpy/COTTL01Y.cpy and the real fixture rows, and NONE OF IT WAS CAPTURED FROM A LIVE COBOL EXECUTION. No z/OS runtime and no CICS emulator is available here, the available compiler has its indexed file handler disabled and provides no Language Environment services, and the three IBM-supplied copybooks these programs include are absent from the repository - eight independently verified blockers in total. That substitution is recorded as risk R-A and it changes the provenance of the expected values and nothing else: the twenty cases per program, the field-by-field diffing and the diff-count-must-be-zero gate all stand. Read this expectation as a careful reading of the source, which is what it is, and not as a recording of a run. GATES: G15, G16, G18, G23, G30, G37, G38 on the REENTER side with no DFHGREEN override because no TRANSACT write occurs, G47 as the primary gate for the WHEN OTHER arm of the READ-ACCTDAT-FILE call site, and G51.",
+  "description": "WHEN OTHER of the ordered EVALUATE WS-RESP-CD in READ-ACCTDAT-FILE at app/cbl/COBIL00C.cbl:356-372 - the arm at :365-371 that displays the response pair and then rejects with 'Unable to lookup Account...'. SERVICE, driving billing.BillPaymentService.processEnterKey directly through its own constructor: no MockMvc, no TestRestTemplate, no WebTestClient, no servlet container, no JobLauncher and no ApplicationContext anywhere in the path, because that is where the decision logic lives and a parity case must reach it with nothing in between (gate G51). THIS IS THE FIRST CASE IN THIS DIRECTORY TO ASSERT A COBOL DISPLAY LINE: case01 through case16 emit none, so the rendering convention fixed below is the one siblings case18, case19 and case20 must match at the remaining WHEN OTHER sites. WHICH ARM THIS FILE COVERS, AND WHY ONLY ONE. READ-ACCTDAT-FILE has exactly three arms and this file encodes the third. A ParityCase carries one screenRequest, which is one invocation, and :345-354 issues its EXEC CICS READ exactly once per invocation - :177 and :184 are two mutually exclusive arms of the EVALUATE CONFIRMI above it, not two reads - so the model has no member in which a second arm of the same EVALUATE could be stated and no ordered multi-step shape to state it in. One arm per file is therefore forced by the model rather than chosen, and this file says which one it is rather than leaving a reader to infer it. The WHEN OTHER arm is the one encoded here because it is the only arm that emits the DISPLAY at :366, and that diagnostic is this case's structural contribution: it cannot be relocated to a sibling without the convention being invented twice. THE OTHER TWO ARMS OF THIS SAME CALL SITE. DFHRESP(NORMAL) at :357-358 is already covered twice over - by case10, where WHEN SPACES reaches the read and the 300-byte record is decoded into the working area, and by case15, where the completed payment reads, debits and rewrites. DFHRESP(NOTFND) at :359-364 IS NOT COVERED BY THIS FILE AND IS NOT COVERED BY ANY OF case01 THROUGH case16: it needs a sibling, and gate G47 for this call site is not satisfied until one exists. That is stated plainly rather than glossed, and the missing arm's shape is fully determined, so whichever sibling adopts it has an exact contract. Seed ACCTDAT from acctdata.txt exactly as this file does and supply the same out-of-range ACTIDINI, but declare NO forced outcome at all; the keyed read then misses and :360 raises WS-ERR-FLG, :361-362 moves 'Account ID NOT found...' - twenty-three characters - into WS-MESSAGE, :363 moves -1 into ACTIDINL and :364 sends. That produces one send, NO DISPLAY line at all, ERRMSGO holding that literal left-justified in seventy-eight, cursorField ACTIDINL, termination RETURN_TRANSID, expectedWrites and expectedFinalState identical to this file's, and expectedReturnCode 0. IN SOURCE ORDER, AND THE ORDER IS THE BEHAVIOUR. :156 SET CONF-PAY-NO TO TRUE. :158-167 EVALUATE TRUE finds ACTIDINI is neither SPACES nor LOW-VALUES, so it takes WHEN OTHER / CONTINUE at :165-166 - a genuine no-op arm, and no error is raised. :169 IF NOT ERR-FLG-ON opens because the flag is still 'N'. :170-171 MOVE ACTIDINI OF COBIL0AI TO ACCT-ID / XREF-ACCT-ID - one MOVE with two receivers, which is the single place a screen field becomes a record identification field. :173-191 EVALUATE CONFIRMI matches 'Y' at :174, so :176 SET CONF-PAY-YES TO TRUE and :177 PERFORM READ-ACCTDAT-FILE. Inside that paragraph :345-354 issues the read and :356 evaluates the response, reaching :365-371: :366 DISPLAY, :367 MOVE 'Y' TO WS-ERR-FLG, :368-369 MOVE 'Unable to lookup Account...' TO WS-MESSAGE, :370 MOVE -1 TO ACTIDINL OF COBIL0AI, :371 PERFORM SEND-BILLPAY-SCREEN. Control returns to :193, which runs AFTER that send, and then :197 and :208 both test IF NOT ERR-FLG-ON and both find the flag on, so the whole payment sequence at :210-242 is never entered. GATE G30 - THE ARM ORDER. EVALUATE is ordered and the first matching WHEN wins, so :365 is reached only because :357 DFHRESP(NORMAL) did not match and :359 DFHRESP(NOTFND) did not match either. WHEN OTHER is last in the source and is last in the translation; a restructuring that hoisted it, or that tested NOTFND after it, would take this arm for a response that has a name and would report 'Unable to lookup Account...' where the program reports 'Account ID NOT found...'. Both preceding tests are therefore part of what this case asserts, not merely part of how it is reached. HOW THE ARM IS REACHED - THE INDUCTION, CONCRETELY. No arrangement of seeded rows can produce a non-NORMAL, non-NOTFND response from a keyed read: a row is either there or it is not. The arm is reachable only from a genuine I/O refusal, which is exactly what forcedOutcomes exists for, so this case declares readForUpdate with outcome OTHER. The chain is verified end to end rather than assumed. The gate hands the declared outcome to the ACCTDAT stub, which classifies it and builds a failed read carrying FileStatus.RECORD_LENGTH_CONFLICT, the two-character status '04'; CicsResponse.ofBatchStatus('04') then reports an EMPTY RESP, because FileStatus.cicsRespOfBatchStatus translates only '00', '10' and '23' into NORMAL, ENDFILE and NOTFND and has no CICS name for '04'; RESP2 stays at FileStatus.NO_REASON_CODE, which is zero. BillPaymentService.readAcctdatFile then stores RESP as FileStatus.RESP_NOT_REPORTED, finds the result neither found nor not-found, and falls through to the WHEN OTHER arm. Because '04' has no CICS counterpart, resp and resp2 are declared null here rather than given numbers: the outcome carries no reportable pair, and writing resp 19 or resp 16 would state a value the run cannot produce and would misstate the very line this case exists to pin. THE DISPLAY RENDERING CONVENTION, FIXED HERE FOR case18, case19 AND case20. :366 reads DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD - four operands, two five-character literals with no trailing space and no separator of any kind between the operands, so the line is the concatenation and nothing else. WS-RESP-CD and WS-REAS-CD are both PIC S9(09) COMP at :46-47, and DISPLAY renders a binary field at its declared nine digit positions: UNSIGNED, so no leading '+' or '-' appears even though the picture is signed, and ZERO-FILLED on the left to exactly nine characters. The line is therefore always 5 + 9 + 5 + 9 = 28 characters, which is what MessageChannel.DISPLAY_LINE documents. Where a code has no CICS value to report - the case here - it is rendered as NINE ASTERISKS by FileStatus.respNotReportedImage, deliberately not as nine zeros, because zero IS DFHRESP(NORMAL) and rendering an unreported response as zero would print a failed command as a successful one. So this case pins exactly 'RESP:' + nine '*' + 'REAS:' + nine '0'. A sibling whose refusal DOES map onto a CICS response prints digits in the same nine positions instead - the cross-reference read at :430 reports DFHRESP(NOTOPEN), which renders 'RESP:000000019REAS:000000000' - and that difference is behaviour and is asserted rather than normalised away. The six DISPLAY sites are :366 here, :397 in UPDATE-ACCTDAT-FILE, :430 in READ-CXACAIX-FILE, :461 in STARTBR-TRANSACT-FILE, :490 in READPREV-TRANSACT-FILE and :541 in WRITE-TRANSACT-FILE; all six are the same statement and all six render by this rule. WHY expectedMessages IS ORDERED THE WAY IT IS. The list is in emission order, and on this arm the order is observable: :366 displays BEFORE :368-369 fills WS-MESSAGE and before :371 sends, so the DISPLAY_LINE entry comes first and the WS_MESSAGE_80 entry second. Reversing them would claim the program had described a failure it had not yet classified. The two entries are two different channels with two different widths and are not interchangeable: DISPLAY_LINE is as wide as its operands, while WS_MESSAGE_80 is the eighty-byte WORKING-STORAGE field WS-MESSAGE PIC X(80) at :39, space-padded on the right. The screen field is deliberately NOT declared as a third SCREEN_ERRMSG_78 entry: screen text belongs in the send, where ERRMSGO is pinned, and stating it twice would create two opinions about one value. THE 80-TO-78 TRUNCATION, MEASURED NOT ASSUMED. 'Unable to lookup Account...' is twenty-seven characters - lower-case 'lookup', capital 'Account', exactly three trailing dots - and :368-369 moves it into WS-MESSAGE PIC X(80), which pads it right with fifty-three spaces. :293 then moves WS-MESSAGE into ERRMSGO, and the symbolic map declares ERRMSGI PIC X(78) in app/cpy-bms/COBIL00.CPY with 01 COBIL0AO REDEFINES COBIL0AI, so an eighty-byte alphanumeric source lands in a seventy-eight-byte alphanumeric receiver and COBOL discards the two rightmost bytes. Both of those bytes are spaces here, so the visible text is unchanged and the widths still differ: the WS_MESSAGE_80 entry is eighty characters and ERRMSGO is seventy-eight, twenty-seven of text plus fifty-one of padding. Every width in this file is taken from a declaration rather than counted by eye: ACTIDINI PIC X(11), CURBALI PIC X(14), CONFIRMI PIC X(1) and ERRMSGI PIC X(78) from app/cpy-bms/COBIL00.CPY; WS-MESSAGE PIC X(80) from COBIL00C.cbl:39; WS-RESP-CD and WS-REAS-CD PIC S9(09) COMP from :46-47; and the thirteen spans of the 300-byte record, FILLER X(178) included, from app/cpy/CVACT01Y.cpy. PROVENANCE OF 'Account ID NOT found...' - THREE CALL SITES, ONE TEXT. That sentence is moved into WS-MESSAGE from three distinct places: :361 in READ-ACCTDAT-FILE, :392 in UPDATE-ACCTDAT-FILE and :425 in READ-CXACAIX-FILE. The text is byte-identical at all three, so the message alone cannot tell them apart and only the surrounding side effects can. This file does not encode any of the three - it encodes the sibling arm at :365-371, whose literal is the distinguishable 'Unable to lookup Account...' - and the distinguishing marks are recorded here for the cases that do. The :361 site is the only one of the three at which NOTHING IS WRITTEN ANYWHERE: it fires before the :208 guard, so the payment sequence is never entered and both ACCTDAT and TRANSACT report zero rows written. The :425 site fires INSIDE the payment sequence at :211, which contains no guard of any kind, so the transaction at :233 is still written and the account at :235 is still rewritten after the rejection - the sibling that owns it reports one row on each writes channel. The :392 site is the rewrite's own failure at the very end of the sequence, so the transaction has already landed and only the account rewrite is refused. Same sentence, three completely different dataset outcomes. THE UNPOPULATED ACCOUNT-RECORD, AND WHY :193-194 CHANGES NOTHING HERE. A failed read fills nothing, so ACCOUNT-RECORD is left in the state it had on entry and ACCT-CURR-BAL was never assigned. :193 MOVE ACCT-CURR-BAL TO WS-CURR-BAL and :194 MOVE WS-CURR-BAL TO CURBALI OF COBIL0AI both sit inside the :169 block and both run AFTER :371 has already transmitted the screen, so whatever they produce never reaches a terminal on this path. What the send carries is therefore the field's pre-:194 content, and that is the fourteen spaces of WS-CURR-BAL PIC +9999999999.99 before any MOVE reaches it - one sign, ten integer digits, the decimal point and two fraction digits, fourteen positions. This is exactly the determination case12 made for the same unpopulated record on the invalid-confirmation arm, and it is reused here unchanged rather than re-derived differently. The service is also never handed a balance: its entry point takes the account identifier, the confirmation flag and the communication area and nothing else, so there is no route by which a received CURBALI could reach the send. THE RECEIVED FIELDS SURVIVE THE REJECTION, BECAUSE NOTHING CLEARS THEM. ACTIDINO is the identifier exactly as received, at its declared eleven characters, and CONFIRMO is the flag exactly as received, at one - both unchanged - because INITIALIZE-ALL-FIELDS at :560-566 is never invoked on this path. Only two places perform it: CLEAR-CURRENT-SCREEN at :552-555, which is reached from the 'N' arm at :180 and from the PF4 arm at :137, and the write's own success arm at :524. Neither is on this path, and neither failing arm of READ-ACCTDAT-FILE performs it either, so a rejection here leaves the operator's input on the screen. A translation that blanked the fields on rejection would be a different program. CONFIRMI is 'Y' by deliberate choice rather than convenience: it puts the invocation on the confirmed-payment branch at :174-177, so this case proves that a CONFIRMED payment is aborted outright by a failed account read - which a blank or an absent confirmation could not show, because those arms reach the read without ever setting CONF-PAY-YES. THE READ IS ISSUED WITH UPDATE, AND THAT IS PRESERVED. :351 states the UPDATE option, so the Java counterpart is readForUpdate and not a plain read, and it runs inside the unit of work the service opens - even on this arm, where the read fails, holds no record and locks nothing. Tidying it to a plain read because the arm fails would lose the fact that the source asks for a lock before it knows whether there is a record to lock. THE FOUR FIELDS THE SEND PINS, AND THE SIX IT DOES NOT. A SERVICE case pins the items this program's own paragraphs write - ACTIDINO, CURBALO, CONFIRMO and ERRMSGO. The header six are POPULATE-HEADER-INFO's at :319-338 and are the controller's projection, so a service case does not claim them; the CONTROLLER_POJO cases in this directory - case01, case03, case06 and case07 - are where they are asserted, together with nextMapset COBIL00 and nextMap COBIL0A from :296-297. Their values on this path are nevertheless fully determined by the pinned clock and are recorded here so nothing is left unstated: TRNNAMEO is 'CB00' in four, PGMNAMEO is 'COBIL00C' in eight, TITLE01O is CCDA-TITLE01 from app/cpy/COTTL01Y.cpy:18-19 which is six spaces then 'AWS Mainframe Modernization' then seven spaces in forty, TITLE02O is CCDA-TITLE02 from :20-22 which is fourteen spaces then 'CardDemo' then eighteen spaces in forty, CURDATEO is '07/19/22' in the MM/DD/YY form of WS-CURDATE-MM-DD-YY and CURTIMEO is '23:12:32' in the HH:MM:SS form of WS-CURTIME-HH-MM-SS. nextProgram, nextMapset and nextMap are absent from the response for the same reason: the two XCTL sites at :281-284 are performed only from MAIN-PARA, so naming a next target from a service invocation would claim a transfer that did not happen. termination is RETURN_TRANSID because :146-149 EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) is where this path ends and the pseudo-conversation continues with the area travelling in the payload (gates G6 and G37). attributes is empty: the only attribute assignment in all 572 lines is MOVE DFHGREEN TO ERRMSGC at :526, on the write's success arm, which this path never reaches. DETERMINISM. The clock is pinned to 2022-07-19T23:12:32 - the same instant as every other case in this directory, and the instant in the source's own version footer at :571 - and it is injected, never read from the host. No twenty-six-byte WS-TIMESTAMP is produced on this path at all: GET-CURRENT-TIMESTAMP at :249-267 is performed from :230, inside the payment sequence, which the raised error flag prevents :208 from entering. The rendered RESP and REAS images are fixed by the rule above and are not environment-dependent. Nothing in this file was captured from a running clock or a running process. WHAT THE DATASETS ASSERT. ACCTDAT is seeded from the real fixture - all fifty rows of fixtures/acctdata.txt, byte-identical to app/data/ASCII/acctdata.txt, at exactly three hundred bytes per row (gate G16). ACTIDINI is '00000000099', which is PROVABLY absent: the fifty keys ascend from '00000000001' to '00000000050' and none exceeds that, so no key in the file can match. That choice is deliberate beyond reaching the arm - it makes the case fail-safe. If the forced outcome were ever dropped, the seeded data would take the NOTFND arm at :359-364, which has a different literal and no DISPLAY line, so the case would fail loudly; it could never quietly degrade into asserting the NORMAL arm and reporting green. expectedWrites is EMPTY and both writes channels report zero rows, which is the whole point of this case: a refusal before the payment sequence aborts everything, because the :208 IF NOT ERR-FLG-ON guard is never satisfied. expectedFinalState pins the first and the last seeded rows, field by field and as complete three-hundred-byte images, so 'the account file is untouched' is asserted at both ends of the file rather than asserted about one row and assumed about forty-nine. Pinning the whole image is also what proves FILLER was emitted: a record missing its FILLER X(178) span is short by 178 bytes and the image comparison fails immediately. TRANSACT is not seeded and appears on both channels at zero rows, which positively states that it was opened and produced nothing rather than saying nothing about it. CXACAIX is absent from inputs entirely because READ-CXACAIX-FILE at :211 is never reached; sibling case18 owns that alternate-index finder, and normalisations is empty because the only fixture in this system needing a width pad is cardxref.txt at 36 bytes against the 50 its copybook declares, which this case does not use. NUMERIC POLICY, STATED EVEN THOUGH NO ARITHMETIC RUNS. The one COMPUTE in this program is at :234, ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT, and it is inside the unreached sequence, so this case exercises no arithmetic at all. The policy still governs the default ACCT-CURR-BAL that :193 reads: every PIC S9...V.. span in this system is held as BigDecimal at the scale its picture declares - scale 2 for ACCT-CURR-BAL PIC S9(10)V99 - and never as double or float, and every store truncates with RoundingMode.DOWN because the keyword ROUNDED appears zero times in all twenty-eight programs. HALF_UP and HALF_EVEN are both wrong here and neither appears (gates G22, G23 and G24). The record images are read and compared as US-ASCII, named explicitly and never left to a platform default; the twelve-character zoned images such as '00000001940{' carry their sign as the standard trailing overpunch, where '{' is a positive zero low-order digit. NOT APPLICABLE ON THIS PATH - DO NOT INVENT. There is no CSSETATY error highlight and no DFHRED: COBIL00C copies neither CSSETATY nor CSSTRPFY and the literal DFHRED does not appear in its 572 lines, so the MOVE -1 into ACTIDINL at :370 is the only emphasis the arm applies and the mapset's own COLOR=RED on the ERRMSG field stands unaltered. There is no CALL 'CEE3ABD' anywhere in the program and the identifier RETURN-CODE does not appear in it either, so expectedReturnCode is 0 as a positive statement about the failure path and not as a default - gate G35 does not apply to this program. G19 and G21 do not apply as write assertions because nothing is written; G24 and G28 do not apply because the :234 COMPUTE is unreached; G45 does not apply because the alternate-index finder is unreached; G32 does not apply because the program contains no GO TO; G39 does not apply because the program paginates nothing; G40 does not apply because no XCTL is reached from the service. PROVENANCE - STATICALLY DERIVED, NOT CAPTURED. Every expected value in this file was derived by reading app/cbl/COBIL00C.cbl:343-372, :193-194, :289-301 and :319-338 against app/cpy-bms/COBIL00.CPY, app/cpy/CVACT01Y.cpy, app/cpy/COTTL01Y.cpy and the real fixture rows, and NONE OF IT WAS CAPTURED FROM A LIVE COBOL EXECUTION. No z/OS runtime and no CICS emulator is available here, the available compiler has its indexed file handler disabled and provides no Language Environment services, and the three IBM-supplied copybooks these programs include are absent from the repository - eight independently verified blockers in total. That substitution is recorded as risk R-A and it changes the provenance of the expected values and nothing else: the twenty cases per program, the field-by-field diffing and the diff-count-must-be-zero gate all stand. Read this expectation as a careful reading of the source, which is what it is, and not as a recording of a run. GATES: G15, G16, G18, G23, G30, G37, G38 on the REENTER side with no DFHGREEN override because no TRANSACT write occurs, G47 as the primary gate for the WHEN OTHER arm of the READ-ACCTDAT-FILE call site, and G51. THE EIGHTY-BYTE WS-MESSAGE IS NOT DECLARED AS AN EMITTED MESSAGE, AND THAT IS DELIBERATE: an online program emits nothing. app/cbl/COBIL00C.cbl:299 moves WS-MESSAGE into ERRMSGO and the value leaves through EXEC CICS SEND MAP, so the observable form is the send - pinned field for field in expectedResponse at the seventy-eight-byte width app/cpy-bms/COBIL00.CPY declares, which is also the width at which the two-byte tail of an over-long message is lost. Declaring the working-storage value as well would assert a channel this program has none of and would duplicate an expectation the send already carries. EVERY ONE OF THE FIFTY SEEDED ACCTDAT ROWS IS PINNED ON THE FINAL_STATE CHANNEL, not only the row the lookup was aimed at. A row count is an additional assertion and never a substitute for reading bytes: a translation that rewrote or reordered a row this case is not about would satisfy a count of fifty and be caught only by the images, and this is the WHEN OTHER arm at :365-371, on which nothing whatsoever may change.",
   "unitKind": "SERVICE",
   "inputs": {
     "ACCTDAT": {
@@ -88,6 +88,966 @@
     },
     {
       "dataset": "ACCTDAT",
+      "rowIndex": 1,
+      "fields": {
+        "ACCT-ID": "00000000002",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001580{",
+        "ACCT-CREDIT-LIMIT": "00000061300{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000054480{",
+        "ACCT-OPEN-DATE": "2013-06-19",
+        "ACCT-EXPIRAION-DATE": "2024-08-11",
+        "ACCT-REISSUE-DATE": "2024-08-11",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 2,
+      "fields": {
+        "ACCT-ID": "00000000003",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001470{",
+        "ACCT-CREDIT-LIMIT": "00000049090{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000005380{",
+        "ACCT-OPEN-DATE": "2013-08-23",
+        "ACCT-EXPIRAION-DATE": "2024-01-10",
+        "ACCT-REISSUE-DATE": "2024-01-10",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 3,
+      "fields": {
+        "ACCT-ID": "00000000004",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000400{",
+        "ACCT-CREDIT-LIMIT": "00000035030{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000027890{",
+        "ACCT-OPEN-DATE": "2012-11-17",
+        "ACCT-EXPIRAION-DATE": "2023-12-16",
+        "ACCT-REISSUE-DATE": "2023-12-16",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 4,
+      "fields": {
+        "ACCT-ID": "00000000005",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003450{",
+        "ACCT-CREDIT-LIMIT": "00000038190{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000024300{",
+        "ACCT-OPEN-DATE": "2012-10-03",
+        "ACCT-EXPIRAION-DATE": "2025-03-09",
+        "ACCT-REISSUE-DATE": "2025-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 5,
+      "fields": {
+        "ACCT-ID": "00000000006",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002180{",
+        "ACCT-CREDIT-LIMIT": "00000035840{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000029480{",
+        "ACCT-OPEN-DATE": "2017-12-23",
+        "ACCT-EXPIRAION-DATE": "2025-10-08",
+        "ACCT-REISSUE-DATE": "2025-10-08",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 6,
+      "fields": {
+        "ACCT-ID": "00000000007",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001930{",
+        "ACCT-CREDIT-LIMIT": "00000020650{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000002640{",
+        "ACCT-OPEN-DATE": "2012-10-12",
+        "ACCT-EXPIRAION-DATE": "2024-12-13",
+        "ACCT-REISSUE-DATE": "2024-12-13",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 7,
+      "fields": {
+        "ACCT-ID": "00000000008",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000006050{",
+        "ACCT-CREDIT-LIMIT": "00000061040{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000013180{",
+        "ACCT-OPEN-DATE": "2012-01-04",
+        "ACCT-EXPIRAION-DATE": "2024-05-20",
+        "ACCT-REISSUE-DATE": "2024-05-20",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 8,
+      "fields": {
+        "ACCT-ID": "00000000009",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000005600{",
+        "ACCT-CREDIT-LIMIT": "00000082010{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000020650{",
+        "ACCT-OPEN-DATE": "2016-08-27",
+        "ACCT-EXPIRAION-DATE": "2024-12-27",
+        "ACCT-REISSUE-DATE": "2024-12-27",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 9,
+      "fields": {
+        "ACCT-ID": "00000000010",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001590{",
+        "ACCT-CREDIT-LIMIT": "00000054010{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000044420{",
+        "ACCT-OPEN-DATE": "2015-09-13",
+        "ACCT-EXPIRAION-DATE": "2023-01-27",
+        "ACCT-REISSUE-DATE": "2023-01-27",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 10,
+      "fields": {
+        "ACCT-ID": "00000000011",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002120{",
+        "ACCT-CREDIT-LIMIT": "00000049980{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000031750{",
+        "ACCT-OPEN-DATE": "2014-09-12",
+        "ACCT-EXPIRAION-DATE": "2025-03-12",
+        "ACCT-REISSUE-DATE": "2025-03-12",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 11,
+      "fields": {
+        "ACCT-ID": "00000000012",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001760{",
+        "ACCT-CREDIT-LIMIT": "00000046360{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000003880{",
+        "ACCT-OPEN-DATE": "2009-06-17",
+        "ACCT-EXPIRAION-DATE": "2023-07-07",
+        "ACCT-REISSUE-DATE": "2023-07-07",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 12,
+      "fields": {
+        "ACCT-ID": "00000000013",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000410{",
+        "ACCT-CREDIT-LIMIT": "00000075420{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000049220{",
+        "ACCT-OPEN-DATE": "2017-10-01",
+        "ACCT-EXPIRAION-DATE": "2024-08-04",
+        "ACCT-REISSUE-DATE": "2024-08-04",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000013Y00000000410{00000075420{00000049220{2017-10-012024-08-042024-08-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 13,
+      "fields": {
+        "ACCT-ID": "00000000014",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000150{",
+        "ACCT-CREDIT-LIMIT": "00000022540{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000002120{",
+        "ACCT-OPEN-DATE": "2010-12-04",
+        "ACCT-EXPIRAION-DATE": "2025-12-11",
+        "ACCT-REISSUE-DATE": "2025-12-11",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000014Y00000000150{00000022540{00000002120{2010-12-042025-12-112025-12-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 14,
+      "fields": {
+        "ACCT-ID": "00000000015",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004890{",
+        "ACCT-CREDIT-LIMIT": "00000084410{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000038330{",
+        "ACCT-OPEN-DATE": "2009-10-06",
+        "ACCT-EXPIRAION-DATE": "2025-06-09",
+        "ACCT-REISSUE-DATE": "2025-06-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000015Y00000004890{00000084410{00000038330{2009-10-062025-06-092025-06-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 15,
+      "fields": {
+        "ACCT-ID": "00000000016",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000007330{",
+        "ACCT-CREDIT-LIMIT": "00000089220{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000026320{",
+        "ACCT-OPEN-DATE": "2014-09-11",
+        "ACCT-EXPIRAION-DATE": "2024-01-25",
+        "ACCT-REISSUE-DATE": "2024-01-25",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000016Y00000007330{00000089220{00000026320{2014-09-112024-01-252024-01-2500000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 16,
+      "fields": {
+        "ACCT-ID": "00000000017",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000330{",
+        "ACCT-CREDIT-LIMIT": "00000005680{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000005100{",
+        "ACCT-OPEN-DATE": "2014-05-17",
+        "ACCT-EXPIRAION-DATE": "2025-03-01",
+        "ACCT-REISSUE-DATE": "2025-03-01",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000017Y00000000330{00000005680{00000005100{2014-05-172025-03-012025-03-0100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 17,
+      "fields": {
+        "ACCT-ID": "00000000018",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001440{",
+        "ACCT-CREDIT-LIMIT": "00000029030{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000014960{",
+        "ACCT-OPEN-DATE": "2018-11-15",
+        "ACCT-EXPIRAION-DATE": "2023-09-10",
+        "ACCT-REISSUE-DATE": "2023-09-10",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000018Y00000001440{00000029030{00000014960{2018-11-152023-09-102023-09-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 18,
+      "fields": {
+        "ACCT-ID": "00000000019",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004800{",
+        "ACCT-CREDIT-LIMIT": "00000069860{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000037230{",
+        "ACCT-OPEN-DATE": "2011-12-14",
+        "ACCT-EXPIRAION-DATE": "2025-07-23",
+        "ACCT-REISSUE-DATE": "2025-07-23",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000019Y00000004800{00000069860{00000037230{2011-12-142025-07-232025-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 19,
+      "fields": {
+        "ACCT-ID": "00000000020",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003690{",
+        "ACCT-CREDIT-LIMIT": "00000037670{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000010400{",
+        "ACCT-OPEN-DATE": "2014-02-27",
+        "ACCT-EXPIRAION-DATE": "2024-03-13",
+        "ACCT-REISSUE-DATE": "2024-03-13",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 20,
+      "fields": {
+        "ACCT-ID": "00000000021",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001120{",
+        "ACCT-CREDIT-LIMIT": "00000012640{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000001800{",
+        "ACCT-OPEN-DATE": "2011-10-19",
+        "ACCT-EXPIRAION-DATE": "2023-01-06",
+        "ACCT-REISSUE-DATE": "2023-01-06",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000021Y00000001120{00000012640{00000001800{2011-10-192023-01-062023-01-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 21,
+      "fields": {
+        "ACCT-ID": "00000000022",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000550{",
+        "ACCT-CREDIT-LIMIT": "00000085990{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000047120{",
+        "ACCT-OPEN-DATE": "2016-11-21",
+        "ACCT-EXPIRAION-DATE": "2025-12-28",
+        "ACCT-REISSUE-DATE": "2025-12-28",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000022Y00000000550{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 22,
+      "fields": {
+        "ACCT-ID": "00000000023",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001040{",
+        "ACCT-CREDIT-LIMIT": "00000033770{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000029040{",
+        "ACCT-OPEN-DATE": "2012-03-15",
+        "ACCT-EXPIRAION-DATE": "2025-03-18",
+        "ACCT-REISSUE-DATE": "2025-03-18",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000023Y00000001040{00000033770{00000029040{2012-03-152025-03-182025-03-1800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 23,
+      "fields": {
+        "ACCT-ID": "00000000024",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004000{",
+        "ACCT-CREDIT-LIMIT": "00000051740{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000041290{",
+        "ACCT-OPEN-DATE": "2015-08-08",
+        "ACCT-EXPIRAION-DATE": "2025-02-11",
+        "ACCT-REISSUE-DATE": "2025-02-11",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000024Y00000004000{00000051740{00000041290{2015-08-082025-02-112025-02-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 24,
+      "fields": {
+        "ACCT-ID": "00000000025",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000610{",
+        "ACCT-CREDIT-LIMIT": "00000081940{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000065820{",
+        "ACCT-OPEN-DATE": "2012-10-26",
+        "ACCT-EXPIRAION-DATE": "2025-07-10",
+        "ACCT-REISSUE-DATE": "2025-07-10",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000025Y00000000610{00000081940{00000065820{2012-10-262025-07-102025-07-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 25,
+      "fields": {
+        "ACCT-ID": "00000000026",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000460{",
+        "ACCT-CREDIT-LIMIT": "00000021810{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000013750{",
+        "ACCT-OPEN-DATE": "2009-04-20",
+        "ACCT-EXPIRAION-DATE": "2024-12-19",
+        "ACCT-REISSUE-DATE": "2024-12-19",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000026Y00000000460{00000021810{00000013750{2009-04-202024-12-192024-12-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 26,
+      "fields": {
+        "ACCT-ID": "00000000027",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002840{",
+        "ACCT-CREDIT-LIMIT": "00000055720{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000020750{",
+        "ACCT-OPEN-DATE": "2012-09-30",
+        "ACCT-EXPIRAION-DATE": "2025-07-13",
+        "ACCT-REISSUE-DATE": "2025-07-13",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000027Y00000002840{00000055720{00000020750{2012-09-302025-07-132025-07-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 27,
+      "fields": {
+        "ACCT-ID": "00000000028",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000680{",
+        "ACCT-CREDIT-LIMIT": "00000008680{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000005470{",
+        "ACCT-OPEN-DATE": "2015-05-20",
+        "ACCT-EXPIRAION-DATE": "2024-05-09",
+        "ACCT-REISSUE-DATE": "2024-05-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000028Y00000000680{00000008680{00000005470{2015-05-202024-05-092024-05-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 28,
+      "fields": {
+        "ACCT-ID": "00000000029",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003390{",
+        "ACCT-CREDIT-LIMIT": "00000055110{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000043610{",
+        "ACCT-OPEN-DATE": "2015-11-03",
+        "ACCT-EXPIRAION-DATE": "2024-06-04",
+        "ACCT-REISSUE-DATE": "2024-06-04",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000029Y00000003390{00000055110{00000043610{2015-11-032024-06-042024-06-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 29,
+      "fields": {
+        "ACCT-ID": "00000000030",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000020{",
+        "ACCT-CREDIT-LIMIT": "00000001200{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000000930{",
+        "ACCT-OPEN-DATE": "2011-08-26",
+        "ACCT-EXPIRAION-DATE": "2024-06-27",
+        "ACCT-REISSUE-DATE": "2024-06-27",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000030Y00000000020{00000001200{00000000930{2011-08-262024-06-272024-06-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 30,
+      "fields": {
+        "ACCT-ID": "00000000031",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000310{",
+        "ACCT-CREDIT-LIMIT": "00000011400{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000010770{",
+        "ACCT-OPEN-DATE": "2017-02-25",
+        "ACCT-EXPIRAION-DATE": "2025-06-08",
+        "ACCT-REISSUE-DATE": "2025-06-08",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000031Y00000000310{00000011400{00000010770{2017-02-252025-06-082025-06-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 31,
+      "fields": {
+        "ACCT-ID": "00000000032",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000300{",
+        "ACCT-CREDIT-LIMIT": "00000011750{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000008460{",
+        "ACCT-OPEN-DATE": "2013-11-10",
+        "ACCT-EXPIRAION-DATE": "2025-05-19",
+        "ACCT-REISSUE-DATE": "2025-05-19",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000032Y00000000300{00000011750{00000008460{2013-11-102025-05-192025-05-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 32,
+      "fields": {
+        "ACCT-ID": "00000000033",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004100{",
+        "ACCT-CREDIT-LIMIT": "00000064040{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000009510{",
+        "ACCT-OPEN-DATE": "2012-10-11",
+        "ACCT-EXPIRAION-DATE": "2025-10-07",
+        "ACCT-REISSUE-DATE": "2025-10-07",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000033Y00000004100{00000064040{00000009510{2012-10-112025-10-072025-10-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 33,
+      "fields": {
+        "ACCT-ID": "00000000034",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002530{",
+        "ACCT-CREDIT-LIMIT": "00000036420{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000027700{",
+        "ACCT-OPEN-DATE": "2009-05-10",
+        "ACCT-EXPIRAION-DATE": "2025-10-06",
+        "ACCT-REISSUE-DATE": "2025-10-06",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000034Y00000002530{00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 34,
+      "fields": {
+        "ACCT-ID": "00000000035",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001660{",
+        "ACCT-CREDIT-LIMIT": "00000019470{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000015250{",
+        "ACCT-OPEN-DATE": "2018-02-02",
+        "ACCT-EXPIRAION-DATE": "2025-09-23",
+        "ACCT-REISSUE-DATE": "2025-09-23",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000035Y00000001660{00000019470{00000015250{2018-02-022025-09-232025-09-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 35,
+      "fields": {
+        "ACCT-ID": "00000000036",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001100{",
+        "ACCT-CREDIT-LIMIT": "00000033280{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000008390{",
+        "ACCT-OPEN-DATE": "2018-07-18",
+        "ACCT-EXPIRAION-DATE": "2024-12-23",
+        "ACCT-REISSUE-DATE": "2024-12-23",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000036Y00000001100{00000033280{00000008390{2018-07-182024-12-232024-12-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 36,
+      "fields": {
+        "ACCT-ID": "00000000037",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000070{",
+        "ACCT-CREDIT-LIMIT": "00000004460{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000001660{",
+        "ACCT-OPEN-DATE": "2016-09-10",
+        "ACCT-EXPIRAION-DATE": "2023-10-24",
+        "ACCT-REISSUE-DATE": "2023-10-24",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000037Y00000000070{00000004460{00000001660{2016-09-102023-10-242023-10-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 37,
+      "fields": {
+        "ACCT-ID": "00000000038",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000006120{",
+        "ACCT-CREDIT-LIMIT": "00000065050{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000034760{",
+        "ACCT-OPEN-DATE": "2010-08-12",
+        "ACCT-EXPIRAION-DATE": "2023-07-23",
+        "ACCT-REISSUE-DATE": "2023-07-23",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000038Y00000006120{00000065050{00000034760{2010-08-122023-07-232023-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 38,
+      "fields": {
+        "ACCT-ID": "00000000039",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000008430{",
+        "ACCT-CREDIT-LIMIT": "00000097500{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000062120{",
+        "ACCT-OPEN-DATE": "2018-08-26",
+        "ACCT-EXPIRAION-DATE": "2025-09-08",
+        "ACCT-REISSUE-DATE": "2025-09-08",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000039Y00000008430{00000097500{00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 39,
+      "fields": {
+        "ACCT-ID": "00000000040",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000430{",
+        "ACCT-CREDIT-LIMIT": "00000058230{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000016740{",
+        "ACCT-OPEN-DATE": "2010-02-13",
+        "ACCT-EXPIRAION-DATE": "2023-10-27",
+        "ACCT-REISSUE-DATE": "2023-10-27",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000040Y00000000430{00000058230{00000016740{2010-02-132023-10-272023-10-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 40,
+      "fields": {
+        "ACCT-ID": "00000000041",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003750{",
+        "ACCT-CREDIT-LIMIT": "00000067210{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000034290{",
+        "ACCT-OPEN-DATE": "2015-02-07",
+        "ACCT-EXPIRAION-DATE": "2023-04-24",
+        "ACCT-REISSUE-DATE": "2023-04-24",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000041Y00000003750{00000067210{00000034290{2015-02-072023-04-242023-04-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 41,
+      "fields": {
+        "ACCT-ID": "00000000042",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003020{",
+        "ACCT-CREDIT-LIMIT": "00000065630{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000051030{",
+        "ACCT-OPEN-DATE": "2016-09-19",
+        "ACCT-EXPIRAION-DATE": "2025-09-19",
+        "ACCT-REISSUE-DATE": "2025-09-19",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000042Y00000003020{00000065630{00000051030{2016-09-192025-09-192025-09-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 42,
+      "fields": {
+        "ACCT-ID": "00000000043",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000006100{",
+        "ACCT-CREDIT-LIMIT": "00000061680{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000012060{",
+        "ACCT-OPEN-DATE": "2012-04-09",
+        "ACCT-EXPIRAION-DATE": "2025-08-29",
+        "ACCT-REISSUE-DATE": "2025-08-29",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000043Y00000006100{00000061680{00000012060{2012-04-092025-08-292025-08-2900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 43,
+      "fields": {
+        "ACCT-ID": "00000000044",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002630{",
+        "ACCT-CREDIT-LIMIT": "00000068990{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000044320{",
+        "ACCT-OPEN-DATE": "2018-12-01",
+        "ACCT-EXPIRAION-DATE": "2024-01-17",
+        "ACCT-REISSUE-DATE": "2024-01-17",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000044Y00000002630{00000068990{00000044320{2018-12-012024-01-172024-01-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 44,
+      "fields": {
+        "ACCT-ID": "00000000045",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001860{",
+        "ACCT-CREDIT-LIMIT": "00000027190{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000006880{",
+        "ACCT-OPEN-DATE": "2010-12-31",
+        "ACCT-EXPIRAION-DATE": "2025-07-09",
+        "ACCT-REISSUE-DATE": "2025-07-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000045Y00000001860{00000027190{00000006880{2010-12-312025-07-092025-07-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 45,
+      "fields": {
+        "ACCT-ID": "00000000046",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003960{",
+        "ACCT-CREDIT-LIMIT": "00000070070{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000054380{",
+        "ACCT-OPEN-DATE": "2013-09-06",
+        "ACCT-EXPIRAION-DATE": "2025-06-20",
+        "ACCT-REISSUE-DATE": "2025-06-20",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000046Y00000003960{00000070070{00000054380{2013-09-062025-06-202025-06-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 46,
+      "fields": {
+        "ACCT-ID": "00000000047",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000320{",
+        "ACCT-CREDIT-LIMIT": "00000023380{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000001590{",
+        "ACCT-OPEN-DATE": "2014-04-03",
+        "ACCT-EXPIRAION-DATE": "2025-08-23",
+        "ACCT-REISSUE-DATE": "2025-08-23",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000047Y00000000320{00000023380{00000001590{2014-04-032025-08-232025-08-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 47,
+      "fields": {
+        "ACCT-ID": "00000000048",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002260{",
+        "ACCT-CREDIT-LIMIT": "00000023060{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000006120{",
+        "ACCT-OPEN-DATE": "2017-03-18",
+        "ACCT-EXPIRAION-DATE": "2025-02-06",
+        "ACCT-REISSUE-DATE": "2025-02-06",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000048Y00000002260{00000023060{00000006120{2017-03-182025-02-062025-02-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 48,
+      "fields": {
+        "ACCT-ID": "00000000049",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001000{",
+        "ACCT-CREDIT-LIMIT": "00000090480{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000048070{",
+        "ACCT-OPEN-DATE": "2019-04-06",
+        "ACCT-EXPIRAION-DATE": "2023-09-17",
+        "ACCT-REISSUE-DATE": "2023-09-17",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000049Y00000001000{00000090480{00000048070{2019-04-062023-09-172023-09-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
       "rowIndex": 49,
       "fields": {
         "ACCT-ID": "00000000050",
@@ -112,10 +1072,6 @@
     {
       "channel": "DISPLAY_LINE",
       "text": "RESP:*********REAS:000000000"
-    },
-    {
-      "channel": "WS_MESSAGE_80",
-      "text": "Unable to lookup Account...                                                     "
     }
   ],
   "normalisations": [],

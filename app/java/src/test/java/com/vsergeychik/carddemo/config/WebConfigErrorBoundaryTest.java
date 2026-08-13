@@ -21,6 +21,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.PropertySource;
@@ -375,9 +376,10 @@ class WebConfigErrorBoundaryTest {
         @DisplayName("A screen value a RECEIVE MAP could not have carried names the member, because "
                 + "\"a field does not fit\" is unactionable on a 54-field screen")
         void aScreenInputRefusalNamesTheMember() {
-            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
-                    ScreenInputRejectedException.unrepresentable("acslnam", "ACSLNAMI",
-                            StandardCharsets.US_ASCII, 0x00D1));
+            ScreenInputRejectedException refusal = ScreenInputRejectedException.unrepresentable(
+                    "acslnam", "ACSLNAMI", StandardCharsets.US_ASCII, 0x00D1);
+
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(refusal);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
@@ -387,14 +389,95 @@ class WebConfigErrorBoundaryTest {
                         // The lowercase JSON member the caller sent, not the uppercase COBOL label:
                         // one vocabulary across every arm of the envelope.
                         assertThat(field.field()).isEqualTo("acslnam");
-                        assertThat(field.message()).contains("U+00D1").contains("US-ASCII");
+                        // The FIXED public sentence, which is the exception's publicDetail() and NOT its
+                        // message. The two are different texts on purpose.
+                        assertThat(field.message()).isEqualTo(refusal.publicDetail());
                     });
-            assertThat(response.getBody().detail()).contains("acslnam").contains("U+00D1");
+            assertThat(response.getBody().detail()).isEqualTo(refusal.publicDetail())
+                    .contains("acslnam");
         }
 
         @Test
-        @DisplayName("It is the one IllegalArgumentException whose message is published, and it is safe "
-                + "to publish because the type is final and every factory is value-free")
+        @DisplayName("The published answer names the member and NOTHING internal - no code page, no "
+                + "symbolic item, no PICTURE, no code point, no 3270 mechanics")
+        void theScreenInputAnswerDisclosesNothingInternal() {
+            // Every internal fact below is genuinely present in the exception's own message, which is
+            // why this assertion is about the RESPONSE and not about the exception: the diagnostic is
+            // for the server log, and what the boundary publishes is the fixed sentence.
+            ScreenInputRejectedException refusal = ScreenInputRejectedException.unrepresentable(
+                    "acslnam", "ACSLNAMI", StandardCharsets.US_ASCII, 0x00D1);
+            assertThat(refusal.getMessage())
+                    .contains("ACSLNAMI").contains("US-ASCII").contains("U+00D1").contains("PIC X");
+
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(refusal);
+
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().toString())
+                    .doesNotContain("ACSLNAMI")
+                    .doesNotContain("US-ASCII")
+                    .doesNotContain("IBM037")
+                    .doesNotContain("U+00D1")
+                    .doesNotContain("PIC X")
+                    .doesNotContain("RECEIVE MAP")
+                    .doesNotContain("3270")
+                    .doesNotContain("copybook");
+        }
+
+        @ParameterizedTest
+        @EnumSource(ScreenInputRejectedException.Reason.class)
+        @DisplayName("every refusal reason publishes a fixed sentence carrying no internal fact, so a "
+                + "factory added later cannot widen the answer by wording its diagnostic differently")
+        void everyReasonPublishesAFixedInternalsFreeSentence(
+                final ScreenInputRejectedException.Reason reason) {
+            // Driven from the enum rather than from a list of factories, so a reason added later is
+            // covered the moment it exists.
+            for (String member : new String[] {"acslnam", "eibaid", "usridin"}) {
+                ResponseEntity<CobolErrorResponse> response =
+                        HANDLER.handleRejectedValue(refusalWith(reason, member));
+
+                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                assertThat(response.getBody()).isNotNull();
+                assertThat(response.getBody().detail())
+                        .contains(member)
+                        .contains("not echoed")
+                        .doesNotContain("U+")
+                        .doesNotContain("PIC X")
+                        .doesNotContain("US-ASCII")
+                        .doesNotContain("RECEIVE MAP")
+                        .doesNotContain("3270")
+                        .doesNotContain(PAN);
+                assertThat(response.getBody().fieldErrors()).singleElement()
+                        .satisfies(field -> assertThat(field.field()).isEqualTo(member));
+            }
+        }
+
+        /**
+         * One refusal per {@link ScreenInputRejectedException.Reason}, built through the public factory
+         * that produces it, so the enum drives real refusals rather than a hand-made stand-in.
+         *
+         * @param reason the reason to produce
+         * @param member the member to name
+         * @return the refusal; never {@code null}
+         */
+        private static ScreenInputRejectedException refusalWith(
+                final ScreenInputRejectedException.Reason reason, final String member) {
+            return switch (reason) {
+                case UNSUPPORTED_CHARACTER -> ScreenInputRejectedException.unrepresentable(member,
+                        "ACSLNAMI", StandardCharsets.US_ASCII, 0x00D1);
+                case NOT_CHARACTER_DATA ->
+                        ScreenInputRejectedException.notCharacterData(member, "VALUE_NUMBER_INT");
+                case TOO_WIDE -> ScreenInputRejectedException.tooWide(member,
+                        "CARDSIDI PIC X(16)", 16, PAN.length() + 1);
+                case OUTSIDE_RANGE ->
+                        ScreenInputRejectedException.outsideRange(member, "one EIBAID byte", 0, 255);
+                case CONTRADICTORY_SPELLINGS -> ScreenInputRejectedException
+                        .contradictorySpellings(member, "eibAid", "one EIBAID");
+            };
+        }
+
+        @Test
+        @DisplayName("It is the one IllegalArgumentException whose refusal text is published, and it is "
+                + "safe to publish because the type is final and the text is fixed per reason")
         void theScreenInputMessageIsSafeToPublishBecauseTheTypeIsSealedShut() {
             assertThat(java.lang.reflect.Modifier.isFinal(ScreenInputRejectedException.class
                     .getModifiers()))
@@ -408,8 +491,8 @@ class WebConfigErrorBoundaryTest {
             }
             // And the value genuinely does not reach the body, even for a member whose span holds a PAN.
             ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
-                    ScreenInputRejectedException.inconsistentCommarea("commArea.oldDetails.cardid",
-                            "the sixteen digits of the fetched card number"));
+                    ScreenInputRejectedException.tooWide("cardNumber", "CARDSIDI PIC X(16)",
+                            CardDetails.CARDID_LENGTH, PAN.length() + 3));
 
             assertThat(response.getBody()).isNotNull();
             assertThat(response.getBody().toString()).doesNotContain(PAN);

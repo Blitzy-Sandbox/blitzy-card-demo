@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -1753,6 +1754,110 @@ class PfKeyResolverTest {
             assertThatExceptionOfType(InvocationTargetException.class)
                     .isThrownBy(constructor::newInstance)
                     .withCauseInstanceOf(AssertionError.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("resolveWithoutFolding and primaryAid - the twelve programs that never copied CSSTRPFY")
+    class WithoutFolding {
+
+        @Test
+        @DisplayName("each token names the EIBAID byte of its own WHEN clause, never its folded partner")
+        void everyTokenNamesItsOwnByte() {
+            // Read straight off CSSTRPFY.cpy L22-L53: the FIRST arm that sets each condition.
+            assertThat(AidKey.ENTER.primaryAid()).isEqualTo(CicsAid.DFHENTER);
+            assertThat(AidKey.CLEAR.primaryAid()).isEqualTo(CicsAid.DFHCLEAR);
+            assertThat(AidKey.PA1.primaryAid()).isEqualTo(CicsAid.DFHPA1);
+            assertThat(AidKey.PA2.primaryAid()).isEqualTo(CicsAid.DFHPA2);
+            assertThat(AidKey.PFK01.primaryAid()).isEqualTo(CicsAid.DFHPF1);
+            assertThat(AidKey.PFK02.primaryAid()).isEqualTo(CicsAid.DFHPF2);
+            assertThat(AidKey.PFK03.primaryAid()).isEqualTo(CicsAid.DFHPF3);
+            assertThat(AidKey.PFK04.primaryAid()).isEqualTo(CicsAid.DFHPF4);
+            assertThat(AidKey.PFK05.primaryAid()).isEqualTo(CicsAid.DFHPF5);
+            assertThat(AidKey.PFK06.primaryAid()).isEqualTo(CicsAid.DFHPF6);
+            assertThat(AidKey.PFK07.primaryAid()).isEqualTo(CicsAid.DFHPF7);
+            assertThat(AidKey.PFK08.primaryAid()).isEqualTo(CicsAid.DFHPF8);
+            assertThat(AidKey.PFK09.primaryAid()).isEqualTo(CicsAid.DFHPF9);
+            assertThat(AidKey.PFK10.primaryAid()).isEqualTo(CicsAid.DFHPF10);
+            assertThat(AidKey.PFK11.primaryAid()).isEqualTo(CicsAid.DFHPF11);
+            assertThat(AidKey.PFK12.primaryAid()).isEqualTo(CicsAid.DFHPF12);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(AidKey.class)
+        @DisplayName("a token's own byte round-trips through the non-folding resolver, for all sixteen")
+        void everyPrimaryByteRoundTrips(AidKey key) {
+            assertThat(PfKeyResolver.resolveWithoutFolding(key.primaryAid()))
+                    .as("the byte a token was declared with must name that token again")
+                    .contains(key);
+            assertThat(PfKeyResolver.resolve(key.primaryAid()))
+                    .as("and the folding resolver agrees on every primary byte - the fold only adds "
+                            + "twelve extra bytes, it never moves an existing one")
+                    .contains(key);
+        }
+
+        @ParameterizedTest(name = "DFHPF{0} folds to PFK{1} but names nothing on its own")
+        @CsvSource({"13, 01", "14, 02", "15, 03", "16, 04", "17, 05", "18, 06",
+            "19, 07", "20, 08", "21, 09", "22, 10", "23, 11", "24, 12"})
+        @DisplayName("the twelve folded bytes resolve to nothing, so an inline tester reaches WHEN OTHER")
+        void theFoldedTwelveNameNothing(int pfNumber, String foldedOnto) {
+            byte upper = aidByte("DFHPF" + pfNumber);
+            AidKey folded = AidKey.valueOf("PFK" + foldedOnto);
+
+            assertThat(PfKeyResolver.resolve(upper))
+                    .as("CSSTRPFY L54-L77 does fold it - that is the copybook, and it stands")
+                    .contains(folded);
+            assertThat(PfKeyResolver.resolveWithoutFolding(upper))
+                    .as("but the byte is not that token's own, so a program with no CSSTRPFY sees no "
+                            + "match and takes its WHEN OTHER arm")
+                    .isEmpty();
+            assertThat(folded.primaryAid())
+                    .as("the fold target's own byte is the lower key, never this one")
+                    .isNotEqualTo(upper);
+        }
+
+        @Test
+        @DisplayName("a byte no resolver tests is empty in both forms")
+        void anUntestedByteIsEmptyInBothForms() {
+            for (byte untested : new byte[] {CicsAid.DFHPA3, CicsAid.DFHNULL, CicsAid.DFHPEN}) {
+                assertThat(PfKeyResolver.resolve(untested)).isEmpty();
+                assertThat(PfKeyResolver.resolveWithoutFolding(untested)).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("across all 256 byte values the non-folding form yields exactly sixteen matches")
+        void exactlySixteenBytesNameAToken() {
+            List<Integer> naming = new ArrayList<>();
+            for (int value = 0; value < 256; value++) {
+                if (PfKeyResolver.resolveWithoutFolding((byte) value).isPresent()) {
+                    naming.add(value);
+                }
+            }
+
+            assertThat(naming)
+                    .as("one byte per token, which is what 'no fold' means")
+                    .hasSize(AidKey.values().length)
+                    .hasSize(16);
+
+            // And the folding form names twelve more - the difference is precisely the fold.
+            long folding = 0;
+            for (int value = 0; value < 256; value++) {
+                if (PfKeyResolver.resolve((byte) value).isPresent()) {
+                    folding++;
+                }
+            }
+            assertThat(folding).isEqualTo(28L);
+        }
+
+        /** The {@link CicsAid} constant of a given name, read reflectively so the name is the source. */
+        private static byte aidByte(String constantName) {
+            try {
+                Field constant = CicsAid.class.getDeclaredField(constantName);
+                return constant.getByte(null);
+            } catch (ReflectiveOperationException absent) {
+                throw new AssertionError("CicsAid does not declare " + constantName, absent);
+            }
         }
     }
 }

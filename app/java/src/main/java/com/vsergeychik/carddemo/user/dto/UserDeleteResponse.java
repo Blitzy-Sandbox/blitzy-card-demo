@@ -5,6 +5,9 @@ import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.user.dto.UserDeleteRequest.Cu03Info;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -862,6 +865,40 @@ public record UserDeleteResponse(@JsonProperty("trnname") String trnName,
                     + "does");
         }
         return value;
+    }
+
+    /**
+     * The eleven {@code xxxO} items of {@code COUSR3AO}, keyed by the names {@code app/cpy-bms/COUSR03.CPY}
+     * spells, in screen order.
+     *
+     * <p>What this is for: {@code EXEC CICS SEND MAP ... FROM(COUSR3AO)} sends the <em>whole</em> map area
+     * every time, so a program that sends twice sends eleven values twice - not five the first time and
+     * eleven the second. Capturing the area at each send is the only way that sequence can be observed, and
+     * this method is the snapshot {@code UserDeleteController.ProgramState.recordSend()} takes. It mirrors
+     * {@code UserUpdateResponse.fieldValues()}, because the two sibling screens are one keystroke apart in
+     * the source and should be one method apart here.
+     *
+     * <p>Values are returned exactly as they are held, not padded to the widths the copybook declares.
+     * Rendering a field to its declared width belongs to the codec at the point a fixed-width image is
+     * produced, and is not duplicated here.
+     *
+     * @return an unmodifiable, screen-ordered map of all eleven field names to their values; never
+     *         {@code null}
+     */
+    public Map<String, String> fieldValues() {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put(TRN_NAME_FIELD, trnName);
+        values.put(TITLE01_FIELD, title01);
+        values.put(CUR_DATE_FIELD, curDate);
+        values.put(PGM_NAME_FIELD, pgmName);
+        values.put(TITLE02_FIELD, title02);
+        values.put(CUR_TIME_FIELD, curTime);
+        values.put(USR_ID_IN_FIELD, usrIdIn);
+        values.put(F_NAME_FIELD, fName);
+        values.put(L_NAME_FIELD, lName);
+        values.put(USR_TYPE_FIELD, usrType);
+        values.put(ERR_MSG_FIELD, errMsg);
+        return Collections.unmodifiableMap(values);
     }
 
     /**

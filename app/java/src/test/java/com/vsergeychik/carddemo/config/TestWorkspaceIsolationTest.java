@@ -1,5 +1,7 @@
 package com.vsergeychik.carddemo.config;
 
+import java.nio.charset.Charset;
+import com.vsergeychik.carddemo.transaction.ReportRequestController;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -43,25 +45,55 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
  *       {@link LinkOption#NOFOLLOW_LINKS}, and by writing beneath it with
  *       {@link StandardOpenOption#CREATE_NEW} together with {@link LinkOption#NOFOLLOW_LINKS} so an
  *       existing link is never followed.</li>
- *   <li><strong>CWE-377, insecure temporary file.</strong> The USRSEC rows the suite materialises
- *       carry the legacy plaintext {@code SEC-USR-PWD} span, so the directory holding them must not
- *       be world-readable. Checked here by requiring owner-only {@code rwx------} on the root.</li>
+ *   <li><strong>CWE-377, insecure temporary file.</strong> What materialises beneath this root is
+ *       the job-submission destination - {@code carddemo.job-submission.destination} resolves to
+ *       {@code ${carddemo.test.work-dir}/inreader/JOBS} - whose records are the eighty-byte JCL
+ *       skeletons {@code CORPT00C} writes, naming datasets and the submitting user. So the directory
+ *       must not be world-readable. Checked here by requiring owner-only {@code rwx------} on the
+ *       root, and by driving the real port and reading back the permissions it created its file
+ *       with.
+ *       <p>This bullet used to claim the root holds materialised {@code USRSEC} rows with their
+ *       legacy plaintext {@code SEC-USR-PWD} span. That was wrong and worth stating plainly, because
+ *       it justified the check with a file that is never there: under the {@code test} profile every
+ *       dataset including {@code USRSEC} is a relation in the in-memory H2 database, not a file in
+ *       this tree. The correct justification is the one above, which is a file this module really
+ *       does write.</li>
  *   <li><strong>CWE-362, race.</strong> Two runs sharing one root open the same files and overwrite
  *       each other's output, producing a parity diff whose cause is another process. Checked here by
  *       requiring the configured root to carry both a clone component and a per-invocation component,
  *       so no two runs can resolve to the same path.</li>
  * </ul>
  *
+ * <h2>Asserted through the production writer, not through the JDK</h2>
+ * <p>The link-following and permission properties are asserted by driving
+ * {@link ReportRequestController.InternalReaderJobSubmissionPort} - the module's one filesystem writer,
+ * and the component {@code carddemo.job-submission.approved-root} points at this very property for.
+ * That distinction is the whole value of these tests. They previously wrote a file themselves with
+ * {@link StandardOpenOption#CREATE_NEW} and {@link LinkOption#NOFOLLOW_LINKS} and then asserted the
+ * write behaved as those flags promise, which tests the JDK rather than this module: had production
+ * code omitted either flag, every assertion would still have passed. Now the flags under test are the
+ * ones the port passes, so a regression in the port fails here.
+ *
+ * <p>The port defends the descent in four independent places, which is worth knowing before changing
+ * any of them: the per-element {@link Files#isSymbolicLink(Path)} test, the per-element
+ * "exists but is not a directory" test, {@code requireParentStillWithinRoot}'s requirement that the
+ * parent resolve to itself and inside the root, and the {@link LinkOption#NOFOLLOW_LINKS} on the
+ * channel open. Disabling any one of them alone leaves every test here passing, because another still
+ * refuses; the tests below were each confirmed to fail once the layer that actually answers them was
+ * removed, so none of them is passing by accident.
+ *
  * <h2>What it deliberately does not do</h2>
- * <p>It does not create datasets, seed fixtures or run a job. It creates the root, proves the four
- * properties above hold for it, and removes only what it created - never ascending to the shared
- * parent, because deleting {@code /tmp/carddemo-test} would destroy a concurrent clone's run. The
- * cleanup is scoped to a directory this test made itself, inside the run-owned root.
+ * <p>It does not seed fixtures or run a job, and it asserts nothing about the datasets a job produces.
+ * It creates the root, proves the properties above hold for it and for the port writing beneath it,
+ * and removes only what it created - never ascending to the shared parent, because deleting
+ * {@code /tmp/carddemo-test} would destroy a concurrent clone's run. The cleanup is scoped to a
+ * directory this test made itself, inside the run-owned root.
  *
  * <p>Every POSIX-permission assertion is skipped on a filesystem with no POSIX view rather than
  * asserted loosely, so the suite states honestly which platform it verified.
  */
-@DisplayName("carddemo.test.work-dir - run-unique, owner-only, never link-followed")
+@DisplayName("carddemo.test.work-dir - run-unique, owner-only, never link-followed, proven through "
+        + "the production job-submission writer")
 class TestWorkspaceIsolationTest {
 
     /** The configuration key under test. */
@@ -195,57 +227,119 @@ class TestWorkspaceIsolationTest {
                 .isFalse();
             Assertions.assertThat(Files.getPosixFilePermissions(ownedDirectory,
                     LinkOption.NOFOLLOW_LINKS))
-                .as("owner-only rwx------: the USRSEC seed materialised beneath this root carries "
-                    + "the legacy plaintext SEC-USR-PWD span, so a group- or world-readable "
-                    + "directory is a disclosure (CWE-377)")
+                .as("owner-only rwx------: the job-submission destination materialised beneath this "
+                    + "root holds JCL skeletons naming datasets and the submitting user, so a group- "
+                    + "or world-readable directory is a disclosure (CWE-377)")
                 .isEqualTo(OWNER_ONLY_DIRECTORY);
         }
 
         @Test
-        @DisplayName("a dataset written beneath it uses CREATE_NEW and NOFOLLOW_LINKS")
-        void writesDoNotFollowLinks() throws IOException {
+        @DisplayName("the production port writes beneath the root and creates its file owner-only")
+        void theProductionPortWritesOwnerOnlyBeneathTheRoot() throws IOException {
             ownedDirectory = createOwnedDirectory();
-            Path dataset = ownedDirectory.resolve("usrsec.txt");
+            Path destination = ownedDirectory.resolve("inreader").resolve("JOBS");
+            ReportRequestController.InternalReaderJobSubmissionPort port = portWriting(destination);
 
-            Files.write(dataset, List.of("row"), StandardCharsets.US_ASCII,
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
-            restrictToOwner(dataset);
+            ReportRequestController.WriteQueueOutcome outcome =
+                port.writeQueueTd(ReportRequestController.JOB_LINE_01);
 
-            Assertions.assertThat(Files.readAllLines(dataset, StandardCharsets.US_ASCII))
-                .containsExactly("row");
-            Assertions.assertThat(Files.getPosixFilePermissions(dataset, LinkOption.NOFOLLOW_LINKS))
-                .as("a dataset the suite writes is owner-only for the same reason the directory is")
+            Assertions.assertThat(outcome)
+                .as("a well-formed eighty-character record is written, so the root is usable as "
+                    + "configured")
+                .isEqualTo(ReportRequestController.WriteQueueOutcome.NORMAL);
+            Assertions.assertThat(Files.readAllBytes(destination))
+                .as("RECORDSIZE(80) RECORDFORMAT(FIXED): one record is eighty bytes on the medium")
+                .hasSize(ReportRequestController.JCL_RECORD_LENGTH);
+            Assertions.assertThat(Files.getPosixFilePermissions(destination,
+                    LinkOption.NOFOLLOW_LINKS))
+                .as("the permissions are the port's own, applied at creation: this is the assertion "
+                    + "that would have failed had production code created the file with the process "
+                    + "umask instead")
                 .isEqualTo(OWNER_ONLY_FILE);
-
-            // The second CREATE_NEW must fail. That is the property that makes a pre-created path -
-            // a real file or a planted symlink - impossible to write through silently.
-            Assertions.assertThatThrownBy(() -> Files.write(dataset, List.of("second"),
-                    StandardCharsets.US_ASCII, StandardOpenOption.CREATE_NEW,
-                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS))
-                .as("CREATE_NEW refuses an existing path, so a planted file or link cannot be "
-                    + "written through")
-                .isInstanceOf(IOException.class);
+            Assertions.assertThat(Files.getPosixFilePermissions(destination.getParent(),
+                    LinkOption.NOFOLLOW_LINKS))
+                .as("and the directory the port created on the way down is owner-only too")
+                .isEqualTo(OWNER_ONLY_DIRECTORY);
+            Assertions.assertThat(destination.toRealPath()
+                    .startsWith(Path.of(configuredWorkDir).toRealPath()))
+                .as("the record landed inside the configured root, not merely at a path spelled as "
+                    + "though it were")
+                .isTrue();
         }
 
         @Test
-        @DisplayName("a planted symlink beneath the root is refused rather than followed")
-        void plantedSymlinkIsRefused() throws IOException {
+        @DisplayName("a symlink planted at the destination is refused by the port, not followed")
+        void aPlantedSymlinkIsRefusedByThePort() throws IOException {
             ownedDirectory = createOwnedDirectory();
+            Path queueDirectory = createOwnerOnlyDirectory(ownedDirectory.resolve("inreader"));
             Path elsewhere = Files.createFile(ownedDirectory.resolve("attacker-target.txt"));
-            Path planted = ownedDirectory.resolve("planted.txt");
-            Files.createSymbolicLink(planted, elsewhere);
+            Path destination = queueDirectory.resolve("JOBS");
+            Files.createSymbolicLink(destination, elsewhere);
 
-            Assertions.assertThatThrownBy(() -> Files.write(planted, List.of("redirected"),
-                    StandardCharsets.US_ASCII, StandardOpenOption.CREATE_NEW,
-                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS))
-                .as("this is CWE-59 reproduced deliberately: without NOFOLLOW_LINKS the write lands "
-                    + "in the link's target and the suite reports success over data it did not "
-                    + "write where it thought")
-                .isInstanceOf(IOException.class);
+            // CWE-59 reproduced against production code. The link is inside the approved root and
+            // spelled exactly as the configuration says, so a containment check alone accepts it; only
+            // a per-element no-follow inspection catches it.
+            ReportRequestController.WriteQueueOutcome outcome =
+                portWriting(destination).writeQueueTd(ReportRequestController.JOB_LINE_01);
 
-            Assertions.assertThat(Files.readAllLines(elsewhere, StandardCharsets.US_ASCII))
-                .as("the link target must be untouched")
+            Assertions.assertThat(outcome)
+                .as("EXEC CICS WRITEQ TD has ERROROPTION(IGNORE), so the port reports rather than "
+                    + "throws: an unusable destination is RESP NOTOPEN")
+                .isEqualTo(ReportRequestController.WriteQueueOutcome.notOpen());
+            Assertions.assertThat(Files.readAllBytes(elsewhere))
+                .as("the link target must be untouched - a followed link would leave eighty bytes "
+                    + "here and still report success")
                 .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a symlink planted on the way down to the destination is refused as well")
+        void aPlantedIntermediateSymlinkIsRefusedByThePort() throws IOException {
+            ownedDirectory = createOwnedDirectory();
+            Path outsideTree = createOwnerOnlyDirectory(ownedDirectory.resolve("attacker-tree"));
+            // "inreader" itself is the link, so the destination's own name is never a link and the
+            // refusal has to come from inspecting each element of the descent.
+            Files.createSymbolicLink(ownedDirectory.resolve("inreader"), outsideTree);
+            Path destination = ownedDirectory.resolve("inreader").resolve("JOBS");
+
+            ReportRequestController.WriteQueueOutcome outcome =
+                portWriting(destination).writeQueueTd(ReportRequestController.JOB_LINE_01);
+
+            Assertions.assertThat(outcome)
+                .as("an intermediate link redirects the whole subtree while the destination string "
+                    + "still lies inside the approved root")
+                .isEqualTo(ReportRequestController.WriteQueueOutcome.notOpen());
+            Assertions.assertThat(Files.list(outsideTree).toList())
+                .as("nothing was created through the link")
+                .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a destination outside the approved root is refused before any write")
+        void aDestinationOutsideTheApprovedRootIsRefused() throws IOException {
+            ownedDirectory = createOwnedDirectory();
+            // Outside the approved root - which is the run-owned directory this test writes through -
+            // but still inside the run-unique root, so the path cannot collide with another run's.
+            // Naming it in the clone-level parent instead would put an absence assertion on a directory
+            // shared between runs, which is precisely the CWE-362 hazard this class exists to guard: a
+            // path another run had created would fail this test for a reason having nothing to do with
+            // the code under test.
+            Path outside = Path.of(configuredWorkDir).resolve("outside-approved-root-JOBS");
+            Files.deleteIfExists(outside);
+
+            // Containment is the property that keeps a mis-set destination from writing anywhere on the
+            // host. The refusal is reported rather than thrown: EXEC CICS WRITEQ TD has
+            // ERROROPTION(IGNORE), so the port resolves the destination once, keeps why it could not be
+            // used, and answers every write with RESP NOTOPEN - which is what an extrapartition queue
+            // whose dataset cannot be opened reports. An exception here would be the wrong contract, and
+            // asserting one is how this test first got it wrong.
+            Assertions.assertThat(portWriting(outside)
+                    .writeQueueTd(ReportRequestController.JOB_LINE_01))
+                .as("a destination outside %s must never be written to", configuredWorkDir)
+                .isEqualTo(ReportRequestController.WriteQueueOutcome.notOpen());
+            Assertions.assertThat(Files.exists(outside, LinkOption.NOFOLLOW_LINKS))
+                .as("and nothing was created there")
+                .isFalse();
         }
     }
 
@@ -396,4 +490,25 @@ class TestWorkspaceIsolationTest {
         return temporaryDirectory.getFileSystem().supportedFileAttributeViews().contains("posix")
             && Files.getFileAttributeView(temporaryDirectory, PosixFileAttributeView.class) != null;
     }
+
+    /**
+     * The real production writer, configured exactly as {@code application-test.yml} configures it:
+     * {@code approved-root} is the run-owned root this class guards and {@code destination} is the file
+     * beneath it.
+     *
+     * <p>{@code IBM037} is passed explicitly rather than taken from the binding because the code page is
+     * irrelevant to every property asserted here and naming it removes a platform-default dependency
+     * (practice B8).
+     *
+     * @param destination the file the port should append to
+     * @return a port bound to that destination
+     */
+    private ReportRequestController.InternalReaderJobSubmissionPort portWriting(Path destination) {
+        WebConfig.JobSubmissionProperties properties = new WebConfig.JobSubmissionProperties("JOBS",
+            "INREADER", "IBM037", ReportRequestController.JCL_RECORD_LENGTH, "FIXED", "UNBLOCKED",
+            "MOD", ownedDirectory.toString(), destination.toString());
+        return new ReportRequestController.InternalReaderJobSubmissionPort(properties,
+            Charset.forName("IBM037"));
+    }
+
 }

@@ -123,7 +123,7 @@ final class TransactionMenuControllerTest {
     @BeforeEach
     void setUp() {
         repository = mock(TransactionRepository.class);
-        browse = mock(Browse.class);
+        browse = positionedBrowse();
         when(repository.startBrowse(any(BrowseDirection.class))).thenReturn(browse);
         when(repository.startBrowse(anyString(), any(BrowseDirection.class))).thenReturn(browse);
         controller = new TransactionMenuController(repository, CODEC, CLOCK);
@@ -198,6 +198,39 @@ final class TransactionMenuControllerTest {
         } else {
             when(browse.readPrev()).thenReturn(all[0], rest);
         }
+        stubPositioningFrom(all[0]);
+    }
+
+    /**
+     * Stubs the {@code STARTBR} outcome to agree with what the browse's first read finds.
+     *
+     * <p>{@code STARTBR ... GTEQ} reports {@code NORMAL} exactly when a record exists at or beyond the
+     * {@code RIDFLD}, which is exactly when the first {@code READNEXT} or {@code READPREV} of that browse
+     * returns one - so a mock whose reads and whose positioning disagreed would describe a state CICS
+     * cannot produce. {@code NOTFND} is the condition a {@code STARTBR} raises for an exhausted position;
+     * an exhausted <em>read</em> is {@code ENDFILE}, and the repository restates it as {@code NOTFND} on
+     * the positioning side, which this mirrors.
+     *
+     * <p>A record-returning read is mirrored as a plain {@code found} position rather than as itself,
+     * because {@code STARTBR} establishes a position without transferring a record: it cannot raise
+     * {@code DUPKEY}, which arises on the read that returns a row whose alternate key duplicates the
+     * next one. Echoing a duplicate read into the position would describe a {@code STARTBR} condition
+     * CICS never raises, and would stop the paragraph before the read that the duplicate belongs to.
+     *
+     * @param first what the first read of this browse reports
+     */
+    private void stubPositioningFrom(ReadResult first) {
+        ReadResult positioning;
+        if (first.isRecordReturned()) {
+            positioning = ReadResult.found(first.ddName(), first.record().orElseThrow());
+        } else if (first.isEndOfFile()) {
+            positioning = ReadResult.notFound(TransactionRepository.CICS_FILE_NAME);
+        } else {
+            positioning = first;
+        }
+        when(browse.positioningResult()).thenReturn(positioning);
+        when(browse.positioningOutcome()).thenReturn(positioning.outcome());
+        when(browse.isStarted()).thenReturn(positioning.isRecordReturned());
     }
 
     /** A request carrying a communication area in the given context - that is, {@code EIBCALEN} non-zero. */
@@ -762,7 +795,9 @@ final class TransactionMenuControllerTest {
             TransactionListResponse response =
                     controller.listTransactions(request(true), CicsAid.DFHENTER, ws);
 
-            assertThat(ws.startbrOutcome()).isEqualTo(Outcome.END_OF_FILE);
+            assertThat(ws.startbrOutcome())
+                    .as(":602-619 has no DFHRESP(ENDFILE) arm - an exhausted STARTBR is NOTFND")
+                    .isEqualTo(Outcome.NOT_FOUND);
             assertThat(ws.isTransactEof()).isTrue();
             assertThat(ws.isErrFlgOn()).as("NOTFND does not set WS-ERR-FLG").isFalse();
             assertThat(ws.message())
@@ -1055,15 +1090,25 @@ final class TransactionMenuControllerTest {
         }
 
         @Test
-        @DisplayName("a duplicate-key response is neither NORMAL nor ENDFILE, so it is WHEN OTHER")
+        @DisplayName("a duplicate-key response is neither NORMAL nor ENDFILE, so the read takes WHEN OTHER")
         void duplicateIsWhenOther() {
             stub(true, ReadResult.duplicate(FILE, tran(1)), endOfFile());
             WorkArea ws = new WorkArea();
 
             controller.listTransactions(request(true), CicsAid.DFHENTER, ws);
 
-            assertThat(ws.startbrOutcome()).isEqualTo(Outcome.DUPLICATE);
+            // DUPKEY is a read condition, not a positioning one: STARTBR establishes a position without
+            // transferring a record, and :602-619 has no DFHRESP(DUPKEY) arm to raise. The position
+            // succeeds here because a record does satisfy it; the duplicate surfaces on the READNEXT that
+            // returns that row, and it is the READNEXT's own WHEN OTHER arm [:646-652] that runs.
+            assertThat(ws.startbrOutcome())
+                    .as("the STARTBR found a record, so it reported NORMAL")
+                    .isEqualTo(Outcome.OK);
             assertThat(ws.isErrFlgOn()).isTrue();
+            assertThat(ws.isTransactEof()).as("WHEN OTHER does not set TRANSACT-EOF").isFalse();
+            assertThat(ws.message())
+                    .isEqualTo(CODEC.movePicX(TransactionMenuController.MSG_UNABLE_TO_LOOKUP,
+                            TransactionMenuController.WS_MESSAGE_LENGTH));
         }
 
         @ParameterizedTest(name = "a read reporting {0}")
@@ -1318,7 +1363,7 @@ final class TransactionMenuControllerTest {
         @DisplayName("the query parameter wins, because only a byte distinguishes PF3 from PF15")
         void parameterWins() {
             TransactionListRequest request = new TransactionListRequest();
-            request.setAid(AidKey.PFK07.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF7));
             assertThat(controller.resolveEibAid(request, CicsAid.DFHPF15 & 0xFF))
                     .isEqualTo(CicsAid.DFHPF15);
             assertThat(controller.resolveEibAid(request, null)).isEqualTo(CicsAid.DFHPF7);
@@ -1352,25 +1397,66 @@ final class TransactionMenuControllerTest {
         }
 
         @Test
-        @DisplayName("an unrecognised token is no key at all, which is the WHEN OTHER arm")
+        @DisplayName("a value that is not one byte is no key at all, which is the WHEN OTHER arm")
         void unrecognisedTokenIsNoKey() {
             assertThat(controller.aidByteOfToken("ZZZZZ")).isEqualTo(CicsAid.DFHNULL);
             assertThat(PfKeyResolver.resolve(CicsAid.DFHNULL)).isEmpty();
         }
 
-        @ParameterizedTest(name = "{0} round-trips")
-        @EnumSource(AidKey.class)
-        @DisplayName("every one of the sixteen tokens maps to a byte the resolver maps back")
-        void everyTokenRoundTrips(AidKey key) {
-            byte resolved = controller.aidByteOfToken(key.token());
-            assertThat(PfKeyResolver.resolve(resolved)).contains(key);
+        @ParameterizedTest(name = "byte {0} round-trips")
+        @ValueSource(ints = {1, 0x40, 0x4B, 0x6B, 0x7D, 0xC1, 0xC8, 0xF1, 0xF3, 0xF8, 0xFC, 255})
+        @DisplayName("the payload's one character IS the byte, across the whole AID space")
+        void everyByteRoundTrips(int unsigned) {
+            byte stated = (byte) unsigned;
+
+            assertThat(controller.aidByteOfToken(PfKeyResolver.aidImage(stated)))
+                    .as("nothing is folded, so PF19 and PF20 survive as themselves")
+                    .isEqualTo(stated);
         }
 
         @Test
-        @DisplayName("a short token is padded by the PIC X move rule before it is matched")
-        void shortTokenIsPadded() {
-            assertThat(controller.aidByteOfToken("PA1")).isEqualTo(CicsAid.DFHPA1);
-            assertThat(AidKey.PA1.token()).isEqualTo("PA1  ");
+        @DisplayName("the blank and LOW-VALUES defaults cost no AID: neither U+0020 nor U+0000 is one")
+        void theNoKeyDefaultsCostNothing() {
+            // "States no key" keeps its ENTER default, and the two images that mean it - a blank field and
+            // a never-written one - are the only two characters not read back as bytes. Neither is an
+            // attention identifier: DFHNULL is X'40' and every DFHAID constant this application reproduces
+            // lies at X'40' or above, so no key becomes unreachable by keeping the default.
+            assertThat(controller.aidByteOfToken(" ")).isEqualTo(CicsAid.DFHENTER);
+            assertThat(controller.aidByteOfToken("\u0000")).isEqualTo(CicsAid.DFHENTER);
+            assertThat(CicsAid.DFHNULL).isEqualTo((byte) 0x40);
+            assertThat(controller.aidByteOfToken(PfKeyResolver.aidImage(CicsAid.DFHNULL)))
+                    .as("X'40' arrives as U+0040, the at-sign, and is read back as DFHNULL itself")
+                    .isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("a CCARD-AID token is not one byte, so it names no key: WHEN OTHER at :129")
+        void aFoldedTokenIsNoLongerDecoded() {
+            // CSSTRPFY folds PF7 onto 'PFK07' together with PF19, and PF8 onto 'PFK08' with PF20; those
+            // are this screen's two paging keys, so decoding a token paged for a key nobody pressed.
+            assertThat(AidKey.PFK07.token()).isEqualTo("PFK07");
+            assertThat(controller.aidByteOfToken("PFK07")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(controller.aidByteOfToken("PA1  ")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(controller.aidByteOfToken("PA1")).isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("PF20 is not PF8: it pages nothing and takes WHEN OTHER, as on a terminal")
+        void highFunctionKeysAreNotFolded() {
+            byte pf20 = controller.aidByteOfToken(PfKeyResolver.aidImage(CicsAid.DFHPF20));
+
+            assertThat(pf20).isEqualTo(CicsAid.DFHPF20);
+            assertThat(TransactionMenuController.isEnterOrPf8(pf20)).isFalse();
+            assertThat(PfKeyResolver.resolve(pf20))
+                    .as("CSSTRPFY does fold it onto PFK08 - which is why the token is not the input")
+                    .contains(AidKey.PFK08);
+        }
+
+        @Test
+        @DisplayName("a character above the one-byte AID space is DFHNULL, never narrowed onto PF8")
+        void aCharacterAboveTheAidSpaceIsDfhnull() {
+            assertThat(controller.aidByteOfToken(String.valueOf((char) 0x01F8)))
+                    .isEqualTo(CicsAid.DFHNULL);
         }
 
         @Test
@@ -1457,7 +1543,9 @@ final class TransactionMenuControllerTest {
             TransactBrowse handle = TransactBrowse.position(repository, BrowseDirection.FORWARD,
                     Ridfld.lowValues());
 
-            assertThat(handle.positioningOutcome().isEndOfFile()).isTrue();
+            assertThat(handle.positioningOutcome().isNotFound())
+                    .as("a STARTBR that finds nothing raises NOTFND, not ENDFILE")
+                    .isTrue();
             verify(browse).endBrowse();
         }
 
@@ -2041,7 +2129,7 @@ final class TransactionMenuControllerTest {
         void theOneArgumentEntryPointReadsThePayloadToken() {
             forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
             TransactionListRequest onEnter = request(true);
-            onEnter.setAid(AidKey.ENTER.token());
+            onEnter.setAid(PfKeyResolver.aidImage(CicsAid.DFHENTER));
 
             TransactionListResponse painted = controller.listTransactions(onEnter);
 
@@ -2053,7 +2141,7 @@ final class TransactionMenuControllerTest {
         @DisplayName("the one-argument entry point honours a function key token")
         void theOneArgumentEntryPointHonoursAFunctionKey() {
             TransactionListRequest request = request(true);
-            request.setAid(AidKey.PFK03.token());
+            request.setAid(PfKeyResolver.aidImage(CicsAid.DFHPF3));
 
             assertThat(controller.listTransactions(request).getNextProgram()).isEqualTo("COMEN01C");
         }
@@ -3086,6 +3174,29 @@ final class TransactionMenuControllerTest {
             verify(repository, never()).startBrowse(any(BrowseDirection.class));
             verify(repository, never()).startBrowse(anyString(), any(BrowseDirection.class));
         }
+    }
+
+
+    /**
+     * A mocked {@code TRANSACT} browse whose {@code STARTBR} positioned successfully.
+     *
+     * <p>{@link TransactionRepository#startBrowse(TransactionRepository.BrowseDirection)} issues the
+     * position as a real operation and reports what it found, so a handle carries a positioning outcome
+     * that its caller's {@code EVALUATE WS-RESP-CD} branches on. A bare mock reports {@code null} for it,
+     * which is not a state a real handle can be in - so every mock is built here with the successful arm
+     * stubbed, and a test that wants {@code NOTFND} or {@code WHEN OTHER} re-stubs it.
+     *
+     * @return the mock; never {@code null}
+     */
+    private static Browse positionedBrowse() {
+        Browse handle = mock(Browse.class);
+        when(handle.positioningResult()).thenReturn(
+                TransactionRepository.ReadResult.found(TransactionRepository.CICS_FILE_NAME,
+                        new com.vsergeychik.carddemo.transaction.model.TranRecord(
+                                java.nio.charset.StandardCharsets.US_ASCII)));
+        when(handle.positioningOutcome()).thenReturn(Outcome.OK);
+        when(handle.isStarted()).thenReturn(true);
+        return handle;
     }
 
 }

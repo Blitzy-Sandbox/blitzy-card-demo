@@ -113,9 +113,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  *
  * <h2>How the unit is reached: no HTTP, no launcher, no container</h2>
  *
- * <p>Sixteen cases construct {@link AdminMenuService} directly and call it as a plain object
- * ({@link UnitKind#SERVICE}); four construct {@link AdminMenuController} and invoke its handler
- * method directly ({@link UnitKind#CONTROLLER_POJO}), which is the only way to observe the six
+ * <p>Seventeen cases construct {@link AdminMenuService} directly and call it as a plain object
+ * ({@link UnitKind#SERVICE}); three - {@code case01}, {@code case02} and {@code case15} - construct
+ * {@link AdminMenuController} and invoke its handler method directly
+ * ({@link UnitKind#CONTROLLER_POJO}), which is the only way to observe the six
  * header fields {@code POPULATE-HEADER-INFO} renders and the seventy-eight-byte {@code ERRMSGO} the
  * eighty-byte {@code WS-MESSAGE} is truncated into. There is no {@code MockMvc}, no
  * {@code TestRestTemplate}, no {@code WebTestClient}, no {@code JobLauncher}, no application context
@@ -246,6 +247,29 @@ class COADM01CParityTest {
             "COUSR01C",   // app/cpy/COADM02Y.cpy:32
             "COUSR02C",   // app/cpy/COADM02Y.cpy:37
             "COUSR03C");  // app/cpy/COADM02Y.cpy:42
+
+    /**
+     * The {@link ParityCase.UnitStimulus#PERMITTED_ENVIRONMENT_KEYS} entry a case names to run over an
+     * option table other than the copybook's own.
+     *
+     * <p>The {@code OCCURS 9} slots past {@code app/cpy/COADM02Y.cpy}'s four populated entries are
+     * storage rather than data, and no dataset seeds them, so the table is the one input to this
+     * program that cannot be expressed as a seeded row. That is precisely why the key exists.
+     */
+    private static final String MENU_TABLE_VARIANT_KEY = "MENU_TABLE_VARIANT";
+
+    /**
+     * The one {@code MENU_TABLE_VARIANT} value this program has a branch for: a single-entry table
+     * whose program name carries the {@code 'DUMMY'} prefix {@code app/cbl/COADM01C.cbl:138} tests.
+     */
+    private static final String DUMMY_PREFIX_TABLE_VARIANT = "DUMMY_PREFIX_FIRST_ENTRY";
+
+    /**
+     * The program name that variant injects - {@link AdminMenuService#DUMMY_PROGRAM_PREFIX} followed by
+     * three ordinary name characters, at the {@code PIC X(08)} width every
+     * {@code CDEMO-ADMIN-OPT-PGMNAME} carries.
+     */
+    private static final String DUMMY_OPTION_PROGRAM = "DUMMY001";
 
     /** {@code CCDA-TITLE01} - {@code app/cpy/COTTL01Y.cpy}, {@code PIC X(40)}. */
     private static final String CCDA_TITLE01 = "      AWS Mainframe Modernization       ";
@@ -381,9 +405,9 @@ class COADM01CParityTest {
             List.of("repository", "jdbctemplate", "datasource", "connection", "entitymanager");
 
     // =================================================================================================
-    // Section 5 - case dispatch. Every one of the twenty case identifiers appears exactly once, and
-    // the absence of a default arm is deliberate: a new case that nobody wired up must not run
-    // through some fallback adapter and pass.
+    // Section 5 - case dispatch, by declared unit kind. There is no table of case identifiers here and
+    // no arm keyed on one: a case's own unitKind selects its adapter, so a renumbered case keeps the
+    // adapter it declares and a case file added without a Java change is dispatched correctly.
     // =================================================================================================
 
     /**
@@ -395,15 +419,6 @@ class COADM01CParityTest {
      * field holds no mutable state.
      */
     private static final Map<String, Byte> AID_BY_MNEMONIC = aidByMnemonic();
-
-    /** Case identifiers driven through {@link AdminMenuController} as a plain Java object. */
-    private static final List<String> CONTROLLER_CASES =
-            List.of("case01", "case02", "case15");
-
-    /** Case identifiers driven through {@link AdminMenuService} with the copybook option table. */
-    private static final List<String> SERVICE_CASES =
-            List.of("case03", "case04", "case05", "case06", "case07", "case09", "case10", "case11",
-                    "case12", "case13", "case14", "case19", "case20");
 
     // =================================================================================================
     // Section 6 - the gate itself.
@@ -488,50 +503,125 @@ class COADM01CParityTest {
     }
 
     /**
-     * Every case is dispatched by name, and the two dispatch lists partition the twenty.
+     * Every case resolves to an adapter, and the adapter it resolves to is the one its declared unit
+     * kind names.
      *
-     * <p>{@link #unitFor(ParityCase)} has no fallback arm, so a case nobody wired up throws rather
-     * than running through some default adapter and reporting a clean diff for the wrong reason. This
-     * test is what turns that throw into a named failure at build time.
+     * <p>{@link #unitFor(ParityCase)} reads {@link ParityCase#unitKind()} and nothing else, so this is
+     * total by construction rather than by a table someone has to keep in step with the directory.
+     * What is worth asserting is that the totality is real: every case yields a non-null adapter, and
+     * the two kinds partition the twenty with no case declaring a kind this program has no adapter for
+     * - a {@code BATCH_JOB} or {@code SUBPROGRAM} declaration on an online transaction would otherwise
+     * fall into the service arm and run.
      */
     @Test
-    @DisplayName("dispatches all twenty cases by name, with no case falling through")
-    void everyCaseIsDispatchedByName() {
+    @DisplayName("resolves every case to the adapter its declared unit kind names")
+    void everyCaseIsDispatchedByItsDeclaredUnitKind() {
         List<String> dispatched = new ArrayList<>();
         for (ParityCase parityCase : cases()) {
             assertThat(unitFor(parityCase))
-                    .describedAs("%s has no adapter", parityCase.caseId())
+                    .describedAs("%s resolves to no adapter", parityCase.caseId())
                     .isNotNull();
+            assertThat(parityCase.unitKind())
+                    .describedAs("%s declares %s, and %s is an online transaction reached as either a "
+                            + "service or a controller; no other kind has an adapter here",
+                            parityCase.caseId(), parityCase.unitKind(), PROGRAM)
+                    .isIn(UnitKind.SERVICE, UnitKind.CONTROLLER_POJO);
             dispatched.add(parityCase.caseId());
         }
 
         assertThat(dispatched).hasSize(ParityHarness.CASES_PER_PROGRAM).doesNotHaveDuplicates();
-        assertThat(CONTROLLER_CASES).doesNotHaveDuplicates();
-        assertThat(SERVICE_CASES).doesNotHaveDuplicates();
-        assertThat(CONTROLLER_CASES).doesNotContainAnyElementsOf(SERVICE_CASES);
     }
 
     /**
-     * The declared unit kind matches the adapter that will be used, for every case.
+     * The declared unit kinds are exactly seventeen {@link UnitKind#SERVICE} and three
+     * {@link UnitKind#CONTROLLER_POJO}, and the three are the ones the class documentation names.
      *
-     * <p>{@link ParityHarness#run(ParityCase, UnitKind, ParityUnit)} already refuses a mismatch, but
-     * it refuses it one case at a time and only when that case runs. Checking the whole set here
-     * turns a mis-declared fixture into one failure that names it.
+     * <p>{@link ParityHarness#run(ParityCase, UnitKind, ParityUnit)} already refuses a mismatch between
+     * the declared kind and the adapter, but it refuses it one case at a time and only when that case
+     * runs. Counting the whole set here turns a mis-declared fixture into one failure that names it,
+     * and pins the distribution the class documentation states so the prose cannot drift away from the
+     * directory - which it had, claiming sixteen and four.
      */
     @Test
-    @DisplayName("declares SERVICE for the seventeen service cases and CONTROLLER_POJO for the three")
-    void everyCaseDeclaresTheUnitKindItsAdapterConstructs() {
+    @DisplayName("declares SERVICE for seventeen cases and CONTROLLER_POJO for case01, case02, case15")
+    void theDeclaredUnitKindsAreSeventeenServicesAndThreeControllers() {
+        List<String> controllers = cases().stream()
+                .filter(one -> one.unitKind() == UnitKind.CONTROLLER_POJO)
+                .map(ParityCase::caseId)
+                .toList();
+        List<String> services = cases().stream()
+                .filter(one -> one.unitKind() == UnitKind.SERVICE)
+                .map(ParityCase::caseId)
+                .toList();
+
+        assertThat(controllers)
+                .describedAs("the three cases that need the controller are the ones observing the six "
+                        + "POPULATE-HEADER-INFO fields and the 78-byte ERRMSGO truncation")
+                .containsExactly("case01", "case02", "case15");
+        assertThat(services)
+                .describedAs("every other case reaches AdminMenuService directly")
+                .hasSize(ParityHarness.CASES_PER_PROGRAM - controllers.size());
+        assertThat(services.size() + controllers.size())
+                .isEqualTo(ParityHarness.CASES_PER_PROGRAM);
+    }
+
+    /**
+     * Both terms of the combined relation at {@code app/cbl/COADM01C.cbl:162} are actually declared by
+     * some case, so the pair that pins them cannot quietly collapse into one.
+     *
+     * <p>Line 162 tests {@code CDEMO-TO-PROGRAM} against {@code LOW-VALUES} <strong>or</strong>
+     * {@code SPACES} and defaults to {@code COSGN00C} for either. The two terms converge, which is
+     * exactly why two cases pinning the same target are easy to mistake for duplicates - and why a
+     * fixture whose binary zeros degraded into spaces would still pass while testing one term twice.
+     * This requires the {@code EIBCALEN = 0} cases to declare between them one all-{@code LOW-VALUES}
+     * image and one area that arrives with no {@code CDEMO-TO-PROGRAM} at all, which is the cold-start
+     * working-storage area this projection presents as spaces.
+     *
+     * <p>{@link #assertSignonDefaultingRelation(Invocation, AdminMenuService, AdminMenuOutcome)} then
+     * drives both terms on every one of those runs. This test is what guarantees there is more than one
+     * such run to drive them on.
+     */
+    @Test
+    @DisplayName("declares both the LOW-VALUES and the SPACES term of the line 162 relation")
+    void theCaseSetDeclaresBothTermsOfTheSignonDefaultingRelation() {
+        String unpainted = ScreenFieldImage.unpainted(NavigationContext.TO_PROGRAM_LENGTH);
+        List<String> coldStart = new ArrayList<>();
+        List<String> declaringLowValues = new ArrayList<>();
+        List<String> declaringNoToProgram = new ArrayList<>();
+
         for (ParityCase parityCase : cases()) {
-            UnitKind expected = CONTROLLER_CASES.contains(parityCase.caseId())
-                    ? UnitKind.CONTROLLER_POJO
-                    : UnitKind.SERVICE;
-            assertThat(parityCase.unitKind())
-                    .describedAs("%s is dispatched as %s but declares %s", parityCase.caseId(),
-                            expected, parityCase.unitKind())
-                    .isEqualTo(expected);
+            if (parityCase.screenRequest().eibcalen() != 0) {
+                continue;
+            }
+            coldStart.add(parityCase.caseId());
+            String image = parityCase.screenRequest().commarea()
+                    .get(NavigationContext.TO_PROGRAM_FIELD);
+            if (image == null) {
+                declaringNoToProgram.add(parityCase.caseId());
+            } else {
+                assertThat(image)
+                        .describedAs("%s declares %s on the EIBCALEN = 0 path, and the only image "
+                                + "worth declaring there is the LOW-VALUES term itself; anything else "
+                                + "would be a third spelling of a two-term relation",
+                                parityCase.caseId(), NavigationContext.TO_PROGRAM_FIELD)
+                        .isEqualTo(unpainted);
+                declaringLowValues.add(parityCase.caseId());
+            }
         }
-        assertThat(cases().stream().filter(one -> one.unitKind() == UnitKind.CONTROLLER_POJO).count())
-                .isEqualTo(CONTROLLER_CASES.size());
+
+        assertThat(coldStart)
+                .describedAs("lines 82-84 divert on EIBCALEN = 0, and that diversion is the only path "
+                        + "on which a signon target is resolved at all")
+                .isNotEmpty();
+        assertThat(declaringLowValues)
+                .describedAs("some case must declare CDEMO-TO-PROGRAM as X'00' at every one of its %d "
+                        + "declared bytes, or the LOW-VALUES term of line 162 is never the term under "
+                        + "test", NavigationContext.TO_PROGRAM_LENGTH)
+                .isNotEmpty();
+        assertThat(declaringNoToProgram)
+                .describedAs("and some case must arrive with no area at all, which is the un-VALUEd "
+                        + "working storage this projection presents as spaces - the other term")
+                .isNotEmpty();
     }
 
     /**
@@ -606,10 +696,24 @@ class COADM01CParityTest {
                                 field.getKey())
                         .isEqualTo(commareaWidths.get(field.getKey()));
             }
-            assertThat(parityCase.expectedResponse().navigation())
-                    .describedAs("%s must pin all sixteen COMMAREA fields, because the differ compares "
-                            + "the navigation context in both directions", parityCase.caseId())
-                    .hasSameSizeAs(commareaWidths);
+            // A case states the communication area completely or states its absence completely; a
+            // partial map would leave the unpinned fields unchecked in both directions. Absence is only
+            // reachable through the bare XCTL PROGRAM(CDEMO-TO-PROGRAM) at
+            // app/cbl/COADM01C.cbl:165-167, which names no COMMAREA option - a RETURN always carries the
+            // area, because line 109 states COMMAREA(CARDDEMO-COMMAREA) unconditionally.
+            if (parityCase.expectedResponse().navigation().isEmpty()) {
+                assertThat(parityCase.expectedResponse().termination())
+                        .describedAs("%s pins no COMMAREA field, which only the no-COMMAREA transfer at "
+                                + "app/cbl/COADM01C.cbl:165-167 can produce; a RETURN always carries the area",
+                                parityCase.caseId())
+                        .isEqualTo(ParityCase.Termination.XCTL);
+            } else {
+                assertThat(parityCase.expectedResponse().navigation())
+                        .describedAs("%s must pin all sixteen COMMAREA fields, because the differ "
+                                + "compares the navigation context in both directions",
+                                parityCase.caseId())
+                        .hasSameSizeAs(commareaWidths);
+            }
 
             for (var send : parityCase.expectedResponse().sends()) {
                 for (Map.Entry<String, String> field : send.fields().entrySet()) {
@@ -792,38 +896,41 @@ class COADM01CParityTest {
     }
 
     // =================================================================================================
-    // Section 8 - the adapters. One per shape, chosen by case identifier, each constructing its unit
-    // and calling it as a plain object. Assertions that need the unit itself live inside the adapter,
-    // where the instance is in scope; an AssertionError raised there is an Error rather than an
-    // Exception, so the harness lets it through untouched and the failure reads at its own call site.
+    // Section 8 - the adapters. Two, one per declared unit kind, each constructing its unit and calling
+    // it as a plain object. Assertions that need the unit itself live inside the adapter, where the
+    // instance is in scope; an AssertionError raised there is an Error rather than an Exception, so the
+    // harness lets it through untouched and the failure reads at its own call site. Probes that used to
+    // be adapters of their own are applied here instead - unconditionally where they hold on every
+    // path, and otherwise guarded by the declaration that produces the run rather than by an ordinal.
     // =================================================================================================
 
     /**
-     * The adapter one case is run through, selected by name.
+     * The adapter one case is run through, selected by the unit kind the case declares.
      *
-     * <p>No fallback arm, deliberately: a case identifier nobody wired up throws here instead of
-     * running through a default adapter and reporting a clean diff for the wrong reason.
+     * <h2>Why this is two arms and not eight</h2>
+     * <p>It used to be a {@code switch} over {@code case01}..{@code case20} choosing between seven
+     * adapters, and that is the defect it now fixes. Six of the seven were the service adapter plus one
+     * extra probe - the signon-defaulting relation, the {@code DUMMY} prefix branch, the seeded security
+     * file, the unreferenced working storage, the statelessness round trip - and attaching a probe to an
+     * ordinal meant three things went wrong at once. A case file gave no indication which probe it was
+     * subject to; renumbering a case silently moved the probe to a different run; and the probes that
+     * were <em>unconditionally</em> true - the dead working storage is dead on every path, and a
+     * stateless service is stateless on every path - were asserted for exactly one case out of
+     * seventeen.
+     *
+     * <p>{@link #runService(Invocation)} now applies every probe. The ones that hold universally hold
+     * for all seventeen service cases, and the ones that depend on the run are guarded by the
+     * <em>declaration that produces that run</em>: a seeded dataset, a {@code CDEMO-TO-PROGRAM} of
+     * low-values, a declared {@code MENU_TABLE_VARIANT}. Nothing reads {@link ParityCase#caseId()} to
+     * decide anything.
      *
      * @param parityCase the case about to run
      * @return how to construct and call its unit
-     * @throws IllegalArgumentException if the case identifier has no adapter
      */
     private static ParityUnit unitFor(ParityCase parityCase) {
-        return switch (parityCase.caseId()) {
-            case "case01", "case02", "case15" -> COADM01CParityTest::runController;
-            case "case03" -> COADM01CParityTest::runSignonDefaultingGuard;
-            case "case08" -> COADM01CParityTest::runDummyPrefixBranch;
-            case "case16" -> COADM01CParityTest::runWithSecurityFileSeeded;
-            case "case17" -> COADM01CParityTest::runWithUnusedWorkingStorageChecked;
-            case "case18" -> COADM01CParityTest::runThreeTimesForStatelessness;
-            case "case04", "case05", "case06", "case07", "case09", "case10", "case11",
-                    "case12", "case13", "case14", "case19",
-                    "case20" -> COADM01CParityTest::runService;
-            default -> throw new IllegalArgumentException("Case " + parityCase.caseId()
-                    + " of " + PROGRAM + " has no adapter. Every case is dispatched by name and there "
-                    + "is no fallback, because a case running through some default adapter would "
-                    + "report a diff count of zero for a run nobody chose.");
-        };
+        return parityCase.unitKind() == UnitKind.CONTROLLER_POJO
+                ? COADM01CParityTest::runController
+                : COADM01CParityTest::runService;
     }
 
     /**
@@ -835,77 +942,269 @@ class COADM01CParityTest {
      * {@code EXEC CICS XCTL} sends no map - so on those paths there is no {@code ScreenSend} to carry
      * the echoed value and it is checked here instead.
      *
+     * <h2>Every probe, on every service case</h2>
+     * <p>Five further probes used to be five separate adapters, each reached by naming an ordinal.
+     * They are applied here instead, and what selects them is the declaration that produces the run
+     * rather than the case's number:
+     * <ul>
+     *   <li>{@linkplain #assertDeadWorkingStorageStaysDead the two declarations {@code COADM01C} never
+     *       references} and {@linkplain #assertStatelessAcrossThreeCalls statelessness across three
+     *       calls} are <strong>unconditional</strong>. Dead storage is dead on every path and a
+     *       stateless service is stateless on every path, so asserting them for one case in seventeen
+     *       understated both. Now every service case carries them.</li>
+     *   <li>{@linkplain #assertSeededDatasetsAreUntouched a seeded dataset is left exactly as seeded},
+     *       guarded by the case having seeded one. Only the case that seeds {@code USRSEC} can assert
+     *       anything about {@code USRSEC}.</li>
+     *   <li>{@linkplain #assertSignonDefaultingRelation the two terms of the combined relation at
+     *       line 162}, guarded by the run having taken the {@code EIBCALEN = 0} diversion at lines 82
+     *       to 84 - which is the only path on which a signon target is resolved at all.</li>
+     *   <li>{@linkplain #assertDummyPrefixBranch the unreachable {@code 'DUMMY'} prefix branch at
+     *       line 138}, guarded by the case declaring {@code MENU_TABLE_VARIANT}. This is the one probe
+     *       that changes what the unit is handed, so it is the one that needs a declared control, and
+     *       {@link ParityCase.UnitStimulus#PERMITTED_ENVIRONMENT_KEYS} already names the key.</li>
+     * </ul>
+     *
      * @param invocation the seeded inputs, the pinned clock and the codec
      * @return {@code null}, meaning the recorder holds the observation
      */
     private static UnitOutcome runService(Invocation invocation) {
         AdminMenuService service = service(invocation.codec());
         AdminMenuInput input = inputOf(invocation);
+        AdminMenuOptionTable declaredTable = declaredOptionTable(invocation);
+        Map<String, List<String>> seededBefore = snapshotOfSeededRows(invocation);
 
-        AdminMenuOutcome outcome = service.handle(input);
+        SecUserRecord deadStorageBefore = service.secUserData();
+        assertThat(deadStorageBefore)
+                .describedAs("SEC-USER-DATA has no VALUE clause, so an initialised copy is blank")
+                .isEqualTo(SecUserRecord.blank());
+
+        AdminMenuOutcome outcome = handle(service, input, declaredTable);
 
         assertServiceInvariants(service, input, outcome);
+        assertDeadWorkingStorageStaysDead(service, deadStorageBefore, outcome);
+        assertStatelessAcrossThreeCalls(invocation, input, declaredTable, outcome);
+        assertSeededDatasetsAreUntouched(invocation, seededBefore, service);
+        if (invocation.eibcalen() == 0) {
+            assertSignonDefaultingRelation(invocation, service, outcome);
+        }
+        if (declaredTable != null) {
+            assertDummyPrefixBranch(declaredTable, outcome);
+        }
+
         recordServiceOutcome(invocation, outcome);
         return null;
     }
 
     /**
-     * {@code case03}: the {@code LOW-VALUES} term of the combined relation at
-     * {@code app/cbl/COADM01C.cbl:162}.
+     * Calls the service the way the case declared it, with or without an injected option table.
      *
-     * <p>Runs the {@code EIBCALEN = 0} path exactly as {@link #runService(Invocation)} does - lines 82
-     * to 84 divert to {@code RETURN-TO-SIGNON-SCREEN}, and the transfer that produces is the
-     * observation - and then drives the relation itself with the {@code CDEMO-TO-PROGRAM} image the
-     * case declares. That second step belongs here rather than in the case's expectation because the
-     * relation's two terms are not both reachable through {@code handle}: line 97 has already written
-     * a name on the one path that arrives carrying a communication area, and the cold-start path
-     * arrives with the un-{@code VALUE}d working-storage area, which the source holds as binary zeros
-     * and this projection's {@code NavigationContext#empty()} presents as spaces.
-     * {@link AdminMenuService#resolveSignonTarget(String)} is public for exactly that reason, and this
-     * is the adapter that uses it.
-     *
-     * <p>The declared image is required to be all low-values at the field's declared width, so the
-     * fixture cannot quietly degrade into the spaces {@code case01} declares and collapse the pair
-     * into one case. Both terms are then required to converge on the single target the run named, and
-     * a half-and-half image is required to satisfy neither - which is what stops a translation that
-     * had replaced the relation with one blank test from passing both halves of the pair.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
+     * @param service the service under test
+     * @param input the three values the program consults
+     * @param declaredTable the injected table, or {@code null} to run over the copybook's own
+     * @return what the service produced
      */
-    private static UnitOutcome runSignonDefaultingGuard(Invocation invocation) {
-        AdminMenuService service = service(invocation.codec());
-        AdminMenuInput input = inputOf(invocation);
+    private static AdminMenuOutcome handle(AdminMenuService service, AdminMenuInput input,
+                                           AdminMenuOptionTable declaredTable) {
+        return declaredTable == null ? service.handle(input) : service.handle(input, declaredTable);
+    }
 
-        AdminMenuOutcome outcome = service.handle(input);
+    /**
+     * The option table a case declares through {@code MENU_TABLE_VARIANT}, or {@code null} for the
+     * copybook's own.
+     *
+     * <p>{@code app/cpy/COADM02Y.cpy} names no program beginning {@code DUMMY}, so the branch at
+     * {@code app/cbl/COADM01C.cbl:138} cannot be reached from the copybook table at all - and it must
+     * still be exercised, because dead and unreachable code is preserved rather than cleaned up. The
+     * table this returns therefore differs from the copybook's first entry in <strong>nothing but the
+     * program name</strong>: same option number, same {@code PIC X(35)} name, so the program name is
+     * the only variable under test and the composed {@code OPTN001O} line stays byte-identical to the
+     * real one.
+     *
+     * <p>An unrecognised variant is refused rather than ignored. A control an adapter silently drops
+     * is a case that passes for the wrong reason, which is precisely the failure the declared stimulus
+     * exists to remove.
+     *
+     * @param invocation the run, whose declared stimulus names the variant if it needs one
+     * @return the injected table, or {@code null} when the case declares no variant
+     * @throws IllegalArgumentException if the case names a variant this adapter does not implement
+     */
+    private static AdminMenuOptionTable declaredOptionTable(Invocation invocation) {
+        String variant = invocation.stimulus()
+                .environmentValue(MENU_TABLE_VARIANT_KEY)
+                .orElse(null);
+        if (variant == null) {
+            return null;
+        }
+        if (!DUMMY_PREFIX_TABLE_VARIANT.equals(variant)) {
+            throw new IllegalArgumentException(invocation.caseId() + " declares MENU_TABLE_VARIANT '"
+                    + variant + "', and the only variant " + PROGRAM + " has a branch for is '"
+                    + DUMMY_PREFIX_TABLE_VARIANT + "'. Honouring an unknown variant by running the "
+                    + "copybook table would make the declaration do nothing in silence.");
+        }
+        return singleEntryTable(AdminMenuOption.of(1, OPTION_NAMES.get(0), DUMMY_OPTION_PROGRAM));
+    }
 
-        assertServiceInvariants(service, input, outcome);
+    /**
+     * The rows every seeded dataset holds before the run, so "nothing was touched" can be asserted
+     * rather than assumed.
+     *
+     * @param invocation the run, whose datasets are whatever the case seeded
+     * @return the rows per binding key, in declaration order
+     */
+    private static Map<String, List<String>> snapshotOfSeededRows(Invocation invocation) {
+        Map<String, List<String>> snapshot = new LinkedHashMap<>();
+        invocation.datasets()
+                .forEach((key, dataset) -> snapshot.put(key, List.copyOf(dataset.rows())));
+        return snapshot;
+    }
+
+    /**
+     * Requires every seeded row to survive the run byte for byte, and the translation to hold no
+     * data-access collaborator at all.
+     *
+     * <p>{@code COADM01C} opens no dataset. The second half is what makes the emptiness of both record
+     * channels a property of the code rather than of one particular input: a service with no
+     * repository field cannot have read anything, whatever it was handed.
+     *
+     * @param invocation the run
+     * @param before the rows each dataset held before the run
+     * @param service the service the run went through
+     */
+    private static void assertSeededDatasetsAreUntouched(Invocation invocation,
+                                                         Map<String, List<String>> before,
+                                                         AdminMenuService service) {
+        before.forEach((key, rows) -> {
+            SeededDataset dataset = invocation.dataset(key);
+            if (USRSEC_DATASET_KEY.equals(key)) {
+                assertThat(dataset.recordLength())
+                        .describedAs("app/cpy/CSUSR01Y.cpy declares SEC-USER-DATA at 80 bytes, so the "
+                                + "seed must have been padded from the 57 characters "
+                                + "app/jcl/DUSRSECJ.jcl carries")
+                        .isEqualTo(SecUserRecord.RECORD_LENGTH);
+            }
+            assertThat(dataset.rows())
+                    .describedAs("%s opens no dataset, so every row seeded into %s must be exactly as "
+                            + "it was seeded", PROGRAM, key)
+                    .isEqualTo(rows);
+        });
+        assertNoDataAccessCollaborator(service);
+    }
+
+    /**
+     * Requires the two declarations {@code COADM01C} never references to stay dead.
+     *
+     * <p>{@code COPY CSUSR01Y} at {@code app/cbl/COADM01C.cbl:58} and {@code WS-USRSEC-FILE} at
+     * {@code :39} are both dead, and both survive the translation because a declaration is part of
+     * what the program is. The record is compared before and after, so "never read" is asserted as
+     * "never changed and never disclosed" rather than assumed.
+     *
+     * @param service the service the run went through
+     * @param before the record as it stood before the run
+     * @param outcome what the run produced
+     */
+    private static void assertDeadWorkingStorageStaysDead(AdminMenuService service,
+                                                          SecUserRecord before,
+                                                          AdminMenuOutcome outcome) {
+        assertThat(service.secUserData())
+                .describedAs("not one of SEC-USER-DATA's six fields is read or written by %s, so the "
+                        + "record is unchanged by a whole invocation", PROGRAM)
+                .isEqualTo(before)
+                .isEqualTo(SecUserRecord.blank());
+        assertThat(service.usrSecFileName())
+                .describedAs("WS-USRSEC-FILE VALUE 'USRSEC  ' - the logical file name padded to its "
+                        + "declared PIC X(08), with the source literal's two trailing spaces intact")
+                .isEqualTo(USRSEC_FILE_NAME)
+                .hasSize(USRSEC_FILE_NAME_LENGTH);
+        assertThat(observableStrings(outcome))
+                .describedAs("neither dead declaration may leak onto the screen: WS-USRSEC-FILE is "
+                        + "never moved anywhere, so its value must appear in no field of the response")
+                .noneMatch(image -> image.contains(USRSEC_DATASET_KEY));
+    }
+
+    /**
+     * Requires the same invocation to produce the same outcome three times over.
+     *
+     * <p>Twice against one service instance and once against a freshly constructed one. All three
+     * outcomes must be equal: a translation holding {@code WS-ERR-FLG}, {@code WS-MESSAGE} or
+     * {@code WS-OPTION} in a field of a singleton bean would leak the first call into the second, and
+     * a translation keeping the communication area in a server-side session would have nothing to
+     * return. Only the outcome the caller already holds is reported, because one invocation produces
+     * one response.
+     *
+     * @param invocation the run, for the codec each fresh service is built over
+     * @param input the three values the program consults
+     * @param declaredTable the injected table, or {@code null}
+     * @param first the outcome the caller will report
+     */
+    private static void assertStatelessAcrossThreeCalls(Invocation invocation, AdminMenuInput input,
+                                                        AdminMenuOptionTable declaredTable,
+                                                        AdminMenuOutcome first) {
+        AdminMenuService shared = service(invocation.codec());
+        assertThat(handle(shared, input, declaredTable))
+                .describedAs("a second service instance handed the identical input must produce the "
+                        + "identical outcome; anything else means the outcome depended on something "
+                        + "outside the request")
+                .isEqualTo(first);
+        assertThat(handle(shared, input, declaredTable))
+                .describedAs("and a second call on that same instance must produce it again; anything "
+                        + "else means per-request working storage became a field")
+                .isEqualTo(first);
+        assertThat(first.navigationContext())
+                .describedAs("the communication area travels in the payload, which is the only reason "
+                        + "it is comparable at all")
+                .isNotNull();
+        assertNoMutableState(shared);
+    }
+
+    /**
+     * Both terms of the combined relation at {@code app/cbl/COADM01C.cbl:162}.
+     *
+     * <p>Reached on the {@code EIBCALEN = 0} path alone - lines 82 to 84 divert to
+     * {@code RETURN-TO-SIGNON-SCREEN}, and the transfer that produces is the observation. The relation
+     * itself is then driven directly, because its two terms are not both reachable through
+     * {@code handle}: line 97 has already written a name on the one path that arrives carrying a
+     * communication area, and the cold-start path arrives with the un-{@code VALUE}d working-storage
+     * area, which the source holds as binary zeros and this projection's {@code NavigationContext#empty()}
+     * presents as spaces. {@link AdminMenuService#resolveSignonTarget(String)} is public for exactly
+     * that reason, and this is the code that uses it.
+     *
+     * <p>Both terms are required to converge on the single target the run named, and a half-and-half
+     * image is required to satisfy neither - which is what stops a translation that had replaced the
+     * relation with one blank test from passing. The case set's own guarantee that both images are
+     * actually declared somewhere is asserted separately, by
+     * {@link #theCaseSetDeclaresBothTermsOfTheSignonDefaultingRelation()}.
+     *
+     * @param invocation the run, whose declared commarea supplies the image under test
+     * @param service the service the run went through
+     * @param outcome what the run produced
+     */
+    private static void assertSignonDefaultingRelation(Invocation invocation,
+                                                       AdminMenuService service,
+                                                       AdminMenuOutcome outcome) {
         assertThat(outcome.nextProgramCarriesCommarea())
                 .describedAs("the XCTL at 165-167 specifies NO COMMAREA, unlike the one at 142-145, "
                         + "and an absent commarea is the condition COSGN00C's own EIBCALEN = 0 test "
                         + "looks for")
                 .isFalse();
 
-        String declared = invocation.commarea().get(NavigationContext.TO_PROGRAM_FIELD);
-        assertThat(declared)
-                .describedAs("%s exists to drive the LOW-VALUES term of line 162, so it must declare "
-                        + "%s as X'00' at every one of its declared bytes; spaces are case01's input "
-                        + "and would collapse the two cases into one", invocation.caseId(),
-                        NavigationContext.TO_PROGRAM_FIELD)
-                .isEqualTo(ScreenFieldImage.unpainted(NavigationContext.TO_PROGRAM_LENGTH));
-
+        String declared = declaredToProgramImage(invocation);
         String target = picX(SIGNON_PROGRAM, NavigationContext.TO_PROGRAM_LENGTH);
-        assertThat(service.resolveSignonTarget(declared))
+        assertThat(service.resolveSignonTarget(ScreenFieldImage
+                        .unpainted(NavigationContext.TO_PROGRAM_LENGTH)))
                 .describedAs("term one: a CDEMO-TO-PROGRAM of binary zeros defaults to 'COSGN00C' at "
                         + "line 163")
                 .isEqualTo(target);
         assertThat(service.resolveSignonTarget(spaces(NavigationContext.TO_PROGRAM_LENGTH)))
-                .describedAs("term two, which is the term this projection's cold-start area takes and "
-                        + "the one case01 pins; the two converge, and that convergence is why the pair "
-                        + "carries one expectation between them")
+                .describedAs("term two, which is the term this projection's cold-start area takes; "
+                        + "the two converge, and that convergence is why the cases that declare each "
+                        + "of them carry the same expectation")
+                .isEqualTo(target);
+        assertThat(service.resolveSignonTarget(declared))
+                .describedAs("and the image %s itself declares, whichever term it is, resolves to the "
+                        + "same target", invocation.caseId())
                 .isEqualTo(target);
         assertThat(picX(outcome.nextProgram(), NavigationContext.TO_PROGRAM_LENGTH))
-                .describedAs("and the target both terms produce is the program the run transferred to")
+                .describedAs("which is the program the run transferred to")
                 .isEqualTo(target);
 
         String halfAndHalf = ScreenFieldImage.unpainted(NavigationContext.TO_PROGRAM_LENGTH / 2)
@@ -915,35 +1214,17 @@ class COADM01CParityTest {
                         + "field that is half of each satisfies neither term and is transferred to "
                         + "unchanged")
                 .isEqualTo(halfAndHalf);
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
     }
 
     /**
-     * {@code case08}: the {@code 'DUMMY'} five-byte-prefix branch at
-     * {@code app/cbl/COADM01C.cbl:138}.
+     * The unreachable {@code 'DUMMY'} five-byte-prefix branch at {@code app/cbl/COADM01C.cbl:138}.
      *
-     * <p>{@code app/cpy/COADM02Y.cpy} names no program beginning {@code DUMMY}, so the branch cannot
-     * be reached from the copybook table at all - and it must still be exercised, because dead and
-     * unreachable code is preserved rather than cleaned up. The table handed in therefore differs from
-     * the copybook's first entry in <strong>nothing but the program name</strong>: same option number,
-     * same {@code PIC X(35)} name, so the program name is the only variable under test and the
-     * composed {@code OPTN001O} line is byte-identical to the real one.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
+     * @param declaredTable the table the case declared, whose first entry carries the prefix
+     * @param outcome what the run over that table produced
      */
-    private static UnitOutcome runDummyPrefixBranch(Invocation invocation) {
-        AdminMenuService service = service(invocation.codec());
-        AdminMenuInput input = inputOf(invocation);
-        AdminMenuOptionTable dummyTable = singleEntryTable(
-                AdminMenuOption.of(1, OPTION_NAMES.get(0), "DUMMY001"));
-
-        AdminMenuOutcome outcome = service.handle(input, dummyTable);
-        assertServiceInvariants(service, input, outcome);
-
-        assertThat(dummyTable.optionBySubscript(1).orElseThrow().adminOptPgmName())
+    private static void assertDummyPrefixBranch(AdminMenuOptionTable declaredTable,
+                                                AdminMenuOutcome outcome) {
+        assertThat(declaredTable.optionBySubscript(1).orElseThrow().adminOptPgmName())
                 .describedAs("line 138 reference-modifies the first five characters, so the prefix is "
                         + "what matters and the remaining three bytes are ordinary name characters")
                 .startsWith(AdminMenuService.DUMMY_PROGRAM_PREFIX)
@@ -970,123 +1251,6 @@ class COADM01CParityTest {
                 .describedAs("the injected entry differs from the copybook's only in its program "
                         + "name, so the composed line must be byte-identical to the real one")
                 .isEqualTo(PAINTED_MENU_LINES.get(0));
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case16}: the security file is seeded and available, and nothing touches it.
-     *
-     * <p>Reads the seeded rows before and after the run and requires them identical, then requires the
-     * translation to hold no data-access collaborator at all - which is what makes the emptiness of
-     * both record channels a property of the code rather than of this particular input.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runWithSecurityFileSeeded(Invocation invocation) {
-        SeededDataset usrsec = invocation.dataset(USRSEC_DATASET_KEY);
-        assertThat(usrsec.recordLength())
-                .describedAs("app/cpy/CSUSR01Y.cpy declares SEC-USER-DATA at 80 bytes, so the seed "
-                        + "must have been padded from the 57 characters app/jcl/DUSRSECJ.jcl carries")
-                .isEqualTo(SecUserRecord.RECORD_LENGTH);
-        List<String> before = List.copyOf(usrsec.rows());
-
-        AdminMenuService service = service(invocation.codec());
-        AdminMenuInput input = inputOf(invocation);
-        AdminMenuOutcome outcome = service.handle(input);
-        assertServiceInvariants(service, input, outcome);
-
-        assertThat(usrsec.rows())
-                .describedAs("COADM01C opens no dataset, so every seeded row must be exactly as it "
-                        + "was seeded")
-                .isEqualTo(before);
-        assertNoDataAccessCollaborator(service);
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case17}: the two declarations {@code COADM01C} never references.
-     *
-     * <p>{@code COPY CSUSR01Y} at {@code app/cbl/COADM01C.cbl:58} and {@code WS-USRSEC-FILE} at
-     * {@code :39} are both dead, and both survive the translation because a declaration is part of
-     * what the program is. The record is checked blank before and after, so "never read" is asserted
-     * as "never changed and never disclosed" rather than assumed.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runWithUnusedWorkingStorageChecked(Invocation invocation) {
-        AdminMenuService service = service(invocation.codec());
-
-        SecUserRecord beforeRun = service.secUserData();
-        assertThat(beforeRun)
-                .describedAs("SEC-USER-DATA has no VALUE clause, so an initialised copy is blank")
-                .isEqualTo(SecUserRecord.blank());
-
-        AdminMenuInput input = inputOf(invocation);
-        AdminMenuOutcome outcome = service.handle(input);
-        assertServiceInvariants(service, input, outcome);
-
-        assertThat(service.secUserData())
-                .describedAs("not one of SEC-USER-DATA's six fields is read or written by COADM01C, "
-                        + "so the record is unchanged by a whole invocation")
-                .isEqualTo(beforeRun)
-                .isEqualTo(SecUserRecord.blank());
-        assertThat(service.usrSecFileName())
-                .describedAs("WS-USRSEC-FILE VALUE 'USRSEC  ' - the logical file name padded to its "
-                        + "declared PIC X(08), with the source literal's two trailing spaces intact")
-                .isEqualTo(USRSEC_FILE_NAME)
-                .hasSize(USRSEC_FILE_NAME_LENGTH);
-        assertThat(observableStrings(outcome))
-                .describedAs("neither dead declaration may leak onto the screen: WS-USRSEC-FILE is "
-                        + "never moved anywhere, so its value must appear in no field of the response")
-                .noneMatch(image -> image.contains(USRSEC_DATASET_KEY));
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case18}: statelessness, driven by running the same invocation three times.
-     *
-     * <p>Twice against one service instance and once against a freshly constructed one. All three
-     * outcomes must be equal: a translation holding {@code WS-ERR-FLG}, {@code WS-MESSAGE} or
-     * {@code WS-OPTION} in a field of a singleton bean would leak the first call into the second, and
-     * a translation keeping the communication area in a server-side session would have nothing to
-     * return. Only the first outcome is reported, because one invocation produces one response.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runThreeTimesForStatelessness(Invocation invocation) {
-        AdminMenuService shared = service(invocation.codec());
-        AdminMenuInput input = inputOf(invocation);
-
-        AdminMenuOutcome first = shared.handle(input);
-        AdminMenuOutcome second = shared.handle(input);
-        AdminMenuOutcome third = service(invocation.codec()).handle(input);
-
-        assertServiceInvariants(shared, input, first);
-        assertThat(second)
-                .describedAs("a second call on the same instance must produce the identical outcome; "
-                        + "anything else means per-request working storage became a field")
-                .isEqualTo(first);
-        assertThat(third)
-                .describedAs("a fresh instance must produce the identical outcome; anything else "
-                        + "means the outcome depended on something outside the request")
-                .isEqualTo(first);
-        assertThat(first.navigationContext())
-                .describedAs("the communication area travels in the payload, which is the only reason "
-                        + "it is comparable at all")
-                .isNotNull();
-        assertNoMutableState(shared);
-
-        recordServiceOutcome(invocation, first);
-        return null;
     }
 
     /**
@@ -1798,19 +1962,53 @@ class COADM01CParityTest {
     }
 
     /**
-     * The sixteen {@code CARDDEMO-COMMAREA} field images, keyed by the copybook's own names.
+     * The {@code CDEMO-TO-PROGRAM} image the case declared, or the cold-start image when it declared
+     * none.
+     *
+     * <p>An {@code EIBCALEN = 0} run receives no communication area - {@link #commareaContext(Invocation)}
+     * returns {@code null} for it - so the area the program reads is the un-{@code VALUE}d working
+     * storage, which the source holds as binary zeros and {@code NavigationContext#empty()} presents as
+     * spaces. A case that wants the other term of line 162 under test declares the image explicitly,
+     * and that declaration is the reason
+     * {@link #assertSignonDefaultingRelation(Invocation, AdminMenuService, AdminMenuOutcome)} can drive
+     * the term the run itself cannot reach.
+     *
+     * @param invocation the run
+     * @return the declared image, or spaces at {@link NavigationContext#TO_PROGRAM_LENGTH}
+     */
+    private static String declaredToProgramImage(Invocation invocation) {
+        String declared = invocation.commarea().get(NavigationContext.TO_PROGRAM_FIELD);
+        return declared == null ? spaces(NavigationContext.TO_PROGRAM_LENGTH) : declared;
+    }
+
+    /**
+     * The sixteen {@code CARDDEMO-COMMAREA} field images, keyed by the copybook's own names - or none at
+     * all, when the response carries no communication area.
      *
      * <p>Produced by encoding the area and decoding it field by field, so the images are the bytes the
      * area actually holds rather than a rendering of the record's Java components: a {@code PIC 9(11)}
      * account identifier reads back zero-filled to eleven digits and a {@code PIC X(25)} name
      * space-padded to twenty-five, which is what the differ compares.
      *
+     * <p>A {@code null} area yields an <strong>empty map</strong>, which is what
+     * {@code FieldDiffer.ObservedResponse} documents as "a response carrying no commarea field" and what
+     * the differ compares in both directions - so an empty expectation is enforced rather than skipped.
+     * The one path that produces it is the bare {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} at
+     * {@code app/cbl/COADM01C.cbl:165-167}, which names no {@code COMMAREA}, so its target is entered with
+     * {@code EIBCALEN = 0}. The service observations are unaffected: at the moment of that transfer the
+     * program's own {@code CARDDEMO-COMMAREA} still holds all sixteen values, and the service outcome is
+     * where that is pinned. What the transfer hands to the target is the separate fact, and it is the one
+     * a controller response states.
+     *
      * @param codec   the run's codec
-     * @param context the area as the program left it
-     * @return the field images in copybook declaration order
+     * @param context the area as the program left it, or {@code null} when the transfer carries none
+     * @return the field images in copybook declaration order, or an empty map
      */
     private static Map<String, String> navigationImages(FixedWidthCodec codec,
             NavigationContext context) {
+        if (context == null) {
+            return Map.of();
+        }
         return codec.deserialise(NavigationContext.LAYOUT, context.toFixedWidth(codec));
     }
 

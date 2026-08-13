@@ -1,9 +1,9 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.Mockito.mock;
@@ -24,7 +24,6 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
-import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -1561,40 +1560,60 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("two to five characters is the CCARD-AID token form, and every one of the sixteen "
-                + "resolves to the byte it stands for")
+        @DisplayName("two to five characters is the CCARD-AID token form, which is not a byte and so "
+                + "names no key: DFHNULL, and WHEN OTHER")
         void theTokenFormResolvesToItsByte() {
-            // The token form is what every response of this module publishes, so a client that echoes
-            // what it was given states the key this way. It used to be refused here on width alone,
-            // which meant "ENTER" - a value this route's own responses carry - could not be sent back
-            // to it while nine sibling routes accepted nothing else.
-            assertThat(TransactionAddController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHENTER);
-            assertThat(TransactionAddController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHPF3);
-            assertThat(TransactionAddController.eibAidOf("PFK04")).isEqualTo(CicsAid.DFHPF4);
-            assertThat(TransactionAddController.eibAidOf("PFK05")).isEqualTo(CicsAid.DFHPF5);
-            // Unpadded spellings resolve too, because the value is put through the PIC X move first.
-            assertThat(TransactionAddController.eibAidOf("PA1")).isEqualTo(CicsAid.DFHPA1);
-            assertThat(TransactionAddController.eibAidOf("PA1  ")).isEqualTo(CicsAid.DFHPA1);
-            // A token naming no key of the sixteen, and one that is blank or LOW-VALUES, are DFHNULL,
-            // which matches no condition name and so takes WHEN OTHER at :130-134.
+            // The token form is what every response of this module publishes, and it stays an output only.
+            // CSSTRPFY folds PF13-PF24 onto PFK01-PFK12, so 'PFK03' stands for DFHPF3 AND DFHPF15;
+            // decoding it had to choose, and choosing PF3 transferred control at :115 for a PF15 press the
+            // source answers with the invalid-key message at :130-134. COTRN01C does not copy CSSTRPFY.
+            assertThat(TransactionAddController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionAddController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionAddController.eibAidOf("PA1")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionAddController.eibAidOf("PA1  ")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionAddController.eibAidOf("PFK99")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionAddController.eibAidOf("     ")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionAddController.eibAidOf("\u0000".repeat(5)))
                     .isEqualTo(CicsAid.DFHNULL);
-            // AID_LENGTH is still the width of EIBAID itself; AID_TOKEN_LENGTH is the member's width.
+            // AID_LENGTH is the width of EIBAID itself; AID_TOKEN_LENGTH is the widest value the member
+            // accepts, so a token-shaped value is answered for what it says rather than refused on width.
             assertThat(TransactionAddRequest.AID_LENGTH).isEqualTo(1);
             assertThat(TransactionAddRequest.AID_TOKEN_LENGTH)
                     .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH);
         }
 
-        @ParameterizedTest(name = "the token {0} maps back to the byte PfKeyResolver maps onto it")
+        @ParameterizedTest(name = "the byte behind {0} is read back as itself")
         @EnumSource(PfKeyResolver.AidKey.class)
-        @DisplayName("every one of the sixteen tokens round-trips through the shared resolver")
+        @DisplayName("every key a response can name is readable back as its own byte, unfolded")
         void everyTokenRoundTripsThroughTheResolver(PfKeyResolver.AidKey key) {
-            // The inverse must agree with PfKeyResolver for all sixteen, or a client echoing a token it
-            // was given would be understood as a different key than the one that produced it.
-            assertThat(PfKeyResolver.resolve(TransactionAddController.eibAidOf(key.token())))
-                    .contains(key);
+            // For each of the sixteen condition names, take a byte that produces it and prove the payload
+            // image of that byte reads back as that byte - so a client echoing a key it was given is
+            // understood as the key that produced it, and not as its folded twin.
+            byte source = someByteResolvingTo(key);
+
+            assertThat(TransactionAddController.eibAidOf(PfKeyResolver.aidImage(source)))
+                    .isEqualTo(source);
+            assertThat(PfKeyResolver.resolve(source)).contains(key);
+        }
+
+        /**
+         * A raw byte the shared resolver maps onto the given condition name.
+         *
+         * <p>Found by search over the whole one-byte space rather than by a second table, so this helper
+         * cannot disagree with {@link PfKeyResolver#resolve(byte)} about which bytes produce which name.
+         *
+         * @param key the condition name
+         * @return a byte that resolves to it
+         */
+        private byte someByteResolvingTo(PfKeyResolver.AidKey key) {
+            for (int unsigned = 0; unsigned <= 0xFF; unsigned++) {
+                if (PfKeyResolver.resolve((byte) unsigned).filter(key::equals).isPresent()) {
+                    return (byte) unsigned;
+                }
+            }
+            throw new AssertionError("PfKeyResolver maps no byte at all onto " + key
+                    + ", which would mean the sixteen condition names of app/cpy/CVCRD01Y.cpy and the "
+                    + "EVALUATE of app/cpy/CSSTRPFY.cpy have drifted apart");
         }
 
         @Test
@@ -2249,7 +2268,8 @@ class TransactionAddControllerTest {
                     .isNotNull();
 
             java.lang.reflect.Method handler = TransactionAddController.class
-                    .getMethod("viewTransaction", String.class, TransactionAddRequest.class);
+                    .getMethod("viewTransaction", String.class, TransactionAddRequest.class,
+                            Integer.class, Integer.class);
             org.springframework.web.bind.annotation.GetMapping mapping = handler.getAnnotation(
                     org.springframework.web.bind.annotation.GetMapping.class);
             assertThat(mapping)
@@ -2304,7 +2324,11 @@ class TransactionAddControllerTest {
                     .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
                     .build();
 
+            // A re-entry carries the operator's own TRNIDIN, which is the field :147 and :217-224 read;
+            // the URI seeds only a first entry. So a client echoing a painted screen sends the key in
+            // the body, exactly as this does.
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
+            request.setTrnidin(KNOWN_TRAN_ID);
 
             mockMvc.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -2577,19 +2601,34 @@ class TransactionAddControllerTest {
         private final TransactionAddController controller = controllerOver(unusedRepository());
 
         @Test
-        @DisplayName("the path variable is the identity, and it fills TRNIDIN")
+        @DisplayName("on a first entry the path variable is the identity, and it fills TRNIDIN")
         void thePathVariableIsTheIdentity() {
-            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER));
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, firstEntry());
 
             assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID)
                     .hasSize(TransactionAddRequest.TRNIDIN_LENGTH);
         }
 
         @Test
+        @DisplayName("on a re-entry the operator's own TRNIDIN is the identity, because :110-111 "
+                + "receives the map and :147 and :217-224 read that field")
+        void aReentryKeepsTheTypedIdentity() {
+            TransactionAddRequest typed = reentry(CicsAid.DFHENTER);
+            typed.setTrnidin("0000000000000099");
+
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, typed);
+
+            assertThat(bound.getTrnidin()).isEqualTo("0000000000000099");
+            assertThat(bound.getCt01Info().getTrnSelected())
+                    .as("the extension is the list program's carrier and is not rewritten either")
+                    .isEqualTo(typed.getCt01Info().getTrnSelected());
+        }
+
+        @Test
         @DisplayName("it fills CDEMO-CT01-TRN-SELECTED too, which is what first entry reads")
         void thePathVariableAlsoFillsTheExtension() {
             // app/cbl/COTRN01C.cbl:103-106 reads the extension, not the typed field, on first entry.
-            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER));
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, firstEntry());
 
             assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID)
                     .hasSize(TransactionAddRequest.Ct01Info.TRN_SELECTED_LENGTH);
@@ -2598,7 +2637,7 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("a shorter path value is padded to the declared width, as a PIC X MOVE pads")
         void aShorterPathValueIsPadded() {
-            TransactionAddRequest bound = controller.bind("1", reentry(CicsAid.DFHENTER));
+            TransactionAddRequest bound = controller.bind("1", firstEntry());
 
             assertThat(bound.getTrnidin())
                     .isEqualTo("1" + " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH - 1));
@@ -2610,61 +2649,72 @@ class TransactionAddControllerTest {
             String tooWide = "0".repeat(TransactionAddRequest.TRNIDIN_LENGTH + 1);
 
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> controller.bind(tooWide, reentry(CicsAid.DFHENTER)))
+                    .isThrownBy(() -> controller.bind(tooWide, firstEntry()))
                     .withMessageContaining("refused rather than truncated");
         }
 
         @Test
-        @DisplayName("a body whose TRNIDIN names a different transaction is refused, naming the member")
+        @DisplayName("a body whose TRNIDIN names a different transaction is answered by the source's "
+                + "own PROCESS-ENTER-KEY, not by a boundary refusal")
         void aDisagreeingScreenFieldIsRefused() {
-            // TRNIDINI is the field the operator types into, so a value there naming a second
-            // transaction is two keys in one request. Replacing it silently discarded the typed identity
-            // with no message; a client echoing a painted screen always agrees and never gets here.
+            // COTRN01C is a view screen: :110-111 receives the map and PROCESS-ENTER-KEY at :146-173
+            // edits TRNIDINI and reads on it, so typing another transaction id over the painted screen
+            // is how an operator looks up the next one. The source has no URI to compare against and no
+            // mismatch message, so the typed identity travels on and its own 'Tran ID can NOT be
+            // empty...' and 'Transaction ID NOT found...' messages remain the only answers.
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin("0000000000000099");
 
-            assertThatThrownBy(() -> controller.bind(KNOWN_TRAN_ID, stating))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .hasMessageContaining("trnidin")
-                    .hasMessageNotContaining("0000000000000099");
-            assertThat(((ScreenInputRejectedException) catchThrowable(
-                    () -> controller.bind(KNOWN_TRAN_ID, stating))).member()).contains("trnidin");
+            assertThatCode(() -> controller.bind(KNOWN_TRAN_ID, stating)).doesNotThrowAnyException();
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin())
+                    .isEqualTo("0000000000000099");
         }
 
         @Test
-        @DisplayName("the extension is still projected: its only writer is the list program, not the "
-                + "operator")
+        @DisplayName("the extension is projected on a first entry - its writer is the list program - "
+                + "and left alone on a re-entry")
         void theExtensionIsStillProjected() {
             // CDEMO-CT01-TRN-SELECTED is a communication-area carrier the transaction-list program
-            // writes when a row is marked, not a screen field, so projecting it from the URI is what
-            // closes the second client-controlled identity rather than a discard of typed input.
-            TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
-            stating.getCt01Info().setTrnSelected("0000000000000098");
+            // writes when a row is marked, not a screen field. :103-106 is the only place the program
+            // reads it, and that is the first-entry arm, so that is the arm the URI projects onto.
+            TransactionAddRequest arriving = firstEntry();
+            arriving.getCt01Info().setTrnSelected("0000000000000098");
 
-            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, stating);
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, arriving);
 
             assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
             assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID);
+
+            TransactionAddRequest onReentry = reentry(CicsAid.DFHENTER);
+            onReentry.getCt01Info().setTrnSelected("0000000000000098");
+
+            assertThat(controller.bind(KNOWN_TRAN_ID, onReentry).getCt01Info().getTrnSelected())
+                    .isEqualTo("0000000000000098");
         }
 
-        @ParameterizedTest(name = "a body stating TRNIDIN as \"{0}\" lets the URI supply it")
+        @ParameterizedTest(name = "a re-entry stating TRNIDIN as \"{0}\" keeps exactly that")
         @ValueSource(strings = {"", "   ", "0000000000000001", "0000000000000001    "})
-        @DisplayName("the no-criterion states and the URI's own key all agree")
+        @DisplayName("every image a re-entry can carry survives to PROCESS-ENTER-KEY, which is what "
+                + "judges it - an empty field included, because :148-152 has a message for it")
         void theStatesThatAgreeAreAccepted(String stated) {
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin(stated);
 
-            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin())
-                    .isEqualTo(KNOWN_TRAN_ID);
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin()).isEqualTo(stated);
         }
 
         @Test
-        @DisplayName("a LOW-VALUES key field agrees too: that is what an unmodified BMS field carries")
+        @DisplayName("a LOW-VALUES key field survives a re-entry too: that is what an unmodified BMS "
+                + "field carries, and the source's empty-field message is its answer")
         void aLowValuesKeyFieldAgrees() {
+            String lowValues = "\u0000".repeat(TransactionAddRequest.TRNIDIN_LENGTH);
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
-            stating.setTrnidin("\u0000".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
+            stating.setTrnidin(lowValues);
 
-            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin())
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin()).isEqualTo(lowValues);
+
+            assertThat(controller.bind(KNOWN_TRAN_ID, firstEntry()).getTrnidin())
+                    .as("a first entry is the arm the URI projects onto")
                     .isEqualTo(KNOWN_TRAN_ID);
         }
 
@@ -2675,7 +2725,7 @@ class TransactionAddControllerTest {
             TransactionAddRequest arriving = firstEntry();
             arriving.getCt01Info().setTrnSelected("0000000000000099");
 
-            controllerOver(repository).viewTransaction(KNOWN_TRAN_ID, arriving);
+            controllerOver(repository).viewTransaction(KNOWN_TRAN_ID, arriving, null, null);
 
             verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
             verify(repository, never()).readForUpdateByTranId("0000000000000099");
@@ -2689,7 +2739,7 @@ class TransactionAddControllerTest {
             arriving.getCt01Info()
                     .setTrnSelected(" ".repeat(TransactionAddRequest.Ct01Info.TRN_SELECTED_LENGTH));
 
-            controllerOver(repository).viewTransaction(KNOWN_TRAN_ID, arriving);
+            controllerOver(repository).viewTransaction(KNOWN_TRAN_ID, arriving, null, null);
 
             verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
         }
@@ -2701,23 +2751,31 @@ class TransactionAddControllerTest {
             padded.setTrnidin(KNOWN_TRAN_ID);
             assertThat(controller.bind(KNOWN_TRAN_ID, padded).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
 
+            // A short image is not padded here, because a re-entry is carried through untouched; the
+            // PIC X(16) receiver's padding happens where the source applies it, in
+            // RECEIVE-TRNVIEW-SCREEN's projection through toFieldImages.
             TransactionAddRequest shortForm = reentry(CicsAid.DFHENTER);
             shortForm.setTrnidin("1");
-            assertThat(controller.bind("1", shortForm).getTrnidin())
+            assertThat(controller.bind("1", shortForm).getTrnidin()).isEqualTo("1");
+
+            // On a first entry the path's own MOVE pads it, as a PIC X MOVE pads.
+            assertThat(controller.bind("1", firstEntry()).getTrnidin())
                     .isEqualTo("1" + " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH - 1));
         }
 
         @Test
-        @DisplayName("a blank or LOW-VALUES body field states nothing, so the path supplies it")
+        @DisplayName("a blank or LOW-VALUES field on a FIRST entry is what the path fills, and on a "
+                + "re-entry it is the operator having blanked the field")
         void aBlankBodyFieldStatesNothing() {
-            TransactionAddRequest spaces = reentry(CicsAid.DFHENTER);
-            spaces.setTrnidin(" ".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
-            assertThat(controller.bind(KNOWN_TRAN_ID, spaces).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
-
-            TransactionAddRequest lowValues = reentry(CicsAid.DFHENTER);
-            lowValues.setTrnidin("\u0000".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
-            assertThat(controller.bind(KNOWN_TRAN_ID, lowValues).getTrnidin())
+            TransactionAddRequest coldSpaces = firstEntry();
+            coldSpaces.setTrnidin(" ".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
+            assertThat(controller.bind(KNOWN_TRAN_ID, coldSpaces).getTrnidin())
                     .isEqualTo(KNOWN_TRAN_ID);
+
+            String spaces = " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH);
+            TransactionAddRequest warmSpaces = reentry(CicsAid.DFHENTER);
+            warmSpaces.setTrnidin(spaces);
+            assertThat(controller.bind(KNOWN_TRAN_ID, warmSpaces).getTrnidin()).isEqualTo(spaces);
         }
 
         @Test
@@ -2744,7 +2802,7 @@ class TransactionAddControllerTest {
         @DisplayName("the handler refuses an absent path variable: it is the RIDFLD of the read")
         void theHandlerRefusesAnAbsentPathVariable() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> controller.viewTransaction(null, reentry(CicsAid.DFHENTER)))
+                    .isThrownBy(() -> controller.viewTransaction(null, reentry(CicsAid.DFHENTER), null, null))
                     .withMessageContaining("transaction id");
         }
 
@@ -2754,7 +2812,7 @@ class TransactionAddControllerTest {
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
             ScreenResponse<TransactionAddResponse> answer =
                     controllerOver(repositoryReturning(ReadResult.found(DD_NAME, record)))
-                            .viewTransaction(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER));
+                            .viewTransaction(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER), null, null);
 
             ScreenMetadata metadata = answer.screenMetadata();
             assertThat(metadata.cursorField())
@@ -2825,7 +2883,7 @@ class TransactionAddControllerTest {
         @DisplayName("a transferring arm places no cursor, and the metadata names no field")
         void aTransferPlacesNoCursor() {
             ScreenResponse<TransactionAddResponse> answer = controllerOver(unusedRepository())
-                    .viewTransaction(KNOWN_TRAN_ID, null);
+                    .viewTransaction(KNOWN_TRAN_ID, null, null, null);
 
             assertThat(answer.screen().getNextProgram().strip())
                     .isEqualTo(TransactionAddController.SIGN_ON_PROGRAM);

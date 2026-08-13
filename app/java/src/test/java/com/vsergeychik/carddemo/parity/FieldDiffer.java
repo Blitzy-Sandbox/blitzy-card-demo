@@ -1634,9 +1634,11 @@ public final class FieldDiffer {
      * others zeros. Only a comparison that can address a {@code FILLER} can check that.
      *
      * <p>{@code REDEFINES} overlays are included under their own names, because an overlay is a
-     * legitimate alternative view of storage that a case may reasonably pin - there are 82 such sites
-     * in the codebase, {@code CVCRD01Y}'s {@code CC-ACCT-ID PIC X(11)} over
-     * {@code CC-ACCT-ID-N PIC 9(11)} among them.
+     * legitimate alternative view of storage that a case may reasonably pin - there are 96 such sites in
+     * the codebase, 80 in {@code app/cbl} and 16 in {@code app/cpy} counting only non-comment lines, with
+     * {@code CVCRD01Y}'s {@code CC-ACCT-ID PIC X(11)} over {@code CC-ACCT-ID-N PIC 9(11)} among them. The
+     * count is asserted mechanically by {@code RedefinesCensusTest} rather than left as prose, because
+     * this number was wrong here - 82 - for as long as it was only written down.
      */
     private static Map<String, FieldSpan> addressableSpans(RecordLayout layout) {
         Map<String, FieldSpan> addressable = new LinkedHashMap<>();

@@ -436,6 +436,12 @@ public class TransactionRepository {
     private static final int DUPLICATE_DETECTION_ROW_LIMIT = 2;
 
     /**
+     * One row: all the unreadable-row probe needs, because it asks a yes-or-no question. Whether the
+     * dataset holds one unreadable row or fifty does not change what a keyed read reports.
+     */
+    private static final int UNREADABLE_ROW_PROBE_LIMIT = 1;
+
+    /**
      * The escape character of every {@code LIKE} predicate this class composes.
      *
      * <p>It must be the same character {@link DatasetRelation} escapes with, because
@@ -493,6 +499,15 @@ public class TransactionRepository {
      * once, at startup, from the configuration the deployment declared.
      */
     private final boolean inputIsKeyed;
+
+    /**
+     * Whether the configured {@value #INPUT_DD_NAME} cluster carries the VSAM {@code REUSE} attribute.
+     *
+     * <p>It decides one outcome and only one: whether {@link #openLoadMode()} can begin against a cluster
+     * that already holds records. Read once, at startup, from the binding the deployment declared - the
+     * attribute is a property of the dataset, not a decision this class is entitled to take.
+     */
+    private final boolean inputIsReusable;
 
     /** The resolved {@value #SEQUENTIAL_OUTPUT_DD_NAME} output, addressed by {@link #openOutput()}. */
     private final DatasetRelation outputRelation;
@@ -632,6 +647,7 @@ public class TransactionRepository {
         this.outputRelation = DatasetRelation.of(
                 requireUsableDatasetName(SEQUENTIAL_OUTPUT_DD_NAME, output.dsname()), RECORD_LENGTH);
         this.inputIsKeyed = input.keyed();
+        this.inputIsReusable = input.reusableCluster();
     }
 
     // =================================================================================================
@@ -1182,7 +1198,97 @@ public class TransactionRepository {
     }
 
     /**
+     * {@code OPEN OUTPUT} of the <strong>indexed</strong> master - VSAM load mode -
+     * {@code app/cbl/CBTRN02C.cbl:256}.
+     *
+     * <p><strong>This is a different verb from {@link #openOutput()}, and the difference decides whether
+     * {@code CBTRN02C} runs at all.</strong> {@code openOutput()} serves
+     * {@code app/cbl/CBACT04C.cbl:309}, whose {@code SELECT} declares {@code ORGANIZATION IS SEQUENTIAL}
+     * ({@code :53-56}) over {@code app/jcl/INTCALC.jcl:37-41}'s brand-new {@code SYSTRAN(+1)} generation:
+     * a sequential open of an empty dataset. This method serves {@code CBTRN02C:256}, whose {@code SELECT}
+     * declares {@code ORGANIZATION IS INDEXED ACCESS MODE IS RANDOM} ({@code :34-38}) over
+     * {@code app/jcl/POSTTRAN.jcl:28-29}'s {@code DISP=SHR} binding to the <em>existing</em> master. An
+     * {@code OPEN OUTPUT} of an indexed file is load mode, and load mode has a precondition a sequential
+     * open does not: <strong>the base cluster must be empty.</strong>
+     *
+     * <p><strong>The outcome is derived, not claimed.</strong> Two facts decide it, and both come from
+     * outside this class:
+     * <ol>
+     *   <li><em>Is the cluster empty?</em> Asked of the dataset itself, with
+     *       {@link DatasetRelation#countAllStatement()} - a read. Nothing is emptied, deleted or defined
+     *       here: no {@code CREATE}, no {@code DROP}, no {@code TRUNCATE}, no bulk delete over a
+     *       {@code DISP=SHR} production cluster (gate <strong>G44</strong>). Emptying it to make the open
+     *       succeed would be this module inventing the very precondition the source fails on.</li>
+     *   <li><em>Can the open empty it?</em> Answered by the cluster's {@code REUSE} / {@code NOREUSE}
+     *       attribute, from the binding's {@link DatasetBinding#reusableCluster()}. A {@code REUSE}
+     *       cluster is reset by load mode and the open succeeds; a {@code NOREUSE} one is not.</li>
+     * </ol>
+     *
+     * <p>So: empty, or reusable, gives {@link FileStatus#OK}. Non-empty and not reusable gives
+     * {@link FileStatus#OPEN_MODE_CONFLICT} - file status {@code '37'}. In the shipped configuration that
+     * is the answer, because {@code app/catlg/LISTCAT.txt:3595-3597} records
+     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} as {@code NOREUSE} holding {@code REC-TOTAL 311}:
+     * {@code 0100-TRANFILE-OPEN} leaves {@code APPL-RESULT} at 12, displays
+     * {@code 'ERROR OPENING TRANSACTION FILE'} and abends - before {@code 1000-DALYTRAN-GET-NEXT} reads
+     * anything and therefore before any category balance, account balance or transaction record is
+     * touched. A run against an empty master opens, and the whole job proceeds.
+     *
+     * <p>This replaces an earlier substitution that opened the master for <em>input</em> and reported
+     * whether it could be reached. That answered a different question, and it answered it {@code '00'} on
+     * exactly the dataset the source refuses - so the job posted 300 transactions the source never reads
+     * (practice <strong>B4</strong>: the limitation is now derived and documented, not papered over).
+     *
+     * <p>A refusal of either statement is reported as {@link #PERMANENT_ERROR_STATUS}, with the backend's
+     * own codes logged and never a key or a record image.
+     *
+     * <p>Each call returns a fresh handle with its own status and its own open flag, so two runs never
+     * share state (practice B9, gate G53).
+     *
+     * @return a new per-execution load-mode handle carrying the status the open reported; never
+     *         {@code null}
+     */
+    public LoadModeFile openLoadMode() {
+        String openStatus;
+        try {
+            Integer held = jdbcTemplate.queryForObject(inputRelation.countAllStatement(), Integer.class);
+            boolean empty = held == null || held == 0;
+            openStatus = empty || inputIsReusable ? FileStatus.OK : FileStatus.OPEN_MODE_CONFLICT;
+            if (!FileStatus.isOk(openStatus)) {
+                LOG.error("OPEN OUTPUT of " + INPUT_DD_NAME + " (" + inputRelation.dsname()
+                        + ") is VSAM load mode - app/cbl/CBTRN02C.cbl:256 over the ORGANIZATION IS "
+                        + "INDEXED SELECT at :34-38 - and load mode requires an empty base cluster. This "
+                        + "one holds " + held + " record(s) and is configured NOREUSE, so the open cannot "
+                        + "reset it. Reporting file status " + FileStatus.toStatusImage(openStatus)
+                        + ", which is what app/cbl/CBTRN02C.cbl:257-268 abends on. This is the source's "
+                        + "outcome against app/catlg/LISTCAT.txt's catalogued master, not a defect of "
+                        + "this run: POSTTRAN cannot post into a master that already holds records");
+            }
+        } catch (DataAccessException refused) {
+            openStatus = reportRefusal(OPEN_OPERATION_NAME, INPUT_DD_NAME, "for load-mode output",
+                    refused);
+        }
+        return new LoadModeFile(inputRelation, INPUT_DD_NAME, openStatus);
+    }
+
+    /**
      * Establishes the generation a sequential output writes into, and hands back the handle for it.
+     *
+     * <h2>The clear is DML, and the caller owns its boundary</h2>
+     * <p>The second statement deletes the destination's rows - that is what the {@code NEW} of a
+     * {@code DISP=(NEW,CATLG,DELETE)} generation means - so this method performs a write, and the pool
+     * hands out connections with {@code auto-commit} disabled ({@code application.yml}). A caller that
+     * invokes this with no transaction on the thread therefore gets a clear that executes, reports the
+     * rows it removed, and is rolled back when the connection returns, while the handle reports
+     * {@code '00'}: the run then appends to the previous generation's records having been told it was
+     * writing into an empty one.
+     *
+     * <p>The boundary is the caller's rather than this method's because only the caller knows whether it
+     * already has one. A <strong>tasklet</strong> step runs its whole body inside one transaction, so its
+     * open is already covered. A <strong>chunk</strong> step's open is not: Spring Batch invokes the
+     * {@link org.springframework.batch.item.ItemStream} open callback outside the chunk transaction, so
+     * such a caller must apply this through
+     * {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)} -
+     * {@code AccountInterestCalcJob.tranfileOpen()} is the one caller in this module that has to, and does.
      *
      * @param relation the relation to open
      * @param ddName   the DD name it was resolved for, for the refusal diagnostic
@@ -1475,7 +1581,11 @@ public class TransactionRepository {
             String statement = locking ? sql.selectByKeyForUpdate() : sql.selectByKey();
             FetchedRows rows = fetch(statement, KEY_SPAN.pattern(keyImage),
                     DUPLICATE_DETECTION_ROW_LIMIT);
-            return classify(rows, CICS_FILE_NAME, false).result();
+            // The proof is applied here rather than inside classify(...), because classify serves the
+            // browses too and an empty browse is an end of file, which needs nothing proved: a browse that
+            // walked the whole dataset has already seen every row there is.
+            return provenAbsence(classify(rows, CICS_FILE_NAME, false).result(),
+                    sql.probeUnreadableRows());
         } catch (DataAccessException refused) {
             return ReadResult.other(CICS_FILE_NAME,
                     reportRefusal(READ_OPERATION_NAME, CICS_FILE_NAME,
@@ -1517,10 +1627,12 @@ public class TransactionRepository {
      * statement. What the COBOL <em>means</em> by those two keys is "from the first record" and "from
      * the last record", and that is what this overload expresses: exactly, and in any code page.
      *
-     * <p>Positioning performs no backend call. Each step re-positions by value rather than holding a
-     * cursor open, which is what keeps the online layer free of server-side conversation state (rule
-     * R6). The handle is {@link AutoCloseable}, and ending an already-ended browse does nothing, so
-     * try-with-resources and an explicit {@link Browse#endBrowse()} in the same block are both safe.
+     * <p><strong>Positioning is one backend call and it reports its outcome</strong> - see
+     * {@link Browse#positioningOutcome()}. No cursor is held open: the probe establishes whether a record
+     * satisfies the position and discards the row, and each subsequent step re-positions by value, which
+     * is what keeps the online layer free of server-side conversation state (rule R6). The handle is
+     * {@link AutoCloseable}, and ending an already-ended browse does nothing, so try-with-resources and an
+     * explicit {@link Browse#endBrowse()} in the same block are both safe.
      *
      * <p>A handle counts nothing and knows no page size (gate G39). It yields one record per read; that
      * ten of them make a page is {@code COTRN00C}'s decision, taken at {@code :283} and {@code :348}.
@@ -1532,7 +1644,7 @@ public class TransactionRepository {
      * @throws NullPointerException if {@code direction} is {@code null}
      */
     public Browse startBrowse(BrowseDirection direction) {
-        return new Browse(this, requireDirection(direction), null);
+        return startedBrowse(requireDirection(direction), null);
     }
 
     /**
@@ -1554,11 +1666,14 @@ public class TransactionRepository {
      * being paged away from. Whether to discard it is the caller's decision, and it is the caller that
      * makes it.
      *
-     * <p>No status is returned from positioning, because the legacy code discards its own: all three
-     * {@code STARTBR} sites capture {@code RESP} and {@code RESP2} and the paragraph that follows never
-     * tests them for a successful position. Surfacing a status here would invite a caller to branch on
-     * something the COBOL ignores. The guard chain begins at the first read, and so does the first
-     * reported outcome.
+     * <p><strong>Positioning reports a status, because the legacy code branches on it.</strong> All three
+     * {@code STARTBR} sites over this dataset capture {@code RESP} and {@code RESP2} and then evaluate
+     * them: {@code app/cbl/COTRN00C.cbl:602-620} sets {@code TRANSACT-EOF} and sends
+     * {@code 'You are at the top of the page...'} on {@code NOTFND},
+     * {@code app/cbl/COTRN02C.cbl:652-668} does the same for its own screen, and
+     * {@code app/cbl/COBIL00C.cbl:451-467} has three distinct arms. The outcome is
+     * {@link Browse#positioningOutcome()}; withholding it - as an earlier revision did - left every one of
+     * those {@code NOTFND} and {@code WHEN OTHER} arms unreachable in production.
      *
      * @param ridfldTranId the {@code RIDFLD} value to position at; never {@code null}. Pass an empty
      *                     string to position at a key of all spaces
@@ -1567,7 +1682,44 @@ public class TransactionRepository {
      * @throws NullPointerException if either argument is {@code null}
      */
     public Browse startBrowse(String ridfldTranId, BrowseDirection direction) {
-        return new Browse(this, requireDirection(direction), keyImageOf(ridfldTranId));
+        return startedBrowse(requireDirection(direction), keyImageOf(ridfldTranId));
+    }
+
+    /**
+     * Issues the {@code STARTBR} and hands back the handle, positioned or not.
+     *
+     * <p><strong>Positioning is a real operation with a real outcome, and this is where it happens.</strong>
+     * CICS {@code STARTBR} with {@code GTEQ} in force - the default, and what all six {@code STARTBR} sites
+     * in {@code app/cbl} use - reports {@code NORMAL} when a record exists at or after the {@code RIDFLD}
+     * going forward, or at or before it going backward, and {@code NOTFND} when none does. It transfers no
+     * record; it establishes a position. So the probe here runs exactly the statement the browse's first
+     * read would run, reports whether it found anything, and <em>discards the row</em> - the first read
+     * still issues its own read and still returns the record.
+     *
+     * <p><strong>Three of the six sites branch on that outcome</strong>, which is why it is no longer
+     * withheld. {@code app/cbl/COBIL00C.cbl:451-467} has {@code NORMAL} / {@code NOTFND} / {@code OTHER}
+     * arms with different messages; {@code app/cbl/COTRN00C.cbl:602-620} sets {@code TRANSACT-EOF} on
+     * {@code NOTFND}; {@code app/cbl/COTRN02C.cbl:652-668} does the same for its own screen. An earlier
+     * revision returned no status from positioning and documented the legacy code as discarding it, which
+     * was true of the {@code READ} that follows and not of the {@code STARTBR} itself - so those callers
+     * hard-coded success and their {@code NOTFND} and {@code OTHER} arms could not be reached in
+     * production.
+     *
+     * <p><strong>A failed {@code STARTBR} starts no browse.</strong> That is CICS's behaviour and it is
+     * observable: the next {@code READNEXT} or {@code READPREV} then reports {@code INVREQ}, because there
+     * is no browse to read. {@link Browse#read(BrowseDirection)} reports exactly that for a handle whose
+     * positioning failed, which is what lets {@code COBIL00C}'s unconditional
+     * {@code PERFORM READPREV-TRANSACT-FILE} at {@code :214} reach its own {@code WHEN OTHER} arm the way
+     * the source does.
+     *
+     * @param direction  the direction the browse is positioned for
+     * @param anchorKey  the key image to position at, or {@code null} for a boundary browse
+     * @return the handle, carrying the positioning outcome; never {@code null}
+     */
+    private Browse startedBrowse(BrowseDirection direction, String anchorKey) {
+        Browse browse = new Browse(this, direction, anchorKey);
+        browse.position();
+        return browse;
     }
 
     /**
@@ -1758,6 +1910,78 @@ public class TransactionRepository {
             rowCount++;
         }
         return new FetchedRows(rowCount, firstImage, firstImageMissing);
+    }
+
+    /**
+     * Turns a keyed read's {@code NOTFND} into the invalid-request outcome when the dataset holds a row
+     * that <strong>cannot be read</strong>, and leaves every other outcome exactly as it was.
+     *
+     * <h2>Why an absence has to be proved</h2>
+     * <p>{@code TRAN-ID} is the leading sixteen bytes of {@code TRAN-RECORD}, so the key lives
+     * <em>inside</em> the record image. SQL evaluates every comparison against a null as {@code UNKNOWN},
+     * so the keyed {@code LIKE} cannot match a row whose record-image column holds nothing, and such a row
+     * leaves the read with no matching row: on the face of it {@code NOTFND}. But {@code NOTFND} is a
+     * positive claim, and every consumer acts on it as one - {@code app/cbl/COTRN01C.cbl:283-288} paints
+     * "Transaction ID NOT found", and {@code app/cbl/COTRN02C.cbl} takes it as licence to add a record
+     * under that identifier. Making the claim while an unreadable row sits in the dataset reports a record
+     * that is present as absent, which is exactly what {@link #classify(FetchedRows, String, boolean)}
+     * already refuses to do for a row it could see.
+     *
+     * <h2>Why only the keyed path</h2>
+     * <p>An empty <em>browse</em> is an end of file and needs nothing proved: a browse has walked the rows
+     * it was pointed at, and an unreadable one among them is a row it read rather than a row it missed. So
+     * this qualifies {@link #readKeyed(String, boolean)} alone, and a read that found its record is
+     * untouched either way - a VSAM {@code READ} of a key that resolves does not fail because another
+     * record in the cluster is damaged.
+     *
+     * <p>The outcome when a row is unreadable is the same {@link #PERMANENT_ERROR_STATUS} the visible form
+     * of this condition already reports, so no caller's guard chain changes shape.
+     *
+     * @param classified          the outcome the read produced
+     * @param unreadableRowsProbe the statement selecting the rows whose record-image column holds nothing
+     * @return {@code classified} unless it is {@code NOTFND} and the absence cannot be established, in
+     *         which case the permanent-error outcome; never {@code null}
+     * @throws DataAccessException if the backend refuses the probe - reported by the caller on the arm it
+     *                             reports a refused read on, because an unproved absence must not become
+     *                             {@code NOTFND}
+     */
+    private ReadResult provenAbsence(ReadResult classified, String unreadableRowsProbe) {
+        if (!classified.isNotFound()) {
+            return classified;
+        }
+        FetchedRows unreadable = fetch(unreadableRowsProbe, UNREADABLE_ROW_PROBE_LIMIT);
+        if (unreadable.rowCount() == 0) {
+            // A genuine WHEN DFHRESP(NOTFND): no row matched the key and no row of the dataset is
+            // unreadable, so the absence is established rather than assumed.
+            return classified;
+        }
+        LOG.error("A keyed read of the " + CICS_FILE_NAME + " dataset matched no row, but the dataset holds "
+                + "a row with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
+                + " - and TRAN-ID is part of that image, so that row's key cannot be known; reporting file "
+                + "status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                + " rather than reporting as absent a transaction that may well be present");
+        return ReadResult.other(CICS_FILE_NAME, PERMANENT_ERROR_STATUS,
+                CicsResponse.of(FileStatus.INVREQ));
+    }
+
+    /**
+     * Runs a statement that binds no parameter and reads at most {@code rowLimit} rows.
+     *
+     * <p>The same extractor and the same row-limit discipline as {@link #fetch(String, String, int)}, so
+     * the unreadable-row probe cannot drift from the reads it qualifies.
+     *
+     * @param statement the statement to send
+     * @param rowLimit  the most rows worth reading
+     * @return what came back; never {@code null}
+     * @throws DataAccessException if the backend refused the request
+     */
+    private FetchedRows fetch(String statement, int rowLimit) {
+        return execute(connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            prepared.setMaxRows(rowLimit);
+            prepared.setFetchSize(rowLimit);
+            return prepared;
+        }, rowLimit);
     }
 
     /**
@@ -2087,7 +2311,8 @@ public class TransactionRepository {
                     masterRelation.selectAfterAscending(column),
                     selectAllDescending(column),
                     selectAtOrBeforeKeyDescending(column),
-                    masterRelation.selectBeforeDescending(column));
+                    masterRelation.selectBeforeDescending(column),
+                    masterRelation.selectUnreadableRows(column));
             this.statements = resolved;
         }
         return resolved;
@@ -2211,7 +2436,8 @@ public class TransactionRepository {
                       String browseForwardAfter,
                       String browseBackwardAll,
                       String browseBackwardAnchor,
-                      String browseBackwardBefore) {
+                      String browseBackwardBefore,
+                      String probeUnreadableRows) {
     }
 
     /**
@@ -3382,6 +3608,136 @@ public class TransactionRepository {
     }
 
     /**
+     * One execution's <strong>load-mode</strong> open of the indexed master -
+     * {@code OPEN OUTPUT TRANSACT-FILE} at {@code app/cbl/CBTRN02C.cbl:256}.
+     *
+     * <p>Obtained from {@link TransactionRepository#openLoadMode()}. Distinct from {@link OutputFile}
+     * because the verb is distinct: {@link OutputFile} is a sequential open of a new generation that
+     * accepts writes, while this is load mode over an existing indexed cluster - and in the shipped
+     * configuration it does not open at all.
+     *
+     * <p><strong>It carries a status and a close, and deliberately nothing else.</strong> The source
+     * writes to this file through {@code 2900-WRITE-TRANSACTION-FILE}, whose {@code WRITE} is a keyed add
+     * addressed by {@link TransactionRepository#write(TranRecord)} - not through the open handle. So the
+     * two things {@code CBTRN02C} does with the handle are exactly the two things this type offers:
+     * {@code 0100-TRANFILE-OPEN} branches on {@link #openStatus()} and {@code 9100-TRANFILE-CLOSE}
+     * branches on {@link #closeLoadMode()}. Offering reads or writes here would advertise a capability the
+     * source never exercises through this handle.
+     *
+     * <p>Per-execution state on the handle, never on the repository singleton, so two runs never share an
+     * open status (practice B9, gate G53).
+     */
+    public static final class LoadModeFile implements AutoCloseable {
+
+        /** The relation this open addressed. */
+        private final DatasetRelation relation;
+
+        /** The DD name it was resolved for. */
+        private final String ddName;
+
+        /** The status the open reported: {@code '00'}, {@code '37'} or a permanent error. */
+        private final String openStatus;
+
+        /** Whether the close has run, so it cannot report success twice. */
+        private boolean closed;
+
+        /**
+         * Records one load-mode open.
+         *
+         * @param relation   the relation it addressed
+         * @param ddName     the DD name it was resolved for
+         * @param openStatus the status the open reported
+         */
+        private LoadModeFile(DatasetRelation relation, String ddName, String openStatus) {
+            this.relation = relation;
+            this.ddName = ddName;
+            this.openStatus = openStatus;
+        }
+
+        /**
+         * The resolved dataset name.
+         *
+         * @return the dataset name; never {@code null}
+         */
+        public String datasetName() {
+            return relation.dsname();
+        }
+
+        /**
+         * The DD name this open was resolved for.
+         *
+         * @return the DD name; never {@code null}
+         */
+        public String ddName() {
+            return ddName;
+        }
+
+        /**
+         * The status {@code OPEN OUTPUT} reported - the value {@code app/cbl/CBTRN02C.cbl:257} tests and
+         * {@code :262-268} abends on as {@code 'ERROR OPENING TRANSACTION FILE'}.
+         *
+         * @return {@link FileStatus#OK} when load mode could begin, {@link FileStatus#OPEN_MODE_CONFLICT}
+         *         when the cluster holds records and is not reusable, or
+         *         {@link TransactionRepository#PERMANENT_ERROR_STATUS} when the backend refused; never
+         *         {@code null}, always two characters
+         */
+        public String openStatus() {
+            return openStatus;
+        }
+
+        /**
+         * The open status classified.
+         *
+         * @return {@link Outcome#OK} when load mode began, {@link Outcome#OTHER} otherwise
+         */
+        public Outcome openOutcome() {
+            return FileStatus.outcomeOfStatus(openStatus);
+        }
+
+        /**
+         * The {@code APPL-RESULT} the open sets - the ladder at {@code app/cbl/CBTRN02C.cbl:257-261}:
+         * {@code MOVE 0} on {@code '00'} and {@code MOVE 12} otherwise.
+         *
+         * @return {@link FileStatus#APPL_AOK} or {@link TransactionRepository#APPL_RESULT_FATAL}
+         */
+        public int openApplResult() {
+            return FileStatus.OK.equals(openStatus) ? FileStatus.APPL_AOK : APPL_RESULT_FATAL;
+        }
+
+        /**
+         * Whether this handle has not yet been closed.
+         *
+         * @return {@code true} until {@link #closeLoadMode()} or {@link #close()} has been called
+         */
+        public boolean isOpen() {
+            return !closed;
+        }
+
+        /**
+         * {@code CLOSE TRANSACT-FILE} - {@code app/cbl/CBTRN02C.cbl:602}.
+         *
+         * <p>Load mode holds no cursor and no buffered row: the open either began or did not, and the
+         * close has nothing to flush. It reports {@link FileStatus#OK} for a file that opened, and the
+         * open's own status for one that did not - which is COBOL's behaviour for a {@code CLOSE} of a
+         * file that is not open, and is unreachable in practice because {@code 0100-TRANFILE-OPEN} abends
+         * on a failed open long before {@code 9100-TRANFILE-CLOSE} runs.
+         *
+         * <p>Idempotent: a second call reports the same status without pretending to close again.
+         *
+         * @return the close status; never {@code null}
+         */
+        public String closeLoadMode() {
+            closed = true;
+            return FileStatus.isOk(openStatus) ? FileStatus.OK : openStatus;
+        }
+
+        /** Releases the handle, so try-with-resources reads the same as the source's close paragraph. */
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+    /**
      * One opened sequential output run over the generation a step allocated.
      *
      * <p>Obtained from {@link TransactionRepository#openOutput()} - which addresses the
@@ -3851,6 +4207,24 @@ public class TransactionRepository {
         private boolean ended;
 
         /**
+         * The outcome the {@code STARTBR} reported, or {@code null} until {@link #position()} has run.
+         *
+         * <p>{@code NORMAL} when a record satisfies the positioning, {@code NOTFND} when none does, and an
+         * {@code OTHER} outcome when the backend refused the probe. It is the value the three
+         * {@code EVALUATE WS-RESP-CD} chains after a {@code STARTBR} branch on.
+         */
+        private ReadResult positioningResult;
+
+        /**
+         * Whether the {@code STARTBR} established a browse.
+         *
+         * <p>{@code false} when positioning reported anything but {@code NORMAL}. CICS starts no browse in
+         * that case, so a subsequent read reports {@code INVREQ} rather than walking a file the program was
+         * never positioned in - and {@code COBIL00C} performs that read unconditionally at {@code :214}.
+         */
+        private boolean started;
+
+        /**
          * Constructed only by {@link TransactionRepository}, so a handle always carries a key already
          * moved to its declared width.
          *
@@ -3862,6 +4236,67 @@ public class TransactionRepository {
             this.repository = repository;
             this.direction = direction;
             this.anchorKey = anchorKey;
+        }
+
+        /**
+         * Issues the {@code STARTBR}: runs the anchor statement, records its outcome and discards the row.
+         *
+         * <p>Called once, by {@link TransactionRepository#startedBrowse(BrowseDirection, String)}, before
+         * the handle is handed to a caller. The row is deliberately thrown away and neither
+         * {@link #positionImage} nor {@link #positioned} is touched, because {@code STARTBR} transfers no
+         * record: the first {@code READNEXT} or {@code READPREV} still issues its own read and still
+         * returns that record. What the probe leaves behind is the position's <em>existence</em>, which is
+         * the only thing {@code STARTBR} reports.
+         */
+        private void position() {
+            Statements sql;
+            try {
+                sql = repository.resolveStatements();
+            } catch (DataAccessException refused) {
+                positioningResult = failedStep(CICS_FILE_NAME, "while positioning a browse", refused)
+                        .result();
+                started = false;
+                return;
+            }
+            positioningResult = anchor(sql).result();
+            // NOTFND is what CICS reports when no record satisfies GTEQ positioning. The browse-step layer
+            // reports an exhausted read as end-of-file, which is the same fact seen from the READ side, so
+            // it is restated here as the condition a STARTBR raises for it.
+            if (!positioningResult.isRecordReturned() && positioningResult.isEndOfFile()) {
+                positioningResult = ReadResult.notFound(CICS_FILE_NAME);
+            }
+            started = positioningResult.isRecordReturned();
+        }
+
+        /**
+         * The outcome the {@code STARTBR} reported - the value
+         * {@code app/cbl/COBIL00C.cbl:451-467}, {@code app/cbl/COTRN00C.cbl:602-620} and
+         * {@code app/cbl/COTRN02C.cbl:652-668} each evaluate.
+         *
+         * @return {@link Outcome#OK} when a record satisfies the positioning, {@link Outcome#NOT_FOUND}
+         *         when none does, {@link Outcome#OTHER} when the backend refused; never {@code null}
+         */
+        public Outcome positioningOutcome() {
+            return positioningResult.outcome();
+        }
+
+        /**
+         * The full {@code STARTBR} outcome, including the {@code RESP} and {@code RESP2} a
+         * {@code WHEN OTHER} arm displays.
+         *
+         * @return the positioning result; never {@code null}
+         */
+        public ReadResult positioningResult() {
+            return positioningResult;
+        }
+
+        /**
+         * Whether the {@code STARTBR} established a browse.
+         *
+         * @return {@code true} only when positioning reported {@code NORMAL}
+         */
+        public boolean isStarted() {
+            return started;
         }
 
         /**
@@ -3944,6 +4379,16 @@ public class TransactionRepository {
          * @return the discriminated outcome; never {@code null}
          */
         private ReadResult read(BrowseDirection required) {
+            if (!started) {
+                // The STARTBR did not establish a browse, so there is no browse to read. CICS reports an
+                // invalid request, and COBIL00C's unconditional PERFORM READPREV-TRANSACT-FILE at :214
+                // reaches its WHEN OTHER arm through exactly this path.
+                LOG.error("A read was requested on a browse of " + CICS_FILE_NAME + " whose STARTBR "
+                        + "reported " + positioningResult.outcome() + ", so no browse was established; "
+                        + "reporting the invalid-request condition");
+                return ReadResult.other(CICS_FILE_NAME, PERMANENT_ERROR_STATUS,
+                        CicsResponse.of(FileStatus.INVREQ));
+            }
             if (ended) {
                 // No browse is in progress, so there is nothing to read from. CICS reports an invalid
                 // request for a browse operation without a browse, and so does this.

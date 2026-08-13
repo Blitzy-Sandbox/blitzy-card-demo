@@ -720,6 +720,81 @@ class TransactionRepositoryTest {
         }
 
         @Test
+        @DisplayName("finding DB-05: an unreadable row is not reported as NOTFND")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            // A row the dataset holds and cannot present. TRAN-ID is the leading sixteen bytes of the
+            // record image, so SQL evaluates the keyed LIKE against a null image as UNKNOWN and the read
+            // matches nothing - which looks exactly like NOTFND and is not: that row's key is unknowable
+            // and may be the one asked for. COTRN01C:283-288 paints "Transaction ID NOT found" on the
+            // claim, and COTRN02C takes it as licence to add a record under that identifier.
+            seedRaw(MASTER_DS, null);
+
+            ReadResult result = repository.readByTranId("0000000000000009");
+
+            assertThat(result.isNotFound())
+                    .as("the unreadable row's key cannot be known, so no absence can be asserted")
+                    .isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.cicsResp())
+                    .as("the same arm the visible form of this condition already reports")
+                    .hasValue(FileStatus.INVREQ);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key still reports '23'")
+        void aGenuinelyAbsentKeyIsStillNotFound() {
+            seed(MASTER_DS, record("0000000000000001"));
+
+            // No row of the dataset is unreadable, so the absence is established rather than assumed.
+            assertThat(repository.readByTranId("0000000000000009").status())
+                    .isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a read that found its record is unaffected by an unreadable row")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            seed(MASTER_DS, record("0000000000000001"));
+            seedRaw(MASTER_DS, null);
+
+            // A VSAM READ of a key that resolves does not fail because another record in the cluster is
+            // damaged, so the proof is confined to the not-found path.
+            assertThat(repository.readByTranId("0000000000000001").isFound()).isTrue();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: an empty browse is an end of file and needs no proof")
+        void anEmptyBrowseIsStillAnEndOfFileEvenWithAnUnreadableRow() {
+            // The proof qualifies the KEYED path only. A browse that walked the rows it was pointed at has
+            // already seen every row there is, and an unreadable one among them is a row it read rather
+            // than a row it missed - so an empty browse read stays ENDFILE, unchanged.
+            try (TransactionRepository.InputFile input = repository.openInput(sequential(DALY_DS))) {
+                assertThat(input.readNext().isEndOfFile()).isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a refused probe is reported rather than reported as absent")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() {
+            seed(MASTER_DS, record("0000000000000001"));
+            JdbcTemplate refusingTheProbe = Mockito.spy(template);
+            // The keyed read is answered for real; the very next creator-bound query - the probe - is not.
+            Mockito.doCallRealMethod()
+                    .doThrow(new DataAccessResourceFailureException("the probe cannot be answered"))
+                    .when(refusingTheProbe).query(Mockito.any(PreparedStatementCreator.class),
+                            Mockito.<ResultSetExtractor<Object>>any());
+            TransactionRepository spied = new TransactionRepository(refusingTheProbe, validBindings(),
+                    ASCII, RecordImageForm.CHARACTER, ORDINAL);
+
+            ReadResult result = spied.readByTranId("0000000000000009");
+
+            assertThat(result.isNotFound())
+                    .as("the probe established nothing, so the absence stays unproved")
+                    .isFalse();
+            assertThat(result.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
         @DisplayName("two records under one key report '22' and carry the first, as CICS does")
         void aLostUniqueKeyReportsDuplicate() {
             TranRecord first = record("0000000000000001");
@@ -833,7 +908,12 @@ class TransactionRepositoryTest {
         void backwardOverAnEmptyMaster() {
             template.update("DELETE FROM \"" + MASTER_DS + "\"");
             try (Browse browse = repository.startBrowse(BrowseDirection.BACKWARD)) {
-                assertThat(browse.readPrev().isEndOfFile()).isTrue();
+                // Nothing satisfies the position, so the STARTBR reports NOTFND and starts no browse.
+                assertThat(browse.positioningResult().isNotFound()).isTrue();
+                assertThat(browse.isStarted()).isFalse();
+                // A read of a browse that was never started is an invalid request rather than an end of
+                // file: there is no browse to have reached the end of.
+                assertThat(browse.readPrev().cicsResp()).hasValue(FileStatus.INVREQ);
             }
         }
 
@@ -863,12 +943,18 @@ class TransactionRepositoryTest {
         @Test
         @DisplayName("a forward anchor above every key, and a backward anchor below every key, end at once")
         void anchorsOutsideTheKeyRange() {
+            // No key is at or after the first anchor, and none is at or before the second, so both
+            // positions report NOTFND and neither browse is started.
             try (Browse forward = repository.startBrowse("9999999999999999", BrowseDirection.FORWARD)) {
-                assertThat(forward.readNext().isEndOfFile()).isTrue();
+                assertThat(forward.positioningResult().isNotFound()).isTrue();
+                assertThat(forward.isStarted()).isFalse();
+                assertThat(forward.readNext().cicsResp()).hasValue(FileStatus.INVREQ);
             }
             try (Browse backward =
                     repository.startBrowse("0000000000000000", BrowseDirection.BACKWARD)) {
-                assertThat(backward.readPrev().isEndOfFile()).isTrue();
+                assertThat(backward.positioningResult().isNotFound()).isTrue();
+                assertThat(backward.isStarted()).isFalse();
+                assertThat(backward.readPrev().cicsResp()).hasValue(FileStatus.INVREQ);
             }
         }
 
@@ -958,10 +1044,15 @@ class TransactionRepositoryTest {
         void aRefusedBrowseIsReported() {
             try (Browse browse = repositoryOverMissingRelations()
                     .startBrowse(BrowseDirection.FORWARD)) {
-                ReadResult refused = browse.readNext();
+                // The refusal strikes on the position, because that is the operation that touches the
+                // relation first, so it is the positioning outcome that carries the diagnostic.
+                ReadResult refused = browse.positioningResult();
                 assertThat(refused.isOther()).isTrue();
                 assertThat(refused.isEndOfFile()).isFalse();
                 assertThat(refused.diagnostic()).isPresent();
+                assertThat(browse.isStarted()).isFalse();
+                // The read that follows reports the invalid request, having no browse to read.
+                assertThat(browse.readNext().cicsResp()).hasValue(FileStatus.INVREQ);
             }
         }
     }
@@ -1639,12 +1730,14 @@ class TransactionRepositoryTest {
             doReturn(null).when(stub).query(any(PreparedStatementCreator.class),
                     anyExtractor());
 
-            // A keyed read of nothing is a missing record; a browse of nothing is an end of file. Both
-            // are reached from the same null answer, which is why the two are distinguished by the
-            // caller's own access path rather than by the answer.
+            // A keyed read of nothing is a missing record; a position that finds nothing is a NOTFND,
+            // which is the condition a STARTBR raises for it. Both are reached from the same null
+            // answer, which is why the two are distinguished by the caller's own access path rather
+            // than by the answer.
             assertThat(stubbed.readByTranId("0000000000000001").isNotFound()).isTrue();
             try (Browse browse = stubbed.startBrowse(BrowseDirection.FORWARD)) {
-                assertThat(browse.readNext().isEndOfFile()).isTrue();
+                assertThat(browse.positioningResult().isNotFound()).isTrue();
+                assertThat(browse.readNext().cicsResp()).hasValue(FileStatus.INVREQ);
             }
         }
 

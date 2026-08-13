@@ -34,9 +34,9 @@ import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
@@ -52,8 +52,10 @@ import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -187,7 +189,7 @@ import static org.mockito.Mockito.mock;
  *   <li><strong>B7, deterministic and non-interactive.</strong> Nothing here reads a wall clock, a
  *       locale, a platform charset, a directory listing or an environment variable, so two runs of the
  *       same case produce identical bytes. Each case gets its own in-memory database, named with a
- *       fresh {@link UUID}, so the suite is order independent and safe to run in parallel.</li>
+ *       store of its own, so the suite is order independent and safe to run in parallel.</li>
  *   <li><strong>B10, the tests ship with the implementation.</strong> These twenty cases were authored
  *       against the COBOL rather than against a completed translation, which is the whole reason a
  *       difference here localises to a line of {@code app/cbl/CBSTM03A.CBL} instead of to "somewhere in
@@ -224,8 +226,10 @@ class CBSTM03AParityTest {
     private static final RecordImageForm IMAGE_FORM = RecordImageForm.CHARACTER;
 
     /**
-     * H2's own row-identifier pseudo-column, which is what {@code application-test.yml} configures for
-     * {@value PhysicalSequence#EXPRESSION_PROPERTY}. It is never read by the statement pass - all four
+     * The row-identifier pseudo-column {@code application-test.yml} configures for
+     * {@value PhysicalSequence#EXPRESSION_PROPERTY}; the record-image store behind this suite answers an
+     * ordering over it with write order, which is the same thing it means to the shipped test profile's
+     * engine. It is never read by the statement pass - all four
      * inputs are keyed or ascending browses - but the job's utility steps take it, so it is supplied
      * rather than left to a default that does not exist.
      */
@@ -258,6 +262,57 @@ class CBSTM03AParityTest {
 
     /** {@code HTMLFILE} - the HTML statement, {@code :L92-L96}. */
     private static final String HTMLFILE_DSNAME = "TEST.M2.CARDDEMO.STATEMNT.HTML";
+
+    /**
+     * The six DD names {@code app/jcl/CREASTMT.JCL} allocates to the statement step, in the order the
+     * JCL declares them at {@code :L83-L96}.
+     *
+     * <p>Sourced from {@link StatementGenerationJobA}'s own constants rather than retyped, so a DD name
+     * has exactly one spelling in the module. Its one reader is
+     * {@link #declaredDdNames(String)}, which refuses a {@code NULL_UCB_DDS} declaration naming
+     * anything else - a DD the program never opens has no {@code TIOT} entry to report on.
+     */
+    private static final List<String> ALL_DD_NAMES = List.of(
+        StatementGenerationJobA.TRNXFILE_DD,
+        StatementGenerationJobA.XREFFILE_DD,
+        StatementGenerationJobA.ACCTFILE_DD,
+        StatementGenerationJobA.CUSTFILE_DD,
+        StatementGenerationJobA.STMTFILE_DD,
+        StatementGenerationJobA.HTMLFILE_DD);
+
+    /**
+     * The substitutable call sites this directory deliberately does <strong>not</strong> drive, and where
+     * each is driven instead.
+     *
+     * <p>One entry, and it is a considered allocation rather than an omission. {@code READ-CUSTFILE} is
+     * the keyed read at {@code app/cbl/CBSTM03A.CBL:L377}, whose guard at {@code L379-L386} has only a
+     * {@code WHEN '00'} and a {@code WHEN OTHER} - so <em>every</em> unusual status is fatal there, and
+     * a single parity case forcing one of them would assert one row of a matrix.
+     * {@code StatementGenerationJobATest.TheStatusMatrix} drives {@code '10'}, {@code '22'}, {@code '23'}
+     * and {@code '34'} through that guard as parameterized rows, asserting the
+     * {@code ERROR READING CUSTFILE}, {@code RETURN CODE} and {@code ABENDING PROGRAM} lines for each,
+     * which is a strictly stronger statement than one case here could make. The parity case that used to
+     * force it - the {@code STRING} and {@code MOVE} truncation case - now runs to completion, which is
+     * what its own subject requires: three whole transactions inside one whole statement.
+     *
+     * <p>Recorded as an assertion rather than a comment on purpose. A comment saying "covered elsewhere"
+     * decays the moment the elsewhere changes;
+     * {@link #everyCaseDeclaresADecodableScenario()} reads this map and fails if a site appears in
+     * neither place, and fails equally if a site appears in both.
+     */
+    private static final Map<CallSite, String> GUARD_ARMS_COVERED_OUTSIDE_THIS_DIRECTORY = Map.of(
+        CallSite.READ_CUSTFILE,
+        "StatementGenerationJobATest.TheStatusMatrix.theCustFileKeyedReadHasNoEndOfFileArm");
+
+    /**
+     * The {@link ParityCase.UnitStimulus#PERMITTED_ENVIRONMENT_KEYS} entry a case names to declare a DD
+     * whose {@code TIOT} entry carries no unit control block.
+     *
+     * <p>The control-block walk at {@code app/cbl/CBSTM03A.CBL:L262-L291} reports such a DD with a
+     * different literal, and no seeded row can express it - the condition is a property of the address
+     * space, not of the data. That is why the key exists.
+     */
+    private static final String NULL_UCB_DDS_KEY = "NULL_UCB_DDS";
 
     // ---------------------------------------------------------------------------------------------
     //  The two output record layouts.
@@ -293,8 +348,9 @@ class CBSTM03AParityTest {
      * it is the last <em>ungated</em> step of {@code app/jcl/CREASTMT.JCL}, so it is exactly the step
      * whose failure the three gates downstream of it exist to react to.
      *
-     * <p>No case currently declares {@link Scenario#bypassedAfter(int)}. The gate is a genuine
-     * dimension of this step's environment and the harness keeps the ability to express it, but the
+     * <p>No case currently declares a {@code stepStatuses} entry. The gate is a genuine
+     * dimension of this step's environment and a case file can express it - the decoder honours it and
+     * {@link #drive(ParityCase, ParityHarness.Invocation)} acts on it - but the
      * behaviour itself is asserted where it can be asserted far more thoroughly - {@code
      * StatementGenerationJobATest} drives all three gates and the ungated control through a real
      * {@code JobRepository}, and {@code BatchConfigTest} pins the shared decider. A parity case, whose
@@ -413,26 +469,67 @@ class CBSTM03AParityTest {
     }
 
     /**
-     * Guards that every case is paired with a scenario, which is the half {@link ParityCase} cannot
-     * carry.
+     * Every case's declared stimulus decodes into a scenario, and the set covers every guard arm a
+     * substitution exists to reach.
      *
-     * <p>A case file states its seed and its expectations; it does not state which of the ten
-     * subroutine call sites is to report an unusual file status, nor whether the {@code COND} gate is
-     * closed, because neither is an input to the program - both are properties of the environment it
-     * runs in. Those live in {@link #scenario(String)}, and a case whose scenario is missing would
-     * fail with a lookup error rather than a parity difference, which is a considerably worse
-     * diagnostic than this.
+     * <p>{@link #scenarioFrom(String, ParityCase.UnitStimulus)} refuses a malformed declaration rather
+     * than defaulting it, so a mistyped call-site name fails here with the five legal names in the
+     * message instead of silently leaving the guard arm unreached. What this adds is the other
+     * direction: that each of the five substitutable sites is reached by <em>something</em>, because a
+     * substitution nothing declares is a guard arm nothing drives, and gate {@code G47} asks for all of
+     * them. Four are reached by a case here; the fifth is reached by the unit test named in
+     * {@link #GUARD_ARMS_COVERED_OUTSIDE_THIS_DIRECTORY}, and this requires that no case declares it
+     * too, so there is exactly one place the arm is driven from and exactly one record of where.
      */
     @Test
-    @DisplayName("every case has a scenario, and every declared scenario belongs to a case")
-    void everyCaseHasAScenario() {
+    @DisplayName("decodes every case's declared stimulus, and names all five substitutable call sites")
+    void everyCaseDeclaresADecodableScenario() {
+        Map<CallSite, List<String>> byCallSite = new LinkedHashMap<>();
         for (ParityCase parityCase : cases()) {
-            assertThat(scenario(parityCase.caseId()))
-                .as("case %s must be paired with a scenario in scenario(String), next to the "
-                    + "nineteen others, so the case and the environment it asserts stay side by "
-                    + "side", parityCase.caseId())
+            Scenario decoded = scenarioOf(parityCase);
+            assertThat(decoded)
+                .as("case %s declares a stimulus that does not decode", parityCase.caseId())
                 .isNotNull();
+            byCallSite.computeIfAbsent(decoded.site(), key -> new ArrayList<>())
+                .add(parityCase.caseId());
+            if (decoded.site() == CallSite.NONE) {
+                assertThat(decoded.status())
+                    .as("case %s names no call site, so it must substitute no status either",
+                        parityCase.caseId())
+                    .isNull();
+            } else {
+                assertThat(decoded.status())
+                    .as("case %s names %s, so it must say what that site reports", parityCase.caseId(),
+                        decoded.site())
+                    .isNotNull();
+            }
         }
+
+        for (CallSite site : CallSite.values()) {
+            if (site == CallSite.NONE) {
+                continue;
+            }
+            String coveredElsewhere = GUARD_ARMS_COVERED_OUTSIDE_THIS_DIRECTORY.get(site);
+            if (coveredElsewhere != null) {
+                assertThat(byCallSite.get(site))
+                    .as("%s is recorded as covered by %s rather than by a case here, so no case may "
+                        + "declare it: two homes for one guard arm is how the record of where it is "
+                        + "driven goes stale", site.declaredName(), coveredElsewhere)
+                    .isNull();
+                continue;
+            }
+            assertThat(byCallSite.get(site))
+                .as("no case declares an outcome at %s, and it is not recorded in "
+                    + "GUARD_ARMS_COVERED_OUTSIDE_THIS_DIRECTORY either - so the guard arm at that call "
+                    + "site is reached by nothing, anywhere (gate G47)", site.declaredName())
+                .isNotNull()
+                .isNotEmpty();
+        }
+        assertThat(byCallSite.get(CallSite.NONE))
+            .as("the cases whose whole assertion is the record sequence declare no substitution at all, "
+                + "and they are the majority")
+            .isNotNull()
+            .isNotEmpty();
     }
 
     // =============================================================================================
@@ -456,22 +553,51 @@ class CBSTM03AParityTest {
     private enum CallSite {
 
         /** No substitution: every call reports whatever the real subroutine reports. */
-        NONE,
+        NONE(null),
 
         /** {@code 8100-TRNXFILE-OPEN}'s open, {@code app/cbl/CBSTM03A.CBL:L734}, guarded at {@code L736}. */
-        OPEN_TRNXFILE,
+        OPEN_TRNXFILE("OPEN-TRNXFILE"),
 
         /** {@code 1000-XREFFILE-GET-NEXT}'s sequential read, {@code L351}, guarded at {@code L353}. */
-        READ_XREFFILE,
+        READ_XREFFILE("READ-XREFFILE"),
 
         /** {@code 2000-CUSTFILE-GET}'s keyed read, {@code L377}, guarded at {@code L379}. */
-        READ_CUSTFILE,
+        READ_CUSTFILE("READ-CUSTFILE"),
 
         /** {@code 3000-ACCTFILE-GET}'s keyed read, {@code L401}, guarded at {@code L403}. */
-        READ_ACCTFILE,
+        READ_ACCTFILE("READ-ACCTFILE"),
 
         /** {@code 9100-TRNXFILE-CLOSE}'s close, {@code L860}, guarded at {@code L862}. */
-        CLOSE_TRNXFILE
+        CLOSE_TRNXFILE("CLOSE-TRNXFILE");
+
+        /**
+         * The {@code <VERB>-<DD>} name a case file declares this site under, or {@code null} for
+         * {@link #NONE}, which no case declares because naming no site is how a case declares no
+         * substitution.
+         */
+        private final String declaredName;
+
+        /** @param declaredName the name a case declares, or {@code null} */
+        CallSite(String declaredName) {
+            this.declaredName = declaredName;
+        }
+
+        /**
+         * The name a case file declares this site under.
+         *
+         * <p>{@code <VERB>-<DD>}, the convention every gate in this package uses, so the declaration
+         * reads as the COBOL statement it substitutes at rather than as a Java enum constant.
+         *
+         * @return the declared name
+         * @throws IllegalStateException if asked of {@link #NONE}
+         */
+        private String declaredName() {
+            if (declaredName == null) {
+                throw new IllegalStateException("CallSite.NONE has no declared name: a case declares no "
+                    + "substitution by naming no call site at all.");
+            }
+            return declaredName;
+        }
     }
 
     /**
@@ -493,92 +619,194 @@ class CBSTM03AParityTest {
             return new Scenario(CallSite.NONE, null, 0, List.of());
         }
 
-        /**
-         * @param site the call site to substitute at
-         * @param status the status it is to report
-         */
-        private static Scenario reporting(CallSite site, String status) {
-            return new Scenario(site, status, 0, List.of());
-        }
-
-        /** @param exitCode the non-zero return code a preceding step left behind */
-        private static Scenario bypassedAfter(int exitCode) {
-            return new Scenario(CallSite.NONE, null, exitCode, List.of());
-        }
-
-        /** @param ddNames the DD names with no unit control block */
-        private static Scenario withNullUcb(String... ddNames) {
-            return new Scenario(CallSite.NONE, null, 0, List.of(ddNames));
-        }
     }
 
     /**
-     * The scenario each case runs under, kept beside the twenty case files it belongs to.
+     * Decodes the scenario a case declares in its {@link ParityCase.UnitStimulus}.
      *
-     * <p>The fifteen cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
-     * uninteresting - they are the ones whose whole assertion is the record sequence, and they differ
-     * from each other only in their seed, which is where a case file belongs. The five that do name
-     * something are the guard-arm and null-UCB cases, and each states its one deviation and nothing
-     * else.
+     * <p><strong>Nothing here reads {@link ParityCase#caseId()}.</strong> It used to: a {@code switch}
+     * over {@code case01}..{@code case20} chose a substituted status, a bypass code or a null-UCB DD
+     * list, and that is the defect this replaces. A case file gave no indication of the environment it
+     * ran in, renumbering a case silently moved the environment to a different run, and a new case file
+     * either threw or fell into an arm asserting something it had not asked for. The environment is an
+     * <em>input</em>, so it is declared beside the seed that is also an input.
      *
-     * @param caseId the case whose scenario to resolve
+     * <p>Three declarations are honoured, each mapping to one member of the stimulus:
+     * <ul>
+     *   <li>a {@code callSiteOutcomes} entry naming one of the six {@link CallSite} members and the
+     *       two-character {@code FILE STATUS} it reports - which is how a case reaches a guard arm no
+     *       arrangement of seeded rows can produce;</li>
+     *   <li>a {@code stepStatuses} entry naming a preceding step of {@code app/jcl/CREASTMT.JCL} and the
+     *       condition code it left behind, which the {@code COND=(0,NE)} gate on the statement step
+     *       reads;</li>
+     *   <li>an {@code environment} entry under {@code NULL_UCB_DDS} listing the DD names whose
+     *       {@code TIOT} entry reports no unit control block, which the control-block walk at
+     *       {@code app/cbl/CBSTM03A.CBL:L262-L291} reports with a different literal.</li>
+     * </ul>
+     *
+     * <p>Silence is itself a declaration, and the commonest one: the fifteen cases that name nothing are
+     * not uninteresting - they are the ones whose whole assertion is the record sequence, and they differ
+     * from each other only in their seed, which is where a case file belongs.
+     *
+     * @param parityCase the case whose declared environment to decode
      * @return that case's scenario; never {@code null}
-     * @throws IllegalArgumentException if the case has no declared scenario
+     * @throws IllegalArgumentException if a declared call site is not one of the six, if a status is
+     *     malformed, if more than one call site is named, or if a stimulus member this program has no
+     *     use for is declared
      */
-    private static Scenario scenario(String caseId) {
-        return switch (caseId) {
-            // The record-sequence cases: seed only, no environmental deviation.
-            case "case01", "case02", "case03", "case04", "case05", "case06", "case07", "case08",
-                 "case09", "case10", "case18", "case19" -> Scenario.normal();
+    private static Scenario scenarioOf(ParityCase parityCase) {
+        return scenarioFrom(parityCase.caseId(), parityCase.unitStimulus());
+    }
 
-            // '04' is ACCEPTED by IF WS-M03B-RC = '00' OR '04' at L736 - a run that completes.
-            case "case11" -> Scenario.reporting(CallSite.OPEN_TRNXFILE,
-                FileStatus.RECORD_LENGTH_CONFLICT);
+    /**
+     * Decodes a stimulus into the scenario it describes.
+     *
+     * @param caseId the case, for a diagnostic only - never for a decision
+     * @param stimulus the declared stimulus
+     * @return the scenario; never {@code null}
+     * @throws IllegalArgumentException if the stimulus is malformed or declares something unusable
+     */
+    private static Scenario scenarioFrom(String caseId, ParityCase.UnitStimulus stimulus) {
+        if (!stimulus.operationScript().isEmpty()) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares an "
+                + "operationScript. CBSTM03A issues its four file operations through CBSTM03B, whose own "
+                + "gate declares the script; here the operations are a consequence of the seed and the "
+                + "guard arms, so a script would be a control nothing reads.");
+        }
+        if (!stimulus.linkage().isEmpty()) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares linkage values. "
+                + "CBSTM03A takes no PROCEDURE DIVISION USING parameters - app/jcl/CREASTMT.JCL declares "
+                + "no PARM on the statement step - so there is no linkage boundary to hand a value "
+                + "across.");
+        }
 
-            // The ST-CURR-BAL high-order truncation case needs a run that COMPLETES: its subject is
-            // MOVE ACCT-CURR-BAL TO ST-CURR-BAL at L484, so it asserts four whole statements and no
-            // environmental deviation at all. The TRNXFILE open's ELSE arm it used to reach stays
-            // covered by StatementGenerationJobATest.TheAbendPath.theFourOpenGuards, which forces a
-            // bad status at each of the four opens in turn (gates G47, G35).
-            case "case12" -> Scenario.normal();
+        CallSite site = CallSite.NONE;
+        String status = null;
+        for (Map.Entry<String, ParityCase.CallSiteOutcome> declared
+                : stimulus.callSiteOutcomes().entrySet()) {
+            if (site != CallSite.NONE) {
+                throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares more than one "
+                    + "call-site outcome. One substitution per case, deliberately: the guard arms are "
+                    + "reached one at a time and a run that failed at two sites would never reach the "
+                    + "second.");
+            }
+            site = callSiteNamed(caseId, declared.getKey());
+            status = statusOf(caseId, declared.getKey(), declared.getValue());
+        }
 
-            // The STRING and MOVE truncation case needs a run that COMPLETES, for the same reason
-            // case12 does: its subject is the pair of ONE-space STRING builds at L462-L481 and the
-            // MOVE TRNX-DESC TO ST-TRANDT at L677, so it asserts three whole transactions inside one
-            // whole statement and declares no environmental deviation at all. The '10' it used to
-            // force at the CUSTFILE keyed read - fatal there, because the EVALUATE at L379-L386 has
-            // only a WHEN '00' and a WHEN OTHER - stays covered by
-            // StatementGenerationJobATest.TheStatusMatrix, whose
-            // theCustFileKeyedReadHasNoEndOfFileArm forces exactly that status at exactly that call
-            // site and asserts the ERROR READING CUSTFILE, RETURN CODE and ABENDING PROGRAM lines,
-            // alongside the parameterized rows of the same class that drive CUSTFILE '10', '22',
-            // '23' and '34' through the same guard (gates G47, G35).
-            case "case14" -> Scenario.normal();
+        int bypassExitCode = 0;
+        for (Map.Entry<String, Integer> step : stimulus.stepStatuses().entrySet()) {
+            if (bypassExitCode != 0) {
+                throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares a non-zero "
+                    + "condition code for more than one preceding step. COND=(0,NE) flushes the "
+                    + "statement step on the first non-zero code, so a second one could not be the "
+                    + "reason the step was bypassed.");
+            }
+            bypassExitCode = step.getValue();
+        }
 
-            // The three remaining WHEN OTHER / ELSE arms, one per remaining guarded call site
-            // (gate G47).
-            case "case13" -> Scenario.reporting(CallSite.READ_XREFFILE, "37");
-            case "case15" -> Scenario.reporting(CallSite.READ_ACCTFILE, "23");
-            case "case16" -> Scenario.reporting(CallSite.CLOSE_TRNXFILE, "38");
+        List<String> nullUcbDds = stimulus
+            .environmentValue(NULL_UCB_DDS_KEY)
+            .map(CBSTM03AParityTest::declaredDdNames)
+            .orElse(List.of());
 
-            // The ordered three-arm EVALUATE of 1000-XREFFILE-GET-NEXT at L353-L362, driven across
-            // both arms a seeded run can reach: two '00' reads producing two statements and the '10'
-            // read that terminates the loop cleanly. Neither arm is an environmental deviation - the
-            // '10' arrives because the seeded XREFFILE window is exhausted - so the scenario is the
-            // ordinary one. The third arm needs a substituted status and is case13's, at this very
-            // call site (gates G30, G47).
-            case "case17" -> Scenario.normal();
+        return new Scenario(site, status, bypassExitCode, nullUcbDds);
+    }
 
-            // The only case whose TIOT image reports a DD with no unit control block.
-            case "case20" -> Scenario.withNullUcb(StatementGenerationJobA.HTMLFILE_DD);
+    /**
+     * Resolves a declared call-site name to the enum member it names.
+     *
+     * <p>Refused rather than defaulted, because a name matching nothing would leave the guard arm
+     * unreached and the case would pass having asserted the opposite of what it says.
+     *
+     * @param caseId the case, for the diagnostic
+     * @param name the declared name
+     * @return the matching member, never {@link CallSite#NONE}
+     * @throws IllegalArgumentException if the name is not one of the five substitutable sites
+     */
+    private static CallSite callSiteNamed(String caseId, String name) {
+        for (CallSite candidate : CallSite.values()) {
+            if (candidate != CallSite.NONE && candidate.declaredName().equals(name)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares a call-site outcome at "
+            + "'" + name + "', which is not one of " + substitutableCallSiteNames() + ". A name matching "
+            + "no call site would leave the guard arm unreached while the case reads as though it had "
+            + "driven it.");
+    }
 
-            default -> throw new IllegalArgumentException("No scenario is declared for case '"
-                + caseId + "' of " + PROGRAM + ". Every case file must be paired with the environment "
-                + "it runs in, because ParityCase carries inputs and expectations but neither a "
-                + "substituted file status nor a preceding step's return code - jobParameters cannot "
-                + "carry them either, since no step of app/jcl/CREASTMT.JCL declares a PARM. Add the "
-                + "scenario here, next to the nineteen others.");
-        };
+    /**
+     * The two-character {@code FILE STATUS} a declared outcome reports.
+     *
+     * @param caseId the case, for the diagnostic
+     * @param site the declared site name, for the diagnostic
+     * @param outcome the declared outcome
+     * @return the status, never {@code null}
+     * @throws IllegalArgumentException if the outcome declares a CICS response, a record count or
+     *     nothing at all
+     */
+    private static String statusOf(String caseId, String site,
+                                   ParityCase.CallSiteOutcome outcome) {
+        if (outcome.resp() != null) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares a CICS RESP at "
+                + site + ". CBSTM03A is a batch program reached by EXEC PGM= in "
+                + "app/jcl/CREASTMT.JCL and every one of its I/O verbs reports a two-character FILE "
+                + "STATUS; a RESP has no meaning at this call site.");
+        }
+        if (outcome.isRefused()) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " refuses the call at " + site
+                + ". Every status CBSTM03A's guards distinguish is expressible as two printable "
+                + "characters, so a refusal would be a status with no COBOL spelling.");
+        }
+        if (outcome.afterRecords() != null) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares afterRecords at "
+                + site + ". Which record the substituted status lands on is a property of the seed - the "
+                + "sequential read reports it once the seeded window is exhausted - so a count here "
+                + "would be a second, contradictory way of saying the same thing.");
+        }
+        if (outcome.status() == null) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares an outcome at "
+                + site + " that names no status. Naming a site and nothing else would substitute "
+                + "nothing.");
+        }
+        return outcome.status();
+    }
+
+    /**
+     * Splits a comma-separated {@code NULL_UCB_DDS} declaration into DD names.
+     *
+     * @param declared the declared value
+     * @return the DD names, in declaration order
+     * @throws IllegalArgumentException if the value names no DD, or names one this program never opens
+     */
+    private static List<String> declaredDdNames(String declared) {
+        List<String> names = new ArrayList<>();
+        for (String candidate : declared.split(",", -1)) {
+            String name = candidate.trim();
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("NULL_UCB_DDS declares '" + declared + "', which "
+                    + "contains an empty DD name. A blank entry is a control that does nothing.");
+            }
+            if (!ALL_DD_NAMES.contains(name)) {
+                throw new IllegalArgumentException("NULL_UCB_DDS names '" + name + "', which is not one "
+                    + "of the six DD names app/jcl/CREASTMT.JCL allocates to the statement step: "
+                    + ALL_DD_NAMES + ". A DD the program never opens has no TIOT entry to report on.");
+            }
+            names.add(name);
+        }
+        return List.copyOf(names);
+    }
+
+    /** @return the five substitutable call-site names, for a diagnostic */
+    private static List<String> substitutableCallSiteNames() {
+        List<String> names = new ArrayList<>();
+        for (CallSite candidate : CallSite.values()) {
+            if (candidate != CallSite.NONE) {
+                names.add(candidate.declaredName());
+            }
+        }
+        return List.copyOf(names);
     }
 
     // =============================================================================================
@@ -602,8 +830,17 @@ class CBSTM03AParityTest {
      * <em>consequence</em> of a discard: {@code app/jcl/CREASTMT.JCL:L87-L96} declares both outputs
      * {@code DISP=(NEW,CATLG,DELETE)}, so a run that does not reach {@code 9999-GOBACK} leaves nothing
      * behind however many records it wrote. It is therefore recorded in a {@code finally}, before the
-     * abend leaves this method, and only for the cases that declare a {@code FINAL_STATE} expectation -
-     * asked of the case itself rather than duplicated in a flag here, so the two cannot drift.
+     * abend leaves this method.
+     *
+     * <p><strong>It is recorded for every case, unconditionally.</strong> It used to be recorded only
+     * for the cases that declared a {@code FINAL_STATE} expectation, and that was a defect however
+     * convenient it read: an observation chosen by consulting the expectation makes the two sides of the
+     * comparison one side. A case that should have pinned a retained record but did not would have had
+     * nothing observed to contradict it, and the differ - which reports an observed dataset no
+     * expectation addresses - would have had nothing to report. Both outputs are declared
+     * {@code DISP=(NEW,CATLG,DELETE)} and both are opened on every path that runs at all, so both are
+     * observable on every such path, and what the run left behind is now measured rather than asked
+     * about.
      *
      * @param parityCase the case being run; supplies the seed and states which channels it expects
      * @param invocation the seeded datasets, the codec and the recorder
@@ -611,7 +848,7 @@ class CBSTM03AParityTest {
      */
     private ParityHarness.UnitOutcome drive(ParityCase parityCase,
                                             ParityHarness.Invocation invocation) {
-        Scenario scenario = scenario(parityCase.caseId());
+        Scenario scenario = scenarioOf(parityCase);
         ParityHarness.UnitOutcome.Builder recorder = invocation.recorder();
 
         if (scenario.bypassExitCode() != 0
@@ -624,20 +861,17 @@ class CBSTM03AParityTest {
 
         JobFixture assembled = fixture(invocation.datasets(), scenario, recorder);
 
-        boolean pinsFinalState = parityCase.expectedDatasets().stream()
-            .anyMatch(expected -> expected.channel() == ParityCase.DatasetChannel.FINAL_STATE);
         try {
             // Every DISPLAY goes straight into the fingerprint rather than into a list drained
             // afterwards: three of the twenty cases end in an abend, and the harness builds from
             // whatever the recorder holds at that moment.
             assembled.job().printAccountStatements(recorder::display);
         } finally {
-            if (pinsFinalState) {
-                recorder.finalState(StatementGenerationJobA.STMTFILE_DD, STMT_LAYOUT,
-                    assembled.textSink().retained());
-                recorder.finalState(StatementGenerationJobA.HTMLFILE_DD, HTML_LAYOUT,
-                    assembled.htmlSink().retained());
-            }
+            // Unconditionally, and never gated on what the case expects: see the method comment.
+            recorder.finalState(StatementGenerationJobA.STMTFILE_DD, STMT_LAYOUT,
+                assembled.textSink().retained());
+            recorder.finalState(StatementGenerationJobA.HTMLFILE_DD, HTML_LAYOUT,
+                assembled.htmlSink().retained());
         }
         return recorder.build();
     }
@@ -1268,11 +1502,18 @@ class CBSTM03AParityTest {
     /**
      * A template over a fresh in-memory relation per case, holding the seeded input rows.
      *
-     * <p>One database per invocation, named with a fresh {@link UUID}: two cases - and two clones
-     * running in parallel - can never share one, and no counter is kept because a mutable static field
-     * is exactly what practice B9 and gate G53 forbid. Only the four <em>input</em> datasets get a
-     * relation; the two outputs are reached through supplied sinks, so they need no table and this
-     * suite issues no data-definition statement against anything the program writes.
+     * <p>One store per invocation: two cases - and two clones running in parallel - can never share one,
+     * and no counter is kept because a mutable static field is exactly what practice B9 and gate G53
+     * forbid. Only the four <em>input</em> datasets get a relation; the two outputs are reached through
+     * supplied sinks.
+     *
+     * <p><strong>No DDL, for the inputs either.</strong> A relation here is declared to a
+     * {@link RecordImageDataSource}, which holds record images and has no schema, so gate
+     * <strong>G44</strong> - no DDL, no schema migration, no entity annotation and no generated table
+     * definition anywhere in this module - holds with nothing to reinterpret. Everything above the driver
+     * is unchanged: the real {@code JdbcTemplate}, the real {@link StatementGenerationJobA} and its real
+     * subroutine, {@code DatasetRelation}'s real composed statements and {@code RecordImageForm}'s real
+     * column read.
      *
      * <p>The column is declared at the seeded width rather than at the copybook width. The two agree
      * for every case here, and stating the seeded one means a disagreement would surface as the
@@ -1283,24 +1524,17 @@ class CBSTM03AParityTest {
      * @return a template over the seeded relations
      */
     private static JdbcTemplate seededTemplate(Map<String, ParityHarness.SeededDataset> seeded) {
-        SimpleDriverDataSource dataSource = new SimpleDriverDataSource(new org.h2.Driver(),
-            "jdbc:h2:mem:cbstm03a" + UUID.randomUUID().toString().replace("-", "")
-                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-
+        RecordImageDataSource backend = new RecordImageDataSource();
         for (String dd : StatementGenerationJobB.DD_NAMES) {
             ParityHarness.SeededDataset dataset = seeded.get(dd);
             if (dataset == null) {
                 continue;
             }
-            String relation = delimited(dsnameOf(dd));
-            template.execute("CREATE TABLE " + relation + " (" + delimited(RECORD_IMAGE_COLUMN)
-                + " VARCHAR(" + dataset.recordLength() + "))");
-            for (String row : dataset.rows()) {
-                template.update("INSERT INTO " + relation + " VALUES (?)", row);
-            }
+            backend.define(dsnameOf(dd), RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER,
+                    dataset.recordLength());
+            backend.store().seed(dsnameOf(dd), dataset.rows());
         }
-        return template;
+        return new JdbcTemplate(backend);
     }
 
     /**

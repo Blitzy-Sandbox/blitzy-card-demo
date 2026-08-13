@@ -3,12 +3,18 @@ package com.vsergeychik.carddemo.config;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonStreamContext;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonMappingException;
 
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 
@@ -18,6 +24,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.metadata.ConstraintDescriptor;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.nio.file.InvalidPathException;
@@ -34,6 +41,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -213,26 +221,326 @@ public class WebConfig implements WebMvcConfigurer {
      * whole or was refused. It is enabled here rather than in {@code application.yml} so that every
      * production-equivalent mapper a test builds from this customizer inherits it.
      *
+     * <h4>{@code STRICT_DUPLICATE_DETECTION} - one member states one value, or the request is refused</h4>
+     * A BMS map declares exactly one storage item per named field, and a communication area has one of
+     * each of its members, so {@code {"userid":"USER0001","userid":"ADMIN001"}} describes a screen that
+     * cannot exist. Jackson's default is to accept it and keep the last occurrence, which discards the
+     * other value with nothing in the response saying so - and on a password, a record key, an attention
+     * identifier or a navigation member, which of the two survived decides what the request does
+     * (CWE-20). Enabling this feature makes a repeated member a {@code 400} through
+     * {@link CobolErrorHandler}, at both the top level and inside a nested object. It is the same
+     * setting the parity harness already hardens its own mapper with for exactly the same reason - a
+     * fixture stating two expectations - and it belongs on the production mapper for the stronger one:
+     * silent loss of the caller's own input is what this module refuses everywhere else.
+     *
      * <p>No date module and no date pattern is registered either: COBOL dates in this estate are
      * {@code PIC X(n)} character fields, and reformatting them through a {@code java.time}
      * serializer would change observable output.
      *
+     * <h4>The inbound string boundary carries the active code page</h4>
+     * {@link ScreenTextDeserializer} judges every inbound string - is it character data at all, could a
+     * terminal have transmitted it, and can the configured code page represent it - and the last
+     * question needs the page the deployment actually named. It is therefore injected here, qualified by
+     * bean name, and handed to the deserializer as a {@link FixedWidthCodec}: {@code CobolCharsetConfig}
+     * publishes three {@link Charset} beans and deliberately marks none of them primary, so an
+     * unqualified injection point would fail the context rather than silently receive the wrong one.
+     * Naming {@code US-ASCII} or {@code IBM037} in this file instead would put a code page in a place no
+     * profile can override, which is the one thing that class exists to prevent (practice
+     * <strong>B8</strong>). The page belongs to dataset input and output: it is used for one purpose
+     * here - judging whether an inbound screen value is representable in the {@code PIC X(n)} bytes it
+     * will occupy - and never for the encoding of the request or the response.
+     *
+     * @param datasetCharset the active dataset and screen code page, from
+     *                       {@code @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)}; must not
+     *                       be {@code null}
      * @return the customizer Spring Boot applies to the shared {@code ObjectMapper} builder
+     * @throws NullPointerException if {@code datasetCharset} is {@code null}
      */
     @Bean
-    public Jackson2ObjectMapperBuilderCustomizer carddemoJacksonCustomizer() {
+    public Jackson2ObjectMapperBuilderCustomizer carddemoJacksonCustomizer(
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) final Charset datasetCharset) {
+        Objects.requireNonNull(datasetCharset, "A dataset charset is required: the inbound screen-text "
+                + "boundary judges every value against a stated code page and never against the "
+                + "platform default");
+        final ScreenTextDeserializer screenText = new ScreenTextDeserializer(
+                new FixedWidthCodec(datasetCharset));
         return builder -> builder
                 .featuresToEnable(
                         DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS,
                         DeserializationFeature.FAIL_ON_TRAILING_TOKENS,
+                        JsonParser.Feature.STRICT_DUPLICATE_DETECTION,
                         JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN)
                 .featuresToDisable(
                         DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT)
-                // Every payload member of all seventeen screens projects a PIC X(n) item, so the one
-                // rule about what a RECEIVE MAP could have delivered is applied once, here, to every
-                // inbound string - rather than seventeen times over per-route member lists, where a
-                // member left off any one list is a silent hole.
-                .deserializerByType(String.class, new ScreenTextDeserializer());
+                // Every payload member of all seventeen screens projects a PIC X(n) item, so the rules
+                // about what a RECEIVE MAP could have delivered are applied once, here, to every inbound
+                // string - rather than seventeen times over per-route member lists, where a member left
+                // off any one list is a silent hole, and rather than inside a flow whose own guards
+                // decide whether a map is received at all. Three rules ride on this one registration:
+                // the member must be character data at all, it must carry no character a terminal cannot
+                // transmit, and it must carry no character the screen code page cannot represent.
+                .deserializerByType(String.class, screenText);
+    }
+
+    /**
+     * Judges every inbound JSON string once, at the boundary where the request body is read, for
+     * characters no {@code EXEC CICS RECEIVE MAP} could have delivered.
+     *
+     * <h2>Why the judgement belongs here and not in seventeen controllers</h2>
+     * Every payload member of all seventeen screens projects a {@code PIC X(n)} symbolic-map item, and the
+     * rules that govern them are two rules that hold for every one of those members. Applied at each
+     * controller they would have to be repeated seventeen times over a per-route list of members, and a
+     * member left off any one list would be a silent hole - which is precisely the shape of the gap this
+     * closes: the code-page judgement used to be wired into three routes and therefore judged nothing on
+     * the other fourteen.
+     *
+     * <p>There is a second reason the controllers are the wrong place, and it is a parity reason. A screen
+     * program decides for itself whether it performs an {@code EXEC CICS RECEIVE MAP} at all: a cold start,
+     * a first entry from a menu and a function-key transfer all reach {@code SEND} without ever looking at
+     * the map's input area. A sweep placed inside the flow ran ahead of that decision and could refuse a
+     * field the program was about to ignore. Asked here, the question is the transport-level one it always
+     * was - "is this a payload a 3270 could have sent" - and it is settled before the program starts, so no
+     * judgement of this kind sits between the program's own guards.
+     *
+     * <p>Placed here it also names the member with <strong>the caller's own JSON spelling</strong>, because
+     * that is the only name in scope at this point: the parser is positioned on the field it just read, so
+     * there is no Java property name and no COBOL label to be tempted into the answer. That is the same
+     * vocabulary every other arm of {@link CobolErrorHandler} uses.
+     *
+     * <h2>Why it is a nested type of this file</h2>
+     * The {@code config} package's configuration owners are fixed at four - {@link CobolCharsetConfig},
+     * {@link DataSourceConfig}, {@code BatchConfig} and this one - so a collaborator that exists only to be
+     * registered on the object mapper this file configures belongs inside it, exactly as
+     * {@link CobolErrorHandler} and {@link JobSubmissionValidator} do. It is registered by
+     * {@link #carddemoJacksonCustomizer(java.nio.charset.Charset)} and by nothing else; it is not a bean.
+     *
+     * <h2>What is judged and what is not</h2>
+     * Strings anywhere in the body - a top-level screen field, a member of {@code navigationContext}, a
+     * member of a communication-area extension, an element of an array. An explicit {@code null} token is
+     * returned as {@code null} rather than coerced, so the "absent field is spaces on a terminal" behaviour
+     * of every screen is untouched.
+     *
+     * <p><strong>Three questions are asked of every value, and they are different questions.</strong>
+     *
+     * <ol>
+     *   <li><strong>Is it character data at all?</strong> Every payload member projects a {@code PIC X(n)}
+     *       item, so a JSON number or boolean is not a screen field with an unusual value - it is not a
+     *       screen field. Coercing it would fabricate a field image no {@code RECEIVE MAP} delivered:
+     *       {@code 11} written into a {@code PIC X(11)} account filter arrives as two characters where the
+     *       screen carries eleven, silently dropping the nine leading zeros that identify the record. Such a
+     *       token is refused through
+     *       {@link ScreenInputRejectedException#notCharacterData(String, String)}, which names the token
+     *       shape in the diagnostic and never in the published answer. A <em>structured</em> token - an
+     *       object or an array - is instead handed to
+     *       {@link DeserializationContext#handleUnexpectedToken(Class, JsonParser)}, Jackson's own refusal
+     *       path, which names this member and this location and surfaces as a mapping failure rather than
+     *       inventing a second answer for the same fault.</li>
+     *   <li><strong>Could a terminal have transmitted it?</strong> The rule lives in
+     *       {@link ScreenInputRejectedException#requireDeliverable(String, String)} rather than here, so it
+     *       is one statement, unit-testable without a parser, and shared with any caller that has a value
+     *       and a member name. In short: a control character is refused unless it is {@code U+0000} in a
+     *       trailing run, which is the one shape a real conversation produces, because BMS delivers an
+     *       unmodified field as all-nulls and this module renders an unpainted field the same way.</li>
+     *   <li><strong>Can the configured code page represent it?</strong> Every payload member projects a
+     *       {@code PIC X(n)} item, which is {@code n} <em>bytes</em> in a single-byte code page, so a
+     *       character that page cannot encode is a value no {@code RECEIVE MAP} could have delivered into
+     *       the field - only a hand-built payload reaches it. The code page is the active dataset page
+     *       {@link CobolCharsetConfig} publishes, injected as a {@link FixedWidthCodec} rather than assumed
+     *       (practice <strong>B8</strong>), and the judgement is
+     *       {@link FixedWidthCodec#firstUnrepresentableCodePoint(String)}.</li>
+     * </ol>
+     *
+     * <p>The second question used to be asked by three of the seventeen controllers over their own
+     * per-route field lists, and by the other fourteen not at all - so fourteen screens accepted Unicode
+     * their configured 3270 code page cannot deliver, and two of the three asked it against a hard-coded
+     * {@code US-ASCII} rather than the page actually in force. Both halves of that gap close by asking it
+     * here: once, over every string of every body, against the one code page the deployment named.
+     *
+     * <h2>The one member neither question is asked of, and why</h2>
+     * {@value #ATTENTION_IDENTIFIER_MEMBER} is not a screen field. It is {@code EIBAID}, one byte of the
+     * CICS exec interface block, which CICS reports <em>alongside</em> the map and not inside it - every
+     * request record in this module says so where it declares the member, and none of the 441
+     * {@code DFHMDF} definitions across the seventeen mapsets declares a field by that name. The
+     * code-page question is therefore not applicable to it rather than merely inconvenient: the value is a
+     * byte carried as the one character whose code point <em>is</em> that byte
+     * [{@code common.PfKeyResolver#aidImage(byte)}], so its code point is a byte value in the range
+     * {@code U+0000}-{@code U+00FF} and not text the deployment's page has to be able to spell. Asking the
+     * question anyway made {@code DFHPF3} - {@code X'F3'}, carried as {@code U+00F3} - unsendable wherever
+     * the configured page is single-byte ASCII, which would have made every function-key arm of every
+     * screen unreachable over HTTP on that configuration.
+     *
+     * <p>The first question is not asked of it either, and for the same reason rather than a different one:
+     * "could a terminal have transmitted this into a {@code PIC X} field" is a question about a field, and
+     * two of the AIDs this application reproduces are themselves control code points - {@code DFHTRIG} is
+     * {@code X'7F'} and {@code DFHSTRF} is {@code X'88'}. No program in {@code app/cbl} tests either, so both
+     * belong on {@code WHEN OTHER}, and refusing the request outright with a {@code 400} instead of answering
+     * with the screen's own invalid-key message would be a failure mode no terminal can produce.
+     *
+     * <p>What governs the member instead is the rule each controller applies to it - exactly one character,
+     * within the one-byte AID space, and anything else is {@code DFHNULL} and therefore {@code WHEN OTHER} -
+     * which is a stricter statement than either question here, not a weaker one. So nothing is unjudged: the
+     * member is judged by the program that reads it, in the terms that program uses.
+     *
+     * <h2>How the refusal reaches the caller</h2>
+     * A {@link JsonDeserializer} may only fail through Jackson, so the refusal is wrapped in a mapping
+     * failure and surfaces to Spring as {@code HttpMessageNotReadableException}.
+     * {@link CobolErrorHandler} unwraps it and answers with the same
+     * {@code 400 REJECTED_VALUE} body, naming the same member, that a value refused inside a controller
+     * produces - so the envelope has one shape however deep the refusal was raised.
+     *
+     * <h2>Why this does not narrow the API</h2>
+     * A route's own {@code 200} response must remain a legal next request, and those responses are full of
+     * {@code U+0000}: an unpainted field is rendered as {@code LOW-VALUES} at its declared width. Those
+     * values are accepted, by the trailing-run exemption, and that property was re-verified across all
+     * seventeen routes after this class was introduced. What is refused is a shape no response of this API
+     * ever produces and no terminal can send.
+     *
+     * <p>Stateless and immutable - its one field is an immutable codec - so the single instance registered
+     * on the object mapper is safe for concurrent use.
+     *
+     * @see ScreenInputRejectedException#requireDeliverable(String, String)
+     * @see ScreenInputRejectedException#requireRepresentable(String, String, String, FixedWidthCodec)
+     */
+    static final class ScreenTextDeserializer extends JsonDeserializer<String> {
+
+        /** The member name used when the parser is positioned somewhere that has no field name. */
+        static final String UNNAMED_MEMBER = "requestBody";
+
+        /**
+         * The one member whose value is a byte rather than screen text: the {@code EIBAID} carrier.
+         *
+         * <p>Spelled the same way by all seventeen request records, which is what lets the exemption be
+         * stated once here rather than annotated seventeen times. {@code ScreenTextDeserializerTest} holds
+         * that spelling against every request record, so a screen that renamed it would fail rather than
+         * quietly start being judged as text.
+         */
+        static final String ATTENTION_IDENTIFIER_MEMBER = "aid";
+
+        /**
+         * The symbolic-map item name reported in the server-side diagnostic.
+         *
+         * <p>A generic name rather than a per-member one, because at this point the only name in scope is
+         * the caller's own JSON spelling: the parser is positioned on a field, not on a copybook. The
+         * per-item name is still reported where it is known - the controller sweeps pass the label with
+         * {@code I} appended - and it is a diagnostic either way, never part of the published answer.
+         */
+        static final String SCREEN_ITEM = "a PIC X(n) screen item";
+
+        /**
+         * The code page every value is judged against - the active dataset page, injected, never assumed.
+         *
+         * <p>Immutable and stateless, like the instance holding it, so the single deserializer registered on
+         * the shared object mapper stays safe for concurrent use.
+         */
+        private final FixedWidthCodec codec;
+
+        /**
+         * @param codec the codec carrying the active screen and dataset code page, published by
+         *              {@link CobolCharsetConfig} under
+         *              {@link CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME} and passed in by
+         *              {@link #carddemoJacksonCustomizer(java.nio.charset.Charset)}; must not be
+         *              {@code null}
+         * @throws NullPointerException if {@code codec} is {@code null}
+         */
+        ScreenTextDeserializer(final FixedWidthCodec codec) {
+            this.codec = Objects.requireNonNull(codec, "A FixedWidthCodec is required: the code page an "
+                    + "inbound screen value is judged against is stated explicitly and never taken from the "
+                    + "platform default");
+        }
+
+        /**
+         * The code page this boundary judges against.
+         *
+         * <p>Exposed package-visibly so a test can assert that the deserializer the production customizer
+         * registered carries the profile's own page rather than a lookalike.
+         *
+         * @return the codec, never {@code null}
+         */
+        FixedWidthCodec codec() {
+            return codec;
+        }
+
+        /**
+         * Reads one JSON string and judges it before it becomes a payload value.
+         *
+         * <p>A token that is not a JSON string is refused rather than coerced: a structured value - an
+         * object or an array - through {@link DeserializationContext#handleUnexpectedToken(Class,
+         * JsonParser)}, and any other non-string scalar through
+         * {@link ScreenInputRejectedException#notCharacterData(String, String)}. Nothing about an accepted
+         * value is altered; the three judgements are all that is added.
+         *
+         * <p>The deliverability and representability judgements are skipped for
+         * {@value #ATTENTION_IDENTIFIER_MEMBER}, which carries a byte of
+         * the exec interface block rather than a {@code PIC X(n)} screen field, and is judged instead by the
+         * controller that reads it - see the class comment.
+         *
+         * @param parser  the parser, positioned on the value; must not be {@code null}
+         * @param context the deserialization context; must not be {@code null}
+         * @return the string as sent, unchanged, or {@code null} for a JSON {@code null}
+         * @throws IOException                  if the underlying parser fails, or if a structured token is
+         *                                      refused through Jackson's unexpected-token handling
+         * @throws ScreenInputRejectedException if the value carries a character no terminal could transmit, or
+         *                                      one the configured code page cannot represent; neither is
+         *                                      asked of {@value #ATTENTION_IDENTIFIER_MEMBER}
+         */
+        @Override
+        public String deserialize(final JsonParser parser, final DeserializationContext context)
+                throws IOException {
+
+            if (parser.hasToken(JsonToken.VALUE_NULL)) {
+                return null;
+            }
+
+            if (!parser.hasToken(JsonToken.VALUE_STRING)) {
+                // A screen field is character data or it is not a screen field. Refused rather than coerced:
+                // getValueAsString would turn 11 into "11" and true into "true", fabricating a field image no
+                // RECEIVE MAP delivered. A structured token goes to Jackson's own unexpected-token handling
+                // instead, which names this member and this location and answers through the mapping-failure
+                // arm rather than inventing a second answer for one fault; anything else is refused here,
+                // with the token shape named in the diagnostic only.
+                if (context != null
+                        && (parser.hasToken(JsonToken.START_OBJECT) || parser.hasToken(JsonToken.START_ARRAY))) {
+                    context.handleUnexpectedToken(String.class, parser);
+                }
+                throw ScreenInputRejectedException.notCharacterData(memberName(parser),
+                        String.valueOf(parser.currentToken()));
+            }
+
+            final String value = parser.getText();
+            final String member = memberName(parser);
+            if (ATTENTION_IDENTIFIER_MEMBER.equals(member)) {
+                // EIBAID, not a screen field: a byte carried as one character. Judged by the controller that
+                // reads it - one character inside the one-byte AID space, anything else DFHNULL - and not by
+                // either of the two PIC X(n) questions this class asks of screen text. See the class comment.
+                return value;
+            }
+            ScreenInputRejectedException.requireDeliverable(member, value);
+            ScreenInputRejectedException.requireRepresentable(member, SCREEN_ITEM, value, codec);
+            return value;
+        }
+
+        /**
+         * The name of the member being read, as the caller spelled it in the request body.
+         *
+         * <p>Walks outwards from the parser's current context to the nearest named field, so an element of
+         * an array is attributed to the array's own member rather than to nothing. A body that is a bare
+         * string, with no field name anywhere, falls back to {@link #UNNAMED_MEMBER}: no screen accepts such
+         * a body, so this is a name for the unreachable case rather than a name a caller will see.
+         *
+         * @param parser the parser, positioned on the value; must not be {@code null}
+         * @return the member name, never {@code null} and never blank
+         */
+        private static String memberName(final JsonParser parser) {
+            for (JsonStreamContext context = parser.getParsingContext();
+                    context != null;
+                    context = context.getParent()) {
+                final String name = context.getCurrentName();
+                if (name != null && !name.isBlank()) {
+                    return name;
+                }
+            }
+            return UNNAMED_MEMBER;
+        }
     }
 
     /**
@@ -330,9 +638,13 @@ public class WebConfig implements WebMvcConfigurer {
      *
      * <h2>Why this is a nested type, and how it is registered</h2>
      * It is nested inside {@code WebConfig.java} rather than being a file of its own because the
-     * {@code config} package is exactly four classes - {@link CobolCharsetConfig},
-     * {@link DataSourceConfig}, {@code BatchConfig} and this one - and the error mapping belongs
-     * with the rest of the web-layer configuration rather than becoming a fifth.
+     * {@code config} package's configuration owners are fixed at four - {@link CobolCharsetConfig},
+     * {@link DataSourceConfig}, {@code BatchConfig} and {@link WebConfig} - and the error mapping
+     * belongs with the rest of the web-layer configuration rather than becoming a fifth. The same
+     * reasoning keeps {@link JobSubmissionValidator} and {@link ScreenTextDeserializer} inside this
+     * file. The package's one other member, {@code DatasetUnitOfWork}, is not a configuration owner
+     * at all: it is the {@code @Component} that carries the transaction boundary a locking read runs
+     * inside, and it is named here so that this statement describes the package as it actually is.
      *
      * <p>Registration comes from the {@code @RestControllerAdvice} annotation alone, and it is
      * reliable by two independent routes, so it does not depend on which one applies:
@@ -993,10 +1305,17 @@ public class WebConfig implements WebMvcConfigurer {
         public ResponseEntity<CobolErrorResponse> handleRejectedValue(
                 final IllegalArgumentException rejected) {
             if (rejected instanceof ScreenInputRejectedException screenInput) {
+                // The DIAGNOSTIC goes here and only here. It names the code page, the symbolic-map item,
+                // the PICTURE width and the Unicode code point - the facts an engineer holding the
+                // copybook open needs, and the facts an unauthenticated caller must not be handed. It
+                // never carries the value, and it is rendered through DiagnosticText.singleLine because
+                // the member name inside it is caller-supplied and a carriage return in a log line lets
+                // whoever supplied it write a second line of their own choosing (CWE-117).
                 LOG.warn("Rejected a request because a screen value could not have arrived through a "
                         + "RECEIVE MAP; responding " + HttpStatus.BAD_REQUEST.value()
-                        + " naming the member but echoing no value"
-                        + "; raised as " + rejected.getClass().getName() + ".");
+                        + " with the fixed " + screenInput.reason() + " answer, naming the member and "
+                        + "echoing no value; raised as " + rejected.getClass().getName()
+                        + "; diagnostic: " + DiagnosticText.singleLine(screenInput.getMessage()));
                 return json(HttpStatus.BAD_REQUEST, screenInputRejectedResponse(screenInput));
             }
             LOG.warn("Rejected a request because a field value did not fit its COBOL picture; "
@@ -1006,16 +1325,23 @@ public class WebConfig implements WebMvcConfigurer {
         }
 
         /**
-         * The body for a screen value a received map could not have carried, naming the member at fault.
+         * The body for a screen value a received map could not have carried: the member at fault, and a
+         * fixed sentence saying what kind of thing is wrong with it.
          *
-         * <p>This is the one {@link IllegalArgumentException} whose own message <em>is</em> published,
-         * and the reason is structural rather than a judgement about the current wording.
-         * {@link ScreenInputRejectedException} is {@code final}, every one of its constructors is
-         * private, and every factory composes its message from a member name, a code page, a Unicode
-         * code point, a width or a statement of what the program writes - never from the value. So there
-         * is no path by which a guard added later can widen this response by wording its message
-         * differently, which is the risk {@link #rejectedValueResponse()} exists to close for the
-         * open-ended family.
+         * <p><strong>The exception's own message is not published.</strong> It is the server-side
+         * diagnostic, and it names this module's internals one rejected field at a time - the code page
+         * this deployment decodes datasets in, the symbolic-map item a member projects, its
+         * {@code PIC X(n)} width, the Unicode code point that offended, and the mechanics of a 3270
+         * {@code RECEIVE MAP}. None of that is anything a caller can act on, and all of it describes the
+         * inside of a system whose endpoints are unauthenticated, so it goes to the log in
+         * {@link #handleRejectedValue(IllegalArgumentException)} and no further.
+         *
+         * <p>What is published instead is {@link ScreenInputRejectedException#publicDetail()}: a
+         * <em>fixed</em> sentence per {@link ScreenInputRejectedException.Reason}, composed inside that
+         * type from the member name and nothing else. Fixed is what makes it safe as the module grows -
+         * a factory added later cannot widen this response by wording its diagnostic differently, which
+         * is the same property {@link #rejectedValueResponse()} relies on for the open-ended
+         * {@link IllegalArgumentException} family. The value is never carried by either text.
          *
          * <p>Naming the member is the point of the type, and it is why this arm is reached from two
          * directions: a refusal raised inside a controller arrives here as the
@@ -1025,17 +1351,19 @@ public class WebConfig implements WebMvcConfigurer {
          * envelope has one shape however deep the refusal was raised. A caller told only that "a field
          * value does not fit" has no way to find which of 54 fields it was.
          *
-         * @param rejected the refusal, carrying the member name and a value-free message
-         * @return {@code 400} with the member named in {@code fieldErrors} and no value echoed
+         * @param rejected the refusal, carrying the member name and its reason
+         * @return {@code 400} with the member named in {@code fieldErrors}, the fixed public detail, and
+         *         neither the value nor any internal fact echoed
          */
         static CobolErrorResponse screenInputRejectedResponse(
                 final ScreenInputRejectedException rejected) {
+            String publicDetail = rejected.publicDetail();
             List<FieldMessage> fieldErrors = rejected.member()
-                    .map(member -> List.of(new FieldMessage(member, rejected.getMessage())))
+                    .map(member -> List.of(new FieldMessage(member, publicDetail)))
                     .orElseGet(List::of);
             return CobolErrorResponse.of(REJECTED_VALUE_CODE,
                     HttpStatus.BAD_REQUEST,
-                    rejected.getMessage(),
+                    publicDetail,
                     fieldErrors);
         }
 
@@ -1450,8 +1778,38 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(DataAccessException.class)
         public ResponseEntity<CobolErrorResponse> handleDataAccessFailure(
                 final DataAccessException failure) {
+            logDataAccessFailure(failure);
             return sanitized(DATASET_ACCESS_CODE, HttpStatus.INTERNAL_SERVER_ERROR,
                     DATASET_ACCESS_MESSAGE);
+        }
+
+        /**
+         * Writes the withheld data-access detail to the server log, at {@code ERROR} because a unit of
+         * work that did not complete is an operational event.
+         *
+         * <p>Without this the failure left no trace anywhere. An {@code @ExceptionHandler} that returns
+         * a response <em>handles</em> the exception, so Spring's own resolver never logs it either: the
+         * caller received a five-word sentence and the operator received nothing at all - no dataset
+         * outage, no exhausted pool, no revoked credential, nothing to correlate with the {@code 500}
+         * a caller reports.
+         *
+         * <p>What is recorded is the status, the exception's own type and the fact that a dataset access
+         * did not complete. What is <strong>not</strong> recorded is anything the failure carries: a
+         * {@link DataAccessException}'s message quotes the SQL it was executing, and the SQL of this
+         * module's repositories names the dataset and carries the record image as a bound parameter -
+         * account numbers, card numbers and customer records among it (CWE-532). The exception object is
+         * not handed to the logger either, because passing it emits that message and its whole cause
+         * chain, including the driver's own text. The type alone says which class of access failed, and
+         * the deployment's own driver and pool diagnostics say why.
+         *
+         * @param failure the failure whose detail is being withheld; must not be {@code null}
+         */
+        static void logDataAccessFailure(final DataAccessException failure) {
+            Objects.requireNonNull(failure, "A data-access failure is required to log one");
+            LOG.error("A dataset access did not complete, so the unit of work is abandoned; responding "
+                    + HttpStatus.INTERNAL_SERVER_ERROR.value()
+                    + " with no dataset name, statement text or bound value echoed"
+                    + "; raised as " + failure.getClass().getName() + ".");
         }
 
         /**
@@ -1470,8 +1828,43 @@ public class WebConfig implements WebMvcConfigurer {
          */
         @ExceptionHandler(Exception.class)
         public ResponseEntity<CobolErrorResponse> handleUnexpectedFailure(final Exception failure) {
-            return sanitized(REQUEST_NOT_COMPLETED_CODE, statusForFailure(failure),
-                    UNEXPECTED_FAILURE_MESSAGE);
+            final HttpStatusCode status = statusForFailure(failure);
+            logUnexpectedFailure(failure, status);
+            return sanitized(REQUEST_NOT_COMPLETED_CODE, status, UNEXPECTED_FAILURE_MESSAGE);
+        }
+
+        /**
+         * Records the withheld detail of an unclaimed failure, at the level its status deserves.
+         *
+         * <p>The level is chosen from the status rather than fixed, and that distinction is the whole
+         * point of the method. A failure that arrives here carrying {@code 404}, {@code 405},
+         * {@code 415} or {@code 503} is an ordinary client mistake - a typo in a path, the wrong verb,
+         * an {@code Accept} header this API does not speak - and an estate that logged every one of them
+         * at {@code ERROR} would page an operator for a caller's typo and bury the failures that matter.
+         * Those are recorded at {@code DEBUG}, where an investigation can still find them. Anything that
+         * resolves to a server status did not complete for a reason the caller could not have caused, so
+         * it is recorded at {@code ERROR}: it is the only trace of a request this module answered with a
+         * fixed sentence and no detail.
+         *
+         * <p>Value-free either way. The status and the exception's type are recorded; the message is
+         * not, and neither is the exception object - an unclaimed failure is by definition of unknown
+         * provenance, so nothing may be assumed about what its text quotes. That is precisely why the
+         * response withholds it too.
+         *
+         * @param failure the failure whose detail is being withheld; must not be {@code null}
+         * @param status  the status being answered with; must not be {@code null}
+         */
+        static void logUnexpectedFailure(final Exception failure, final HttpStatusCode status) {
+            Objects.requireNonNull(failure, "A failure is required to log one");
+            Objects.requireNonNull(status, "A status is required to log a failure at");
+            final String sentence = "A request was not completed; responding " + status.value()
+                    + " with no failure detail echoed"
+                    + "; raised as " + failure.getClass().getName() + ".";
+            if (status.is5xxServerError()) {
+                LOG.error(sentence);
+            } else {
+                LOG.debug(sentence);
+            }
         }
 
         /**

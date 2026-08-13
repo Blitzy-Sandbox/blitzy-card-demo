@@ -319,6 +319,22 @@ public class CardListController {
     // =================================================================================================
 
     /** {@code LIT-THISPGM PIC X(8) VALUE 'COCRDLIC'} - {@code :179-180}. */
+    /**
+     * {@code WS-CONTEXT-FRESH-START VALUE '0'} ({@code app/cbl/COCRDLIC.cbl:131}).
+     *
+     * <p>{@code WS-CONTEXT-FLAG PIC X(1)} ({@code :130}) and both of its condition names are
+     * <strong>declared and never referenced</strong> - each appears exactly once in the file, at its own
+     * declaration, and no paragraph sets or tests either. The two characters are transcribed rather than
+     * dropped because dead declarations are part of the parity contract and are preserved, not tidied
+     * away; no field holds the flag, because inventing one would be inventing state the program has not
+     * got. {@code CardListControllerTest} asserts both conditions in both states over these two
+     * characters, which is the whole of what the source declares.
+     */
+    static final String WS_CONTEXT_FRESH_START = "0";
+
+    /** {@code WS-CONTEXT-FRESH-START-NO VALUE '1'} ({@code :132}) - declared, never referenced. */
+    static final String WS_CONTEXT_FRESH_START_NO = "1";
+
     static final String LIT_THISPGM = "COCRDLIC";
 
     /** {@code LIT-THISTRANID PIC X(4) VALUE 'CCLI'} - {@code :181-182}, CSD transaction {@code CCLI}. */
@@ -857,9 +873,14 @@ public class CardListController {
             @Valid @RequestBody(required = false) CardListRequest request,
             @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
             @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
+        // The work area is held rather than discarded because it carries the input map area the run
+        // worked on, and that area is where :753-807 and :848-866 wrote every field's xxxA attribute
+        // byte. Projecting without it reported the output group's never-written xxxP - x'00' for every
+        // field - so a client could not tell a selectable row from a protected one.
+        WorkArea ws = new WorkArea();
         CardListResponse painted =
-                listCards(request, resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid)));
-        return ScreenResponse.of(painted, painted.screenMetadata());
+                listCards(request, resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid)), ws);
+        return ScreenResponse.of(painted, painted.screenMetadata(ws.inputArea));
     }
 
     /**
@@ -935,6 +956,7 @@ public class CardListController {
         // An absent payload is EIBCALEN = 0. A fresh CardListRequest has no communication area either -
         // its navigationContext is null by construction - so the two arrive at the same test below.
         CardListRequest request = incoming == null ? new CardListRequest() : incoming;
+        ws.inputArea = request;
         CardListResponse response = new CardListResponse();
 
         // :307  MOVE LIT-THISTRANID TO WS-TRANID
@@ -2523,6 +2545,17 @@ public class CardListController {
 
         /** The classification of the last read, kept beside the two raw values it was derived from. */
         Outcome lastOutcome = Outcome.OK;
+
+        /**
+         * The input map area {@code CCRDLIAI} this run worked on.
+         *
+         * <p>Recorded because half the attribute layer lives there and the caller may not hold it: an
+         * absent payload is a legitimate cold start, and the run then builds the area itself. The
+         * attribute paragraph at {@code :753-807} and the two criterion moves at {@code :848-866} write
+         * every field's {@code xxxA} byte into whichever area this is, and
+         * {@link CardListResponse#screenMetadata(CardListRequest)} is where those bytes reach the client.
+         */
+        CardListRequest inputArea;
 
         /**
          * The last record a read actually returned, standing for the {@code CARD-RECORD} area

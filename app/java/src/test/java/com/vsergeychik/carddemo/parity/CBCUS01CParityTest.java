@@ -16,6 +16,8 @@ import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.CustomerRepository.CustomerFile;
 import com.vsergeychik.carddemo.customer.CustomerRepository.ReadResult;
 import com.vsergeychik.carddemo.customer.CustomerService;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
 import com.vsergeychik.carddemo.customer.CustomerService.SysoutSink;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import com.vsergeychik.carddemo.parity.FieldDiffer.DiffResult;
@@ -41,7 +43,6 @@ import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.math.BigDecimal;
@@ -52,7 +53,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -137,14 +137,14 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * <h2>How the units are reached: no launcher, no HTTP, no context</h2>
  * <p>Two of the four unit kinds are used, and each case states which one it is:
  * <ul>
- *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - fifteen cases. The adapter drives
+ *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - eighteen cases. The adapter drives
  *       {@link CustomerFileReaderJob#customerFileDisplayTasklet()} directly, calling
  *       {@link Tasklet#execute} with a plain {@link StepContribution} and {@link ChunkContext}. There
  *       is no {@code JobLauncher}, no {@code JobLauncherTestUtils}, no job repository write, no
  *       asynchronous executor, no application context and nothing resembling an HTTP layer between
  *       the assertion and the code, so the read order and the display order observed here are the ones
  *       the translated statements produce (gate <strong>G51</strong>).</li>
- *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - five cases. The adapter constructs
+ *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - two cases. The adapter constructs
  *       {@link CustomerService} and calls
  *       {@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)}, which is the production
  *       streaming entry point and the shortest path there is to the decision logic. Both kinds are
@@ -164,9 +164,9 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * <h2>Two backends, and what decides which one a case meets</h2>
  * <p>A parity case is inputs and expectations; it is never a script. {@link Invocation} deliberately
  * exposes no part of the expectation, so this adapter cannot and does not branch on what a case
- * expects. It branches on two things only, both of them inputs: the datasets the case declares, and
- * the {@linkplain #SCENARIOS scenario table} below, which states the I/O outcomes no arrangement of
- * rows can produce.
+ * expects. It branches on two things only, both of them inputs: the datasets the case declares, and the
+ * {@code unitStimulus} the case declares, which states the I/O outcomes no arrangement of rows can
+ * produce.
  * <table border="1">
  *   <caption>Which backend a case meets, and why</caption>
  *   <tr><th>the case</th><th>the backend is</th><th>what it reaches</th></tr>
@@ -195,9 +195,10 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * arm that gate <strong>G47</strong> requires be exercised.
  *
  * <h2>Independence</h2>
- * <p>Every case that uses a relation gets a private in-memory one of its own, named after a fresh
- * {@link UUID}, and shuts it down afterwards. This class holds no mutable state, static or otherwise -
- * {@link #SCENARIOS} is an unmodifiable map of records - so the twenty cases may run in any order,
+ * <p>Every case that uses a relation gets a private
+ * record-image store of its own, created inside the case, so there is nothing to shut down and
+ * nothing to leak. This class holds no mutable state, static or otherwise - every scenario is
+ * decoded on demand from the case that declares it - so the twenty cases may run in any order,
  * repeatedly, or in parallel, and each observes exactly what it seeded (practice <strong>B9</strong>,
  * gate <strong>G53</strong>).
  *
@@ -226,6 +227,19 @@ class CBCUS01CParityTest {
 
     /** {@code CUSTFILE} - the one DD {@code app/jcl/READCUST.jcl:L9} declares, and the case key. */
     private static final String DD_NAME = CustomerRepository.BATCH_DD_NAME;
+
+    /**
+     * The call site a case names to arrange a failed {@code OPEN INPUT} - {@code 0000-CUSTFILE-OPEN}.
+     * Spelt {@code <VERB>-<DD>} so a case file reads as the paragraph does, and validated by
+     * {@link ParityCase.UnitStimulus} rather than by convention here.
+     */
+    private static final String OPEN_SITE = "OPEN-" + CustomerRepository.BATCH_DD_NAME;
+
+    /** The call site for the sequential read - {@code 1000-CUSTFILE-GET-NEXT}. */
+    private static final String READ_SITE = "READ-" + CustomerRepository.BATCH_DD_NAME;
+
+    /** The call site for the close - {@code 9000-CUSTFILE-CLOSE}. */
+    private static final String CLOSE_SITE = "CLOSE-" + CustomerRepository.BATCH_DD_NAME;
 
     /**
      * The code page the seeded rows and the repository both use: {@code US-ASCII}, taken from the
@@ -386,11 +400,10 @@ class CBCUS01CParityTest {
         /**
          * Every read succeeds and the {@code CLOSE} at {@code L138} then fails.
          *
-         * <p>{@code case18} and {@code case19} are the two entries in {@link #declaredScenarios()}
-         * that arrange this, and a run that was clean through to its last statement is necessarily the
-         * only shape that can: {@link Scenario} refuses a failing {@code CLOSE} beside a failing
-         * {@code READ}, and every read failure in this table abends before {@code L83} runs the close
-         * at all. The two differ in <strong>record count and nothing else</strong> - {@code case18}
+         * <p>{@code case18} and {@code case19} are the two cases that declare this, and a run that was
+         * clean through to its last statement is necessarily the only shape that can: {@link Scenario}
+         * refuses a failing {@code CLOSE} beside a failing {@code READ}, and every read failure abends
+         * before {@code L83} runs the close at all. The two differ in <strong>record count and nothing else</strong> - {@code case18}
          * refuses the close after three complete record pairs and {@code case19} after none, over a
          * dataset that exists and holds no row - which is what makes them a pair rather than a
          * duplicate: {@code L137}'s {@code ADD 8 TO ZERO GIVING APPL-RESULT} resets the register on
@@ -445,193 +458,126 @@ class CBCUS01CParityTest {
     }
 
     /**
-     * One scenario per case, in case order - the arranged input side of all twenty cases.
+     * The three arrangements this program's cases make, and which cases make them.
      *
-     * <p>Eleven cases arrange nothing and differ only in what they seed; nine arrange a failure,
-     * and between them they reach all three abend sites and both arms of
-     * {@code Z-DISPLAY-IO-STATUS}:
+     * <p>Kept as prose beside the decoder because the distribution is itself an assertion: eleven cases
+     * arrange nothing and run the ordinary path; {@code case10} ({@code '92'}) and {@code case13}
+     * ({@code '37'}) fail the {@code OPEN}; {@code case12} ({@code '04'} after three), {@code case14}
+     * ({@code '22'} after four), {@code case15} ({@code '23'} at the row count), {@code case16}
+     * ({@code '30'} on the first read) and {@code case17} (the permanent-error status after one) fail the
+     * {@code READ}; and {@code case18} and {@code case19} fail the {@code CLOSE} with {@code '42'} after
+     * three record pairs and after none. Every one of those values now lives in the case file that runs
+     * it, and {@link #scenarioFor(ParityCase)} is the only thing that reads them.
+     *
      * <ul>
-     *   <li>{@code case10} and {@code case13} fail the {@code OPEN} at {@code L120}: {@code case10}
-     *       with the extended status {@code '92'}, which drives the {@code IO-STAT1 = '9'} arm at
-     *       {@code L162-L168}, and {@code case13} with {@code '37'}, the attribute-conflict status
-     *       that {@code app/jcl/CUSTFILE.jcl}'s {@code INDEXED} / {@code KEYS(9 0)} /
-     *       {@code RECORDSIZE(500 500)} cluster and the {@code FILE-CONTROL} entry at
-     *       {@code L29-L33} are the two sides of. One open failure therefore renders through each
-     *       arm of {@code Z-DISPLAY-IO-STATUS}. {@code case09} arranges no open failure of its own:
-     *       it pins the {@code PIC 9(03)} upper bound of {@code CUST-FICO-CREDIT-SCORE} instead,
-     *       which is an assertion about a displayed record image and so needs the ordinary path,
-     *       exactly as {@code case08} needs it for the matching lower bound. Nothing is lost by
-     *       that, because the numeric arm its status used to render through is the same arm
-     *       {@code case12}, {@code case13}, {@code case14} and {@code case15} drive;</li>
-     *   <li>{@code case12} fails the fourth {@code READ} with {@code '04'} and {@code case14} the
-     *       fifth with {@code '22'} - a status that is an ordinary branch in the online programs and
-     *       fatal here, because {@code L94} tests only {@code '00'} and {@code L98} only
-     *       {@code '10'}; and {@code case17} fails the second with the permanent-error convention,
-     *       whose second byte is not a digit at all;</li>
-     *   <li>{@code case15} fails the third {@code READ} with {@code '23'}, at the position end of
-     *       file would otherwise have been reported - it seeds two rows and fails the read after
-     *       them, which is the one arrangement no other entry makes and the only way to state that a
-     *       forced status is not quietly re-read as {@code '10'};</li>
-     *   <li>{@code case16} fails the <strong>first</strong> {@code READ} with {@code '30'}, the
-     *       permanent I/O error, on a dataset that does hold a record. It is the only entry whose
-     *       failing read sits at ordinal zero, so it is the only one with no record image standing
-     *       ahead of the failure to hide behind - which is what makes it the complement of
-     *       {@code case04}, where the first read reports {@code '10'} instead and the very same
-     *       {@code IF} ladder ends the loop quietly rather than abending;</li>
-     *   <li>{@code case18} and {@code case19} both fail the {@code CLOSE} at {@code L138} with
-     *       {@code '42'} - a close against a file that is not open - and they are the only two entries
-     *       that reach the third abend site, the one inside {@code 9000-CUSTFILE-CLOSE} at
-     *       {@code L147-L150}. Each arranges its failure <em>after</em> a record pass that completed
-     *       and a normal end-of-file transition, which is the one arrangement that can state that
-     *       {@code L85}'s banner is still never displayed: {@code CALL 'CEE3ABD'} at {@code L158} ends
-     *       the enclave inside the close, so control never returns from the {@code PERFORM} at
-     *       {@code L83}. An implementation that emitted that banner from a finally block, or that
-     *       treated a refused close as recoverable, passes every other case in this folder and fails
-     *       both of these. What separates the two is the <strong>record count</strong> and nothing
-     *       else: {@code case18} reads three seeded rows first, {@code case19} reads none because its
-     *       {@code CUSTFILE} exists and holds no row, and both must still produce the same three
-     *       trailing lines and the same return code {@code 12} - which is the statement that the close
-     *       paragraph is independent of record-processing state, true by construction because
-     *       {@code L137} resets {@code APPL-RESULT} on entry over whatever the read loop left there.
-     *       {@code '42'} is two digits whose first byte is not {@code '9'}, so it renders through the
-     *       {@code ELSE} arm of {@code Z-DISPLAY-IO-STATUS}, identically for both; the
-     *       {@code IO-STAT1 = '9'} arm is reached from the open and read sites instead, by
-     *       {@code case10} and {@code case17}.</li>
+     *   <li>{@code '42'} is two digits whose first byte is not {@code '9'}, so it renders through the
+     *       {@code ELSE} arm of {@code Z-DISPLAY-IO-STATUS}, identically for {@code case18} and
+     *       {@code case19}; the {@code IO-STAT1 = '9'} arm is reached from the open and read sites
+     *       instead, by {@code case10} and {@code case17}.</li>
      * </ul>
-     *
-     * <p>Deeply immutable: an unmodifiable view over a map of records built once by
-     * {@link #declaredScenarios()}. Declaration order is preserved so a diagnostic lists the entries
-     * as a reader expects, and no test can perturb what another test reads (practice
-     * <strong>B9</strong>, gate <strong>G53</strong>).
      */
-    private static final Map<String, Scenario> SCENARIOS = declaredScenarios();
-
     /**
-     * Builds the scenario table.
+     * The scenario a case runs under, decoded from the stimulus that case declares.
      *
-     * @return the twenty entries in case order
+     * <p>This was a table in Java keyed by case identifier, and the table was the defect: a reader of
+     * {@code parity/CBCUS01C/case10.json} saw four lines ending in an abend and nothing anywhere in the
+     * file to say the {@code OPEN} had been arranged to report {@code '92'}, so the case read as though
+     * it described an ordinary pass. It also made the identifier configuration rather than identity -
+     * renumber a case and it silently ran a different arrangement.
+     *
+     * <p>The case now names one of this program's three call sites -
+     * {@code OPEN-}{@value #DD_NAME}, {@code READ-}{@value #DD_NAME}, {@code CLOSE-}{@value #DD_NAME} -
+     * and gives it the two-character {@code FILE STATUS} it reports, with {@code afterRecords} on the
+     * read for the number of record pairs displayed first. A case that declares nothing runs the
+     * ordinary path, which is what eleven of the twenty do. The arrangement is still an input and the
+     * expected lines are still declared independently, so the two agreeing remains evidence; both are
+     * now in one reviewable file.
+     *
+     * @param parityCase the case
+     * @return the arranged backend behaviour; never {@code null}
+     * @throws IllegalArgumentException if the case names a call site this program does not have, gives a
+     *     shape that site cannot report, or declares a kind of stimulus this program has no use for
      */
-    private static Map<String, Scenario> declaredScenarios() {
-        Map<String, Scenario> declared = new LinkedHashMap<>();
-        declared.put("case01", Scenario.asDeclared());
-        declared.put("case02", Scenario.asDeclared());
-        declared.put("case03", Scenario.asDeclared());
-        declared.put("case04", Scenario.asDeclared());
-        declared.put("case05", Scenario.asDeclared());
-        declared.put("case06", Scenario.asDeclared());
-        declared.put("case07", Scenario.asDeclared());
-
-        // case08 seeds one real fixture row and runs the ordinary path, because what it pins is the
-        // zero-filled lower end of CUST-FICO-CREDIT-SCORE PIC 9(03) in a displayed record image.
-        declared.put("case08", Scenario.asDeclared());
-
-        // case09 arranges nothing for the same reason case08 does not: the two are one pair, pinning
-        // the two ends of CUST-FICO-CREDIT-SCORE PIC 9(03) - case08 the zero-filled minimum 001 at
-        // fixture row 26 and case09 the fully-populated maximum 793 at row 35. Both assert a displayed
-        // 500-character record image, which only the ordinary path produces; an arranged open failure
-        // would abend before the first image reached SYSOUT and neither end of the range would be
-        // asserted at all.
-        declared.put("case09", Scenario.asDeclared());
-
-        declared.put("case10", Scenario.openFails("92"));
-
-        // case11 arranges nothing on purpose. It is this program's dedicated record-width and FILLER
-        // case (gates G19 and G21), and those two are assertions about record images: they need six
-        // 500-character lines to exist, which only the ordinary path produces. An arranged read failure
-        // would abend before the first image was displayed and the case would assert nothing about
-        // either gate. Nothing is lost by arranging nothing here, because the fatal read arm is reached
-        // five more times - case12, case14, case15, case16 and case17 - and the numeric branch of
-        // Z-DISPLAY-IO-STATUS that case16's '30' renders through is the same branch case12's '04',
-        // case13's '37', case14's '22' and case15's '23' already drive.
-        declared.put("case11", Scenario.asDeclared());
-
-        declared.put("case12", Scenario.readFailsAfter(3, FileStatus.RECORD_LENGTH_CONFLICT));
-
-        // case13 fails the OPEN with '37' rather than a read: the attribute-conflict status is a
-        // property of the dataset the program is about to open, not of a record it went on to read.
-        // It renders through the ELSE arm of Z-DISPLAY-IO-STATUS, the same arm case12's '04',
-        // case14's '22' and case15's '23' reach from the read site, and differs from each of them in
-        // exactly the two status characters, so between them the arm is pinned as value-driven -
-        // a renderer that hard-coded one image, or that overlaid IO-STATUS anywhere other than
-        // IO-STATUS-04(3:2), passes one of them and fails the others. '37' has no named constant
-        // in FileStatus because no CBCUS01C paragraph tests for it, so it is written here as the
-        // literal the OPEN reports, exactly as case10's '92' is.
-        declared.put("case13", Scenario.openFails("37"));
-
-        declared.put("case14", Scenario.readFailsAfter(4, FileStatus.DUPLICATE));
-
-        // case15 arranges '23' at the row count rather than inside the rows, and is not a duplicate of
-        // any other read failure: case12 and case14 fail a read that pre-empts a record that was
-        // there, while case15 seeds exactly two rows so the failing read is the one that would have
-        // reported end of file. That is the boundary Scenario.failingRead documents and the only entry
-        // that reaches it - a repository that answered "no more rows" with '10' regardless of the
-        // arranged status would send this run down the L107 APPL-EOF arm, end the loop, close, and
-        // display the L85 banner, and only a case whose failing read sits at the row count can tell
-        // the two apart. It runs as a BATCH_JOB, so the two record lines already displayed are also
-        // asserted to survive the abend through the tasklet rather than only through the service.
-        declared.put("case15", Scenario.readFailsAfter(2, FileStatus.NOT_FOUND));
-
-        // case16 fails the read at ordinal zero - the first one - which is the arrangement no other
-        // entry makes: case17 is the next earliest and still delivers one record first. Seeding a real
-        // fixture row and then refusing the read that would have returned it is deliberate, and it is
-        // what separates this case from case04. Both produce no record image, but for opposite reasons
-        // and down opposite arms of the same ladder: case04's empty dataset reports '10', reaches 88
-        // APPL-EOF at L107 and ends the loop quietly at return code 0, while '30' leaves APPL-RESULT at
-        // 12 from L101 with both 88 conditions false and abends. A repository that answered "nothing to
-        // deliver" with '10' regardless of the arranged status, or one that displayed the row it held
-        // before testing the status, passes case04 and fails here - which is the only place in this
-        // folder that distinction is observable, since every other read failure has a record image
-        // ahead of it.
-        declared.put("case16", Scenario.readFailsAfter(0, "30"));
-        declared.put("case17", Scenario.readFailsAfter(1, CustomerRepository.PERMANENT_ERROR_STATUS));
-
-        // case18 fails the CLOSE after every seeded row has been read and end of file has been
-        // reported normally - the fatal arm reached on a run that was clean up to its last statement.
-        // It is the complement of case06, which seeds the same three fixture rows and closes
-        // successfully, and of case16, which refuses the very first READ and so never reaches the
-        // close. '42' has no named constant in FileStatus because no CBCUS01C paragraph tests for it,
-        // so it is written here as the literal the CLOSE reports, exactly as case10's '92' and
-        // case13's '37' are; being two digits with a first byte other than '9' it renders through the
-        // ELSE arm of Z-DISPLAY-IO-STATUS as FILE STATUS IS: NNNN0042.
-        declared.put("case18", Scenario.closeFails("42"));
-
-        // case19 fails the same CLOSE with the same '42' over an empty CUSTFILE, which brackets the
-        // close site's error arm at both ends of the record count: case18 refuses the close after
-        // three record pairs, case19 after none. The pair is not a duplicate, and the difference it
-        // states cannot be stated by either case alone - 9000-CUSTFILE-CLOSE opens with
-        // ADD 8 TO ZERO GIVING APPL-RESULT at L137, which resets the register over whatever the read
-        // loop last left in it, and on both of these paths that value is the 16 the end-of-file read
-        // moved in at L99. So both must render the identical three trailing lines and the identical
-        // return code 12 from L142, and an implementation that carried APPL-RESULT forward instead of
-        // resetting it would pass one of the two and fail the other. Arranging it over an empty
-        // dataset also makes case19 the exact counterpart of case04, which declares the same empty
-        // CUSTFILE and differs in nothing but what the CLOSE answers - '00' there, two lines and
-        // return code 0, against '42' here, four lines and 12 - so that the close outcome is isolated
-        // as the single variable between them.
-        declared.put("case19", Scenario.closeFails("42"));
-        declared.put("case20", Scenario.asDeclared());
-        return Collections.unmodifiableMap(declared);
+    private static Scenario scenarioFor(ParityCase parityCase) {
+        return scenarioFrom(parityCase.unitStimulus());
     }
 
     /**
-     * The scenario a case runs under.
-     *
-     * @param caseId the case identifier the harness handed the adapter
-     * @return the arranged backend behaviour; never {@code null}
-     * @throws IllegalStateException if the table has no entry, which means a case file exists that
-     *     nothing arranged - it would then run on its ordinary path while its expectations described a
-     *     failure, and the failure message would be about lines rather than about the omission
+     * @param stimulus the declared stimulus
+     * @return the arranged backend behaviour
+     * @throws IllegalArgumentException as {@link #scenarioFor(ParityCase)} documents
      */
-    private static Scenario scenarioFor(String caseId) {
-        Scenario scenario = SCENARIOS.get(caseId);
-        if (scenario == null) {
-            throw new IllegalStateException("No scenario is declared for " + PROGRAM + '/' + caseId
-                    + ". Every one of the " + ParityHarness.CASES_PER_PROGRAM + " cases states the "
-                    + "backend behaviour it runs under, because a batch case cannot carry a "
-                    + "ForcedOutcome - that member belongs to ParityCase.ScreenRequest, which a "
-                    + "BATCH_JOB case may not declare. Declared: " + SCENARIOS.keySet() + '.');
+    private static Scenario scenarioFrom(ParityCase.UnitStimulus stimulus) {
+        if (!stimulus.operationScript().isEmpty() || !stimulus.linkage().isEmpty()
+                || !stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
+            throw new IllegalArgumentException(PROGRAM + " calls no subprogram, takes no linkage, "
+                    + "follows no conditional job step and runs under no environmental variant: its "
+                    + "only stimulus is its seeded rows and the outcome of one of its three call sites.");
         }
-        return scenario;
+        String openStatus = FileStatus.OK;
+        String closeStatus = FileStatus.OK;
+        int failingRead = Scenario.NO_FAILING_READ;
+        String failingReadStatus = null;
+        for (Map.Entry<String, ParityCase.CallSiteOutcome> declared
+                : stimulus.callSiteOutcomes().entrySet()) {
+            String site = declared.getKey();
+            ParityCase.CallSiteOutcome outcome = declared.getValue();
+            String status = requireStatusOutcome(site, outcome);
+            if (OPEN_SITE.equals(site)) {
+                openStatus = status;
+            } else if (CLOSE_SITE.equals(site)) {
+                closeStatus = status;
+            } else if (READ_SITE.equals(site)) {
+                failingRead = outcome.recordsBefore();
+                failingReadStatus = status;
+            } else {
+                throw new IllegalArgumentException("Call site " + site + " is not one of " + PROGRAM
+                        + "'s three: " + OPEN_SITE + ", " + READ_SITE + " and " + CLOSE_SITE
+                        + ". A site nothing answers to arranges nothing, and the case would assert the "
+                        + "opposite of what it says.");
+            }
+        }
+        return new Scenario(openStatus, closeStatus, failingRead, failingReadStatus);
+    }
+
+    /**
+     * @param site the call site, for the failure message
+     * @param outcome the declared outcome
+     * @return the {@code FILE STATUS} it reports
+     * @throws IllegalArgumentException if the outcome is a CICS response - every one of this program's
+     *     I/O verbs reports a two-character status into {@code CUSTFILE-STATUS} and the program tests
+     *     that and nothing else - or declares nothing at all. A refusal is accepted and means the
+     *     dataset could not be reached, which this repository reports as
+     *     {@link CustomerRepository#PERMANENT_ERROR_STATUS}: the character {@code '9'} followed by a
+     *     zero feedback byte, and the one status no JSON string can hold
+     */
+    private static String requireStatusOutcome(String site, ParityCase.CallSiteOutcome outcome) {
+        if (outcome.resp() != null) {
+            throw new IllegalArgumentException("Call site " + site + " declares a CICS RESP, but "
+                    + PROGRAM + " is a batch program: every one of its I/O verbs reports a "
+                    + "two-character FILE STATUS and the program tests that and nothing else.");
+        }
+        if (outcome.isRefused()) {
+            return CustomerRepository.PERMANENT_ERROR_STATUS;
+        }
+        if (outcome.status() == null) {
+            throw new IllegalArgumentException("Call site " + site + " declares neither a FILE STATUS "
+                    + "nor a refusal, so it arranges nothing at all.");
+        }
+        return outcome.status();
+    }
+
+    /**
+     * Every shipped case's scenario, in case order, for the assertions that take a census of the set.
+     *
+     * @return case identifier to scenario, unmodifiable
+     */
+    private static Map<String, Scenario> shippedScenarios() {
+        Map<String, Scenario> declared = new LinkedHashMap<>();
+        for (ParityCase parityCase : ParityHarness.casesOf(PROGRAM)) {
+            declared.put(parityCase.caseId(), scenarioFor(parityCase));
+        }
+        return Collections.unmodifiableMap(declared);
     }
 
     // =================================================================================================
@@ -702,15 +648,53 @@ class CBCUS01CParityTest {
                             + "CustomerRepository name notwithstanding - so no case may expect a "
                             + "written record", where, PROGRAM)
                     .isEmpty();
-            assertThat(scenarioFor(declaredCase.caseId()))
+            assertThat(scenarioFor(declaredCase))
                     .as("%s: every case states the backend behaviour it runs under", where)
                     .isNotNull();
         }
 
-        assertThat(SCENARIOS.keySet())
-                .as("a scenario that no case file reads arranges something nothing runs, which is as "
-                        + "silent a failure as a case with no scenario")
+        assertThat(shippedScenarios().keySet())
+                .as("every shipped case decodes to exactly one scenario, and no scenario exists that no "
+                        + "case declares - which is what a table in Java could not guarantee")
                 .containsExactlyElementsOf(declared.stream().map(ParityCase::caseId).toList());
+    }
+
+    /**
+     * The declared unit kinds are exactly eighteen {@link UnitKind#BATCH_JOB} and two
+     * {@link UnitKind#SERVICE}, and the two are the ones the class documentation names.
+     *
+     * <p>{@link ParityHarness#run(ParityCase, UnitKind, ParityUnit)} already refuses a mismatch between
+     * a case's declared kind and the adapter it is handed to, but it refuses it one case at a time and
+     * only when that case runs, and {@link #theCaseSetIsExactlyTwenty()} only requires each kind to be
+     * one of the two legitimate ones. Neither pins how many cases take which path. Counting the whole
+     * set here does, which matters because the class documentation states the distribution in prose and
+     * prose cannot be executed: it had drifted to claiming fifteen batch jobs and five services while
+     * the directory held eighteen and two. Stating the two service cases by name means a case that
+     * changes path has to come to this assertion and say so.
+     */
+    @Test
+    @DisplayName("declares BATCH_JOB for eighteen cases and SERVICE for case10 and case14")
+    void theDeclaredUnitKindsAreEighteenJobsAndTwoServices() {
+        List<String> services = cases().stream()
+                .filter(one -> one.unitKind() == UnitKind.SERVICE)
+                .map(ParityCase::caseId)
+                .toList();
+        List<String> jobs = cases().stream()
+                .filter(one -> one.unitKind() == UnitKind.BATCH_JOB)
+                .map(ParityCase::caseId)
+                .toList();
+
+        assertThat(services)
+                .describedAs("the two cases that reach CustomerService directly, bypassing the tasklet "
+                        + "wiring, are the ones the class documentation names")
+                .containsExactly("case10", "case14");
+        assertThat(jobs)
+                .describedAs("every other case drives the tasklet, so the wiring is exercised by the "
+                        + "great majority rather than assumed")
+                .hasSize(ParityHarness.CASES_PER_PROGRAM - services.size());
+        assertThat(jobs.size() + services.size())
+                .describedAs("the two kinds must account for the whole set with nothing unclassified")
+                .isEqualTo(ParityHarness.CASES_PER_PROGRAM);
     }
 
     /**
@@ -815,17 +799,17 @@ class CBCUS01CParityTest {
                 .hasSize(FileStatus.DISPLAY_PREFIX.length() + FileStatus.STATUS_IMAGE_LENGTH);
 
         // The one place the two independently written sides of a case are cross-checked against each
-        // other: the status the SCENARIOS table arranges must be the status the case file expects to
+        // other: the status the case's own stimulus arranges must be the status it expects to
         // see rendered. A case whose table entry and whose fixture disagreed would otherwise fail with
         // a message about a line, and the line would be the symptom rather than the cause. A fatal case
         // that arranges nothing could only be one whose dataset is absent, whose OPEN probe is refused
         // and which therefore reports the permanent-error convention; no case declares itself that way
         // today, and the arm stays because the alternative is a null the reader has to reason about.
-        String arranged = scenarioFor(declaredCase.caseId()).failingStatus();
+        String arranged = scenarioFor(declaredCase).failingStatus();
         assertThat(texts.get(texts.size() - 2))
                 .as("%s: the rendered status must be the one this case arranges - %s", where,
                         arranged == null ? "nothing, so the backend's own permanent-error status"
-                                : "a status the scenario table names")
+                                : "the status its own unitStimulus names")
                 .isEqualTo(arranged == null
                         ? PERMANENT_ERROR_LINE
                         : FileStatus.toDisplayLine(arranged));
@@ -1198,7 +1182,7 @@ class CBCUS01CParityTest {
      *     out through it to the harness, which records the return code it carries
      */
     private UnitOutcome run(Invocation invocation, boolean throughTheJob) throws Exception {
-        Scenario scenario = scenarioFor(invocation.caseId());
+        Scenario scenario = scenarioFrom(invocation.stimulus());
         SeededDataset seeded = invocation.hasDataset(DD_NAME) ? invocation.dataset(DD_NAME) : null;
         UnitOutcome.Builder recorder = invocation.recorder();
         SysoutSink sysout = recorder::display;
@@ -1212,24 +1196,19 @@ class CBCUS01CParityTest {
             return null;
         }
 
-        JdbcTemplate template = freshDatabase();
-        boolean ranToCompletion = false;
-        try {
-            if (seeded != null) {
-                createRelation(template, seeded.recordLength());
-                seedRelation(template, seeded);
-            }
-            try {
-                runUnit(new CustomerRepository(template, datasetBindings(), DATASET_CHARSET,
-                        RecordImageForm.CHARACTER), sysout, throughTheJob, recorder);
-            } finally {
-                reportFinalState(template, seeded, recorder);
-            }
-            ranToCompletion = true;
-            return null;
-        } finally {
-            discard(template, ranToCompletion);
+        RecordImageDataSource backend = new RecordImageDataSource();
+        JdbcTemplate template = new JdbcTemplate(backend);
+        if (seeded != null) {
+            declareRelation(backend, seeded.recordLength());
+            seedRelation(backend, seeded);
         }
+        try {
+            runUnit(new CustomerRepository(template, datasetBindings(), DATASET_CHARSET,
+                    RecordImageForm.CHARACTER), sysout, throughTheJob, recorder);
+        } finally {
+            reportFinalState(backend, seeded, recorder);
+        }
+        return null;
     }
 
     /**
@@ -1292,114 +1271,58 @@ class CBCUS01CParityTest {
      * at all, so there is no state to describe, and describing one would be an invention rather than an
      * observation.
      *
-     * @param template the template over this case's relation
+     * @param backend the store holding this case's relation
      * @param seeded the dataset as it was seeded, or {@code null} when the case declared none
      * @param recorder where the final state is reported
      */
-    private void reportFinalState(JdbcTemplate template, SeededDataset seeded,
+    private void reportFinalState(RecordImageDataSource backend, SeededDataset seeded,
             UnitOutcome.Builder recorder) {
         if (seeded == null) {
             return;
         }
-        List<String> stored = template.queryForList(
-                "SELECT " + RECORD_IMAGE_COLUMN + " FROM \"" + TEST_DSNAME + "\" ORDER BY "
-                        + RECORD_IMAGE_COLUMN,
-                String.class);
+        List<String> stored = new java.util.ArrayList<>(backend.store().rows(TEST_DSNAME));
+        stored.sort(java.util.Comparator.naturalOrder());
         recorder.finalState(DD_NAME, CustomerRecord.LAYOUT, stored);
     }
 
     // =================================================================================================
-    // Backend one: a private in-memory relation with one record-image column.
+    // Backend one: a private record-image store with one record-image column, and no DDL to create it.
     // =================================================================================================
 
     /**
-     * A private in-memory database for one case, with no relation in it yet.
+     * Declares the relation the repository will discover: one column, holding the record image.
      *
-     * <p>The name carries a fresh {@link UUID}, so no two invocations - in any order, repeated, or
-     * concurrent - can reach each other's data. A counter would have done the same job and would have
-     * been static mutable state, which this class has none of.
+     * <p>No DDL. A {@link RecordImageDataSource} holds record images and has no schema, so gate
+     * <strong>G44</strong> - no DDL, no schema migration, no entity annotation and no generated table
+     * definition anywhere in this module - holds with nothing to reinterpret. Everything above the driver
+     * is unchanged: the real {@code JdbcTemplate}, the real {@link CustomerRepository},
+     * {@code DatasetRelation}'s real composed statements and {@code RecordImageForm}'s real column read.
      *
-     * <p>{@code DB_CLOSE_DELAY=-1} keeps the database alive between operations, which is required
-     * rather than convenient: the template borrows and returns a connection per operation, and an
-     * in-memory database is otherwise discarded with its last connection - taking the relation with it
-     * between the {@code OPEN} and the first {@code READ}.
+     * <p>The width is the one the case's own rows measure rather than the copybook's 500, so a case seeding
+     * a row of another width really does store a row of that width; padding it out to 500 would make the
+     * fatal read arms unreachable.
      *
-     * @return a template over the empty database
-     */
-    private JdbcTemplate freshDatabase() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:parity-" + PROGRAM + '-' + UUID.randomUUID()
-                        + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
-                "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        return new JdbcTemplate(dataSource);
-    }
-
-    /**
-     * Creates the relation the repository will discover: one column, holding the record image.
-     *
-     * <p>The column is declared at the width the case's own rows measure rather than at the copybook's
-     * 500, so a case seeding a row of another width really does store a row of that width instead of
-     * having the difference padded away by the backend.
-     *
-     * @param template the template over this case's database
+     * @param backend     the store backing this case
      * @param recordWidth the width the seeded rows measure
      */
-    private void createRelation(JdbcTemplate template, int recordWidth) {
-        template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (" + RECORD_IMAGE_COLUMN
-                + " VARCHAR(" + recordWidth + "))");
+    private void declareRelation(RecordImageDataSource backend, int recordWidth) {
+        backend.define(TEST_DSNAME, RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER, recordWidth);
     }
 
     /**
      * Stores the case's rows, verbatim and in the order the case declared them.
      *
-     * <p>Declaration order is preserved and deliberately not sorted here. A KSDS browse reads in key
-     * order whatever order the records were loaded in, so the seed must be free to disagree with the
-     * read order: sorting it here would make the ordering untestable from a case file at all, and it
-     * is {@code CustomerRepositoryTest} that loads a relation backwards and asserts the ascending read.
+     * <p>Declaration order is preserved and deliberately not sorted: a KSDS browse reads in key order
+     * whatever order the records were loaded in, and a case seeding out of key order exists to prove the
+     * translation does the same.
      *
-     * @param template the template over this case's relation
-     * @param seeded the dataset as the harness seeded it
+     * @param backend the store backing this case
+     * @param seeded  the dataset as the harness seeded it
      */
-    private void seedRelation(JdbcTemplate template, SeededDataset seeded) {
-        for (String row : seeded.rows()) {
-            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", row);
-        }
+    private void seedRelation(RecordImageDataSource backend, SeededDataset seeded) {
+        backend.store().seed(TEST_DSNAME, seeded.rows());
     }
 
-    /**
-     * Discards this case's in-memory database.
-     *
-     * <p>{@code DB_CLOSE_DELAY=-1} keeps a database alive for the rest of the JVM, so a case that did
-     * not discard its own would accumulate one per invocation. This is where they are discarded.
-     *
-     * <p>A failure to discard is reported only when the run itself succeeded. A run that is already
-     * failing owns the exception the caller needs - the abend it did not expect, or the difference the
-     * differ was about to render - and replacing it with one raised while tidying up would hide exactly
-     * the finding the case exists to produce. Nothing is lost by not reporting it either: the database
-     * is private to this one invocation and unreachable from any other.
-     *
-     * <p>Nothing about the failure is logged. The only thing a driver's message could add here is the
-     * record it was handed, and a customer row carries {@code CUST-SSN},
-     * {@code CUST-DOB-YYYY-MM-DD}, {@code CUST-GOVT-ISSUED-ID} and the customer's names.
-     *
-     * @param template the template over this case's database
-     * @param ranToCompletion whether the run finished without an exception of its own
-     * @throws IllegalStateException if the database could not be discarded after a successful run
-     */
-    private void discard(JdbcTemplate template, boolean ranToCompletion) {
-        try {
-            template.execute("SHUTDOWN");
-        } catch (DataAccessException failure) {
-            if (ranToCompletion) {
-                throw new IllegalStateException("The private in-memory relation backing a " + PROGRAM
-                        + " parity case could not be discarded, so this case has leaked a database "
-                        + "into the rest of the run. Reported rather than swallowed because the run "
-                        + "itself succeeded, which means there is no earlier failure this one could "
-                        + "be hiding.", failure);
-            }
-        }
-    }
 
     // =================================================================================================
     // Backend two: a stubbed customer master, for the statuses no relation can report.

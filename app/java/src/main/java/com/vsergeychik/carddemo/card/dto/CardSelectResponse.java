@@ -2184,12 +2184,39 @@ public final class CardSelectResponse {
      */
     @JsonIgnore
     public ScreenMetadata screenMetadata() {
+        return screenMetadata(null);
+    }
+
+    /**
+     * The same metadata with the basic attribute byte taken from the input area, which is where
+     * {@code 1300-SETUP-SCREEN-ATTRS} actually writes it.
+     *
+     * <p>{@code app/cbl/COCRDSLC.cbl:507-511} moves {@code DFHBMPRF} or {@code DFHBMFSE} into
+     * {@code ACCTSIDA} and {@code CARDSIDA} <em>of {@code CCRDSLAI}</em> - the input group, because
+     * {@code xxxA} redefines that group's flag byte. The output group's {@code xxxP} item, which
+     * {@link #screenMetadata()} alone can see, is never written by this program, so projecting it
+     * reported {@code x'00'} for every field on every path and a client could not tell the protected
+     * criteria of an arrival from the card list from the typeable criteria of a direct entry.
+     *
+     * <p>Colour, highlighting and validation still come from the output group, because {@code xxxC},
+     * {@code xxxH} and {@code xxxV} hang off it. Merging the two groups is what lets a client describe
+     * one field once, and it is the same projection {@code COACTUPC} and {@code COCRDUPC} perform.
+     *
+     * <p>{@code null} is accepted and means "no input area to merge", which is the state a response
+     * carries on the two paths that paint no screen at all - the {@code XCTL} at {@code :331} and the
+     * {@code SEND TEXT} at {@code :839}. The output group's own bytes are reported then, unchanged.
+     *
+     * @param inputArea the input map area {@code CCRDSLAI} as the program left it, or {@code null}
+     * @return the metadata; never {@code null}
+     */
+    @JsonIgnore
+    public ScreenMetadata screenMetadata(CardSelectRequest inputArea) {
         Map<String, ScreenMetadata.FieldMetadata> quads = new LinkedHashMap<>();
         for (ScreenField field : ScreenField.values()) {
             FieldAttributes quad = attributes.get(field);
             quads.put(field.dfhmdfLabel(),
                     ScreenMetadata.FieldMetadata.of(quad.getColour(),
-                            quad.getPs(),
+                            basicAttributeOf(inputArea, field, quad),
                             quad.getHilight(),
                             quad.getValidn()));
         }
@@ -2197,6 +2224,32 @@ public final class CardSelectResponse {
                 attributes.get(ScreenField.ERRMSG).getColour(),
                 false,
                 quads);
+    }
+
+    /**
+     * The basic attribute byte of one field: the input area's {@code xxxA} where there is an input area
+     * and that field has an input-side counterpart, and the output area's {@code xxxP} otherwise.
+     *
+     * <p>The two enumerations are not identical - the request declares {@code FKEYS} as well, because
+     * that field has an {@code xxxL} item - so the lookup is by name and a field with no counterpart
+     * falls back rather than failing.
+     *
+     * @param inputArea the input map area, or {@code null}
+     * @param field     the field being described
+     * @param quad      that field's output-group attributes
+     * @return the byte to report
+     */
+    private static byte basicAttributeOf(CardSelectRequest inputArea, ScreenField field,
+            FieldAttributes quad) {
+        if (inputArea == null) {
+            return quad.getPs();
+        }
+        for (CardSelectRequest.ScreenField inputField : CardSelectRequest.ScreenField.values()) {
+            if (inputField.name().equals(field.name())) {
+                return inputArea.metadata(inputField).getAttribute();
+            }
+        }
+        return quad.getPs();
     }
 
     /**

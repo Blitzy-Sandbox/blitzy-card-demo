@@ -208,52 +208,52 @@ public final class PfKeyResolver {
     public enum AidKey {
 
         /** {@code CCARD-AID-ENTER}, {@code VALUE 'ENTER'} - the ENTER key. */
-        ENTER("ENTER"),
+        ENTER("ENTER", CicsAid.DFHENTER),
 
         /** {@code CCARD-AID-CLEAR}, {@code VALUE 'CLEAR'} - the CLEAR key. */
-        CLEAR("CLEAR"),
+        CLEAR("CLEAR", CicsAid.DFHCLEAR),
 
         /** {@code CCARD-AID-PA1}, {@code VALUE 'PA1  '} - the PA1 key; note the two trailing spaces. */
-        PA1("PA1  "),
+        PA1("PA1  ", CicsAid.DFHPA1),
 
         /** {@code CCARD-AID-PA2}, {@code VALUE 'PA2  '} - the PA2 key; note the two trailing spaces. */
-        PA2("PA2  "),
+        PA2("PA2  ", CicsAid.DFHPA2),
 
         /** {@code CCARD-AID-PFK01}, {@code VALUE 'PFK01'} - set by both PF1 and PF13. */
-        PFK01("PFK01"),
+        PFK01("PFK01", CicsAid.DFHPF1),
 
         /** {@code CCARD-AID-PFK02}, {@code VALUE 'PFK02'} - set by both PF2 and PF14. */
-        PFK02("PFK02"),
+        PFK02("PFK02", CicsAid.DFHPF2),
 
         /** {@code CCARD-AID-PFK03}, {@code VALUE 'PFK03'} - set by both PF3 and PF15. */
-        PFK03("PFK03"),
+        PFK03("PFK03", CicsAid.DFHPF3),
 
         /** {@code CCARD-AID-PFK04}, {@code VALUE 'PFK04'} - set by both PF4 and PF16. */
-        PFK04("PFK04"),
+        PFK04("PFK04", CicsAid.DFHPF4),
 
         /** {@code CCARD-AID-PFK05}, {@code VALUE 'PFK05'} - set by both PF5 and PF17. */
-        PFK05("PFK05"),
+        PFK05("PFK05", CicsAid.DFHPF5),
 
         /** {@code CCARD-AID-PFK06}, {@code VALUE 'PFK06'} - set by both PF6 and PF18. */
-        PFK06("PFK06"),
+        PFK06("PFK06", CicsAid.DFHPF6),
 
         /** {@code CCARD-AID-PFK07}, {@code VALUE 'PFK07'} - set by both PF7 and PF19. */
-        PFK07("PFK07"),
+        PFK07("PFK07", CicsAid.DFHPF7),
 
         /** {@code CCARD-AID-PFK08}, {@code VALUE 'PFK08'} - set by both PF8 and PF20. */
-        PFK08("PFK08"),
+        PFK08("PFK08", CicsAid.DFHPF8),
 
         /** {@code CCARD-AID-PFK09}, {@code VALUE 'PFK09'} - set by both PF9 and PF21. */
-        PFK09("PFK09"),
+        PFK09("PFK09", CicsAid.DFHPF9),
 
         /** {@code CCARD-AID-PFK10}, {@code VALUE 'PFK10'} - set by both PF10 and PF22. */
-        PFK10("PFK10"),
+        PFK10("PFK10", CicsAid.DFHPF10),
 
         /** {@code CCARD-AID-PFK11}, {@code VALUE 'PFK11'} - set by both PF11 and PF23. */
-        PFK11("PFK11"),
+        PFK11("PFK11", CicsAid.DFHPF11),
 
         /** {@code CCARD-AID-PFK12}, {@code VALUE 'PFK12'} - set by both PF12 and PF24. */
-        PFK12("PFK12");
+        PFK12("PFK12", CicsAid.DFHPF12);
 
         /**
          * The copybook literal for this condition name, always exactly
@@ -261,8 +261,18 @@ public final class PfKeyResolver {
          */
         private final String token;
 
-        AidKey(String token) {
+        /**
+         * The {@code EIBAID} byte whose own {@code WHEN} clause in {@code CSSTRPFY} sets this
+         * condition - {@code DFHPF3} for {@link #PFK03}, not {@code DFHPF15}.
+         *
+         * <p>Carried as a field rather than computed, so it is data read from the copybook exactly as
+         * {@link #token} is, and so asking for it introduces no branch.
+         */
+        private final byte primaryAid;
+
+        AidKey(String token, byte primaryAid) {
             this.token = token;
+            this.primaryAid = primaryAid;
         }
 
         /**
@@ -279,6 +289,26 @@ public final class PfKeyResolver {
          */
         public String token() {
             return token;
+        }
+
+        /**
+         * The {@code EIBAID} byte that names <strong>this</strong> key rather than folding onto it.
+         *
+         * <p>Twelve of the sixteen conditions are set by two different bytes: {@code CSSTRPFY} maps
+         * {@code DFHPF3} and {@code DFHPF15} both onto {@code 'PFK03'}. This returns the first of each
+         * pair - the byte whose function-key number matches the token's own - which is the byte a
+         * program comparing {@code EIBAID} against {@code DFHPF3} actually matches.
+         *
+         * <p>It exists so that a caller holding a token can name a byte, and so that
+         * {@link PfKeyResolver#resolveWithoutFolding(byte)} can tell a primary byte from its folded
+         * partner. It is <strong>not</strong> a claim that the other byte of the pair does not set this
+         * condition: it does, on the five programs that copy {@code CSSTRPFY}, and
+         * {@link PfKeyResolver#resolve(byte)} is where that fold lives.
+         *
+         * @return the raw EBCDIC attention-identifier byte of this key's own {@code WHEN} clause
+         */
+        public byte primaryAid() {
+            return primaryAid;
         }
     }
 
@@ -363,6 +393,37 @@ public final class PfKeyResolver {
     }
 
     /**
+     * Maps a raw {@code EIBAID} byte onto the token whose own {@code WHEN} clause it is, refusing the
+     * {@code CSSTRPFY} fold - the resolver the twelve programs that never copied {@code CSSTRPFY}
+     * need.
+     *
+     * <p>{@link #resolve(byte)} is {@code CSSTRPFY} and therefore folds: it answers {@code PFK03} for
+     * {@code DFHPF15} because copybook line 58 says so. That fold is correct for the five programs
+     * that copy the include and wrong for the twelve that do not. {@code COUSR03C} tests
+     * {@code EIBAID} inline with {@code WHEN DFHPF3} and has no clause for {@code DFHPF15}, so on the
+     * mainframe PF15 falls to that program's {@code WHEN OTHER} and paints "invalid key". Routing
+     * such a program through {@link #resolve(byte)} would silently give PF15 the PF3 arm - a real
+     * behavioural difference, not a cosmetic one.
+     *
+     * <p>This method therefore yields a token only when the byte is that token's
+     * {@link AidKey#primaryAid()}: {@code DFHPF3} answers {@code PFK03}, and {@code DFHPF15} answers
+     * {@link Optional#empty()} exactly as {@code DFHPF25} or {@code DFHPA3} would. Empty means "no
+     * clause matched", which is what the inline {@code EVALUATE}'s {@code WHEN OTHER} is for.
+     *
+     * <p>{@code ENTER}, {@code CLEAR}, {@code PA1} and {@code PA2} are unaffected - nothing folds
+     * onto them - so for those four bytes the two resolvers agree.
+     *
+     * @param eibAid the raw EBCDIC attention-identifier byte to map
+     * @return the token this byte names in its own right, or {@link Optional#empty()} if the byte is
+     *         a folded PF13-PF24 partner or matches no tested AID at all; never {@code null}
+     */
+    public static Optional<AidKey> resolveWithoutFolding(byte eibAid) {
+        // resolve(...) already enumerates every tested AID; the filter removes exactly the twelve
+        // folded arms, because a folded byte is never the byte its token was declared with.
+        return resolve(eibAid).filter(key -> key.primaryAid() == eibAid);
+    }
+
+    /**
      * Applies the whole {@code YYYY-STORE-PFKEY} paragraph, including its most easily lost
      * property: on no match the existing token is left exactly as it was.
      *
@@ -418,6 +479,34 @@ public final class PfKeyResolver {
      */
     public static boolean isAid(byte eibAid, byte aidConstant) {
         return eibAid == aidConstant;
+    }
+
+    /**
+     * The JSON carrier form of an {@code EIBAID} byte: the one character whose code point <em>is</em>
+     * that byte.
+     *
+     * <p>A raw byte is not a JSON value, so every online payload in this application carries the
+     * attention identifier as a one-character string - {@code DFHENTER} as {@code U+007D},
+     * {@code DFHPF3} as {@code U+00F3}. This method is the single statement of that form, so a client,
+     * a controller and a test all mean the same thing by it.
+     *
+     * <p><strong>Not the {@code CCARD-AID} token.</strong> {@link AidKey#token()} is the five-character
+     * form {@code app/cpy/CSSTRPFY.cpy} sets in the work area, and that mapping folds
+     * {@code DFHPF13}-{@code DFHPF24} onto {@code PFK01}-{@code PFK12}: {@code 'PFK03'} stands for
+     * {@code DFHPF3} and for {@code DFHPF15} both. The token is therefore something a response
+     * <em>reports</em> and never something a request is read from - twelve of the seventeen online
+     * programs compare {@code EIBAID} itself and would be sent down the wrong arm of their
+     * {@code EVALUATE} by a folded value. This form loses nothing: all 256 bytes round-trip.
+     *
+     * <p>The sign of the byte does not survive a widening cast, so it is masked to its unsigned value
+     * first: {@code DFHPF3} is {@code (byte) 0xF3}, which is {@code -13} as a signed Java byte and would
+     * widen to {@code U+FFF3} rather than {@code U+00F3}.
+     *
+     * @param eibAid the raw EBCDIC attention-identifier byte
+     * @return a string of exactly one character; never {@code null}
+     */
+    public static String aidImage(byte eibAid) {
+        return String.valueOf((char) (eibAid & 0xFF));
     }
 
     /**

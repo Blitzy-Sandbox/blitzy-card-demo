@@ -28,20 +28,31 @@ import java.util.Objects;
  *       value or a length is worth withholding. Use {@link #redacted()}.</li>
  *   <li><strong>Primary account number</strong> - masked to its last {@value #REVEALED_TRAILING_DIGITS}
  *       digits at full stored width. Use {@link #maskPan(String)} or {@link #maskPan(long, int)}.</li>
- *   <li><strong>Identifiers</strong> - account, customer and card-cross-reference keys. Masked the same
- *       way, because an identifier is what makes every other value attributable to a person. Use
- *       {@link #maskIdentifier(String)} or {@link #maskIdentifier(long, int)}.</li>
+ *   <li><strong>Identifiers</strong> - account, customer, card-cross-reference and <em>transaction</em>
+ *       keys. Masked the same way, because an identifier is what makes every other value attributable to
+ *       a person. Use {@link #maskIdentifier(String)} or {@link #maskIdentifier(long, int)}.</li>
  *   <li><strong>Free-text personal data</strong> - names, address lines, telephone numbers. The content
  *       is dropped entirely and only its shape is reported, because a name has no useful prefix to
  *       reveal. Use {@link #describeText(String)}.</li>
  * </ol>
  *
  * <p>Everything else is rendered plainly, and that is a deliberate decision rather than an oversight.
- * Transaction identifiers, program and transaction names, mapset and map names, screen titles, dates,
- * times, return codes, file-status values, attention identifiers and monetary amounts all stay legible.
- * They are exactly what a parity failure has to be diagnosed from - this migration's entire purpose is
- * proving that amounts and status codes match the COBOL byte for byte - and with every identifier masked
- * they are no longer attributable to a cardholder.
+ * Program and transaction names, mapset and map names, screen titles, dates, times, return codes,
+ * file-status values, attention identifiers and monetary amounts all stay legible. They are exactly what
+ * a parity failure has to be diagnosed from - this migration's entire purpose is proving that amounts and
+ * status codes match the COBOL byte for byte - and with every identifier masked they are no longer
+ * attributable to a cardholder.
+ *
+ * <p>The <strong>transaction</strong> identifier used to be on that list, and this checkpoint moved it.
+ * The reasoning that keeps an amount legible is that the keys which attribute it to a person are masked,
+ * and {@code TRAN-ID} is one of those keys: it is the {@code TRANSACT} primary key, and
+ * {@code app/cpy/CVTRA05Y.cpy} puts {@code TRAN-CARD-NUM} in the very record it opens. A screen that
+ * shows no account and no card number still shows a joinable key beside a date and an amount, which
+ * {@code COTRN00}'s ten rows do ten times over - one cardholder's financial history in a build log.
+ * Diagnosability survives the change intact: {@link #maskIdentifier(String)} keeps the stored width and
+ * the last {@value #REVEALED_TRAILING_DIGITS} characters, and this system's transaction identifiers are
+ * zero-filled sequentials, so those four characters are the only part that ever differs between two of
+ * them.
  *
  * <h2>What this class is NOT for</h2>
  * It is not a general-purpose sanitiser and it must never become the way parity tests read values. The

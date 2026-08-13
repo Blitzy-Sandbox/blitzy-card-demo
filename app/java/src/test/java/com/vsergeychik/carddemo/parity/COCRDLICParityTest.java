@@ -1389,9 +1389,10 @@ class COCRDLICParityTest {
      * eleven bytes, {@code CC-ACCT-ID-N PIC 9(11)}. {@code COCRDLIC} depends on both views of those bytes
      * in one paragraph: {@code 2210-EDIT-ACCOUNT} tests the alphanumeric view for {@code LOW-VALUES} and
      * {@code SPACES} and the numeric view for {@code ZEROS} [{@code :1007-1009}], then moves the numeric
-     * view into {@code CDEMO-ACCT-ID} [{@code :1027}]. There are 82 {@code REDEFINES} sites in the
-     * codebase and this is the classic place one diverges, so the round trip is asserted in both
-     * directions and at the boundary values that distinguish the views.
+     * view into {@code CDEMO-ACCT-ID} [{@code :1027}]. There are 96 non-comment {@code REDEFINES} sites in
+     * the codebase - 80 in {@code app/cbl} and 16 in {@code app/cpy}, counted mechanically by
+     * {@code RedefinesCensusTest} - and this is the classic place one diverges, so the round trip is
+     * asserted in both directions and at the boundary values that distinguish the views.
      */
     @Test
     @DisplayName("G34: CC-ACCT-ID and CC-ACCT-ID-N are one span seen two ways, round trip both ways")

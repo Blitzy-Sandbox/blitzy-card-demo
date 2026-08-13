@@ -37,7 +37,8 @@
       "CDEMO-ACCT-STATUS": "Y",
       "CDEMO-CARD-NUM": "9680294154603697",
       "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
+      "CDEMO-LAST-MAPSET": "       ",
+      "WS-THIS-PROGCOMMAREA": "N00000000001Y00000001940{00000020200{00000010200{20141120202505202025052000000000000{00000000000{          000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  02097388800000000000049368437196106080053581756Y27400000000001Y00000012345}00000250000{00000050000{20141120202505202025052000000007502E00000000000{\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA27601     (908)119-8310  (919)693-8684  02097388800000000000049368437196106080053581756Y742"
     },
     "mapFields": {
       "ACCTSIDI": "00000000001",
@@ -155,16 +156,16 @@
       "recordLength": 300
     },
     {
-      "dataset": "CUSTDAT",
-      "channel": "WRITES",
-      "rowCount": 1,
-      "recordLength": 500
-    },
-    {
       "dataset": "ACCTDAT",
       "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 500
     },
     {
       "dataset": "CUSTDAT",

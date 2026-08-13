@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assumptions.assumeThat;
 import static org.junit.jupiter.api.Assumptions.abort;
@@ -13,6 +14,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -69,6 +72,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -80,6 +84,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.junit.jupiter.api.Timeout;
+import com.vsergeychik.carddemo.testsupport.ConcurrentTasks;
 
 /**
  * Proves {@link ReportRequestController} against {@code app/cbl/CORPT00C.cbl}, the 649-line CICS
@@ -109,6 +115,18 @@ import org.springframework.beans.factory.annotation.Qualifier;
 @DisplayName("ReportRequestController - CORPT00C, transaction CR00, POST /api/reports")
 class ReportRequestControllerTest {
 
+
+    /**
+     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
+     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
+     *
+     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
+     * judges every value against the page in force rather than against a page of its own choosing: a
+     * mapper built for a test has to name the same one the profile does or it is not the production
+     * mapper.
+     */
+    private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
+
     /**
      * The code page every test wires, which is the one {@code charset.dataset} declares.
      *
@@ -118,8 +136,14 @@ class ReportRequestControllerTest {
      */
     private static final Charset DATASET_CHARSET = Charset.forName("IBM037");
 
-    /** The AID token for {@code DFHENTER}, which is what {@code EVALUATE EIBAID} branches on first. */
-    private static final String ENTER = "ENTER";
+    /**
+     * The payload image of {@code DFHENTER}, which is what {@code EVALUATE EIBAID} branches on first.
+     *
+     * <p>One character, whose code point <em>is</em> the byte - not the five-character {@code CCARD-AID}
+     * token, which folds {@code PF13}-{@code PF24} onto {@code PF1}-{@code PF12} and which
+     * {@code CORPT00C} never sees, because it does not copy {@code CSSTRPFY}.
+     */
+    private static final String ENTER = PfKeyResolver.aidImage(CicsAid.DFHENTER);
 
     /** {@code 2026-08-09T14:05:06Z} - a fixed instant, so {@code CURDATE} and {@code CURTIME} are exact. */
     private static final String FIXED_INSTANT = "2026-08-09T14:05:06Z";
@@ -422,13 +446,51 @@ class ReportRequestControllerTest {
         }
 
         @Test
-        @DisplayName("the AID token resolves to the EIBAID byte, and an unknown token to DFHNULL")
+        @DisplayName("one character is the EIBAID byte, and any other width is DFHNULL")
         void theAidResolution() {
             assertThat(ReportRequestController.eibAidOf(ENTER)).isEqualTo(CicsAid.DFHENTER);
-            assertThat(ReportRequestController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHPF3);
-            assertThat(ReportRequestController.eibAidOf("PFK07")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(ReportRequestController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF3)))
+                    .isEqualTo(CicsAid.DFHPF3);
+            assertThat(ReportRequestController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF15)))
+                    .as("PF15 is not PF3: CORPT00C compares EIBAID and takes WHEN OTHER at :190")
+                    .isEqualTo(CicsAid.DFHPF15);
+            assertThat(ReportRequestController.eibAidOf("PFK03"))
+                    .as("a folded CCARD-AID token is not one byte, so it names no key at all")
+                    .isEqualTo(CicsAid.DFHNULL);
             assertThat(ReportRequestController.eibAidOf(null)).isEqualTo(CicsAid.DFHNULL);
             assertThat(ReportRequestController.eibAidOf("     ")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(ReportRequestController.eibAidOf(String.valueOf((char) 0x01F3)))
+                    .as("a character above the one-byte AID space is never narrowed onto DFHPF3")
+                    .isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("the query parameter states the byte, and it wins over the payload's image")
+        void theParameterWinsOverThePayload() {
+            String enterImage = PfKeyResolver.aidImage(CicsAid.DFHENTER);
+            ReportRequestController controller = controllerAt(FIXED_MIDNIGHT);
+
+            assertThat(controller.resolveEibAid(CicsAid.DFHPF3 & 0xFF, null))
+                    .isEqualTo(CicsAid.DFHPF3);
+            assertThat(controller.resolveEibAid(CicsAid.DFHENTER & 0xFF, enterImage))
+                    .as("one key stated twice, consistently")
+                    .isEqualTo(CicsAid.DFHENTER);
+            assertThat(controller.resolveEibAid(null, enterImage))
+                    .isEqualTo(CicsAid.DFHENTER);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.resolveEibAid(256, null))
+                    .withMessageContaining(ReportRequestController.EIBAID_PARAM);
+        }
+
+        @Test
+        @DisplayName("an image naming a different key from the stated byte is refused, not discarded")
+        void aContradictingImageIsRefused() {
+            ReportRequestController controller = controllerAt(FIXED_MIDNIGHT);
+
+            assertThatThrownBy(() -> controller.resolveEibAid(CicsAid.DFHPF3 & 0xFF,
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("aid");
         }
     }
 
@@ -474,13 +536,15 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("PF3 transfers to COMEN01C; any other key is the invalid-key message")
         void theKeyEvaluation() {
-            ProgramState pf3 = controllerAt(FIXED_MIDNIGHT).mainPara(reenter().withAid("PFK03"));
+            ProgramState pf3 = controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(reenter().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF3)));
             assertThat(pf3.transferred()).isTrue();
             assertThat(pf3.response().getNextProgram()).isEqualTo("COMEN01C");
             assertThat(pf3.commarea().fromTranid()).isEqualTo("CR00");
             assertThat(pf3.commarea().fromProgram()).isEqualTo("CORPT00C");
 
-            ProgramState other = controllerAt(FIXED_MIDNIGHT).mainPara(reenter().withAid("PFK07"));
+            ProgramState other = controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(reenter().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF7)));
             assertThat(other.errFlagOn()).isTrue();
             assertThat(other.message()).startsWith("Invalid key pressed. Please see below...");
             assertThat(other.cursorRequestedOn(ReportRequestRequest.ScreenField.MONTHLY)).isTrue();
@@ -490,6 +554,106 @@ class ReportRequestControllerTest {
             // field. Reporting a field the program never asked for would be worse than reporting none.
             assertThat(pf3.screenMetadata().cursorField()).isNull();
             assertThat(other.screenMetadata().cursorField()).isEqualTo("MONTHLY");
+        }
+
+        @Test
+        @DisplayName("a raw PF15 byte is an invalid key, where the folded token took the PF3 transfer")
+        void aRawUpperKeyIsNotItsFoldedPartner() {
+            // CORPT00C compares EIBAID inline at lines 184 to 195 and names only DFHENTER and DFHPF3, so
+            // on the terminal PF15 paints the invalid-key message. CSSTRPFY folds PF15 onto 'PFK03', so a
+            // request that could only send the token had to take the PF3 transfer to COMEN01C instead.
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15)).contains(PfKeyResolver.AidKey.PFK03);
+
+            ProgramState state = controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(noKeyStated(), Byte.toUnsignedInt(CicsAid.DFHPF15));
+
+            assertThat(state.transferred())
+                    .as("PF15 does not transfer, because line 187 tests WHEN DFHPF3")
+                    .isFalse();
+            assertThat(state.errFlagOn()).isTrue();
+            assertThat(state.message()).startsWith("Invalid key pressed. Please see below...");
+            assertThat(state.submittedRecords()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a raw PF3 byte still transfers to COMEN01C, so the lower key is unaffected")
+        void aRawLowerKeyStillTakesItsArm() {
+            ProgramState state = controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(noKeyStated(), Byte.toUnsignedInt(CicsAid.DFHPF3));
+
+            assertThat(state.transferred()).isTrue();
+            assertThat(state.response().getNextProgram()).isEqualTo("COMEN01C");
+        }
+
+        @ParameterizedTest(name = "a raw DFHPF{0} byte is an invalid key here")
+        @ValueSource(ints = {13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+        @DisplayName("all twelve upper function keys reach WHEN OTHER when stated as raw bytes")
+        void everyUpperKeyIsInvalidHere(int pfNumber) {
+            ProgramState state = controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(noKeyStated(), Byte.toUnsignedInt(functionKey(pfNumber)));
+
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.errFlagOn()).isTrue();
+            assertThat(state.submittedRecords()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the byte wins over the token, and a token restating it is accepted")
+        void theByteWinsAndAConsistentTokenIsAccepted() {
+            ProgramState state = controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(reenter().withAid("PFK03"), Byte.toUnsignedInt(CicsAid.DFHPF15));
+
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.errFlagOn()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a token naming a different key is refused rather than discarded")
+        void aDisagreeingTokenIsRefused() {
+            assertThatThrownBy(() -> controllerAt(FIXED_MIDNIGHT)
+                    .mainPara(reenter().withAid("PFK07"), Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("aid");
+        }
+
+        @ParameterizedTest(name = "a stated {0} is refused")
+        @ValueSource(ints = {-1, 256, 4096})
+        @DisplayName("a value that is not one byte is refused rather than narrowed")
+        void anImpossibleByteIsRefused(int stated) {
+            assertThatThrownBy(() -> controllerAt(FIXED_MIDNIGHT).mainPara(noKeyStated(), stated))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @Test
+        @DisplayName("both spellings of the parameter reach the same byte through the route")
+        void bothSpellingsAreHonoured() {
+            assertThat(controllerAt(FIXED_MIDNIGHT)
+                    .submitReportRequest(noKeyStated(), Byte.toUnsignedInt(CicsAid.DFHPF15), null)
+                    .screen().getErrmsgo())
+                    .startsWith("Invalid key pressed");
+            assertThat(controllerAt(FIXED_MIDNIGHT)
+                    .submitReportRequest(noKeyStated(), null, Byte.toUnsignedInt(CicsAid.DFHPF15))
+                    .screen().getErrmsgo())
+                    .startsWith("Invalid key pressed");
+        }
+
+        /**
+         * A re-entry whose {@code CCARD-AID} member states no key, so the raw byte is the only statement.
+         *
+         * <p>{@code withAid(null)} normalises to the five spaces {@code RECEIVE MAP} leaves in an
+         * unpainted field, which is what a client sending the byte instead of the token sends.
+         */
+        private static ReportRequestRequest noKeyStated() {
+            return reenter().withAid(null);
+        }
+
+        /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
+        private static byte functionKey(int pfNumber) {
+            try {
+                return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
+            } catch (ReflectiveOperationException absent) {
+                throw new AssertionError("CicsAid does not declare DFHPF" + pfNumber, absent);
+            }
         }
 
         @Test
@@ -960,6 +1124,7 @@ class ReportRequestControllerTest {
         }
 
         @Test
+        @Timeout(value = 120, unit = TimeUnit.SECONDS)
         @DisplayName("two ports over one destination never tear a record: each write lands whole or is "
                 + "refused whole")
         void twoPortInstancesContendingNeverTearARecord(@TempDir Path root) throws Exception {
@@ -996,12 +1161,19 @@ class ReportRequestControllerTest {
                     return null;
                 }));
             }
-            start.countDown();
-            for (Future<?> future : submitted) {
-                future.get(30, TimeUnit.SECONDS);
+            try {
+                start.countDown();
+                for (Future<?> future : submitted) {
+                    future.get(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                }
+            } finally {
+                // In a finally, and shutdownNow rather than shutdown: if a future.get above throws, the
+                // pool would otherwise leak its threads into the next test in this JVM fork.
+                pool.shutdownNow();
             }
-            pool.shutdown();
-            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+            assertThat(pool.awaitTermination(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .as("the pool must terminate - a writer still running would corrupt the next test")
+                    .isTrue();
 
             assertThat(accepted.get() + refused.get()).isEqualTo(2 * perPort);
             byte[] queue = Files.readAllBytes(destination);
@@ -1602,6 +1774,7 @@ class ReportRequestControllerTest {
         // --------------------------------------------------- one complete record per write, in order
 
         @Test
+        @Timeout(value = 120, unit = TimeUnit.SECONDS)
         @DisplayName("concurrent writes each land as one whole 80-byte record, none interleaved")
         void concurrentWritesAreWholeRecords(@TempDir Path root) throws Exception {
             // RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) means the reader takes the destination eighty
@@ -1631,12 +1804,19 @@ class ReportRequestControllerTest {
                     return null;
                 }));
             }
-            start.countDown();
-            for (Future<?> future : submitted) {
-                future.get(30, TimeUnit.SECONDS);
+            try {
+                start.countDown();
+                for (Future<?> future : submitted) {
+                    future.get(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                }
+            } finally {
+                // In a finally, and shutdownNow rather than shutdown: if a future.get above throws, the
+                // pool would otherwise leak its threads into the next test in this JVM fork.
+                pool.shutdownNow();
             }
-            pool.shutdown();
-            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+            assertThat(pool.awaitTermination(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .as("the pool must terminate - a writer still running would corrupt the next test")
+                    .isTrue();
 
             byte[] written = Files.readAllBytes(destination);
             assertThat(written).hasSize(writers * perWriter * 80);
@@ -1767,7 +1947,7 @@ class ReportRequestControllerTest {
         @DisplayName("the adapter adds nothing to MAIN-PARA, and carries the metadata beside it")
         void theAdapterIsThin() {
             ScreenResponse<ReportRequestResponse> answer = controllerAt(FIXED_INSTANT)
-                    .submitReportRequest(ReportRequestRequest.empty());
+                    .submitReportRequest(ReportRequestRequest.empty(), null, null);
 
             ReportRequestResponse response = answer.screen();
             assertThat(response.getNextProgram()).isEqualTo("CORPT00C");
@@ -1784,7 +1964,7 @@ class ReportRequestControllerTest {
         @DisplayName("POST /api/reports is mapped and drives the same flow the plain call drives")
         void theEndpointIsMapped() throws Exception {
             Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
-            new WebConfig().carddemoJacksonCustomizer().customize(builder);
+            new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET).customize(builder);
             ObjectMapper mapper = builder.build();
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controllerAt(FIXED_INSTANT))
                     .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))

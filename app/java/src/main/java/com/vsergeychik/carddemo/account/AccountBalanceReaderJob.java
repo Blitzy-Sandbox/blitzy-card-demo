@@ -1,5 +1,7 @@
 package com.vsergeychik.carddemo.account;
 
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.Charset;
 import java.util.List;
@@ -404,7 +406,7 @@ public class AccountBalanceReaderJob {
      * Where this job's {@code DISPLAY} output goes, resolved on each use.
      *
      * <p>An {@link ObjectProvider} rather than a {@link SysoutSink} directly, so that a deployment or
-     * a test may publish one and the job falls back to {@link #standardOutputSysoutSink()} when
+     * a test may publish one and the job falls back to {@link #standardOutput(Charset)} when
      * nothing does. Resolution is deferred to the point of use because a sink published elsewhere in
      * the context need not exist when this configuration is constructed.
      */
@@ -1281,16 +1283,18 @@ public class AccountBalanceReaderJob {
 
     /**
      * The sink this job writes its {@code DISPLAY} output to: an application-supplied one where the
-     * context publishes it, and {@link #standardOutputSysoutSink()} otherwise.
+     * context publishes it, and {@link #standardOutput(Charset)} over the active dataset code page
+     * otherwise.
      *
      * @return the sink to use for the next run; never {@code null}
      */
     public SysoutSink sysoutSink() {
-        return sysoutSinkProvider.getIfAvailable(AccountBalanceReaderJob::standardOutputSysoutSink);
+        return sysoutSinkProvider.getIfAvailable(() -> standardOutput(datasetCharset));
     }
 
     /**
-     * The default sink: the job's own standard output stream, written verbatim.
+     * The default sink: the job's own standard output stream, written verbatim in the code page the card
+     * master is read in.
      *
      * <p>{@code app/jcl/READCARD.jcl:27} binds {@code //SYSOUT DD SYSOUT=*}, which on the mainframe is
      * the job's print stream. The standard output stream is its direct equivalent, and the stream is
@@ -1298,16 +1302,38 @@ public class AccountBalanceReaderJob {
      * {@code DISPLAY} in this class goes through the one seam and a test can replace all of them at
      * once.
      *
+     * <p><strong>The code page is a parameter and the platform default is never consulted</strong>
+     * (practice <strong>B8</strong>). {@code CBACT02C} displays the whole
+     * {@value CardRecord#RECORD_LENGTH}-byte card record - {@code DISPLAY CARD-RECORD} at {@code :78} -
+     * so these lines <em>are</em> the dataset's own stored characters, and the only honest code page for
+     * them is the one the dataset was read in. On the mainframe the record's bytes pass from the KSDS to
+     * the spool unchanged; encoding them in whatever {@code file.encoding} happens to be would corrupt
+     * every byte outside the invariant ASCII range and would make the emitted line depend on the JVM
+     * rather than on the program. An earlier revision took {@code System.out} as it stood and inherited
+     * exactly that dependency.
+     *
+     * <p>The stream is auto-flushing, so a line is visible as soon as it is written rather than at
+     * process exit, and it is opened on the standard output file descriptor rather than taken from a
+     * mutable global, so a caller cannot silently redirect one job's {@code SYSOUT} by reassigning
+     * something else. It is deliberately never closed: the standard output stream outlives every job
+     * that writes to it, and closing it would silence the rest of the process.
+     *
      * <p><strong>Undecorated, and that is the whole point.</strong> Nothing prefixes a timestamp, a
      * severity or a logger name onto these lines. A parity case compares the emitted sequence line for
      * line against what the COBOL writes, so any decoration would fail every case while the
      * translation underneath was correct. This is also why the module's logger is not used for
      * {@code DISPLAY} output: it is for diagnostics about the run, not for the run's own output.
      *
+     * @param charset the code page to encode each line in - the active dataset code page; must not be
+     *                {@code null}
      * @return a sink over the standard output stream; never {@code null}
+     * @throws NullPointerException if {@code charset} is {@code null}
      */
-    public static SysoutSink standardOutputSysoutSink() {
-        return new PrintStreamSysoutSink(System.out);
+    public static SysoutSink standardOutput(Charset charset) {
+        Objects.requireNonNull(charset, "A code page is required for SYSOUT: a displayed record is the "
+                + "dataset's own bytes, and the platform default is never assumed");
+        return new PrintStreamSysoutSink(
+                new PrintStream(new FileOutputStream(FileDescriptor.out), true, charset));
     }
 
     /**

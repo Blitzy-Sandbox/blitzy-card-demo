@@ -18,7 +18,7 @@ import java.util.List;
  * it is reverse-engineering one, and the second screen of every flow is unreachable without that
  * knowledge.
  *
- * <p>Each of these five members is produced by the server and read from nowhere. The navigation triple
+ * <p>Each of these six members is produced by the server and read from nowhere. The navigation triple
  * is the stateless rendering of {@code EXEC CICS XCTL}: the program decides where control goes, so
  * {@code nextProgram}, {@code nextMapset} and {@code nextMap} are recomputed on every path from the
  * communication area and the program's own branch, never taken from the inbound body. {@code role} is
@@ -29,9 +29,13 @@ import java.util.List;
  *
  * <h2>Tolerated is not honoured</h2>
  *
+ * <p>{@code plainText} is the sign-on screen's own: {@code COSGN00C} answers PF3 with
+ * {@code EXEC CICS SEND TEXT}, which transmits eighty bytes to the terminal and sends no map at all, so
+ * there is no screen field the text could travel in.
+ *
  * <p>These names are declared on each request type through
  * {@code @JsonIgnoreProperties({...})} with {@code ignoreUnknown} left at its default of
- * {@code false}. That combination is exact: these five names bind to nothing and are discarded, and
+ * {@code false}. That combination is exact: these names bind to nothing and are discarded, and
  * <strong>every other unrecognised name is still refused</strong> with the field named in the error
  * envelope's {@code fieldErrors}. So a client may echo the body back verbatim, and a client that
  * misspells a screen field still learns which one - the strictness that catches a typo is kept, and only
@@ -87,6 +91,19 @@ public final class ResponseOnlyMembers {
     public static final String ROLE = "role";
 
     /**
+     * {@code EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE) ERASE FREEKB} - the
+     * unformatted eighty-byte transmission {@code COSGN00C} makes at {@code app/cbl/COSGN00C.cbl:164-169}
+     * instead of sending its map.
+     *
+     * <p>A {@code SEND TEXT} writes to the terminal with no map and therefore no {@code DFHMDF} field, so
+     * the migration has to express it as data for the same reason it expresses {@code XCTL} as data: the
+     * server is stateless and the transmission is an observable output. Emitted by the sign-on screen
+     * alone, so it is tolerated by the sign-on request alone. Recomputed from the taken branch, so an
+     * inbound value is discarded.
+     */
+    public static final String PLAIN_TEXT = "plainText";
+
+    /**
      * The four members every one of the seventeen responses can carry.
      *
      * <p>Held for tests and diagnostics. The annotations themselves name the constants directly, because
@@ -96,9 +113,12 @@ public final class ResponseOnlyMembers {
     public static final List<String> UNIVERSAL =
             List.of(NEXT_PROGRAM, NEXT_MAPSET, NEXT_MAP, SCREEN_METADATA);
 
-    /** The universal four plus {@link #ROLE}, which only the sign-on screen produces. */
+    /**
+     * The universal four plus {@link #ROLE} and {@link #PLAIN_TEXT}, which only the sign-on screen
+     * produces.
+     */
     public static final List<String> ALL =
-            List.of(NEXT_PROGRAM, NEXT_MAPSET, NEXT_MAP, SCREEN_METADATA, ROLE);
+            List.of(NEXT_PROGRAM, NEXT_MAPSET, NEXT_MAP, SCREEN_METADATA, ROLE, PLAIN_TEXT);
 
     private ResponseOnlyMembers() {
         throw new AssertionError("ResponseOnlyMembers is a set of names, not a value");

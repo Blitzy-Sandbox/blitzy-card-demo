@@ -1112,7 +1112,8 @@ public class CustomerRepository {
             return reportRead(unreachable, "describe the customer master dataset '" + datasetName
                     + "' to read " + subject);
         }
-        return readKeyed(forUpdate ? sql.selectByKeyForUpdate() : sql.selectByKey(), keyImage, subject);
+        return readKeyed(forUpdate ? sql.selectByKeyForUpdate() : sql.selectByKey(), keyImage, subject,
+                sql.probeUnreadableRows());
     }
 
     /**
@@ -1122,12 +1123,14 @@ public class CustomerRepository {
      * supplies the statement rather than describing the dataset a second time. One body serves both entry
      * points, so a keyed read cannot behave differently depending on which one issued it.
      *
-     * @param statement the composed keyed select, with or without {@code FOR UPDATE}
-     * @param keyImage  the key exactly as the record stores it
-     * @param subject   how to name the operation in a diagnostic - never the key's value
+     * @param statement           the composed keyed select, with or without {@code FOR UPDATE}
+     * @param keyImage            the key exactly as the record stores it
+     * @param subject             how to name the operation in a diagnostic - never the key's value
+     * @param unreadableRowsProbe the statement that proves the absence before it is reported
      * @return the discriminated outcome; never {@code null}
      */
-    private ReadResult readKeyed(String statement, String keyImage, String subject) {
+    private ReadResult readKeyed(String statement, String keyImage, String subject,
+            String unreadableRowsProbe) {
         List<byte[]> rows;
         try {
             rows = jdbcTemplate.query(firstRowMatching(statement, asPrefixPattern(keyImage)),
@@ -1139,9 +1142,10 @@ public class CustomerRepository {
 
         // As in the browse, the list itself is never null, so emptiness is the whole of the test.
         if (rows.isEmpty()) {
-            // The INVALID KEY condition, and DFHRESP(NOTFND) online. Reported, never thrown, so the caller
-            // can compose its own 'CustId: … not found' message - see readByKey(long).
-            return ReadResult.notFound();
+            // The INVALID KEY condition, and DFHRESP(NOTFND) online - but only once it has been PROVED.
+            // Reported, never thrown, so the caller can compose its own 'CustId: … not found' message -
+            // see readByKey(long).
+            return provenAbsence(subject, unreadableRowsProbe);
         }
         byte[] recordImage = rows.get(0);
         if (recordImage == null) {
@@ -1154,6 +1158,52 @@ public class CustomerRepository {
             return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
         }
         return decoded(recordImage, subject);
+    }
+
+    /**
+     * Reports the {@code INVALID KEY} condition only once no row of the dataset is
+     * <strong>unreadable</strong>, and the invalid-request outcome when one is.
+     *
+     * <h2>Why an absence has to be proved</h2>
+     * <p>{@code CUST-ID} is the leading nine bytes of {@code CUSTOMER-RECORD}, so it lives <em>inside</em>
+     * the record image. SQL evaluates every comparison against a null as {@code UNKNOWN}, so the keyed
+     * predicate cannot match a row whose record-image column holds nothing, and such a row leaves the read
+     * with no matching row - on the face of it {@code NOTFND}. Every consumer acts on that answer as a
+     * fact: {@code app/cbl/COACTVWC.cbl} paints "Customer not found", {@code app/cbl/CBTRN01C.cbl} abends,
+     * and {@code CBSTM03A} composes a statement without the customer. Reporting it while a present record
+     * sits unreadable states something the data does not support.
+     *
+     * <p>Confirmed with one further row-limited read, on the empty path only. A read that found its record
+     * is untouched: a VSAM {@code READ} of a key that resolves does not fail because another record is
+     * damaged.
+     *
+     * @param subject             how to name the operation in a diagnostic - never the key's value
+     * @param unreadableRowsProbe the statement selecting the rows with no record image
+     * @return {@link ReadResult#notFound()} when the absence is established, the permanent-error outcome
+     *         when it is not; never {@code null}
+     */
+    private ReadResult provenAbsence(String subject, String unreadableRowsProbe) {
+        List<byte[]> unreadable;
+        try {
+            unreadable = jdbcTemplate.query(firstRow(unreadableRowsProbe), recordImageMapper());
+        } catch (DataAccessException translated) {
+            // The probe established nothing, so the absence stays unproved: reported on the arm a refused
+            // read is reported on rather than as '23'.
+            return reportRead(translated, "establish that the customer master dataset '" + datasetName
+                    + "' holds no unreadable row before reporting " + subject + " as absent");
+        }
+        // As everywhere else in this class, the list itself is never null, so emptiness is the whole test.
+        if (unreadable.isEmpty()) {
+            // A genuine INVALID KEY: nothing matched the key and no row of the dataset is unreadable.
+            return ReadResult.notFound();
+        }
+        LOG.error("A keyed read of " + subject + " from the customer master dataset '" + datasetName
+                + "' matched no row, but the dataset holds a row with no record image at column position "
+                + RECORD_IMAGE_COLUMN_INDEX + " - and CUST-ID is part of that image, so that row's key "
+                + "cannot be known; reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " rather than reporting as absent a "
+                + "record that may be the one asked for");
+        return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
     }
 
     // =================================================================================================
@@ -1749,12 +1799,18 @@ public class CustomerRepository {
      * @param selectByKeyForUpdate the keyed read with the row lock the CICS {@code READ ... UPDATE} takes,
      *                    valid only inside a unit of work
      * @param rewrite     the rewrite: replace the image of the record whose image begins with the key
+     * @param probeUnreadableRows the rows whose record-image column holds nothing. Not a COBOL operation:
+     *                    it is what lets a keyed read <em>prove</em> an absence before reporting
+     *                    {@code NOTFND}, because {@code CUST-ID} lives inside the record image and a row
+     *                    with no image therefore has no knowable key - see
+     *                    {@link CustomerRepository#provenAbsence(String, String)}
      */
     record Statements(String selectFirst,
                       String selectNext,
                       String selectByKey,
                       String selectByKeyForUpdate,
-                      String rewrite) {
+                      String rewrite,
+                      String probeUnreadableRows) {
 
         /**
          * Composes the statements over one dataset and one record-image column.
@@ -1775,7 +1831,8 @@ public class CustomerRepository {
                     relation.selectAfterAscending(recordImageColumn),
                     relation.selectByKey(recordImageColumn),
                     relation.selectByKeyForUpdate(recordImageColumn),
-                    relation.rewriteByKey(recordImageColumn));
+                    relation.rewriteByKey(recordImageColumn),
+                    relation.selectUnreadableRows(recordImageColumn));
         }
     }
 
@@ -2078,7 +2135,8 @@ public class CustomerRepository {
             }
             return repository.readKeyed(statements.selectByKey(), repository.keyImageOf(custId),
                     "the customer identifier "
-                            + SensitiveDiagnostics.maskIdentifier(custId, KEY_LENGTH));
+                            + SensitiveDiagnostics.maskIdentifier(custId, KEY_LENGTH),
+                    statements.probeUnreadableRows());
         }
 
         /**
@@ -2105,7 +2163,7 @@ public class CustomerRepository {
             }
             return repository.readKeyed(statements.selectByKey(), keyImage,
                     "the record identification field '" + SensitiveDiagnostics.maskIdentifier(keyImage)
-                            + "'");
+                            + "'", statements.probeUnreadableRows());
         }
 
         // =============================================================================================

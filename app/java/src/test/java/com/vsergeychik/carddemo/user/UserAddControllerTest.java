@@ -18,6 +18,7 @@ import com.vsergeychik.carddemo.user.dto.UserAddResponse;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mockito;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
@@ -41,6 +43,7 @@ import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -121,7 +124,11 @@ class UserAddControllerTest {
     void setUp() {
         repository = mock(SecUserRepository.class);
         when(repository.add(any(SecUserRecord.class))).thenReturn(WriteResult.written());
-        controller = new UserAddController(repository, FIXED_CLOCK, StandardCharsets.US_ASCII);
+        // The code page comes from the repository the record is written through, so the stub reports
+        // one: the five values moved into SEC-USER-DATA are persistence-bound, and the page they are
+        // measured in has to be the dataset's rather than this class's opinion of it.
+        when(repository.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
+        controller = new UserAddController(repository, FIXED_CLOCK);
     }
 
     // =================================================================================================
@@ -910,39 +917,53 @@ class UserAddControllerTest {
     class ParameterResolution {
 
         @Test
-        @DisplayName("the explicit eibAid parameter wins")
+        @DisplayName("the explicit eibAid parameter wins over the payload's own image")
         void explicitParameterWins() {
-            UserAddRequest withToken = new UserAddRequest(null, null, null, null, null, null,
-                    "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(), "PFK03");
+            UserAddRequest carryingPf3 = new UserAddRequest(null, null, null, null, null, null,
+                    "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(),
+                    PfKeyResolver.aidImage(CicsAid.DFHPF3));
 
-            assertThat(controller.resolveEibAid(0x7D, withToken)).isEqualTo(CicsAid.DFHENTER);
+            assertThat(controller.resolveEibAid(0x7D, carryingPf3)).isEqualTo(CicsAid.DFHENTER);
+            assertThat(controller.resolveEibAid(null, carryingPf3)).isEqualTo(CicsAid.DFHPF3);
         }
 
-        @ParameterizedTest(name = "token {0} resolves to the matching AID")
-        @ValueSource(strings = {"ENTER", "CLEAR", "PA1", "PA2", "PFK01", "PFK02", "PFK03", "PFK04",
-            "PFK05", "PFK06", "PFK07", "PFK08", "PFK09", "PFK10", "PFK11", "PFK12"})
-        @DisplayName("every AidKey token round-trips back to an attention identifier the resolver knows")
-        void everyTokenRoundTrips(String token) {
+        @ParameterizedTest(name = "the byte {0} in the payload is read back as itself")
+        @ValueSource(ints = {0x40, 0x6C, 0x6D, 0x6E, 0x7D, 0xC1, 0xC3, 0xF1, 0xF3, 0xF4, 0x7C, 0xFF})
+        @DisplayName("the payload's one character IS the EIBAID byte, and nothing is folded")
+        void everyTokenRoundTrips(int unsigned) {
+            byte stated = (byte) unsigned;
             UserAddRequest req = new UserAddRequest(null, null, null, null, null, null,
-                    "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(), token);
+                    "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(),
+                    PfKeyResolver.aidImage(stated));
 
-            byte resolved = controller.resolveEibAid(null, req);
-
-            assertThat(PfKeyResolver.resolve(resolved)).isPresent();
-            assertThat(PfKeyResolver.resolve(resolved).orElseThrow().token())
-                    .isEqualTo(token + " ".repeat(PfKeyResolver.AID_TOKEN_LENGTH - token.length()));
+            assertThat(controller.resolveEibAid(null, req))
+                    .as("PF15 stays PF15 and does not reach the WHEN DFHPF3 arm that transfers")
+                    .isEqualTo(stated);
         }
 
         @Test
-        @DisplayName("an unrecognised token becomes an AID the resolver does not know, reaching WHEN OTHER")
+        @DisplayName("a CCARD-AID token is not one byte, so it names no key: DFHNULL, and WHEN OTHER")
         void unknownTokenBecomesNoMatch() {
-            UserAddRequest req = new UserAddRequest(null, null, null, null, null, null,
-                    "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(), "ZZZZZ");
+            for (String token : new String[] {"ZZZZZ", "PFK03", "ENTER", "PA1  ", "PA1"}) {
+                UserAddRequest req = new UserAddRequest(null, null, null, null, null, null,
+                        "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(), token);
 
-            byte resolved = controller.resolveEibAid(null, req);
+                byte resolved = controller.resolveEibAid(null, req);
 
-            assertThat(resolved).isEqualTo(CicsAid.DFHNULL);
-            assertThat(PfKeyResolver.resolve(resolved)).isEmpty();
+                assertThat(resolved).as("'%s' is not one byte", token).isEqualTo(CicsAid.DFHNULL);
+                assertThat(PfKeyResolver.resolve(resolved)).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("a blank or LOW-VALUES image states no key, which keeps the ENTER default")
+        void aBlankImageStatesNoKey() {
+            for (String image : new String[] {"", " ", "\u0000", "     "}) {
+                UserAddRequest req = new UserAddRequest(null, null, null, null, null, null,
+                        "John", "Doe", "USR1", "PASS1234", "U", null, reenterContext(), image);
+
+                assertThat(controller.resolveEibAid(null, req)).isEqualTo(CicsAid.DFHENTER);
+            }
         }
 
         @Test
@@ -996,13 +1017,16 @@ class UserAddControllerTest {
                     .withMessageContaining("a communication area");
         }
 
-        @ParameterizedTest(name = "eibcalen = {0} is not a length CICS could have set")
-        @ValueSource(ints = {-5, 1, 159, 161, 194, 2000})
-        @DisplayName("only 0 and the copybook length are accepted: COUSR01C declares no extension")
+        @ParameterizedTest(name = "eibcalen = {0} is preserved when a commarea did arrive")
+        @ValueSource(ints = {1, 159, 160, 161, 194, 2000})
+        @DisplayName("every non-zero length is carried through unchanged: line 78 tests EIBCALEN "
+                + "against zero and against nothing else")
         void anImpossibleEibcalenIsRefusedDirectly(int stated) {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> UserAddController.resolveEibcalen(stated, populatedRequest()))
-                    .withMessageContaining(UserAddController.EIBCALEN_PARAM);
+            // The length a real flow produces here is 160 - COUSR01C copies COCOM01Y alone and its one
+            // caller, COADM01C, is the same shape - so an enumerated set of {0, 160} refused nothing
+            // real. It is still not written: it is a rule the source does not have, and the same rule
+            // written on the sibling screens refused the lengths their callers genuinely send.
+            assertThat(UserAddController.resolveEibcalen(stated, populatedRequest())).isEqualTo(stated);
         }
 
         @Test
@@ -1095,13 +1119,22 @@ class UserAddControllerTest {
                     .hasMessageContaining("no communication area");
         }
 
-        @ParameterizedTest(name = "eibcalen = {0} is refused")
-        @ValueSource(ints = {-1, 1, 159, 161, 194, 2000})
-        @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
+        @ParameterizedTest(name = "eibcalen = {0} reaches the non-zero arm over HTTP")
+        @ValueSource(ints = {1, 159, 160, 161, 194, 2000})
+        @DisplayName("Over the route, every non-zero length is accepted and takes line 78's non-zero "
+                + "arm, so a client echoing a real handoff is never answered 400")
         void anImpossibleEibcalenIsRefused(int stated) {
-            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, stated, null))
+            assertThatCode(() -> controller.addUser(populatedRequest(), 0x7D, stated, null))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("A negative EIBCALEN is refused over the route: it is not a length at all")
+        void aNegativeEibcalenIsRefusedOverTheRoute() {
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, -1, null))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(UserAddController.EIBCALEN_PARAM);
+                    .hasMessageContaining(UserAddController.EIBCALEN_PARAM)
+                    .hasMessageContaining("cannot be negative");
         }
 
         @Test
@@ -1186,19 +1219,32 @@ class UserAddControllerTest {
                     .isThrownBy(() -> new UserAddController(null, FIXED_CLOCK));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new UserAddController(repository, null));
+
+            // A repository that reports no code page is refused at construction rather than producing a
+            // record measured in a page nobody stated.
+            SecUserRepository pageless = mock(SecUserRepository.class);
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new UserAddController(repository, FIXED_CLOCK, null));
+                    .isThrownBy(() -> new UserAddController(pageless, FIXED_CLOCK));
         }
 
         @Test
-        @DisplayName("the bean constructor applies the declared code page rather than the platform's")
-        void beanConstructorUsesDeclaredCharset() {
-            UserAddController bean = new UserAddController(repository, FIXED_CLOCK);
+        @DisplayName("the code page is the dataset's own, not a constant and not the platform's")
+        void theCodePageComesFromTheRepository() {
+            // COUSR01C:154-158 moves the five typed values into SEC-USER-DATA and :240-248 writes that
+            // record to USRSEC, so the page they are measured in is a property of the dataset. An
+            // earlier revision named US-ASCII here while application.yml binds IBM037 in production.
+            Charset ebcdic = Charset.forName("IBM037");
+            SecUserRepository ebcdicRepository = mock(SecUserRepository.class);
+            when(ebcdicRepository.datasetCharset()).thenReturn(ebcdic);
+            when(ebcdicRepository.add(any(SecUserRecord.class))).thenReturn(WriteResult.written());
 
-            assertThat(UserAddController.DEFAULT_WORKING_STORAGE_CHARSET)
-                    .isEqualTo(StandardCharsets.US_ASCII);
-            assertThat(bean.addUser(populatedRequest(), 0x7D, NavigationContext.COMMAREA_LENGTH, null)
-                    .screen().errMsg()).contains("has been added");
+            UserAddController onEbcdic = new UserAddController(ebcdicRepository, FIXED_CLOCK);
+
+            assertThat(onEbcdic.addUser(populatedRequest(), 0x7D, NavigationContext.COMMAREA_LENGTH,
+                    null).screen().errMsg()).contains("has been added");
+            assertThat(controller.addUser(populatedRequest(), 0x7D, NavigationContext.COMMAREA_LENGTH,
+                    null).screen().errMsg()).contains("has been added");
+            Mockito.verify(ebcdicRepository).datasetCharset();
         }
 
         @Test
@@ -1578,12 +1624,18 @@ class UserAddControllerTest {
                     + NavigationContext.ACCOUNT_INFO_LENGTH + NavigationContext.CARD_INFO_LENGTH
                     + NavigationContext.MORE_INFO_LENGTH)
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH);
-            // An extension would have made the accepted length 160 + 34 = 194. It is not accepted.
+            // An extension would have made the length CICS reports 160 + 34 = 194, as it is for the CU02
+            // and CU03 screens. Here the length derived from the payload - the one a client that states
+            // nothing gets - is the plain copybook's 160, which is the observable consequence of the
+            // absent extension. A stated 194 is not refused, because line 78 tests EIBCALEN for zero and
+            // for nothing else; what it would mean is an area longer than this program reads, and the
+            // source's answer to that is to read its own 160 bytes out of it and ignore the rest.
             assertThat(state.eibcalen()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
-            assertThatThrownBy(() -> controller.addUser(populatedRequest(), null,
-                    NavigationContext.COMMAREA_LENGTH + NavigationContext.GENERAL_INFO_LENGTH, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(UserAddController.EIBCALEN_PARAM);
+            assertThat(UserAddController.resolveEibcalen(
+                    NavigationContext.COMMAREA_LENGTH + NavigationContext.GENERAL_INFO_LENGTH,
+                    populatedRequest()))
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH
+                            + NavigationContext.GENERAL_INFO_LENGTH);
         }
 
         @Test
@@ -1612,6 +1664,8 @@ class UserAddControllerTest {
             enter(populatedRequest());
 
             verify(repository).add(any(SecUserRecord.class));
+            // The code page was read once, at construction, and it is not a file command.
+            verify(repository).datasetCharset();
             // No STARTBR, no READNEXT, no READ, no REWRITE, no DELETE. COUSR01C declares one EXEC CICS
             // file command and this is it, so an auto-lookup branch could not exist without adding one.
             org.mockito.Mockito.verifyNoMoreInteractions(repository);

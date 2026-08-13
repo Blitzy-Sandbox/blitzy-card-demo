@@ -5,9 +5,11 @@ import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.SecUserRepository.ReadResult;
 import com.vsergeychik.carddemo.user.SignOnService.CursorField;
+import com.vsergeychik.carddemo.user.SignOnService.MapInputArea;
 import com.vsergeychik.carddemo.user.SignOnService.ReceiveOutcome;
 import com.vsergeychik.carddemo.user.SignOnService.SignOnInput;
 import com.vsergeychik.carddemo.user.SignOnService.SignOnOutcome;
@@ -25,6 +27,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 import org.assertj.core.api.Assertions;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -1636,6 +1639,68 @@ class SignOnServiceTest {
         }
 
         @Test
+        @DisplayName("MapInputArea carries the two spans COSGN0AO REDEFINES COSGN0AI makes one")
+        void mapInputArea() {
+            // app/cpy-bms/COSGN00.CPY:85 makes USERIDI/USERIDO one eight-byte span and PASSWDI/PASSWDO
+            // another, so what the RECEIVE at :110-115 leaves there is what the SEND at :151-157 sends.
+            MapInputArea received = MapInputArea.received("ADMIN001", "PASSWORD");
+
+            Assertions.assertThat(received.useridi()).isEqualTo("ADMIN001");
+            Assertions.assertThat(received.passwdi()).isEqualTo("PASSWORD");
+            Assertions.assertThat(received).isEqualTo(MapInputArea.received("ADMIN001", "PASSWORD"));
+
+            // The three paths that never receive: cold start at :80-83, PF3 at :88-90 and the
+            // invalid-key arm at :91-94. LOW-VALUES, not spaces - the distinction :118 and :123 test.
+            Assertions.assertThat(MapInputArea.UNTRANSMITTED.useridi())
+                    .isEqualTo(lowValues(SignOnService.USER_ID_LENGTH));
+            Assertions.assertThat(MapInputArea.UNTRANSMITTED.passwdi())
+                    .isEqualTo(lowValues(SignOnService.PASSWORD_LENGTH));
+            Assertions.assertThat(MapInputArea.UNTRANSMITTED)
+                    .isNotEqualTo(MapInputArea.received(spaces(8), spaces(8)));
+        }
+
+        @Test
+        @DisplayName("MapInputArea withholds the password span from its rendering, and keeps it in equals")
+        void mapInputAreaRendering() {
+            MapInputArea received = MapInputArea.received("ADMIN001", "ZQX7PW  ");
+
+            Assertions.assertThat(received.toString())
+                    .as("the span reaches a 3270 as dark field data; a log line is not a 3270 - CWE-532")
+                    .contains("ADMIN001")
+                    .doesNotContain("ZQX7PW")
+                    .contains(SensitiveDiagnostics.REDACTED);
+            Assertions.assertThat(received)
+                    .as("equals is value semantics and discloses nothing, so it keeps the span")
+                    .isNotEqualTo(MapInputArea.received("ADMIN001", "OTHERPW "));
+        }
+
+        @ParameterizedTest
+        @CsvSource({"USERIDI, 7", "USERIDI, 9", "PASSWDI, 7", "PASSWDI, 9"})
+        @DisplayName("MapInputArea rejects a span that departs from its declared width")
+        void mapInputAreaRejectsWrongWidths(String item, int width) {
+            String wrong = spaces(width);
+            boolean userId = "USERIDI".equals(item);
+            ThrowingCallable construction = userId
+                    ? () -> MapInputArea.received(wrong, spaces(8))
+                    : () -> MapInputArea.received(spaces(8), wrong);
+
+            Assertions.assertThatThrownBy(construction)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(item);
+        }
+
+        @Test
+        @DisplayName("MapInputArea rejects a null span: an untransmitted field is LOW-VALUES, not null")
+        void mapInputAreaRejectsNull() {
+            Assertions.assertThatThrownBy(() -> MapInputArea.received(null, spaces(8)))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("USERIDI");
+            Assertions.assertThatThrownBy(() -> MapInputArea.received(spaces(8), null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("PASSWDI");
+        }
+
+        @Test
         @DisplayName("the outcome requires every reference component")
         void theOutcomeRequiresEveryReference() {
             Assertions.assertThatThrownBy(() -> outcome(false, " ", spaces(8), null,
@@ -1650,23 +1715,28 @@ class SignOnServiceTest {
                     .isInstanceOf(NullPointerException.class);
             Assertions.assertThatThrownBy(() -> new SignOnOutcome(false, " ", spaces(8), spaces(80),
                     false, null, true, false, false, Termination.RETURN_TRANSID,
-                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED, Optional.empty(),
-                    Optional.empty())).isInstanceOf(NullPointerException.class);
-            Assertions.assertThatThrownBy(() -> new SignOnOutcome(false, " ", spaces(8), spaces(80),
-                    false, CursorField.NONE, true, false, false, Termination.RETURN_TRANSID,
-                    null, ReceiveOutcome.NOT_PERFORMED, Optional.empty(), Optional.empty()))
+                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED,
+                    MapInputArea.UNTRANSMITTED, Optional.empty(), Optional.empty()))
                     .isInstanceOf(NullPointerException.class);
             Assertions.assertThatThrownBy(() -> new SignOnOutcome(false, " ", spaces(8), spaces(80),
                     false, CursorField.NONE, true, false, false, Termination.RETURN_TRANSID,
-                    NavigationContext.empty(), null, Optional.empty(), Optional.empty()))
+                    null, ReceiveOutcome.NOT_PERFORMED, MapInputArea.UNTRANSMITTED, Optional.empty(),
+                    Optional.empty()))
                     .isInstanceOf(NullPointerException.class);
             Assertions.assertThatThrownBy(() -> new SignOnOutcome(false, " ", spaces(8), spaces(80),
                     false, CursorField.NONE, true, false, false, Termination.RETURN_TRANSID,
-                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED, null, Optional.empty()))
+                    NavigationContext.empty(), null, MapInputArea.UNTRANSMITTED, Optional.empty(),
+                    Optional.empty()))
                     .isInstanceOf(NullPointerException.class);
             Assertions.assertThatThrownBy(() -> new SignOnOutcome(false, " ", spaces(8), spaces(80),
                     false, CursorField.NONE, true, false, false, Termination.RETURN_TRANSID,
-                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED, Optional.empty(), null))
+                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED, MapInputArea.UNTRANSMITTED, null,
+                    Optional.empty()))
+                    .isInstanceOf(NullPointerException.class);
+            Assertions.assertThatThrownBy(() -> new SignOnOutcome(false, " ", spaces(8), spaces(80),
+                    false, CursorField.NONE, true, false, false, Termination.RETURN_TRANSID,
+                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED, MapInputArea.UNTRANSMITTED,
+                    Optional.empty(), null))
                     .isInstanceOf(NullPointerException.class);
         }
 
@@ -1723,8 +1793,8 @@ class SignOnServiceTest {
             SignOnOutcome signedOn = outcome(true, "A", "COADM01C", spaces(80), Termination.XCTL);
             SignOnOutcome failed = new SignOnOutcome(false, "U", spaces(8), spaces(80), true,
                     CursorField.USER_ID, true, false, false, Termination.RETURN_TRANSID,
-                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED, Optional.empty(),
-                    Optional.empty());
+                    NavigationContext.empty(), ReceiveOutcome.NOT_PERFORMED,
+                    MapInputArea.UNTRANSMITTED, Optional.empty(), Optional.empty());
 
             Assertions.assertThat(signedOn.errFlgImage()).isEqualTo(SignOnService.ERR_FLG_OFF);
             Assertions.assertThat(signedOn.hasNextProgram()).isTrue();
@@ -1752,7 +1822,8 @@ class SignOnServiceTest {
                                       Termination termination) {
             return new SignOnOutcome(signedOn, role, nextProgram, message, false, CursorField.NONE,
                     true, false, false, termination, NavigationContext.empty(),
-                    ReceiveOutcome.NOT_PERFORMED, Optional.empty(), Optional.empty());
+                    ReceiveOutcome.NOT_PERFORMED, MapInputArea.UNTRANSMITTED, Optional.empty(),
+                    Optional.empty());
         }
     }
 }

@@ -132,6 +132,9 @@ class CustomerServiceTest {
     /** The code page of the ASCII fixtures, named explicitly and never taken from the platform. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
+    /** The production dataset code page, named so the charset-parameter test can assert against it. */
+    private static final Charset EBCDIC = Charset.forName("IBM037");
+
     /** The dataset name both bindings resolve to in these tests. */
     private static final String TEST_DSNAME = "TEST.CUSTOMER.KSDS";
 
@@ -1827,16 +1830,86 @@ class CustomerServiceTest {
         void thePrintStreamSinkGuardsItsArguments() {
             assertThatNullPointerException().isThrownBy(() -> new PrintStreamSysoutSink(null));
             assertThatNullPointerException().isThrownBy(
-                    () -> CustomerService.standardOutputSysoutSink().write(null));
+                    () -> CustomerService.standardOutput(ASCII).write(null));
         }
 
         @Test
-        @DisplayName("the SYSOUT=* default is a sink over the standard output stream")
+        @DisplayName("the SYSOUT=* default demands an explicit code page")
+        void theDefaultSinkNeedsACharset() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CustomerService.standardOutput(null));
+        }
+
+        @Test
+        @DisplayName("the SYSOUT=* default encodes in the dataset code page, not the platform default")
+        void theDefaultIsOverStandardOutputInTheDatasetCodePage() {
+            // CBCUS01C:L78,L96 DISPLAY the 500-byte CUSTOMER-RECORD itself, so a SYSOUT line carries the
+            // dataset's own stored characters. The code page has to be the one the record was read in
+            // (practice B8); System.out is bound to file.encoding, which is a property of the JVM rather
+            // than of the program, so it is deliberately not the stream underneath.
+            CustomerService subject = service(seeded(fixtureRows()));
+            SysoutSink sink = subject.standardOutputSysoutSink();
+
+            assertThat(subject.datasetCharset()).isEqualTo(ASCII);
+            assertThat(sink).isInstanceOf(PrintStreamSysoutSink.class);
+            PrintStream stream = ((PrintStreamSysoutSink) sink).stream();
+            assertThat(stream.charset()).isEqualTo(ASCII);
+            assertThat(stream).isNotSameAs(System.out);
+        }
+
+        @Test
+        @DisplayName("the SYSOUT=* default is a sink over the standard output file descriptor, not the "
+                + "mutable System.out global")
         void theDefaultIsOverStandardOutput() {
-            SysoutSink sink = CustomerService.standardOutputSysoutSink();
+            SysoutSink sink = CustomerService.standardOutput(ASCII);
 
             assertThat(sink).isInstanceOf(PrintStreamSysoutSink.class);
-            assertThat(((PrintStreamSysoutSink) sink).stream()).isSameAs(System.out);
+            // Opened on FileDescriptor.out in the code page given, so it is not the System.out
+            // PrintStream and cannot be silently redirected by reassigning that global. Taking
+            // System.out would also have taken its encoding - which is the defect this asserts against.
+            assertThat(((PrintStreamSysoutSink) sink).stream()).isNotSameAs(System.out);
+        }
+
+        @Test
+        @DisplayName("the SYSOUT factory takes the code page as a parameter and demands one")
+        void theSysoutFactoryTakesItsCharsetAsAParameter() {
+            // The production dataset code page is IBM037 (application.yml), the test profile's is
+            // US-ASCII, and neither is reached for by this factory - it is told. Building a sink is
+            // side-effect free; only writing through it reaches the process's own standard output, which
+            // is why nothing is emitted here.
+            assertThat(((PrintStreamSysoutSink) CustomerService.standardOutput(EBCDIC)).stream()
+                    .charset()).isEqualTo(EBCDIC);
+            assertThat(((PrintStreamSysoutSink) CustomerService.standardOutput(ASCII)).stream()
+                    .charset()).isEqualTo(ASCII);
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CustomerService.standardOutput(null));
+        }
+
+        @Test
+        @DisplayName("a sink encodes each line in the code page it was given, never the platform default")
+        void theSinkEncodesInTheCodePageGiven() {
+            // 0xA0 is a character IBM037 carries and US-ASCII cannot represent, so a sink built over the
+            // wrong code page produces different bytes for the same line rather than merely different
+            // metadata. This is the whole of finding DATA-01: SYSOUT carries the record's own bytes.
+            Charset ibm037 = Charset.forName("IBM037");
+            String line = "A" + '\u00A0';
+            ByteArrayOutputStream inDatasetCodePage = new ByteArrayOutputStream();
+            ByteArrayOutputStream inAscii = new ByteArrayOutputStream();
+
+            new PrintStreamSysoutSink(new PrintStream(inDatasetCodePage, true, ibm037)).write(line);
+            new PrintStreamSysoutSink(new PrintStream(inAscii, true, ASCII)).write(line);
+
+            assertThat(inDatasetCodePage.toByteArray())
+                    .isEqualTo((line + System.lineSeparator()).getBytes(ibm037));
+            assertThat(inDatasetCodePage.toByteArray()).isNotEqualTo(inAscii.toByteArray());
+        }
+
+        @Test
+        @DisplayName("the code page the service publishes for SYSOUT is the one it reads records in")
+        void theServicePublishesItsDatasetCodePage() {
+            // How CustomerFileReaderJob qualifies its default sink without accepting a charset of its
+            // own: it asks the layer that decodes the dataset bytes.
+            assertThat(service(seeded(fixtureRows())).datasetCharset()).isEqualTo(ASCII);
         }
     }
 

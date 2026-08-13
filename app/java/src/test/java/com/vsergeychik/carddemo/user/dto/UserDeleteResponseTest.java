@@ -29,10 +29,12 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -2784,11 +2786,19 @@ class UserDeleteResponseTest {
         @DisplayName("a value of exactly the declared width is accepted unchanged")
         void exactWidthAccepted(String cobolName,
                 int width,
-                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with) {
+                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with,
+                Function<UserDeleteResponse, String> read) {
             String value = "X".repeat(width);
 
             UserDeleteResponse response = with.apply(UserDeleteResponse.empty(), value);
-            assertThat(response).as("%s accepts its full %d characters", cobolName, width).isNotNull();
+
+            // "Accepted unchanged" asserted rather than assumed: the value that comes back must be the
+            // value that went in, character for character. A non-null check alone would pass just as
+            // happily on a copy that silently dropped or truncated what it was handed.
+            assertThat(read.apply(response))
+                    .as("%s accepts its full %d characters unchanged", cobolName, width)
+                    .isEqualTo(value);
+            assertEveryOtherFieldIsUntouched(response, cobolName);
         }
 
         @ParameterizedTest(name = "{0} PIC X({1}) accepts a shorter value unchanged")
@@ -2796,13 +2806,76 @@ class UserDeleteResponseTest {
         @DisplayName("a shorter value is accepted as it stands, as a MOVE into a wider receiver is")
         void shorterAccepted(String cobolName,
                 int width,
-                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with) {
+                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with,
+                Function<UserDeleteResponse, String> read) {
             String value = "X".repeat(Math.max(0, width - 1));
 
-            assertThat(with.apply(UserDeleteResponse.empty(), value))
-                    .as("%s tolerates %d characters; the field is padded when the image is rendered",
-                            cobolName, value.length())
-                    .isNotNull();
+            UserDeleteResponse response = with.apply(UserDeleteResponse.empty(), value);
+
+            // "As it stands" is the whole claim, so it is the thing asserted: the short value is stored
+            // at its own length and is not pre-padded here. Padding to the declared width belongs to the
+            // rendering step, which picXValue owns and which its own tests cover.
+            assertThat(read.apply(response))
+                    .as("%s tolerates %d characters as they stand; padding happens when the image is "
+                            + "rendered, not on the way in", cobolName, value.length())
+                    .isEqualTo(value);
+            assertEveryOtherFieldIsUntouched(response, cobolName);
+        }
+
+        /**
+         * Every field other than the one just written still holds exactly what {@code empty()} left
+         * there.
+         *
+         * <p>A single-field copy that also disturbed a neighbour would be a real defect on a screen whose
+         * fields are positional, and nothing in this class would have noticed it.
+         *
+         * <p>The comparison is built from {@link UserDeleteResponseTest#everyStringField()} itself rather
+         * than from a second hand-written list, so it covers exactly the fields the fixture enumerates and
+         * cannot drift out of step with it. {@code fieldValues()} is deliberately not used: it carries the
+         * eleven {@code COUSR3AO} map items only, and three of the copied fields - the navigation trio -
+         * are not map items at all.
+         *
+         * @param response the response returned by the copy under test
+         * @param written the copybook name of the field that was written
+         */
+        private void assertEveryOtherFieldIsUntouched(UserDeleteResponse response, String written) {
+            Map<String, String> before = everyReadableField(UserDeleteResponse.empty());
+            Map<String, String> after = everyReadableField(response);
+            assertThat(after.keySet())
+                    .as("the fixture must read the same fields from both responses")
+                    .isEqualTo(before.keySet());
+            assertThat(before)
+                    .as("%s must be one of the fields the fixture can read", written)
+                    .containsKey(written);
+            for (String item : before.keySet()) {
+                if (item.equals(written)) {
+                    continue;
+                }
+                assertThat(after.get(item))
+                        .as("writing %s must not have disturbed %s", written, item)
+                        .isEqualTo(before.get(item));
+            }
+        }
+
+        /**
+         * Every field the fixture can read, keyed by copybook name.
+         *
+         * <p>The cast is unchecked because {@link Arguments} carries {@code Object}, and it is safe
+         * because the fourth cell of every row of {@link UserDeleteResponseTest#everyStringField()} is
+         * declared as exactly this type at the point it is written.
+         *
+         * @param response the response to read
+         * @return the fixture's fields in fixture order
+         */
+        @SuppressWarnings("unchecked")
+        private Map<String, String> everyReadableField(UserDeleteResponse response) {
+            Map<String, String> values = new LinkedHashMap<>();
+            for (Arguments row : everyStringField()) {
+                Object[] cells = row.get();
+                values.put((String) cells[0],
+                        ((Function<UserDeleteResponse, String>) cells[3]).apply(response));
+            }
+            return values;
         }
 
         @ParameterizedTest(name = "{0} PIC X({1}) refuses one character too many")
@@ -2810,7 +2883,8 @@ class UserDeleteResponseTest {
         @DisplayName("an over-long value is refused rather than silently truncated")
         void overWidthRefused(String cobolName,
                 int width,
-                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with) {
+                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with,
+                Function<UserDeleteResponse, String> read) {
             String value = "X".repeat(width + 1);
 
             assertThatIllegalArgumentException()
@@ -2826,7 +2900,8 @@ class UserDeleteResponseTest {
         @DisplayName("null is refused - there is no null in a COBOL screen field")
         void nullRefused(String cobolName,
                 int width,
-                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with) {
+                BiFunction<UserDeleteResponse, String, UserDeleteResponse> with,
+                Function<UserDeleteResponse, String> read) {
             assertThat(width).as("%s has a declared width", cobolName).isPositive();
             assertThatNullPointerException()
                     .as("an unpopulated PIC X field holds spaces or low-values, never nothing")
@@ -3246,52 +3321,70 @@ class UserDeleteResponseTest {
      * item widths; {@code navigationContext} is excluded for the same reason and is covered by
      * {@link WidthEnforcement#nullCommareaRefused()}.
      *
-     * @return one argument set per width-checked {@code String} field
+     * <p>Each row carries a reader as well as a writer so a test can assert the value that came back
+     * is the value that went in. Without the reader the only thing assertable was that the copy
+     * returned something, which a copy that dropped the value would satisfy just as well.
+     *
+     * @return one argument set per width-checked {@code String} field: name, width, writer, reader
      */
     static List<Arguments> everyStringField() {
         return List.of(
                 Arguments.of("TRNNAMEO", UserDeleteResponse.TRN_NAME_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withTrnName),
+                                UserDeleteResponse::withTrnName,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::trnName),
                 Arguments.of("TITLE01O", UserDeleteResponse.TITLE01_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withTitle01),
+                                UserDeleteResponse::withTitle01,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::title01),
                 Arguments.of("CURDATEO", UserDeleteResponse.CUR_DATE_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withCurDate),
+                                UserDeleteResponse::withCurDate,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::curDate),
                 Arguments.of("PGMNAMEO", UserDeleteResponse.PGM_NAME_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withPgmName),
+                                UserDeleteResponse::withPgmName,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::pgmName),
                 Arguments.of("TITLE02O", UserDeleteResponse.TITLE02_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withTitle02),
+                                UserDeleteResponse::withTitle02,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::title02),
                 Arguments.of("CURTIMEO", UserDeleteResponse.CUR_TIME_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withCurTime),
+                                UserDeleteResponse::withCurTime,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::curTime),
                 Arguments.of("USRIDINO", UserDeleteResponse.USR_ID_IN_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withUsrIdIn),
+                                UserDeleteResponse::withUsrIdIn,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::usrIdIn),
                 Arguments.of("FNAMEO", UserDeleteResponse.F_NAME_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withFName),
+                                UserDeleteResponse::withFName,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::fName),
                 Arguments.of("LNAMEO", UserDeleteResponse.L_NAME_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withLName),
+                                UserDeleteResponse::withLName,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::lName),
                 Arguments.of("USRTYPEO", UserDeleteResponse.USR_TYPE_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withUsrType),
+                                UserDeleteResponse::withUsrType,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::usrType),
                 Arguments.of("ERRMSGO", UserDeleteResponse.ERR_MSG_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withErrMsg),
+                                UserDeleteResponse::withErrMsg,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::errMsg),
                 Arguments.of("CDEMO-TO-PROGRAM", UserDeleteResponse.NEXT_PROGRAM_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withNextProgram),
+                                UserDeleteResponse::withNextProgram,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::nextProgram),
                 Arguments.of("CDEMO-LAST-MAPSET", UserDeleteResponse.NEXT_MAPSET_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withNextMapset),
+                                UserDeleteResponse::withNextMapset,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::nextMapset),
                 Arguments.of("CDEMO-LAST-MAP", UserDeleteResponse.NEXT_MAP_LENGTH,
                         (BiFunction<UserDeleteResponse, String, UserDeleteResponse>)
-                                UserDeleteResponse::withNextMap));
+                                UserDeleteResponse::withNextMap,
+                        (Function<UserDeleteResponse, String>) UserDeleteResponse::nextMap));
     }
 
     /**

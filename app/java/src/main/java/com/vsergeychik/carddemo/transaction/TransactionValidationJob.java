@@ -6,6 +6,7 @@ import com.vsergeychik.carddemo.card.CardXrefRepository;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.config.BatchConfig;
@@ -27,6 +28,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 import org.springframework.batch.core.ExitStatus;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
@@ -151,6 +154,16 @@ import org.springframework.context.annotation.Configuration;
  * and the job then reads around is a DD statement that drives nothing, and that is exactly the class of
  * defect the proof exists to catch.
  *
+ * <p><strong>The second open decides whether this job does anything at all.</strong>
+ * {@value #TRANFILE_DD_NAME}'s {@code OPEN OUTPUT} is over an {@code ORGANIZATION IS INDEXED} file
+ * ({@code app/cbl/CBTRN02C.cbl:34-38}), which makes it VSAM <em>load mode</em>, and load mode requires an
+ * empty base cluster. {@code app/jcl/POSTTRAN.jcl:28-29} binds it to the existing master with
+ * {@code DISP=SHR}, and {@code app/catlg/LISTCAT.txt:3595-3597} records that cluster as {@code NOREUSE}
+ * holding {@code REC-TOTAL 311} - so against the catalogued dataset the open reports file status
+ * {@code '37'} and {@code 0100-TRANFILE-OPEN} abends before the daily file is ever read. Every step below
+ * this line therefore describes what the job does <em>when the master is empty</em>. See
+ * {@link Execution#tranfileOpen()}.
+ *
  * <h2>Why chunk-oriented, and why the commit interval is {@value #CHUNK_SIZE}</h2>
  *
  * <p>This is one of only <em>two</em> chunk-oriented jobs in the estate (AAP 0.3.5; the other is
@@ -166,6 +179,21 @@ import org.springframework.context.annotation.Configuration;
  * it touches is {@code RECOVERY(NONE)}, so each verb stands the instant it completes. One item per chunk is
  * the granularity of the COBOL loop, so the read / process / write triple commits exactly where the
  * single-pass program did.
+ *
+ * <p><strong>One item per chunk is not fine enough on its own, and this is where the translation had to go
+ * further than the step configuration.</strong> Posting a single record performs up to three mutating verbs
+ * over three {@code RECOVERY(NONE)} datasets, in a fixed order, and any one of them can be followed by an
+ * abend from the next: {@code 2900-WRITE-TRANSACTION-FILE} runs unconditionally after
+ * {@code 2800-UPDATE-ACCOUNT-REC}, so a duplicate {@code TRAN-ID} at {@code :564} abends at {@code :707}
+ * with the category balance and the account rewrite <em>already applied</em> on the mainframe. Grouping the
+ * three in one chunk transaction would roll all three back together, and a re-run over the same input would
+ * then apply that transaction's amount to an account it had in fact already updated. Each verb is therefore
+ * persisted through
+ * {@link com.vsergeychik.carddemo.config.DatasetUnitOfWork#persistVerb(String, java.util.function.Supplier)}
+ * at its own source position, so what stands after a failure is exactly what stands after the COBOL's. The
+ * reject write at {@code :451} is persisted the same way and for the same reason - the run continues after
+ * a reject, and a reject lost to a later rollback would leave a transaction neither posted nor rejected,
+ * which nothing downstream can detect.
  *
  * <p>The chunk's own transaction, taken from {@link BatchConfig}'s single transaction manager, is also what
  * makes the repositories' keyed probes take a row lock: they consult whether a unit of work is open and
@@ -224,6 +252,14 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration(TransactionValidationJob.CONFIGURATION_BEAN_NAME)
 public class TransactionValidationJob {
+
+    /**
+     * Where a failed {@value #DALYREJS_DD_NAME} disposition is reported.
+     *
+     * <p>The log rather than {@code SYSOUT}: the COBOL has no paragraph for a disposition, so a line on
+     * {@code SYSOUT} would be output this program does not produce.
+     */
+    private static final Log LOG = LogFactory.getLog(TransactionValidationJob.class);
 
     // =================================================================================================
     // Identity. The job key is the carddemo.jobs key; the job name is the bean name BatchConfig derives
@@ -557,6 +593,48 @@ public class TransactionValidationJob {
     /** {@value #XREFFILE_DD_NAME} - read by the base 16-byte card number, never by the alternate index. */
     private final CardXrefRepository cardXrefRepository;
 
+    // =================================================================================================
+    // The five mutating verbs, named for attribution when a persistence boundary fails.
+    //
+    // Every dataset this step writes to is defined RECOVERY(NONE) (app/csd/CARDDEMO.CSD:9 and its
+    // siblings) and CBTRN02C issues no syncpoint, so each verb is DURABLE the moment it completes and
+    // CALL 'CEE3ABD' at :707 does not take any of them back. A re-run of POSTTRAN over the same input
+    // therefore starts from a dataset carrying everything the failed run had already written - which is
+    // why each one is persisted in a boundary of its own rather than in a boundary shared with the verbs
+    // that follow it. See DatasetUnitOfWork.persistVerb.
+    // =================================================================================================
+
+    /** Names the {@code WRITE} of {@code 2700-A-CREATE-TCATBAL-REC} in a persistence failure. */
+    static final String WRITE_TCATBALF_VERB =
+            "2700-A-CREATE-TCATBAL-REC WRITE FD-TRAN-CAT-BAL-RECORD";
+
+    /** Names the {@code REWRITE} of {@code 2700-B-UPDATE-TCATBAL-REC} in a persistence failure. */
+    static final String REWRITE_TCATBALF_VERB =
+            "2700-B-UPDATE-TCATBAL-REC REWRITE FD-TRAN-CAT-BAL-RECORD";
+
+    /** Names the {@code REWRITE} of {@code 2800-UPDATE-ACCOUNT-REC} in a persistence failure. */
+    static final String REWRITE_ACCTFILE_VERB = "2800-UPDATE-ACCOUNT-REC REWRITE FD-ACCTFILE-REC";
+
+    /** Names the {@code WRITE} of {@code 2900-WRITE-TRANSACTION-FILE} in a persistence failure. */
+    static final String WRITE_TRANFILE_VERB = "2900-WRITE-TRANSACTION-FILE WRITE FD-TRANFILE-REC";
+
+    /** Names the {@code WRITE} of {@code 2500-WRITE-REJECT-REC} in a persistence failure. */
+    static final String WRITE_DALYREJS_VERB = "2500-WRITE-REJECT-REC WRITE FD-REJS-RECORD";
+
+    /**
+     * The name carried into the boundary that establishes the {@value #DALYREJS_DD_NAME} generation.
+     *
+     * <p>Named rather than anonymous so a failure says which disposition it was applying: the text
+     * appears in the {@link DatasetUnitOfWork} diagnostic and nowhere in this program's output, because
+     * the COBOL has no paragraph for a disposition.
+     */
+    static final String DALYREJS_OPEN_DISPOSITION =
+            "establish the " + DALYREJS_DD_NAME + " generation of app/jcl/POSTTRAN.jcl:34 (NEW)";
+
+    /** The name carried into the boundary that applies {@code DISP=(NEW,CATLG,DELETE)} after an abend. */
+    static final String DALYREJS_ABNORMAL_DISPOSITION =
+            "discard the " + DALYREJS_DD_NAME + " generation of app/jcl/POSTTRAN.jcl:34 (DELETE)";
+
     /** {@value #ACCTFILE_DD_NAME} - opened {@code I-O}, read by key and rewritten on every posting. */
     private final AccountRepository accountRepository;
 
@@ -568,6 +646,39 @@ public class TransactionValidationJob {
 
     /** {@value #DALYREJS_DD_NAME} - the 430-byte reject generation. */
     private final DalyRejectWriter dalyRejectWriter;
+
+    /**
+     * The boundary the two {@value #DALYREJS_DD_NAME} disposition statements are applied through.
+     *
+     * <p>Needed because of <em>where</em> they run rather than what they do. Spring Batch invokes the
+     * {@link org.springframework.batch.item.ItemStream} open and close callbacks outside the chunk
+     * transaction, and the pool hands out connections with {@code auto-commit} disabled
+     * ({@code application.yml}), so the generation clear in {@code 0300-DALYREJS-OPEN} and the
+     * {@code DISP=(NEW,CATLG,DELETE)} discard in the release would each execute, report the rows they
+     * affected, and then be rolled back when the connection returned - while this job reported them
+     * applied. {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)} opens a
+     * boundary of its own, so what each reports is what actually happened.
+     *
+     * <p>The per-record reject <em>writes</em> need nothing of the kind: they run inside the step's own
+     * chunk transaction, which is why {@link DalyRejectWriter} requires one for a write and not for an
+     * open or a discard.
+     *
+     * <p><strong>Why a posting job needs it, when its step already has a transaction.</strong> Posting one
+     * record issues three mutating verbs in a fixed order - {@code 2700-UPDATE-TCATBAL},
+     * {@code 2800-UPDATE-ACCOUNT-REC}, {@code 2900-WRITE-TRANSACTION-FILE}
+     * ({@code app/cbl/CBTRN02C.cbl:440-442}) - and a rejected record issues a fourth,
+     * {@code 2500-WRITE-REJECT-REC}. A single chunk transaction around all three means a failure in the
+     * third rolls the first two back. {@code CBTRN02C} has no syncpoint of any kind and every dataset it
+     * touches is {@code RECOVERY(NONE)}, so on the mainframe the category balance and the account balance
+     * stay changed and only the transaction add is lost - which is exactly the state
+     * {@code 2900}'s abend leaves behind.
+     *
+     * <p>{@link DatasetUnitOfWork#persistVerb(String, java.util.function.Supplier)} reproduces that: each
+     * verb commits in its own suspended transaction, so nothing later can take it back. The chunk size
+     * stays {@value #CHUNK_SIZE} and the order stays the source's order; only the commit boundary moves
+     * from "once per record" to "once per verb", which is where the COBOL's boundary actually is.
+     */
+    private final DatasetUnitOfWork unitOfWork;
 
     /**
      * The clock behind {@code FUNCTION CURRENT-DATE} at {@code :693}.
@@ -624,6 +735,11 @@ public class TransactionValidationJob {
      * @param tranCatBalRepository  {@value #TCATBALF_DD_NAME}; required
      * @param transactionRepository {@value #TRANFILE_DD_NAME}; required
      * @param dalyRejectWriter      {@value #DALYREJS_DD_NAME}; required
+     * @param unitOfWork            the per-verb durability seam and the boundary the two
+     *                              {@value #DALYREJS_DD_NAME} disposition statements are applied
+     *                              through; required, because every write this program issues is durable
+     *                              when it completes and a chunk rollback must not take an earlier one
+     *                              back
      * @param sysoutSinkProvider    the {@code SYSOUT} destination; may resolve to no bean, in which case
      *                              the process's standard output is used in the dataset code page
      * @param clock                 the clock behind {@code FUNCTION CURRENT-DATE}; required
@@ -640,6 +756,7 @@ public class TransactionValidationJob {
             TranCatBalRepository tranCatBalRepository,
             TransactionRepository transactionRepository,
             DalyRejectWriter dalyRejectWriter,
+            DatasetUnitOfWork unitOfWork,
             ObjectProvider<SysoutSink> sysoutSinkProvider,
             Clock clock) {
 
@@ -665,6 +782,16 @@ public class TransactionValidationJob {
                 + DALYREJS_DD_NAME + " receives one " + DalyRejectWriter.RECORD_LENGTH + "-byte record per "
                 + "rejected transaction, and a run whose input is entirely clean still opens and closes "
                 + "it");
+        this.unitOfWork = Objects.requireNonNull(unitOfWork, "The dataset unit of work is required: "
+                + "this program posts, and every WRITE and REWRITE it issues must be durable the moment "
+                + "it completes - CBTRN02C takes no syncpoint and every dataset it touches is "
+                + "RECOVERY(NONE), so a chunk transaction around the three verbs of :440-442 would undo "
+                + "writes the source leaves in place. " + DALYREJS_DD_NAME + " adds a second need: it is "
+                + "the one DD in this step whose disposition is DISP=(NEW,CATLG,DELETE) "
+                + "(app/jcl/POSTTRAN.jcl:34), and Spring Batch runs the ItemStream open and close "
+                + "callbacks OUTSIDE the chunk transaction - so the generation clear and the abnormal "
+                + "discard need a boundary of their own or the pool, which hands out connections with "
+                + "auto-commit disabled, rolls them back while this job reports them applied");
         Objects.requireNonNull(sysoutSinkProvider, "A SYSOUT sink provider is required; it may resolve "
                 + "to no bean, in which case the standard output stream is used");
         this.clock = Objects.requireNonNull(clock, "A Clock is required: FUNCTION CURRENT-DATE at "
@@ -1618,7 +1745,7 @@ public class TransactionValidationJob {
         private DalyTranRepository.DalytranFile dalytranFile;
 
         /** {@code TRANSACT-FILE} - {@code OPEN OUTPUT} at {@code :256}; see {@link #tranfileOpen()}. */
-        private TransactionRepository.InputFile tranfile;
+        private TransactionRepository.LoadModeFile tranfile;
 
         /** {@code XREF-FILE} - {@code OPEN INPUT} at {@code :275}. */
         private CardXrefRepository.BrowseCursor xreffile;
@@ -1766,35 +1893,31 @@ public class TransactionValidationJob {
         /**
          * {@code 0100-TRANFILE-OPEN} - {@code app/cbl/CBTRN02C.cbl:254-270}.
          *
-         * <p><strong>The source verb is {@code OPEN OUTPUT} on an indexed file with
-         * {@code ACCESS MODE IS RANDOM} ({@code :34-38}), which is VSAM load mode - and this method models
-         * it as a reachability probe over the same DD name and the same dataset, without emptying
-         * anything.</strong> Two reasons, both recorded rather than resolved by inventing a verb (practice
-         * B4):
+         * <p><strong>The source verb is {@code OPEN OUTPUT} on an {@code ORGANIZATION IS INDEXED} file
+         * ({@code :34-38}), which is VSAM load mode - and load mode requires an empty base
+         * cluster.</strong> {@link TransactionRepository#openLoadMode()} issues that verb and derives its
+         * outcome from the dataset's own record count and its configured {@code REUSE} attribute, without
+         * emptying anything and without any data-definition statement (gate <strong>G44</strong>).
          *
-         * <ul>
-         *   <li>{@link TransactionRepository} publishes no master-output open. Its documentation states
-         *       that {@code CBTRN02C} is "served by {@code write(TranRecord)}" - the keyed add - and its
-         *       {@code openOutput} pair addresses the completely different {@code SYSTRAN} generation of
-         *       {@code app/jcl/INTCALC.jcl}. Opening the master through
-         *       {@link TransactionRepository#openInput()} resolves the destination named by
-         *       {@value #TRANFILE_DD_NAME} and reports whether it can be reached, which is precisely the
-         *       fact the guard chain at {@code :257-269} branches on.</li>
-         *   <li>Emptying the dataset would be a data-definition or bulk-delete statement over a
-         *       {@code DISP=SHR} production KSDS, and gate <strong>G44</strong> forbids any such statement
-         *       anywhere in this module.</li>
-         * </ul>
+         * <p>Against the catalogued master that answer is a failure, and the failure is the point.
+         * {@code app/jcl/POSTTRAN.jcl:28-29} binds {@code TRANFILE} to the existing
+         * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} with {@code DISP=SHR}, and
+         * {@code app/catlg/LISTCAT.txt:3595-3597} records that cluster as {@code NOREUSE} holding
+         * {@code REC-TOTAL 311}. So the open reports {@link FileStatus#OPEN_MODE_CONFLICT},
+         * {@code :257-261} leaves {@code APPL-RESULT} at 12, and {@code :262-268} displays
+         * {@code 'ERROR OPENING TRANSACTION FILE'} and abends. This is the <em>second</em> open of six, so
+         * the abend happens before {@code 0200-XREFFILE-OPEN} and long before
+         * {@code 1000-DALYTRAN-GET-NEXT} reads a record: no category balance, no account balance and no
+         * transaction record is touched, and the four opens after this one emit nothing.
          *
-         * <p>The observable consequence is confined and faithful: a record whose {@code TRAN-ID} already
-         * exists reports the duplicate status {@code '22'}, which {@code 2900-WRITE-TRANSACTION-FILE}
-         * treats as {@link #APPL_RESULT_FATAL} exactly as it treats every status other than {@code '00'}
-         * ({@code :566-570}), so the guard chain the source wrote is the guard chain that runs.
+         * <p>Against an empty master the open succeeds and the whole job runs, which is what makes this a
+         * derived outcome rather than a hard-coded refusal.
          *
          * @throws AbendException if the open does not report {@code '00'}
          */
         void tranfileOpen() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L255
-            tranfile = job.transactionRepository.openInput();                                 //     L256
+            tranfile = job.transactionRepository.openLoadMode();                              //     L256
             String status = tranfile.openStatus();
             workingStorage.moveTranfileStatus(status);
             applResultFromOkStatus(status);                                                   // L257-261
@@ -1835,7 +1958,11 @@ public class TransactionValidationJob {
          */
         void dalyrejsOpen() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L292
-            dalyrejs = job.dalyRejectWriter.openOutput();                                     //     L293
+            // The open clears the generation, which is what NEW means - and this runs in the ItemStream
+            // open callback, outside the chunk transaction. Applied through its own boundary so the clear
+            // is committed rather than reported and then rolled back when the connection returns.
+            dalyrejs = job.unitOfWork.persistDisposition(DALYREJS_OPEN_DISPOSITION,
+                    job.dalyRejectWriter::openOutput);                                        //     L293
             String status = statusOf(dalyrejs.openOutcome());
             workingStorage.moveDalyrejsStatus(status);
             applResultFromOkStatus(status);                                                   // L294-298
@@ -2264,7 +2391,14 @@ public class TransactionValidationJob {
                     workingStorage.validationFailReasonDesc());
 
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L450
-            String status = statusOf(dalyrejs.writeRejectRec());                              //     L451
+            // Persisted in a boundary of its own. A reject is the record of a transaction this run refused,
+            // and the run continues afterwards: a later record's failed TCATBALF write (:510) or account
+            // read abends at :707, and the COBOL leaves every reject already written on DALYREJS. Sharing
+            // one boundary with the verbs that follow would discard them, and a lost reject is the one
+            // outcome nothing downstream can detect - the transaction would appear neither posted nor
+            // rejected.
+            String status = statusOf(job.unitOfWork.persistVerb(                               //     L451
+                    WRITE_DALYREJS_VERB, dalyrejs::writeRejectRec));
             workingStorage.moveDalyrejsStatus(status);
             applResultFromOkStatus(status);                                                   // L452-456
             if (!workingStorage.applAok()) {                                                  //     L457
@@ -2369,7 +2503,11 @@ public class TransactionValidationJob {
                     .trancatCd(item.dalytranCatCd())                                          //     L507
                     .addToTranCatBal(item.dalytranAmt());                                     //     L508
 
-            String status = tcatbalf.write(tranCatBalRecord).status();                         //     L510
+            // Persisted in a boundary of its own: TCATBALF is RECOVERY(NONE) and this WRITE is complete
+            // before 2800 rewrites the account and 2900 adds the transaction, either of which can abend at
+            // :707. The COBOL leaves the balance it created.
+            String status = job.unitOfWork.persistVerb(                                        //     L510
+                    WRITE_TCATBALF_VERB, () -> tcatbalf.write(tranCatBalRecord)).status();
             workingStorage.moveTcatbalfStatus(status);
             applResultFromOkStatus(status);                                                   // L512-516
             if (!workingStorage.applAok()) {                                                  //     L517
@@ -2399,7 +2537,10 @@ public class TransactionValidationJob {
         void updateTcatbalRec(DalyTranRecord item) {
             tranCatBalRecord.addToTranCatBal(item.dalytranAmt());                             //     L527
 
-            String status = tcatbalf.rewrite(tranCatBalRecord).status();                       //     L528
+            // Persisted in a boundary of its own, for the reason 2700-A's WRITE is: the incremented
+            // balance stands even if 2800 or 2900 abends afterwards.
+            String status = job.unitOfWork.persistVerb(                                        //     L528
+                    REWRITE_TCATBALF_VERB, () -> tcatbalf.rewrite(tranCatBalRecord)).status();
             workingStorage.moveTcatbalfStatus(status);
             applResultFromOkStatus(status);                                                   // L530-534
             if (!workingStorage.applAok()) {                                                  //     L535
@@ -2471,7 +2612,13 @@ public class TransactionValidationJob {
                         accountRecord.getAcctCurrCycDebit(), amount, CobolDecimal.MONETARY_SCALE));
             }
 
-            AccountRepository.WriteResult result = acctfile.rewrite(accountRecord);            //     L554
+            // Persisted in a boundary of its own. ACCTFILE is DISP=SHR over a RECOVERY(NONE) cluster and
+            // 2900 runs next unconditionally, so a failed WRITE there abends at :707 with this rewrite
+            // already applied - exactly as the COBOL leaves it. An account reverted here would have this
+            // transaction's amount applied twice by the re-run, because the balance and the cycle amount
+            // would both be un-updated while the reject or the posted record stood.
+            AccountRepository.WriteResult result = job.unitOfWork.persistVerb(                 //     L554
+                    REWRITE_ACCTFILE_VERB, () -> acctfile.rewrite(accountRecord));
             workingStorage.moveAcctfileStatus(result.status());
             if (result.isNotFound()) {                                                        //     L555
                 // PRESERVED DEFECT (practice B5): set and never acted on. See this method's javadoc.
@@ -2507,7 +2654,11 @@ public class TransactionValidationJob {
          */
         void writeTransactionFile() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L563
-            String status = job.transactionRepository.write(tranRecord).status();              //     L564
+            // Persisted in a boundary of its own: the last verb of a posting, and the one whose failure
+            // abends the step. The postings already committed for earlier records stay committed, which is
+            // what makes a re-run of POSTTRAN start where the failed run stopped rather than at the top.
+            String status = job.unitOfWork.persistVerb(                                        //     L564
+                    WRITE_TRANFILE_VERB, () -> job.transactionRepository.write(tranRecord)).status();
             workingStorage.moveTranfileStatus(status);
             applResultFromOkStatus(status);                                                   // L566-570
             if (!workingStorage.applAok()) {                                                  //     L571
@@ -2562,7 +2713,7 @@ public class TransactionValidationJob {
          */
         void tranfileClose() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L601
-            String status = tranfile.closeInput();                                            //     L602
+            String status = tranfile.closeLoadMode();                                         //     L602
             workingStorage.moveTranfileStatus(status);
             applResultFromOkStatus(status);                                                   // L603-607
             if (!workingStorage.applAok()) {                                                  //     L608
@@ -2719,8 +2870,40 @@ public class TransactionValidationJob {
                 dalyrejs = null;
                 releasing.closeOutput();
                 if (!closedNormally) {
-                    // DISP=(NEW,CATLG,DELETE) - the abnormal disposition, applied after the close.
-                    releasing.discardGeneration();
+                    // DISP=(NEW,CATLG,DELETE) - the abnormal disposition, applied after the close, and
+                    // through a boundary of its own: this runs in the ItemStream close callback, outside
+                    // the chunk transaction, and a discard that is rolled back would leave the rejects of
+                    // an abended run catalogued where the mainframe leaves none.
+                    //
+                    // Never allowed to throw. The path is already failing and the AbendException the
+                    // caller needs is the more important of the two, so a disposition that could not be
+                    // applied is logged - which is also all the COBOL could do, since it has no paragraph
+                    // for a disposition and would emit nothing here.
+                    try {
+                        FileStatus.Outcome disposition = job.unitOfWork.persistDisposition(
+                                DALYREJS_ABNORMAL_DISPOSITION, releasing::discardGeneration);
+                        if (disposition != FileStatus.Outcome.OK) {
+                            LOG.error("The " + DALYREJS_DD_NAME + " generation of this abended run could "
+                                    + "not be discarded; it reported FILE STATUS outcome "
+                                    + disposition.name() + ". app/jcl/POSTTRAN.jcl:34 declares "
+                                    + "DISP=(NEW,CATLG,DELETE), so rejects from a run that did not "
+                                    + "complete may remain where the mainframe would leave none; they "
+                                    + "must not be treated as this step's reject set");
+                        }
+                    } catch (RuntimeException dispositionFailure) {
+                        // The exception itself is never handed to the logger: a driver composes its
+                        // message around the values it refused, so logging the throwable would emit that
+                        // text and its whole cause chain verbatim (CWE-532) in a form a control character
+                        // can split into a forged entry (CWE-117). BackendDiagnostic reports the
+                        // SQLSTATE, the vendor code and the type instead - the same discipline every
+                        // refusal in this module follows.
+                        LOG.error("The " + DALYREJS_DD_NAME + " abnormal disposition of "
+                                + "app/jcl/POSTTRAN.jcl:34 could not be applied at all - "
+                                + BackendDiagnostic.of(dispositionFailure).describe()
+                                + "; the rejects of this abended run may remain catalogued. The abend "
+                                + "itself is propagated unchanged, because it is what the caller needs "
+                                + "to see");
+                    }
                 }
             }
             if (tcatbalf != null) {

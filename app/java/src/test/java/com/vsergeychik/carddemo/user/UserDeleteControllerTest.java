@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -25,9 +26,10 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
-import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenResponse;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -233,6 +235,19 @@ class UserDeleteControllerTest {
         return new UserDeleteRequest(blank.trnName(), blank.title01(), blank.curDate(), blank.pgmName(),
                 blank.title02(), blank.curTime(), usrIdIn, blank.fName(), blank.lName(), blank.usrType(),
                 blank.errMsg(), commarea, blank.aid(), null);
+    }
+
+    /**
+     * The same screen carrying a different {@code aid} member - the one-character {@code EIBAID} image.
+     *
+     * @param base the screen to copy
+     * @param aid  the {@code aid} member the copy carries
+     * @return the copy
+     */
+    private static UserDeleteRequest carrying(UserDeleteRequest base, String aid) {
+        return new UserDeleteRequest(base.trnName(), base.title01(), base.curDate(), base.pgmName(),
+                base.title02(), base.curTime(), base.usrIdIn(), base.fName(), base.lName(),
+                base.usrType(), base.errMsg(), base.navigationContext(), aid, base.cu03Info());
     }
 
     /** An 80-byte {@code SEC-USER-DATA} for the given key. */
@@ -502,38 +517,279 @@ class UserDeleteControllerTest {
     }
 
     // =================================================================================================
-    // aidOfToken - the CCARD-AID token the payload carries, mapped back onto its key.
+    // eibAidOf - the one-character EIBAID image the payload carries, read as the byte :108 evaluates.
     // =================================================================================================
 
     @Nested
-    @DisplayName("aidOfToken - the payload's CCARD-AID token")
-    class AidToken {
+    @DisplayName("eibAidOf - the payload's one-character EIBAID image")
+    class AidImage {
 
-        @ParameterizedTest
-        @CsvSource({"ENTER,ENTER", "CLEAR,CLEAR", "PFK03,PFK03", "PFK05,PFK05", "PFK12,PFK12"})
-        @DisplayName("a token names its key exactly")
-        void aTokenNamesItsKey(String token, AidKey expected) {
-            assertThat(UserDeleteController.aidOfToken(token)).contains(expected);
+        @Test
+        @DisplayName("one character is the byte, for every key this program handles")
+        void oneCharacterIsTheByte() {
+            byte[] handled = {CicsAid.DFHENTER, CicsAid.DFHPF3, CicsAid.DFHPF4, CicsAid.DFHPF5,
+                    CicsAid.DFHPF12, CicsAid.DFHCLEAR, CicsAid.DFHPA1};
+
+            for (byte expected : handled) {
+                assertThat(UserDeleteController.eibAidOf(String.valueOf((char) (expected & 0xFF))))
+                        .as("the payload's one character is the EIBAID byte itself")
+                        .isEqualTo(expected);
+            }
         }
 
         @Test
-        @DisplayName("PA1's two trailing spaces are part of the token and are matched, not trimmed")
-        void paddedTokensMatchExactly() {
-            assertThat(UserDeleteController.aidOfToken("PA1  ")).contains(AidKey.PA1);
-            assertThat(UserDeleteController.aidOfToken("PA1")).isEmpty();
+        @DisplayName("a high function key stays itself: PF17 is not folded onto PF5, which deletes")
+        void highFunctionKeysAreNotFolded() {
+            byte pf17 = UserDeleteController.eibAidOf(String.valueOf((char) (CicsAid.DFHPF17 & 0xFF)));
+
+            assertThat(pf17).isEqualTo(CicsAid.DFHPF17);
+            assertThat(PfKeyResolver.isPf5(pf17))
+                    .as("PF17 must not reach the WHEN DFHPF5 arm, which is the delete")
+                    .isFalse();
+            assertThat(PfKeyResolver.resolve(pf17))
+                    .as("CSSTRPFY does fold it onto PFK05 - which is exactly why the token is not the "
+                            + "input carrier")
+                    .contains(AidKey.PFK05);
         }
 
         @Test
-        @DisplayName("an absent token is no key at all, and is never defaulted to ENTER")
-        void anAbsentTokenIsEmpty() {
-            assertThat(UserDeleteController.aidOfToken(null)).isEmpty();
+        @DisplayName("an absent image is no key at all, and is never defaulted to ENTER")
+        void anAbsentImageIsDfhnull() {
+            assertThat(UserDeleteController.eibAidOf(null)).isEqualTo(CicsAid.DFHNULL);
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"", "     ", "NOPE ", "PFK99", "enter"})
-        @DisplayName("a token naming nothing the resolver defines is empty")
-        void anUnknownTokenIsEmpty(String token) {
-            assertThat(UserDeleteController.aidOfToken(token)).isEmpty();
+        @ValueSource(strings = {"", "     ", "NOPE ", "PFK99", "PFK05", "enter"})
+        @DisplayName("any width other than one names no byte, and reaches WHEN OTHER as DFHNULL")
+        void anyOtherWidthIsDfhnull(String image) {
+            assertThat(UserDeleteController.eibAidOf(image)).isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("a character above the one-byte AID space is DFHNULL, never narrowed onto PF5")
+        void aCharacterAboveTheAidSpaceIsDfhnull() {
+            assertThat(UserDeleteController.eibAidOf(String.valueOf((char) 0x01F5)))
+                    .isEqualTo(CicsAid.DFHNULL);
+        }
+    }
+
+    @Nested
+    @DisplayName("resolveEibAid - the query parameter wins over the payload's image")
+    class ResolveEibAid {
+
+        @Test
+        @DisplayName("a stated byte is used as it stands, and the payload's image is not consulted")
+        void theParameterWins() {
+            UserDeleteRequest carryingEnter = screen(USER_ID, reenter());
+
+            assertThat(controller.resolveEibAid(CicsAid.DFHPF5 & 0xFF, carryingEnter))
+                    .isEqualTo(CicsAid.DFHPF5);
+        }
+
+        @Test
+        @DisplayName("no parameter falls back to the payload's own one-character image")
+        void thePayloadIsTheFallback() {
+            UserDeleteRequest carryingPf5 = carrying(screen(USER_ID, reenter()),
+                    String.valueOf((char) (CicsAid.DFHPF5 & 0xFF)));
+
+            assertThat(controller.resolveEibAid(null, carryingPf5))
+                    .isEqualTo(CicsAid.DFHPF5);
+        }
+
+        @Test
+        @DisplayName("an absent payload and an absent parameter is DFHNULL - EIBCALEN = 0 dispatches nothing")
+        void bothAbsentIsDfhnull() {
+            assertThat(controller.resolveEibAid(null, null)).isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {-1, 256, 300})
+        @DisplayName("a stated value outside one byte is refused rather than wrapped")
+        void anOutOfRangeParameterIsRefused(int stated) {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.resolveEibAid(stated, null))
+                    .withMessageContaining(UserDeleteController.EIBAID_PARAM);
+        }
+    }
+
+    // =================================================================================================
+    // The raw EIBAID byte. On this screen the fold is not an imprecision - PFK05 is the delete arm.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The raw EIBAID byte - PF17 must not become the PFK05 delete")
+    class TheRawAidByte {
+
+        @Test
+        @DisplayName("a raw PF17 byte deletes nothing: it reaches WHEN OTHER, as it does on the terminal")
+        void pf17DoesNotDelete() {
+            // The finding that made this route the most serious of the six. COUSR03C tests EIBAID inline
+            // at :108-130 and has no DFHPF15..DFHPF24 clause, so on the terminal PF17 paints "invalid
+            // key". CSSTRPFY folds PF17 onto 'PFK05' - and :121-122 WHEN DFHPF5 is DELETE-USER-INFO. A
+            // dispatch on the folded token therefore deletes a user record on a key the mainframe
+            // rejects. The byte is resolved without the fold, so it does not.
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF17))
+                    .as("the copybook does fold it - that is not in dispute")
+                    .contains(AidKey.PFK05);
+            assertThat(PfKeyResolver.resolveWithoutFolding(CicsAid.DFHPF17))
+                    .as("but this program never copied the copybook")
+                    .isEmpty();
+
+            ProgramState state =
+                    controller.mainPara(screen(USER_ID, reenter()), CicsAid.DFHPF17, null);
+
+            assertThat(state.response().errMsg())
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            verify(repository, never()).readForUpdate(anyString());
+            assertThat(state.isErrFlagOn()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a raw PF5 byte still deletes, so the confirm key itself is unaffected")
+        void pf5StillDeletes() {
+            HeldRecord hold = stubHeldRead(USER_ID);
+            when(hold.deleteHeld()).thenReturn(WriteResult.written());
+
+            ProgramState state =
+                    controller.mainPara(screen(USER_ID, reenter()), CicsAid.DFHPF5, null);
+
+            assertThat(state.response().errMsg())
+                    .isEqualTo(errMsgImage("User USER0001 has been deleted ..."));
+            verify(hold).deleteHeld();
+        }
+
+        @ParameterizedTest(name = "a raw DFHPF{0} byte reads nothing and deletes nothing")
+        @ValueSource(ints = {13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+        @DisplayName("all twelve upper function keys reach WHEN OTHER, none reaching a handled arm")
+        void everyUpperKeyIsInvalidHere(int pfNumber) {
+            ProgramState state = controller.mainPara(screen(USER_ID, reenter()),
+                    functionKeyByte(pfNumber), null);
+
+            assertThat(state.isErrFlagOn()).isTrue();
+            assertThat(state.response().errMsg())
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            assertThat(state.isTransferred())
+                    .as("and none of them transfers, which PF3 and PF12 would")
+                    .isFalse();
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("the query parameter carries the byte end to end, PF17 and PF5 landing differently")
+        void theRouteCarriesTheByte() {
+            UserDeleteResponse invalid = controller.deleteUser(USER_ID, screen(USER_ID, reenter()),
+                    Byte.toUnsignedInt(CicsAid.DFHPF17), null).screen();
+
+            assertThat(invalid.errMsg())
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            verify(repository, never()).readForUpdate(anyString());
+
+            HeldRecord hold = stubHeldRead(USER_ID);
+            when(hold.deleteHeld()).thenReturn(WriteResult.written());
+
+            UserDeleteResponse deleted = controller.deleteUser(USER_ID, screen(USER_ID, reenter()),
+                    Byte.toUnsignedInt(CicsAid.DFHPF5), null).screen();
+
+            assertThat(deleted.errMsg())
+                    .isEqualTo(errMsgImage("User USER0001 has been deleted ..."));
+        }
+
+        @Test
+        @DisplayName("both spellings of the parameter reach the same byte through the route")
+        void bothSpellingsAreHonoured() {
+            assertThat(controller.deleteUser(USER_ID, screen(USER_ID, reenter()),
+                    Byte.toUnsignedInt(CicsAid.DFHPF17), null).screen().errMsg())
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            assertThat(controller.deleteUser(USER_ID, screen(USER_ID, reenter()), null,
+                    Byte.toUnsignedInt(CicsAid.DFHPF17)).screen().errMsg())
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("a token naming a different key is refused before anything is read or deleted")
+        void aDisagreeingTokenIsRefused() {
+            UserDeleteRequest stating = withAidToken(screen(USER_ID, reenter()), AidKey.PFK03.token());
+
+            assertThatThrownBy(() -> controller.deleteUser(USER_ID, stating,
+                    Byte.toUnsignedInt(CicsAid.DFHPF5), null))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("aid");
+
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("a token restating the byte agrees, and the byte is still the one acted on")
+        void aConsistentTokenIsAccepted() {
+            UserDeleteRequest stating = withAidToken(screen(USER_ID, reenter()), AidKey.PFK05.token());
+
+            UserDeleteResponse painted = controller.deleteUser(USER_ID, stating,
+                    Byte.toUnsignedInt(CicsAid.DFHPF17), null).screen();
+
+            assertThat(painted.errMsg())
+                    .as("'PFK05' is what CSSTRPFY stores for PF17, so the two agree - and PF17 is what "
+                            + "is acted on, which is the invalid-key arm")
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @ParameterizedTest(name = "a stated {0} is refused")
+        @ValueSource(ints = {-1, 256, 4096})
+        @DisplayName("a value that is not one byte is refused rather than narrowed to a key not pressed")
+        void anImpossibleByteIsRefused(int stated) {
+            assertThatThrownBy(() -> controller.deleteUser(USER_ID, screen(USER_ID, reenter()),
+                    stated, null))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("no stated byte leaves the payload's own image standing, unfolded")
+        void aTokenOnlyRequestIsUnchanged() {
+            // With no byte on either spelling of the parameter the payload's aid member is the only
+            // statement, and that member is the one-character image of EIBAID - not a CCARD-AID token.
+            // 'PFK05' is five characters, so it states no byte at all: COUSR03C's EVALUATE EIBAID sees
+            // DFHNULL and takes WHEN OTHER, the invalid-key arm. Folding the token back would have to
+            // choose between the DFHPF5 and DFHPF17 that CSSTRPFY stores together, and choosing DFHPF5
+            // would delete the record on a PF17 press the source refuses.
+            UserDeleteResponse refused = controller.deleteUser(USER_ID,
+                    withAidToken(screen(USER_ID, reenter()), AidKey.PFK05.token()),
+                    null, null).screen();
+
+            assertThat(refused.errMsg())
+                    .isEqualTo(errMsgImage("Invalid key pressed. Please see below..."));
+            verify(repository, never()).readForUpdate(anyString());
+
+            // The one character that IS the byte reaches the delete arm, unchanged.
+            HeldRecord hold = stubHeldRead(USER_ID);
+            when(hold.deleteHeld()).thenReturn(WriteResult.written());
+
+            UserDeleteResponse painted = controller.deleteUser(USER_ID,
+                    withAidToken(screen(USER_ID, reenter()),
+                            PfKeyResolver.aidImage(CicsAid.DFHPF5)),
+                    null, null).screen();
+
+            assertThat(painted.errMsg())
+                    .isEqualTo(errMsgImage("User USER0001 has been deleted ..."));
+        }
+
+        /** The same screen carrying a stated {@code CCARD-AID} token. */
+        private static UserDeleteRequest withAidToken(UserDeleteRequest request, String token) {
+            return new UserDeleteRequest(request.trnName(), request.title01(), request.curDate(),
+                    request.pgmName(), request.title02(), request.curTime(), request.usrIdIn(),
+                    request.fName(), request.lName(), request.usrType(), request.errMsg(),
+                    request.navigationContext(), token, request.cu03Info());
+        }
+
+        /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
+        private static byte functionKeyByte(int pfNumber) {
+            try {
+                return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
+            } catch (ReflectiveOperationException absent) {
+                throw new AssertionError("CicsAid does not declare DFHPF" + pfNumber, absent);
+            }
         }
     }
 
@@ -695,8 +951,7 @@ class UserDeleteControllerTest {
     class EnterKey {
 
         @ParameterizedTest
-        @ValueSource(strings = {"        ", "", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-                " \u0000 \u0000 \u0000 \u0000"})
+        @ValueSource(strings = {"        ", "", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
         @DisplayName("a blank or low-values id is answered with a message, not a rejection - line 147")
         void aBlankIdIsAnsweredWithAMessage(String usrIdIn) {
             ProgramState state = controller.mainPara(screen(usrIdIn, reenter()), CicsAid.DFHENTER, null);
@@ -736,6 +991,24 @@ class UserDeleteControllerTest {
 
             assertThat(state.heldRecord()).contains(hold);
             assertThat(state.secUserData().secUsrId()).isEqualTo(USER_ID);
+        }
+
+        @Test
+        @DisplayName("an id mixing spaces and low-values is a VALUE, so line 147 lets it through to the "
+                + "read")
+        void aMixedIdIsNotBlankAndReachesTheRead() {
+            // USRIDINI = SPACES OR LOW-VALUES at :147 is two whole-item comparisons, and a mixed image
+            // equals neither - so the empty arm is NOT taken and the paragraph goes on to the READ. The
+            // read is what then decides the outcome, exactly as it does for any other supplied id.
+            when(repository.readForUpdate(anyString())).thenReturn(ReadResult.notFound());
+
+            ProgramState state = controller.mainPara(screen(" \u0000 \u0000 \u0000 \u0000", reenter()),
+                    CicsAid.DFHENTER, null);
+
+            assertThat(state.response().errMsg())
+                    .as("the NOTFND message, not 'User ID can NOT be empty...'")
+                    .isEqualTo(errMsgImage("User ID NOT found..."));
+            verify(repository).readForUpdate(anyString());
         }
 
         @Test
@@ -958,10 +1231,10 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("an empty AID reaches the same arm, and is never defaulted to ENTER")
+        @DisplayName("DFHNULL - no identifiable key - reaches the same arm, never defaulted to ENTER")
         void anAbsentAidIsRefused() {
             ProgramState state =
-                    controller.mainPara(screen(USER_ID, reenter()), Optional.empty(), null);
+                    controller.mainPara(screen(USER_ID, reenter()), CicsAid.DFHNULL, null);
 
             assertThat(state.isErrFlagOn()).isTrue();
             assertThat(state.response().errMsg()).startsWith("Invalid key pressed.");
@@ -978,13 +1251,16 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("a null AID Optional is refused outright rather than assumed")
-        void aNullAidOptionalIsRefused() {
-            UserDeleteRequest request = screen(USER_ID, reenter());
+        @DisplayName("PF17 does NOT reach the PF5 delete arm: it is WHEN OTHER, as on a terminal")
+        void aHighFunctionKeyIsNotFoldedOntoTheDeleteKey() {
+            // CSSTRPFY folds PF17 onto the token PFK05, so a token-driven dispatch would have deleted the
+            // record here. COUSR03C compares EIBAID itself [:121], so PF17 is simply not one of its five.
+            ProgramState state = controller.mainPara(screen(USER_ID, reenter()), CicsAid.DFHPF17, null);
 
-            assertThatThrownBy(() -> controller.mainPara(request, (Optional<AidKey>) null, null))
-                    .isInstanceOf(NullPointerException.class)
-                    .hasMessageContaining("Optional");
+            assertThat(state.isErrFlagOn()).isTrue();
+            assertThat(state.response().errMsg()).startsWith("Invalid key pressed.");
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).deleteHeld(any());
         }
     }
 
@@ -1353,11 +1629,23 @@ class UserDeleteControllerTest {
     class CobolStatements {
 
         @ParameterizedTest
-        @ValueSource(strings = {"", " ", "        ", "\u0000", "\u0000\u0000\u0000\u0000",
-                " \u0000 \u0000", "\u0000 \u0000 "})
-        @DisplayName("spaces, low-values and any mixture of the two are all blank")
+        @ValueSource(strings = {"", " ", "        ", "\u0000", "\u0000\u0000\u0000\u0000"})
+        @DisplayName("an entirely-spaces item and an entirely-low-values item are both blank")
         void blankValuesAreBlank(String value) {
             assertThat(UserDeleteController.isSpacesOrLowValues(value)).isTrue();
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {" \u0000 \u0000", "\u0000 \u0000 ", " \u0000", "\u0000 ",
+                "    \u0000\u0000\u0000\u0000"})
+        @DisplayName("a MIXTURE of spaces and low-values is not blank: it equals neither constant")
+        void aMixtureIsNotBlank(String value) {
+            // = SPACES OR LOW-VALUES is COBOL's abbreviated combined relation and expands to two whole-
+            // item comparisons. A mixed image is not all-spaces and not all-low-values, so it equals
+            // neither and the condition is false - the field holds a value as far as the source is
+            // concerned. Reporting it as blank would take the empty arm where the program takes the
+            // populated one.
+            assertThat(UserDeleteController.isSpacesOrLowValues(value)).isFalse();
         }
 
         @Test
@@ -1903,7 +2191,8 @@ class UserDeleteControllerTest {
         @DisplayName("the route projects the screen, and the ENTER token drives the fetch")
         void theRouteProjectsTheScreen() throws Exception {
             stubHeldRead(USER_ID);
-            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()), "ENTER"));
+            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()),
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER)));
 
             mockMvc.perform(delete("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -1916,25 +2205,25 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("over HTTP, a body naming another user cannot make the URI delete it")
+        @DisplayName("over HTTP, a first entry takes the URI's identity into USRIDIN and deletes that "
+                + "record on the confirmation key")
         void theUriIsTheOnlyIdentityOverHttp() throws Exception {
-            // Only reachable through the HTTP binder. A blank USRIDIN lets the URI state the key alone,
-            // which is the state a client echoing a cold-start screen sends, and the record deleted is
-            // the URI's.
-            HeldRecord hold = stubHeldRead(USER_ID);
-            when(hold.deleteHeld()).thenReturn(WriteResult.written());
+            // Only reachable through the HTTP binder. On a first entry - the arm :99-102 takes its key
+            // from CDEMO-CU03-USR-SELECTED - the URI states the key, and the record deleted is the URI's.
+            stubHeldRead(USER_ID);
             String body = mapper.writeValueAsString(
-                    withAid(screen(" ".repeat(8), reenter()), "PFK05"));
+                    withAid(screen(" ".repeat(8), enter()), PfKeyResolver.aidImage(CicsAid.DFHPF5)));
 
             mockMvc.perform(delete("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
                     .andExpect(status().isOk())
-                    // The confirmation names the record that was actually deleted, and it is the URI's -
-                    // COUSR03C:315 performs INITIALIZE-ALL-FIELDS first, which is why USRIDIN comes back
-                    // blank rather than naming either user.
+                    // :95-122 is the first-entry arm: it pre-fetches and paints the confirmation prompt.
+                    // The EVALUATE EIBAID that acts on PF5 is on the re-entry arm at :144-191, so the
+                    // attention identifier is not what this turn answers - the pre-fetch is.
                     .andExpect(jsonPath("$.errmsg")
-                            .value(errMsgImage("User USER0001 has been deleted ...")))
+                            .value(errMsgImage("Press PF5 key to delete this user ...")))
+                    .andExpect(jsonPath("$.usridin").value(USER_ID))
                     .andExpect(jsonPath("$.cu03Info.usrSelected").value(USER_ID));
 
             verify(repository).readForUpdate(USER_ID);
@@ -1942,32 +2231,35 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("a USRIDIN naming a different user is refused over HTTP, naming the member and "
-                + "deleting nothing")
+        @DisplayName("over HTTP, a re-entry USRIDIN naming another user is the record PF5 deletes, "
+                + "because that is the field :179-191 holds and deletes on")
         void aDisagreeingIdentityIsRefusedOverHttp() throws Exception {
-            // This MockMvc is a standalone setup, so config/WebConfig's CobolErrorHandler is not in the
-            // chain and the refusal surfaces as the wrapped exception rather than as the 400 envelope the
-            // deployed application answers with. What is asserted here is the boundary behaviour that
-            // belongs to this controller: the refusal reaches HTTP at all, names the member, echoes
-            // neither value, and no read is issued. WebConfigErrorContractTest owns the envelope.
-            String body = mapper.writeValueAsString(withAid(screen("USER0002", reenter()), "PFK05"));
+            // Only reachable through the HTTP binder, and the point of the route: the URI seeds a first
+            // entry and is thereafter decorative, exactly as a 3270 has no URI at all. An operator who
+            // types another user id over the painted screen and presses PF5 deletes that user, which is
+            // what COUSR03C does - so the read, the hold and the delete all key on USER0002.
+            HeldRecord hold = stubHeldRead("USER0002");
+            when(hold.deleteHeld()).thenReturn(WriteResult.written());
+            String body = mapper.writeValueAsString(withAid(screen("USER0002", reenter()),
+                    PfKeyResolver.aidImage(CicsAid.DFHPF5)));
 
-            assertThatThrownBy(() -> mockMvc.perform(delete("/api/users/{userId}", USER_ID)
+            mockMvc.perform(delete("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(body)))
-                    .rootCause()
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .hasMessageContaining("usridin")
-                    .hasMessageNotContaining("USER0002");
+                            .content(body))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.errmsg")
+                            .value(errMsgImage("User USER0002 has been deleted ...")));
 
-            verify(repository, never()).readForUpdate(anyString());
+            verify(repository).readForUpdate("USER0002");
+            verify(repository, never()).readForUpdate(USER_ID);
         }
 
         @Test
         @DisplayName("no metadata item leaks into the JSON - gate G9")
         void noMetadataLeaksIntoTheJson() throws Exception {
             stubHeldRead(USER_ID);
-            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()), "ENTER"));
+            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()),
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER)));
 
             mockMvc.perform(delete("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -1993,7 +2285,8 @@ class UserDeleteControllerTest {
         @Test
         @DisplayName("the route is DELETE and only DELETE: every other verb on the same URI is 405")
         void anyOtherVerbIsMethodNotAllowed() throws Exception {
-            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()), "PFK05"));
+            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()),
+                    PfKeyResolver.aidImage(CicsAid.DFHPF5)));
 
             // CU03 deletes. CU01 adds and CU02 updates, and each owns its own verb on this URI, so the
             // dispatcher must refuse the other three here rather than route them into COUSR03C.
@@ -2017,7 +2310,8 @@ class UserDeleteControllerTest {
         @Test
         @DisplayName("a blank path identity is answered with the empty-id message, not a 400")
         void aBlankPathIdentityIsAMessageNotARejection() throws Exception {
-            String body = mapper.writeValueAsString(withAid(screen(" ".repeat(8), reenter()), "ENTER"));
+            String body = mapper.writeValueAsString(withAid(screen(" ".repeat(8), reenter()),
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER)));
 
             // %20 x 8 is USRIDINI = SPACES, which line 145 answers with a message on the screen. COUSR03C
             // has no concept of a malformed request, so an HTTP-level rejection would invent one.
@@ -2034,7 +2328,8 @@ class UserDeleteControllerTest {
         void thePf5TokenConfirmsTheDelete() throws Exception {
             HeldRecord hold = stubHeldRead(USER_ID);
             when(hold.deleteHeld()).thenReturn(WriteResult.written());
-            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()), "PFK05"));
+            String body = mapper.writeValueAsString(withAid(screen(USER_ID, reenter()),
+                    PfKeyResolver.aidImage(CicsAid.DFHPF5)));
 
             mockMvc.perform(delete("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -2051,7 +2346,7 @@ class UserDeleteControllerTest {
             stubHeldRead(USER_ID);
 
             ScreenResponse<UserDeleteResponse> answer =
-                    controller.deleteUser(USER_ID, screen(" ".repeat(8), enter()));
+                    controller.deleteUser(USER_ID, screen(" ".repeat(8), enter()), null, null);
 
             verify(repository).readForUpdate(USER_ID);
             assertThat(answer.screen().usrIdIn()).isEqualTo(USER_ID);
@@ -2064,7 +2359,7 @@ class UserDeleteControllerTest {
         void theAdapterRefusesAnAbsentPathVariable() {
             UserDeleteRequest request = screen(USER_ID, reenter());
 
-            assertThatThrownBy(() -> controller.deleteUser(null, request))
+            assertThatThrownBy(() -> controller.deleteUser(null, request, null, null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("user id");
         }
@@ -2072,7 +2367,7 @@ class UserDeleteControllerTest {
         @Test
         @DisplayName("the adapter accepts an absent body and projects the cold start")
         void theAdapterAcceptsAnAbsentBody() {
-            UserDeleteResponse screen = controller.deleteUser(USER_ID, null).screen();
+            UserDeleteResponse screen = controller.deleteUser(USER_ID, null, null, null).screen();
 
             assertThat(screen.nextProgram()).isEqualTo("COSGN00C");
             verify(repository, never()).readForUpdate(anyString());
@@ -2081,7 +2376,7 @@ class UserDeleteControllerTest {
         @Test
         @DisplayName("a path identity wider than USRIDIN is refused, never padded into another user")
         void anOverWidePathIdentityIsRefused() {
-            assertThatThrownBy(() -> controller.deleteUser("USER00012345", null))
+            assertThatThrownBy(() -> controller.deleteUser("USER00012345", null, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("refused rather than truncated");
             verify(repository, never()).readForUpdate(anyString());
@@ -2096,31 +2391,50 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("a body USRIDIN naming a different user is replaced by the path, which is the key")
-        void aBodyIdentityThatDisagreesIsRefused() {
-            // The URI is the resource identity, and USRIDIN is the field the operator types into. A
-            // second, differing statement of the key is two keys in one request: it is refused before any
-            // read, rather than replaced with no message, which is what used to discard the typed value.
-            assertThatThrownBy(() -> controller
-                    .deleteUser(USER_ID, withAid(screen("USER0002", reenter()), "ENTER")))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .hasMessageContaining("usridin")
-                    .hasMessageNotContaining("USER0002");
+        @DisplayName("a re-entry USRIDIN naming a different user is the identity, because :144-191 "
+                + "validates, reads and deletes on the field the operator typed")
+        void aReentryIdentityThatDisagreesIsTheIdentity() {
+            // COUSR03C has no URI. :95-122 is the first-entry arm, which takes its key from
+            // CDEMO-CU03-USR-SELECTED; :144-191 is the re-entry arm, and PROCESS-ENTER-KEY there reads
+            // USRIDINI. Typing another user id over the painted screen and pressing ENTER - or PF5 to
+            // delete that one - is the source-valid action, so the typed key is what the read uses.
+            stubHeldRead("USER0002");
 
-            verify(repository, never()).readForUpdate(anyString());
+            UserDeleteResponse screen = controller
+                    .deleteUser(USER_ID,
+                            withAid(screen("USER0002", reenter()),
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)),
+                            null, null)
+                    .screen();
+
+            verify(repository).readForUpdate("USER0002");
+            verify(repository, never()).readForUpdate(USER_ID);
+            assertThat(screen.usrIdIn()).isEqualTo("USER0002");
         }
 
-        @ParameterizedTest(name = "a body stating USRIDIN as \"{0}\" lets the URI supply it")
+        @ParameterizedTest(name = "a re-entry stating USRIDIN as \"{0}\" keeps exactly that")
         @ValueSource(strings = {"        ", "USER0001", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
-        @DisplayName("blank, LOW-VALUES and the URI's own key all agree with the URI")
+        @DisplayName("a re-entry's own field is authoritative: the source's own empty-field message at "
+                + ":148-152 is the answer to a blank one, not a substituted key")
         void theStatesThatAgreeAreAccepted(String stated) {
             stubHeldRead(USER_ID);
 
             UserDeleteResponse screen = controller
-                    .deleteUser(USER_ID, withAid(screen(stated, reenter()), "ENTER")).screen();
+                    .deleteUser(USER_ID,
+                            withAid(screen(stated, reenter()),
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)),
+                            null, null)
+                    .screen();
 
-            verify(repository).readForUpdate(USER_ID);
-            assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
+            assertThat(screen.usrIdIn()).isEqualTo(stated);
+            if (USER_ID.equals(stated)) {
+                verify(repository).readForUpdate(USER_ID);
+            } else {
+                // SPACES and LOW-VALUES are both 'not supplied' to :148, whose arm is the message and
+                // no read at all.
+                verify(repository, never()).readForUpdate(anyString());
+                assertThat(screen.errMsg()).isEqualTo(errMsgImage("User ID can NOT be empty..."));
+            }
         }
 
         @Test
@@ -2131,7 +2445,7 @@ class UserDeleteControllerTest {
             stubHeldRead(USER_ID);
 
             ScreenResponse<UserDeleteResponse> answer = controller.deleteUser(USER_ID,
-                    withSelection(screen(" ".repeat(8), enter()), "USER0002"));
+                    withSelection(screen(" ".repeat(8), enter()), "USER0002"), null, null);
 
             verify(repository).readForUpdate(USER_ID);
             verify(repository, never()).readForUpdate("USER0002");
@@ -2140,14 +2454,14 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("a blank body USRIDIN is filled from the path, so re-entry reads a real key")
+        @DisplayName("a blank USRIDIN on a FIRST entry is what the path fills, which is the arm "
+                + ":99-102 takes its key from")
         void aBlankBodyIdentityIsFilledFromThePath() {
-            // The defect this replaces: a blank USRIDIN left the source's validation, read and delete key
-            // blank on re-entry, so the URI's user was never read at all.
             stubHeldRead(USER_ID);
 
             UserDeleteResponse screen = controller
-                    .deleteUser(USER_ID, withAid(screen(" ".repeat(8), reenter()), "ENTER")).screen();
+                    .deleteUser(USER_ID, withAid(screen(" ".repeat(8), enter()),
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER)), null, null).screen();
 
             verify(repository).readForUpdate(USER_ID);
             assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
@@ -2160,7 +2474,7 @@ class UserDeleteControllerTest {
             stubHeldRead(USER_ID);
 
             UserDeleteResponse screen = controller.deleteUser(USER_ID,
-                    withSelection(screen(USER_ID, enter()), USER_ID)).screen();
+                    withSelection(screen(USER_ID, enter()), USER_ID), null, null).screen();
 
             assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
             verify(repository).readForUpdate(USER_ID);
@@ -2172,14 +2486,14 @@ class UserDeleteControllerTest {
             stubHeldRead(USER_ID);
 
             ScreenResponse<UserDeleteResponse> answer = controller.deleteUser(USER_ID,
-                    withSelection(screen(USER_ID, enter()), USER_ID));
+                    withSelection(screen(USER_ID, enter()), USER_ID), null, null);
 
             assertThat(answer.screen().cu03Info().usrSelected()).isEqualTo(USER_ID);
 
             // The other five items of the 34-byte group are carried untouched - only the selected id is
             // the URI's to state - so a payload naming none of them still round-trips its VALUE clauses.
             Cu03Info echoed =
-                    controller.deleteUser(USER_ID, screen(USER_ID, enter())).screen().cu03Info();
+                    controller.deleteUser(USER_ID, screen(USER_ID, enter()), null, null).screen().cu03Info();
             Cu03Info initial = Cu03Info.initial();
             assertThat(echoed.usridFirst()).isEqualTo(initial.usridFirst());
             assertThat(echoed.usridLast()).isEqualTo(initial.usridLast());
@@ -2235,7 +2549,7 @@ class UserDeleteControllerTest {
                 assertThat(bean).isNotNull();
                 assertThat(AopUtils.isAopProxy(bean)).isTrue();
 
-                bean.deleteUser(USER_ID, null);
+                bean.deleteUser(USER_ID, null, null, null);
 
                 verify(transactionManager).getTransaction(any());
                 verify(transactionManager).commit(any());
@@ -2247,7 +2561,8 @@ class UserDeleteControllerTest {
         void theRouteIsDeclaredOnce() throws Exception {
             assertThat(UserDeleteController.class.getAnnotation(RestController.class)).isNotNull();
             DeleteMapping mapping = UserDeleteController.class
-                    .getMethod("deleteUser", String.class, UserDeleteRequest.class)
+                    .getMethod("deleteUser", String.class, UserDeleteRequest.class, Integer.class,
+                            Integer.class)
                     .getAnnotation(DeleteMapping.class);
 
             assertThat(mapping).isNotNull();
@@ -2256,7 +2571,8 @@ class UserDeleteControllerTest {
             // No consumes: a bodiless first-entry call must not be refused with 415.
             assertThat(mapping.consumes()).isEmpty();
             assertThat(UserDeleteController.class.getMethod("deleteUser", String.class,
-                    UserDeleteRequest.class).getAnnotation(Transactional.class)).isNotNull();
+                    UserDeleteRequest.class, Integer.class, Integer.class)
+                    .getAnnotation(Transactional.class)).isNotNull();
         }
 
         @Test

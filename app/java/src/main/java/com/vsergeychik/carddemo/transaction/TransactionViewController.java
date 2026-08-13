@@ -4,7 +4,9 @@ import com.vsergeychik.carddemo.account.AccountRepository;
 import com.vsergeychik.carddemo.account.model.AccountRecord;
 import com.vsergeychik.carddemo.card.CardXrefRepository;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -13,6 +15,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.NumericIntrinsics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -44,6 +47,7 @@ import org.springframework.http.MediaType;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -256,6 +260,14 @@ public class TransactionViewController {
      * {@code GET /api/transactions/{tranId}} (different template).
      */
     public static final String TRANSACTIONS_PATH = "/api/transactions";
+
+    /**
+     * The payload member carrying the {@code CCARD-AID} token, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller with a twenty-one-field body knows which member contradicted the
+     * raw byte it also sent.
+     */
+    static final String AID_MEMBER = "aid";
 
     /** {@code MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM} - L116 and L503, the no-communication-area target. */
     public static final String SIGN_ON_PROGRAM = "COSGN00C";
@@ -794,6 +806,30 @@ public class TransactionViewController {
     // =================================================================================================
 
     /**
+     * Query parameter carrying the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value.
+     *
+     * <p>The name is {@link AidRequestParameter#CANONICAL_NAME}, shared with every other online route.
+     * Authoritative when present, because {@code COTRN02C} evaluates {@code EIBAID} itself and only a
+     * byte distinguishes {@code DFHPF3} from {@code DFHPF15}.
+     */
+    public static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /** The accepted alternate spelling of {@value #EIBAID_PARAM} - {@link AidRequestParameter}. */
+    public static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
+
+    /** The lowest value an {@code EIBAID} byte can take, stated unsigned. */
+    static final int AID_MIN = 0;
+
+    /** The highest value an {@code EIBAID} byte can take, stated unsigned. */
+    static final int AID_MAX = 255;
+
+    /** The width of the raw {@code EIBAID} form of the payload's {@code aid} member: one character. */
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
+
+    /**
      * {@code POST }{@value #TRANSACTIONS_PATH} - validate the operator's entry and insert a transaction.
      *
      * <p>An insert, because {@code COTRN02C} inserts. See the R-B discussion in this class's
@@ -825,8 +861,19 @@ public class TransactionViewController {
      * still compute the same next key, because the probe takes no lock, exactly as the COBOL takes
      * none.
      *
+     * <p><strong>The key may arrive as its raw byte, and that byte is what L133 evaluates.</strong> Both
+     * spellings of {@link AidRequestParameter} bind and carry all 256 values of {@code EIBAID}.
+     * {@code COTRN02C} does not copy {@code app/cpy/CSSTRPFY.cpy}: it tests the raw byte against four
+     * {@code DFHAID} constants at L133-152 and names no {@code DFHPF15}, so {@code PF15} reaches
+     * {@code WHEN OTHER} and the invalid-key message on the terminal. The five-character token cannot say
+     * {@code PF15}, because the copybook folds it onto {@code 'PFK03'} and this program's {@code PF3} arm
+     * would run instead. A request that sends neither parameter keeps the token decode it always had.
+     *
      * @param request the inbound screen, the communication area and the {@code EIBAID}; must not be
      *                {@code null}
+     * @param eibaid  the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value, or
+     *                {@code null} when the request names no key
+     * @param eibAid  the accepted alternate spelling of the same parameter
      * @return the painted screen, the next program, the communication area to carry forward and the
      *         presentation metadata - the cursor request, the twenty-one attribute quads and the
      *         message colour - which are metadata by declaration and travel beside the screen rather
@@ -838,8 +885,10 @@ public class TransactionViewController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Transactional
     public ScreenResponse<TransactionViewResponse> addTransaction(
-            @Valid @RequestBody TransactionViewRequest request) {
-        ProgramState state = mainPara(request);
+            @Valid @RequestBody TransactionViewRequest request,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
+        ProgramState state = mainPara(request, AidRequestParameter.resolve(eibaid, eibAid));
         return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
@@ -870,6 +919,43 @@ public class TransactionViewController {
      * @throws NullPointerException if {@code request} is {@code null}
      */
     public ProgramState mainPara(TransactionViewRequest request) {
+        return mainPara(request, null);
+    }
+
+    /**
+     * {@code MAIN-PARA} with the raw attention identifier the request stated.
+     *
+     * <p>The overload the request mapping calls, and the one a test drives when the distinction between
+     * {@code PF3} and {@code PF15} is the point. {@link #mainPara(TransactionViewRequest)} delegates here
+     * with {@code null}, which is "the request named no raw byte" and leaves the payload's token as the
+     * only statement of the key - the behaviour that existed before the parameter did.
+     *
+     * @param request   the inbound screen; must not be {@code null}
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when the request
+     *                  named no key
+     * @return the state at the moment the task returned to CICS or transferred; never {@code null}
+     * @throws NullPointerException if {@code request} is {@code null}
+     */
+    public ProgramState mainPara(TransactionViewRequest request, Integer statedAid) {
+        Objects.requireNonNull(request, "A request is required: COTRN02C is driven entirely by its "
+                + "communication area, the EIBAID and the received map, all of which travel in it");
+        return mainPara(request, resolveEibAid(statedAid, request.getAid()));
+    }
+
+    /**
+     * {@code MAIN-PARA} with the attention identifier supplied separately from the payload.
+     *
+     * <p>The route calls this one, because the raw byte can arrive on the query string as well as in
+     * the body and the query string wins. {@link #mainPara(TransactionViewRequest)} is the same
+     * execution with the byte read out of the payload's own one-character {@code aid} image.
+     *
+     * @param request the inbound screen, the communication area and the received map; must not be
+     *                {@code null}
+     * @param eibAid  the raw {@code EIBAID} byte the {@code EVALUATE} at L133 compares
+     * @return the terminal state of the invocation, never {@code null}
+     * @throws NullPointerException if {@code request} is {@code null}
+     */
+    public ProgramState mainPara(TransactionViewRequest request, byte eibAid) {
         Objects.requireNonNull(request, "A request is required: COTRN02C is driven entirely by its "
                 + "communication area, the EIBAID and the received map, all of which travel in it");
 
@@ -924,7 +1010,8 @@ public class TransactionViewController {
 
         // L133-L152 EVALUATE EIBAID, in the source's order with WHEN OTHER last (gate G30). The raw AID
         // byte is reconstructed from the payload token so that these read as the source's four tests.
-        byte eibAid = eibAidOf(request.getAid());
+        // The raw EIBAID the caller stated: :133's EVALUATE compares the byte, so PF15 is distinct
+        // from PF3 here and takes the invalid-key arm, exactly as the COBOL does.
         if (PfKeyResolver.isEnter(eibAid)) {                                               // WHEN DFHENTER
             processEnterKey(state);                                                        // L135
             return state;
@@ -1870,12 +1957,18 @@ public class TransactionViewController {
      * {@code ACTIDINL} - the <em>account</em> field, not a transaction field - because the map has no
      * transaction field to place it on.
      *
-     * <p>The repository deliberately returns no status from positioning, because the source captures
-     * {@code RESP} and {@code RESP2} here and the paragraph that follows never tests them for a successful
-     * position. The guard chain therefore begins at the first read, and the two rejecting arms of this
-     * paragraph are unreachable through the repository - they are written out in full so that a reviewer
-     * comparing the two files finds the same three arms, and they are reachable from a test that drives
-     * this method's own outcome parameterisation.
+     * <p>The {@code RESP} and {@code RESP2} this paragraph stores are the ones the position reported -
+     * {@link TransactionRepository.Browse#positioningResult()} - so all three arms are live. An earlier
+     * revision stored {@code NORMAL} unconditionally because positioning performed no backend call, which
+     * left the two rejecting arms unreachable outside a unit test: a view against an empty or unreadable
+     * master reported success and read on.
+     *
+     * <p><strong>A rejecting arm does not end the paragraph's caller.</strong>
+     * {@code PERFORM SEND-TRNVIEW-SCREEN} inside an arm is a {@code PERFORM} of a paragraph that sends a
+     * map, not a {@code RETURN}, so the caller's next statement -
+     * {@code PERFORM READPREV-TRANSACT-FILE} at {@code L445} / {@code L476} - runs regardless. That read
+     * then addresses a browse CICS never started and reports the invalid-request condition, reaching its own
+     * {@code WHEN OTHER} arm. Both are preserved.
      *
      * @param state the per-request working storage; must not be {@code null}
      * @throws NullPointerException if {@code state} is {@code null}
@@ -1883,14 +1976,21 @@ public class TransactionViewController {
     public void startbrTransactFile(ProgramState state) {
         requireState(state);
 
-        state.openBrowse(transactionRepository.startBrowse(
-                TransactionRepository.BrowseDirection.BACKWARD));                             // L644-650
-        state.setRespCd(FileStatus.NORMAL);
-        state.setReasCd(FileStatus.NO_REASON_CODE);
+        TransactionRepository.Browse browse = transactionRepository.startBrowse(
+                TransactionRepository.BrowseDirection.BACKWARD);                              // L644-650
+        state.openBrowse(browse);
 
-        // L652-L668 EVALUATE WS-RESP-CD. Positioning reports NORMAL, so this resolves to the CONTINUE arm;
-        // the other two are rendered by startbrOutcome so neither literal nor cursor placement is lost.
-        startbrOutcome(state, FileStatus.Outcome.OK);                                          // L653-654
+        // L647-L648 RESP(WS-RESP-CD) RESP2(WS-REAS-CD) - the codes the position reported, not an
+        // assumption about them.
+        TransactionRepository.ReadResult positioning = browse.positioningResult();
+        // RESP_NOT_REPORTED, never NORMAL, for an outcome that carries no CICS response - the same rule
+        // readprevTransactFile applies, and for the same reason: zero IS DFHRESP(NORMAL), so storing it
+        // would make a position that reported nothing indistinguishable from one that succeeded.
+        state.setRespCd(positioning.cicsResp().orElse(FileStatus.RESP_NOT_REPORTED));
+        state.setReasCd(positioning.cicsResp2());
+
+        // L652-L668 EVALUATE WS-RESP-CD.
+        startbrOutcome(state, positioning.outcome());                                          // L653-654
     }
 
     /**
@@ -2267,28 +2367,40 @@ public class TransactionViewController {
      *
      * <p>{@code LOW-VALUES} is {@code X'00'} repeated, and it is what CICS leaves in a symbolic-map item
      * for a field it did not transmit and what {@code MOVE LOW-VALUES TO COTRN2AO} at L122 writes into all
-     * of them. So a screen field is "empty" when it holds only spaces, only nulls, or a mixture -
-     * which is what this predicate reports.
+     * of them.
+     *
+     * <p>{@code = SPACES OR LOW-VALUES} is COBOL's abbreviated combined relation and expands to
+     * {@code = SPACES OR <item> = LOW-VALUES} - <strong>two separate whole-item comparisons</strong>,
+     * each against a figurative constant that fills the item's entire length. <strong>A mixture of the
+     * two equals neither, so the condition is false.</strong> An item holding some spaces and some nulls
+     * is a value as far as the source is concerned, and reporting it as empty would take the empty arm of
+     * the cascade where the source takes the populated one.
      *
      * <p>An empty string counts as empty, and so does {@code null}: a JSON member the client omitted
-     * altogether is a field CICS did not transmit, and is treated as such rather than rejected. That
-     * matters because the program's own tests are all "empty or not", so a rejection here would refuse a
-     * screen the COBOL accepts.
+     * altogether is a field CICS did not transmit, which is {@code LOW-VALUES} - so it satisfies the
+     * second comparison rather than being a third rule of its own. A rejection here would refuse a screen
+     * the COBOL accepts, because the program's own tests are all "empty or not".
      *
      * @param image the field value, possibly {@code null}
-     * @return {@code true} when every character is a space or a null, including when there are none
+     * @return {@code true} when the item is entirely spaces or entirely low-values, including when it is
+     *         empty
      */
     public static boolean isSpacesOrLowValues(String image) {
         if (image == null) {
             return true;
         }
+        boolean allSpaces = true;
+        boolean allLowValues = true;
         for (int index = 0; index < image.length(); index++) {
             char character = image.charAt(index);
-            if (character != ' ' && character != '\u0000') {
-                return false;
+            if (character != ' ') {
+                allSpaces = false;
+            }
+            if (character != '\u0000') {
+                allLowValues = false;
             }
         }
-        return true;
+        return allSpaces || allLowValues;
     }
 
     /**
@@ -2660,37 +2772,61 @@ public class TransactionViewController {
     }
 
     /**
-     * Reconstructs the {@code EIBAID} byte from the payload's mnemonic token, so the four tests of the
-     * {@code EVALUATE EIBAID} at L133-152 read as the source's four tests against {@code DFHAID}
-     * constants rather than as string comparisons.
+     * Reads the raw {@code EIBAID} byte out of the payload's {@code aid} member, so the four tests of
+     * the {@code EVALUATE EIBAID} at L133-152 are the byte equalities the source writes.
      *
-     * <p>Only the four keys this program acts on are recognised; every other token - and every
-     * unrecognised one - maps to {@link CicsAid#DFHNULL}, which reaches the {@code WHEN OTHER} arm and the
-     * invalid-key message. That is the correct fallback: an AID the program does not name is an AID it
-     * treats as invalid.
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention
+     * identifier - {@code DFHENTER} as {@code U+007D}, {@code DFHPF3} as {@code U+00F3} - which is what
+     * {@code COTRN02C} compares. The same byte may instead be stated as an unsigned {@code 0}-{@code 255}
+     * integer on the {@value #EIBAID_PARAM} query parameter, which wins when both are supplied.
      *
-     * @param aidToken the mnemonic from the payload, for example {@code "ENTER"} or {@code "PFK03"};
-     *                 may be {@code null}, which is an operator who pressed nothing this program knows
-     * @return the corresponding {@code DFHAID} byte, or {@link CicsAid#DFHNULL}
+     * <h4>Why the mnemonic token is no longer reconstructed into a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK03'} stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}. Reconstruction
+     * had to choose, and choosing {@code DFHPF3} sent a PF15 press down the {@code WHEN DFHPF3} arm that
+     * transfers control away, where the source takes {@code WHEN OTHER} and answers the invalid-key
+     * message. {@code COTRN02C} does not copy {@code CSSTRPFY}: it compares {@code EIBAID} itself, so
+     * there is no fold of its own to invert. The token remains what the response publishes.
+     *
+     * <p>Any other width, and an absent value, are {@link CicsAid#DFHNULL} - a byte this program does
+     * not name, which reaches the {@code WHEN OTHER} arm and the invalid-key message. That is the same
+     * answer the source gives any key it does not handle.
+     *
+     * @param aidImage the {@code aid} member from the payload - one character whose code point is the
+     *                 raw {@code EIBAID} byte; may be {@code null}
+     * @return the {@code EIBAID} byte, or {@link CicsAid#DFHNULL}
      */
-    public static byte eibAidOf(String aidToken) {
-        if (aidToken == null) {
+    public static byte eibAidOf(String aidImage) {
+        if (aidImage == null || aidImage.length() != RAW_AID_LENGTH) {
             return CicsAid.DFHNULL;
         }
-        String token = aidToken.strip();
-        if (PfKeyResolver.AidKey.ENTER.token().strip().equals(token)) {
-            return CicsAid.DFHENTER;
+        char stated = aidImage.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            // EIBAID is one byte: U+01F3 would narrow onto 0xF3, which IS DFHPF3, so a character above
+            // the AID space is reported as no key rather than folded onto one nobody pressed.
+            return CicsAid.DFHNULL;
         }
-        if (PfKeyResolver.AidKey.PFK03.token().strip().equals(token)) {
-            return CicsAid.DFHPF3;
+        return (byte) stated;
+    }
+
+    /**
+     * Chooses which of the two statements of the key the request made is acted on: the raw byte when it is
+     * there, the token otherwise.
+     *
+     * <p>The byte wins because it is the lossless one - see {@link AidRequestParameter} - and because this
+     * program tests {@code EIBAID} inline, so a folded token would give {@code PF15} the {@code PF3} arm at
+     * L136 rather than the invalid-key arm at L150. A token stated beside a disagreeing byte is refused
+     * rather than dropped.
+     *
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when absent
+     * @param aidToken  the payload's {@code CCARD-AID} token, or {@code null} when absent
+     * @return the {@code EIBAID} byte L133 evaluates
+     */
+    byte resolveEibAid(Integer statedAid, String aidToken) {
+        if (statedAid == null) {
+            return eibAidOf(aidToken);
         }
-        if (PfKeyResolver.AidKey.PFK04.token().strip().equals(token)) {
-            return CicsAid.DFHPF4;
-        }
-        if (PfKeyResolver.AidKey.PFK05.token().strip().equals(token)) {
-            return CicsAid.DFHPF5;
-        }
-        return CicsAid.DFHNULL;
+        return AidRequestParameter.requireStatedAid(AID_MEMBER, statedAid, aidToken, codec);
     }
 
     /**
@@ -3472,11 +3608,17 @@ public class TransactionViewController {
 
         /**
          * {@code INITIALIZE TRAN-RECORD} - L450: numerics to zero, alphanumerics to spaces, and the
-         * trailing twenty-byte {@code FILLER} left as spaces so the written image is a full 350 bytes
-         * (gates G19, G21).
+         * trailing twenty-byte {@code FILLER} <strong>left exactly as it was</strong>.
+         *
+         * <p>Delegates to {@link TranRecord#initialize()}, which resets the thirteen named items over the
+         * existing span. It does <em>not</em> replace the area with a fresh record: {@code INITIALIZE}
+         * without {@code WITH FILLER} cannot address an unnamed {@code FILLER} item and so skips it, and
+         * replacing the area would blank those twenty bytes as a side effect. The span is observable,
+         * because it is written to disk as part of the record's 350 bytes (gates G19, G21) - so whatever
+         * the preceding {@code READPREV} left there travels forward into the written record.
          */
         public void initializeTranRecord() {
-            this.tranRecord = new TranRecord(tranRecord.charset());
+            this.tranRecord.initialize();
         }
 
         /** {@code MOVE HIGH-VALUES TO TRAN-ID} - L444 and L475. */

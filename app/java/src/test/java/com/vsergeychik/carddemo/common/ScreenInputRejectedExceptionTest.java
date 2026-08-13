@@ -2,14 +2,11 @@ package com.vsergeychik.carddemo.common;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -34,18 +31,9 @@ class ScreenInputRejectedExceptionTest {
 
     private static final Charset ASCII = StandardCharsets.US_ASCII;
     private static final Charset EBCDIC = Charset.forName("IBM037");
-    private static final FixedWidthCodec ASCII_CODEC = new FixedWidthCodec(ASCII);
 
     /** A payload value carrying a card number, to prove it is never echoed. */
     private static final String SENSITIVE = "4111111111111111";
-
-    private static Map<String, String> map(String... labelsAndValues) {
-        Map<String, String> values = new LinkedHashMap<>();
-        for (int index = 0; index < labelsAndValues.length; index += 2) {
-            values.put(labelsAndValues[index], labelsAndValues[index + 1]);
-        }
-        return values;
-    }
 
     @Nested
     @DisplayName("It is an IllegalArgumentException, which is what routes it to the existing 400")
@@ -135,139 +123,6 @@ class ScreenInputRejectedExceptionTest {
                     .unrepresentable("acsfnam", null, ASCII, 0xE9));
             assertThatNullPointerException().isThrownBy(() -> ScreenInputRejectedException
                     .unrepresentable("acsfnam", "ACSFNAMI", null, 0xE9));
-        }
-    }
-
-    @Nested
-    @DisplayName("inconsistentCommarea - a communication area the program itself could not have written")
-    class InconsistentCommarea {
-
-        @Test
-        @DisplayName("names the member and states what the program writes there, as a shape")
-        void namesTheMemberAndTheExpectedShape() {
-            ScreenInputRejectedException rejected = ScreenInputRejectedException.inconsistentCommarea(
-                    "commArea.oldDetails.acctid",
-                    "the eleven digits of the fetched account identifier");
-
-            assertThat(rejected.member()).contains("commArea.oldDetails.acctid");
-            assertThat(rejected.getMessage())
-                    .contains("commArea.oldDetails.acctid")
-                    .contains("eleven digits of the fetched account identifier");
-        }
-
-        @Test
-        @DisplayName("tells the caller how to recover - fetch first, then send back the reply's commarea")
-        void tellsTheCallerHowToRecover() {
-            assertThat(ScreenInputRejectedException
-                    .inconsistentCommarea("commArea.oldDetails.cardid", "sixteen digits").getMessage())
-                    .contains("Fetch the record first")
-                    .contains("no change action")
-                    .contains("not echoed");
-        }
-
-        @Test
-        @DisplayName("rejects null arguments")
-        void rejectsNullArguments() {
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.inconsistentCommarea(null, "digits"));
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.inconsistentCommarea("commArea.oldDetails.acctid", null));
-        }
-    }
-
-    @Nested
-    @DisplayName("requireRepresentable - the map-receive sweep")
-    class TheSweep {
-
-        @Test
-        @DisplayName("passes a map whose every value the code page can represent")
-        void passesARepresentableMap() {
-            assertThatCode(() -> ScreenInputRejectedException.requireRepresentable(
-                    map("ACSFNAM", "JOHN", "ACSTNUM", "123456789", "ACCTSID", "00000000011"),
-                    ASCII_CODEC)).doesNotThrowAnyException();
-        }
-
-        @Test
-        @DisplayName("refuses the first unrepresentable value and names that field, not another")
-        void namesTheFieldAtFault() {
-            assertThatExceptionOfType(ScreenInputRejectedException.class)
-                    .isThrownBy(() -> ScreenInputRejectedException.requireRepresentable(
-                            map("ACSFNAM", "JOHN", "ACSLNAM", "MU\u00D1OZ", "ACSTNUM", "123456789"),
-                            ASCII_CODEC))
-                    .satisfies(rejected -> {
-                        assertThat(rejected.member()).contains("acslnam");
-                        assertThat(rejected.getMessage()).contains("ACSLNAMI").contains("U+00D1");
-                    });
-        }
-
-        @Test
-        @DisplayName("derives the symbolic item as the label with I appended, which is how BMS names "
-                + "the input item of every field in all seventeen mapsets")
-        void derivesTheSymbolicItemName() {
-            assertThatExceptionOfType(ScreenInputRejectedException.class)
-                    .isThrownBy(() -> ScreenInputRejectedException.requireRepresentable(
-                            map("CRDNAME", "JOS\u00C9"), ASCII_CODEC))
-                    .withMessageContaining("CRDNAMEI");
-        }
-
-        @Test
-        @DisplayName("reports the FIRST offending field in declaration order, so the answer is stable")
-        void reportsTheFirstOffenderInOrder() {
-            assertThatExceptionOfType(ScreenInputRejectedException.class)
-                    .isThrownBy(() -> ScreenInputRejectedException.requireRepresentable(
-                            map("ACSFNAM", "JOS\u00C9", "ACSLNAM", "MU\u00D1OZ"), ASCII_CODEC))
-                    .satisfies(rejected -> assertThat(rejected.member()).contains("acsfnam"));
-        }
-
-        @Test
-        @DisplayName("skips a null value rather than refusing it: an absent field is spaces on a "
-                + "terminal, and carries no character to judge")
-        void skipsNullValues() {
-            Map<String, String> withNulls = new LinkedHashMap<>();
-            withNulls.put("ACSFNAM", null);
-            withNulls.put("ACSLNAM", "SMITH");
-
-            assertThatCode(() -> ScreenInputRejectedException.requireRepresentable(withNulls, ASCII_CODEC))
-                    .doesNotThrowAnyException();
-        }
-
-        @Test
-        @DisplayName("passes an empty map, which is what a screen with nothing typed into it is")
-        void passesAnEmptyMap() {
-            assertThatCode(() -> ScreenInputRejectedException.requireRepresentable(Map.of(), ASCII_CODEC))
-                    .doesNotThrowAnyException();
-        }
-
-        @Test
-        @DisplayName("judges against the codec it is given: IBM037 represents an accented letter that "
-                + "US-ASCII does not, and the sweep must not refuse what the write path would accept")
-        void judgesAgainstTheCodecItIsGiven() {
-            Map<String, String> accented = map("CRDNAME", "JOS\u00C9");
-
-            assertThatCode(() -> ScreenInputRejectedException
-                    .requireRepresentable(accented, new FixedWidthCodec(EBCDIC)))
-                    .doesNotThrowAnyException();
-            assertThatExceptionOfType(ScreenInputRejectedException.class).isThrownBy(() ->
-                    ScreenInputRejectedException.requireRepresentable(accented, ASCII_CODEC));
-        }
-
-        @Test
-        @DisplayName("never echoes the rejected value, even when it is a card number")
-        void neverEchoesTheValue() {
-            assertThatExceptionOfType(ScreenInputRejectedException.class)
-                    .isThrownBy(() -> ScreenInputRejectedException.requireRepresentable(
-                            map("CARDSID", SENSITIVE + "\u00E9"), ASCII_CODEC))
-                    .satisfies(rejected ->
-                            assertThat(rejected.getMessage()).doesNotContain(SENSITIVE));
-        }
-
-        @Test
-        @DisplayName("rejects a null map or a null codec: the code page is stated, never assumed")
-        void rejectsNullArguments() {
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.requireRepresentable(null, ASCII_CODEC));
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.requireRepresentable(Map.of(), null));
         }
     }
 
@@ -387,86 +242,65 @@ class ScreenInputRejectedExceptionTest {
     }
 
     @Nested
-    @DisplayName("requireKeyAgreement - one key per request, stated once in the URI and once on the "
-            + "screen")
-    class RequireKeyAgreement {
+    @DisplayName("conflictingAid - one attention identifier, stated twice, disagreeing with itself")
+    class ConflictingAid {
 
         @Test
-        @DisplayName("a member the payload omits states no key, so there is nothing to disagree with")
-        void anAbsentMemberStatesNoKey() {
-            assertThatCode(() -> ScreenInputRejectedException.requireKeyAgreement(
-                    "acctsid", "00000000011", null, 11, ASCII_CODEC))
-                    .doesNotThrowAnyException();
+        @DisplayName("the diagnostic names both carriers and explains which one is authoritative")
+        void theDiagnosticNamesBothCarriers() {
+            ScreenInputRejectedException refusal =
+                    ScreenInputRejectedException.conflictingAid("aid", "eibaid");
+
+            assertThat(refusal.getMessage())
+                    .contains("aid")
+                    .contains("eibaid")
+                    .contains("one attention identifier")
+                    .contains("folded");
+            assertThat(refusal.member()).contains("aid");
         }
 
         @Test
-        @DisplayName("a blank or LOW-VALUES screen field states no key either, and a client echoing a "
-                + "painted screen always agrees")
-        void aBlankMemberStatesNoKey() {
-            assertThatCode(() -> {
-                ScreenInputRejectedException.requireKeyAgreement(
-                        "acctsid", "00000000011", " ".repeat(11), 11, ASCII_CODEC);
-                ScreenInputRejectedException.requireKeyAgreement(
-                        "acctsid", "00000000011", "\u0000".repeat(11), 11, ASCII_CODEC);
-                ScreenInputRejectedException.requireKeyAgreement(
-                        "acctsid", "00000000011", "00000000011", 11, ASCII_CODEC);
-            }).doesNotThrowAnyException();
+        @DisplayName("it reuses CONTRADICTORY_SPELLINGS, so it publishes no new sentence")
+        void itReusesTheContradictionReason() {
+            ScreenInputRejectedException refusal =
+                    ScreenInputRejectedException.conflictingAid("aid", "eibaid");
+
+            assertThat(refusal.reason())
+                    .isEqualTo(ScreenInputRejectedException.Reason.CONTRADICTORY_SPELLINGS);
+            assertThat(refusal.publicDetail())
+                    .isEqualTo(ScreenInputRejectedException.contradictorySpellings("aid", "eibAid",
+                            "one EIBAID").publicDetail());
         }
 
         @Test
-        @DisplayName("a second, different key is refused rather than silently discarded, and the value "
-                + "is not echoed")
-        void aSecondKeyIsRefused() {
-            assertThatExceptionOfType(ScreenInputRejectedException.class)
-                    .isThrownBy(() -> ScreenInputRejectedException.requireKeyAgreement(
-                            "acctsid", "00000000011", "00000000002", 11, ASCII_CODEC))
-                    .satisfies(rejected -> {
-                        assertThat(rejected.member()).contains("acctsid");
-                        assertThat(rejected.getMessage()).doesNotContain("00000000002");
-                    });
+        @DisplayName("neither stated key reaches the published text, and nor do the 3270 mechanics")
+        void thePublishedTextDisclosesNothing() {
+            String published = ScreenInputRejectedException.conflictingAid("aid", "eibaid")
+                    .publicDetail();
+
+            assertThat(published)
+                    .contains("aid")
+                    .doesNotContain("PFK")
+                    .doesNotContain("CSSTRPFY")
+                    .doesNotContain("EIBAID")
+                    .doesNotContain("folded")
+                    .doesNotContain("token");
         }
 
         @Test
-        @DisplayName("an image the screen itself uses to mean \"no criterion supplied\" agrees, which is "
-                + "why the account and card screens pass their asterisk and the user screens pass none")
-        void aNoCriterionImageAgrees() {
-            assertThatCode(() -> ScreenInputRejectedException.requireKeyAgreement(
-                    "acctsid", "00000000011", "*", 11, ASCII_CODEC, "*"))
-                    .doesNotThrowAnyException();
-            assertThatExceptionOfType(ScreenInputRejectedException.class)
-                    .isThrownBy(() -> ScreenInputRejectedException.requireKeyAgreement(
-                            "usridin", "USER0001", "*", 8, ASCII_CODEC));
+        @DisplayName("both names are required, because the answer names the member the caller must fix")
+        void bothNamesAreRequired() {
+            assertThatNullPointerException().isThrownBy(
+                    () -> ScreenInputRejectedException.conflictingAid(null, "eibaid"));
+            assertThatNullPointerException().isThrownBy(
+                    () -> ScreenInputRejectedException.conflictingAid("aid", null));
         }
 
         @Test
-        @DisplayName("a zero width never reaches the comparison at all: the PIC X move refuses it "
-                + "first, so no key can agree vacuously through an empty image")
-        void aZeroWidthNeverReachesTheComparison() {
-            // Worth pinning rather than assuming, because it is what makes the "is the image entirely
-            // spaces or entirely LOW-VALUES" guard safe: every image it sees is at least one character,
-            // so an empty image - which would make every key look like "no key supplied" - cannot be
-            // constructed. FixedWidthCodec, not this class, is what holds that.
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> ScreenInputRejectedException.requireKeyAgreement(
-                            "acctsid", "00000000011", "00000000002", 0, ASCII_CODEC))
-                    .withMessageContaining("at least one character position");
-        }
-
-        @Test
-        @DisplayName("rejects a null member, URI key, codec or no-criterion image")
-        void rejectsNullArguments() {
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.requireKeyAgreement(
-                            null, "00000000011", "x", 11, ASCII_CODEC));
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.requireKeyAgreement(
-                            "acctsid", null, "x", 11, ASCII_CODEC));
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.requireKeyAgreement(
-                            "acctsid", "00000000011", "x", 11, null));
-            assertThatNullPointerException().isThrownBy(() ->
-                    ScreenInputRejectedException.requireKeyAgreement(
-                            "acctsid", "00000000011", "x", 11, ASCII_CODEC, (String) null));
+        @DisplayName("it is an IllegalArgumentException, so it takes the existing 400 route")
+        void itTakesTheExistingRoute() {
+            assertThat(ScreenInputRejectedException.conflictingAid("aid", "eibaid"))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
     }
 }

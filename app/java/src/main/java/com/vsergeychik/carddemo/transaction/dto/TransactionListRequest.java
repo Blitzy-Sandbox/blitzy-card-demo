@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import jakarta.validation.constraints.Size;
 
@@ -1687,18 +1688,23 @@ public final class TransactionListRequest {
 
         /**
          * A diagnostic summary of the browse position. The two browse keys and the selected identifier
-         * are transaction identifiers rather than customer data, so reporting them is safe and is what
-         * makes a paging defect diagnosable.
+         * are transaction identifiers, and a transaction identifier is a {@code TRANSACT} key that opens a
+         * record carrying {@code TRAN-CARD-NUM} - so they are masked to their last
+         * {@value SensitiveDiagnostics#REVEALED_TRAILING_DIGITS} characters by
+         * {@link SensitiveDiagnostics#maskIdentifier(String)} rather than reported in full. A paging
+         * defect stays exactly as diagnosable: this system's identifiers are zero-filled sequentials, so
+         * the trailing digits are the only part that ever differs between two of them. The page number
+         * and the more-pages flag carry no personal data and are reported as they are.
          *
          * @return for example
-         *         {@code PaginationCursor[page=2, first=0000000000000011, last=0000000000000020,
+         *         {@code PaginationCursor[page=2, first=************0011, last=************0020,
          *         nextPage=Y]}
          */
         @Override
         public String toString() {
             return "PaginationCursor[page=" + pageNum
-                    + ", first=" + trnidFirst.strip()
-                    + ", last=" + trnidLast.strip()
+                    + ", first=" + SensitiveDiagnostics.maskIdentifier(trnidFirst).strip()
+                    + ", last=" + SensitiveDiagnostics.maskIdentifier(trnidLast).strip()
                     + ", nextPage=" + nextPageFlg.strip() + "]";
         }
     }

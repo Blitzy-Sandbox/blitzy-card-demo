@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobDatasetBinding;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.parity.FieldDiffer.DiffResult;
 import com.vsergeychik.carddemo.parity.ParityCase.UnitKind;
 import com.vsergeychik.carddemo.parity.ParityHarness.Invocation;
@@ -37,7 +38,7 @@ import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.time.Clock;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,8 +55,12 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -199,8 +204,10 @@ final class CBTRN02CParityTest {
 
     /**
      * The physical-record ordinal every relation is read back in, exactly as
-     * {@code application-test.yml} configures {@code carddemo.physical-sequence.expression}: H2's own
-     * row-identifier pseudo-column, which increases with each insert.
+     * {@code application-test.yml} configures {@code carddemo.physical-sequence.expression}: the shipped
+     * test profile names H2's row-identifier pseudo-column, which increases with each insert. The
+     * record-image store behind this suite holds rows in write order, so an ordering over this expression
+     * means the same thing to both.
      *
      * <p>Used for <em>every</em> dataset here rather than only for the sequential ones, and
      * deliberately in preference to key order. For a keyed dataset the physical order is the seed order
@@ -293,9 +300,10 @@ final class CBTRN02CParityTest {
     //      from the seam where the access method reports it.
     //
     //  A BATCH_JOB case may NOT carry a ForcedOutcome: that member belongs to
-    //  ParityCase.ScreenRequest, which ParityCase refuses for anything but an online case. So the
-    //  arrangement lives in this table, keyed by case identifier, exactly as the other batch parity
-    //  suites in this package do it.
+    //  ParityCase.ScreenRequest, which ParityCase refuses for anything but an online case. But
+    //  ParityCase.UnitStimulus.callSiteOutcomes IS declarable by every unit kind and exists for exactly
+    //  this, so each case DECLARES its own arrangement and the enum below is only the projection this
+    //  gate decodes it into. Nothing is keyed by case identifier.
     // =============================================================================================
 
     /** What the backend does for one case. */
@@ -368,60 +376,183 @@ final class CBTRN02CParityTest {
     private static final String TCATBAL_READ_FAILURE_STATUS = "30";
 
     /**
-     * The arrangement each of the twenty cases runs under, in case order and unmodifiable, so no test
-     * can perturb what another reads (practice B9, gate G53).
+     * The {@code <VERB>-<DD>} names a case declares its arrangement at, one per non-clean
+     * {@link Scenario}.
+     *
+     * <p>Built from {@link TransactionValidationJob}'s own DD constants rather than retyped, so a DD name
+     * has one spelling in the module and a rename cannot leave a declaration matching nothing.
      */
-    private static final Map<String, Scenario> SCENARIOS = declaredScenarios();
+    private static final String REWRITE_ACCTFILE_SITE = "REWRITE-" + ACCTFILE_KEY;
+
+    /** {@code OPEN OUTPUT DALYREJS-FILE} - {@code app/cbl/CBTRN02C.cbl:293}. */
+    private static final String OPEN_DALYREJS_SITE = "OPEN-" + DALYREJS_KEY;
+
+    /** {@code WRITE FD-REJS-RECORD} - {@code app/cbl/CBTRN02C.cbl:451}. */
+    private static final String WRITE_DALYREJS_SITE = "WRITE-" + DALYREJS_KEY;
+
+    /** {@code READ DALYTRAN-FILE INTO DALYTRAN-RECORD} - {@code app/cbl/CBTRN02C.cbl:346}. */
+    private static final String READ_DALYTRAN_SITE = "READ-" + DALYTRAN_KEY;
+
+    /** {@code READ TCATBAL-FILE INTO TRAN-CAT-BAL-RECORD} - {@code app/cbl/CBTRN02C.cbl:474}. */
+    private static final String READ_TCATBALF_SITE = "READ-" + TCATBALF_KEY;
 
     /**
-     * Builds the scenario table.
+     * The arrangement one case runs under, decoded from the stimulus the case itself declares.
      *
-     * @return the twenty entries, in case order
+     * <p><strong>Nothing here reads {@link ParityCase#caseId()}.</strong> It used to: a twenty-entry
+     * {@code Map<String, Scenario>} keyed by case identifier held the arrangement, and that is the defect
+     * this replaces. The arrangement is the difference between a case that posts three hundred
+     * transactions and a case that abends on the second read, and a case file that did not state it gave
+     * no indication of which it was; renumbering a case silently moved the arrangement to a different run;
+     * and a twenty-first case would have thrown from the lookup.
+     *
+     * <p>The comment above about a {@code BATCH_JOB} case being unable to carry a {@code ForcedOutcome}
+     * remains true - that member belongs to {@link ParityCase.ScreenRequest}, which a batch case may not
+     * declare - and it is no longer a reason to keep the arrangement in Java, because
+     * {@link ParityCase.UnitStimulus#callSiteOutcomes()} is declarable by <em>every</em> unit kind and
+     * exists for exactly this.
+     *
+     * @param parityCase the case whose declared arrangement to decode
+     * @return the arrangement; {@link Scenario#CLEAN} when the case declares none
+     * @throws IllegalArgumentException if the case names a site this program has none of, declares an
+     *     outcome shape the site cannot report, names more than one site, or declares a stimulus member
+     *     this program has no use for
      */
-    private static Map<String, Scenario> declaredScenarios() {
-        Map<String, Scenario> declared = new LinkedHashMap<>();
-        declared.put("case01", Scenario.CLEAN);
-        declared.put("case02", Scenario.CLEAN);
-        declared.put("case03", Scenario.CLEAN);
-        declared.put("case04", Scenario.CLEAN);
-        declared.put("case05", Scenario.CLEAN);
-        declared.put("case06", Scenario.CLEAN);
-        declared.put("case07", Scenario.ACCOUNT_REWRITE_NOT_FOUND);
-        declared.put("case08", Scenario.CLEAN);
-        declared.put("case09", Scenario.CLEAN);
-        declared.put("case10", Scenario.CLEAN);
-        declared.put("case11", Scenario.CLEAN);
-        declared.put("case12", Scenario.CLEAN);
-        declared.put("case13", Scenario.CLEAN);
-        declared.put("case14", Scenario.REJECT_WRITE_FAILS);
-        declared.put("case15", Scenario.CLEAN);
-        declared.put("case16", Scenario.CLEAN);
-        declared.put("case17", Scenario.REJECT_OPEN_FAILS);
-        declared.put("case18", Scenario.CLEAN);
-        declared.put("case19", Scenario.TCATBAL_READ_FAILS);
-        declared.put("case20", Scenario.DALYTRAN_READ_FAILS);
-        return Collections.unmodifiableMap(declared);
+    private static Scenario scenarioOf(ParityCase parityCase) {
+        return scenarioFrom(parityCase.caseId(), parityCase.unitStimulus());
     }
 
     /**
-     * The arrangement one case runs under.
+     * Decodes a declared stimulus into the arrangement it describes.
      *
-     * @param caseId the case identifier the harness handed the adapter
-     * @return the declared arrangement; never {@code null}
-     * @throws IllegalStateException if the table has no entry, which means a case file exists that
-     *     nothing arranged - it would then run cleanly while its expectations described a failure, and
-     *     the failure message would be about display lines rather than about the omission
+     * @param caseId   the case, for a diagnostic only - never for a decision
+     * @param stimulus the declared stimulus
+     * @return the arrangement; never {@code null}
+     * @throws IllegalArgumentException if the stimulus is malformed or declares something unusable
      */
-    private static Scenario scenarioFor(String caseId) {
-        Scenario scenario = SCENARIOS.get(caseId);
-        if (scenario == null) {
-            throw new IllegalStateException("No scenario is declared for " + PROGRAM + '/' + caseId
-                + ". Every one of the " + ParityHarness.CASES_PER_PROGRAM + " cases states the backend "
-                + "behaviour it runs under, because a batch case cannot carry a ForcedOutcome - that "
-                + "member belongs to ParityCase.ScreenRequest, which a BATCH_JOB case may not declare. "
-                + "Declared: " + SCENARIOS.keySet() + '.');
+    private static Scenario scenarioFrom(String caseId, ParityCase.UnitStimulus stimulus) {
+        if (!stimulus.operationScript().isEmpty() || !stimulus.linkage().isEmpty()) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares an operationScript or "
+                + "linkage values. CBTRN02C reaches its six datasets through repositories rather than "
+                + "through a called subprogram, and app/jcl/POSTTRAN.jcl declares no PARM on STEP15, so "
+                + "it takes no linkage either.");
         }
-        return scenario;
+        if (!stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares a step status or an "
+                + "environment variant. app/jcl/POSTTRAN.jcl gates STEP15 with no COND, and none of the "
+                + "permitted environment keys names anything this program can observe.");
+        }
+        if (stimulus.callSiteOutcomes().isEmpty()) {
+            return Scenario.CLEAN;
+        }
+        if (stimulus.callSiteOutcomes().size() > 1) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares outcomes at "
+                + stimulus.callSiteOutcomes().keySet() + ". One arrangement per case, deliberately: five "
+                + "of the six arms end in an abend, so a run arranged to fail at two sites would never "
+                + "reach the second and the case would assert half of what it says.");
+        }
+
+        Map.Entry<String, ParityCase.CallSiteOutcome> declared =
+            stimulus.callSiteOutcomes().entrySet().iterator().next();
+        String site = declared.getKey();
+        ParityCase.CallSiteOutcome outcome = declared.getValue();
+        if (outcome.resp() != null) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares a CICS RESP at " + site
+                + ". CBTRN02C is a batch program reached by EXEC PGM= in app/jcl/POSTTRAN.jcl and every "
+                + "one of its I/O verbs reports a two-character FILE STATUS.");
+        }
+
+        if (REWRITE_ACCTFILE_SITE.equals(site)) {
+            requireStatus(caseId, site, outcome, FileStatus.NOT_FOUND);
+            requireNoRecordCount(caseId, site, outcome);
+            return Scenario.ACCOUNT_REWRITE_NOT_FOUND;
+        }
+        if (OPEN_DALYREJS_SITE.equals(site)) {
+            requireRefusal(caseId, site, outcome);
+            return Scenario.REJECT_OPEN_FAILS;
+        }
+        if (WRITE_DALYREJS_SITE.equals(site)) {
+            requireRefusal(caseId, site, outcome);
+            return Scenario.REJECT_WRITE_FAILS;
+        }
+        if (READ_DALYTRAN_SITE.equals(site)) {
+            requireStatus(caseId, site, outcome, DALYTRAN_PERMANENT_ERROR_STATUS);
+            if (!Integer.valueOf(1).equals(outcome.afterRecords())) {
+                throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares afterRecords "
+                    + outcome.afterRecords() + " at " + site + ". The arrangement is scoped to the SECOND "
+                    + "read on purpose: the first must succeed and deliver a record the run posts in "
+                    + "full, so the case can assert both that the failure happened and that what "
+                    + "preceded it survived. Declare afterRecords 1.");
+            }
+            return Scenario.DALYTRAN_READ_FAILS;
+        }
+        if (READ_TCATBALF_SITE.equals(site)) {
+            requireStatus(caseId, site, outcome, TCATBAL_READ_FAILURE_STATUS);
+            requireNoRecordCount(caseId, site, outcome);
+            return Scenario.TCATBAL_READ_FAILS;
+        }
+        throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares an outcome at '" + site
+            + "', which is not one of " + List.of(REWRITE_ACCTFILE_SITE, OPEN_DALYREJS_SITE,
+                WRITE_DALYREJS_SITE, READ_DALYTRAN_SITE, READ_TCATBALF_SITE)
+            + ". Those five are the only seams where this program's guards can be reached at all - every "
+            + "other arm is reachable from seeded rows, and arranging one of those would replace the "
+            + "subject with the arrangement.");
+    }
+
+    /**
+     * Requires a declared outcome to name exactly the status the seam can report.
+     *
+     * @param caseId   the case, for the diagnostic
+     * @param site     the declared site name
+     * @param outcome  the declared outcome
+     * @param expected the only status this seam reports
+     * @throws IllegalArgumentException if the outcome refuses the call or names a different status
+     */
+    private static void requireStatus(String caseId, String site,
+                                      ParityCase.CallSiteOutcome outcome, String expected) {
+        if (outcome.isRefused() || !expected.equals(outcome.status())) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares "
+                + (outcome.isRefused() ? "a refusal" : "status '" + outcome.status() + "'") + " at "
+                + site + ", and the status that seam reports is '" + expected + "'. It is named in the "
+                + "case file rather than assumed so the rendered FILE STATUS IS: line in the "
+                + "expectation traces to the declaration that produced it.");
+        }
+    }
+
+    /**
+     * Requires a declared outcome to be a plain refusal, with no status to spell.
+     *
+     * @param caseId  the case, for the diagnostic
+     * @param site    the declared site name
+     * @param outcome the declared outcome
+     * @throws IllegalArgumentException if the outcome names a status or a record count
+     */
+    private static void requireRefusal(String caseId, String site,
+                                       ParityCase.CallSiteOutcome outcome) {
+        if (!outcome.isRefused() || outcome.status() != null) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares status '"
+                + outcome.status() + "' at " + site + ". The reject writer's sink reports a "
+                + "FileStatus.Outcome rather than a two-character image - OTHER carries no status to "
+                + "spell - so this seam is declared as a refusal.");
+        }
+        requireNoRecordCount(caseId, site, outcome);
+    }
+
+    /**
+     * Requires a declared outcome to name no record count.
+     *
+     * @param caseId  the case, for the diagnostic
+     * @param site    the declared site name
+     * @param outcome the declared outcome
+     * @throws IllegalArgumentException if the outcome names one
+     */
+    private static void requireNoRecordCount(String caseId, String site,
+                                             ParityCase.CallSiteOutcome outcome) {
+        if (outcome.afterRecords() != null) {
+            throw new IllegalArgumentException(PROGRAM + '/' + caseId + " declares afterRecords at " + site
+                + ", which is a single call rather than a loop: there is no record count for the "
+                + "arrangement to land after.");
+        }
     }
 
     // =============================================================================================
@@ -703,7 +834,7 @@ final class CBTRN02CParityTest {
      */
     private static UnitOutcome invokePostingJob(Invocation invocation) {
         UnitOutcome.Builder recorder = invocation.recorder();
-        Scenario scenario = scenarioFor(invocation.caseId());
+        Scenario scenario = scenarioFrom(invocation.caseId(), invocation.stimulus());
         Charset charset = invocation.charset();
         JdbcTemplate database = database(invocation.caseId());
         seedDeclaredDatasets(invocation, database);
@@ -726,6 +857,31 @@ final class CBTRN02CParityTest {
     }
 
     /**
+     * A real boundary for the two {@value com.vsergeychik.carddemo.transaction.DalyRejectWriter#DD_NAME}
+     * dispositions, over the same database this case seeds.
+     *
+     * <p>Real rather than declared, because the dispositions are the one part of this step that genuinely
+     * needs a transaction of its own. Spring Batch runs the {@code ItemStream} open and close callbacks
+     * outside the chunk transaction, so the generation clear and the abnormal discard are applied through
+     * {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)} - and a fake
+     * declaration cannot commit anything, which would leave the clear rolled back and this harness
+     * recording a fingerprint over the previous case's rejects.
+     *
+     * <p>It does not disturb the posting verbs. Those run against
+     * {@link #inStepUnitOfWork(java.util.function.Supplier)}'s declaration, which stays exactly as
+     * documented there: one boundary per verb, nothing taken back by an abend - the {@code REQUIRES_NEW}
+     * behaviour case18 exists to prove, which a mock could not supply because it would commit nothing.
+     *
+     * @param database the template whose data source the boundary is bound to
+     * @return a unit of work over that data source
+     */
+    private static DatasetUnitOfWork stepDeclaredUnitOfWork(JdbcTemplate database) {
+        return new DatasetUnitOfWork(new JdbcTransactionManager(
+                Objects.requireNonNull(database.getDataSource(),
+                        "every harness template is built over its own data source")));
+    }
+
+    /**
      * Declares the unit of work the step supplies, runs the work, and always undoes the declaration.
      *
      * <p>{@code CBTRN02C} posts, and every posting verb refuses to run outside a unit of work: the pool
@@ -743,16 +899,32 @@ final class CBTRN02CParityTest {
      * cannot produce. The declaration satisfies the precondition and leaves each statement's durability
      * exactly where the case fixtures expect it.
      *
+     * <p><strong>Synchronization is declared too, not only the transaction.</strong> A real step
+     * transaction activates both, and the difference shows the moment something inside opens a
+     * {@code REQUIRES_NEW} boundary - which the two {@value
+     * com.vsergeychik.carddemo.transaction.DalyRejectWriter#DD_NAME} dispositions do. Without an active
+     * synchronization that nested boundary is the one that initialised it, so on commit it tears the whole
+     * thread state down and takes this declaration with it; every posting verb after the open would then
+     * be refused for want of a unit of work that the launcher would still have had. With it declared, the
+     * nested boundary leaves the outer state exactly as Spring's own suspend-and-resume does.
+     *
      * @param work the work to run
      * @param <T>  what it answers
      * @return what {@code work} answered
      */
     private static <T> T inStepUnitOfWork(java.util.function.Supplier<T> work) {
+        boolean synchronizationDeclaredHere = !TransactionSynchronizationManager.isSynchronizationActive();
+        if (synchronizationDeclaredHere) {
+            TransactionSynchronizationManager.initSynchronization();
+        }
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
             return work.get();
         } finally {
             TransactionSynchronizationManager.setActualTransactionActive(false);
+            if (synchronizationDeclaredHere && TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
         }
     }
 
@@ -900,23 +1072,26 @@ final class CBTRN02CParityTest {
      * A private in-memory database for one case, with the eight relations this step's repositories
      * address between them.
      *
-     * <p>The database is named after the case, so two cases never share one and the name is derived
-     * rather than generated - there is no counter and no random component, hence no static mutable state
-     * (practice B9) and nothing that varies between runs (practice B7). {@code DROP ALL OBJECTS} makes
-     * the setup idempotent, which matters because {@code DB_CLOSE_DELAY=-1} deliberately keeps the
-     * database alive for the JVM: {@code DriverManagerDataSource} opens a connection per operation, and
-     * without it the relations would vanish between the seed and the run.
+     * <p>Each case gets a store of its own, so two cases never share one and nothing is carried between
+     * runs - there is no counter and no random component, hence no static mutable state (practice B9) and
+     * nothing that varies between runs (practice B7). Nothing has to be made idempotent, because a fresh
+     * store starts empty rather than outliving the case that made it.
      *
-     * @param discriminator the case identifier, or another name unique within this class
-     * @return a template over the created relations; never {@code null}
+     * <p><strong>No DDL.</strong> A relation is declared to a {@link RecordImageDataSource}, which holds
+     * record images and has no schema, so gate <strong>G44</strong> - no DDL, no schema migration, no
+     * entity annotation and no generated table definition anywhere in this module - holds with nothing to
+     * reinterpret. Everything above the driver runs unchanged, and that matters most here: this case drives
+     * the whole {@code POSTTRAN} step, so the real {@code JdbcTemplate}, the real repositories, the real
+     * {@code DatasetUnitOfWork} and a real {@code JdbcTransactionManager} are all still in the path, and
+     * each {@code RECOVERY(NONE)} verb still commits in its own boundary.
+     *
+     * @param discriminator the case identifier, retained so a diagnostic can name the case a store
+     *                      belongs to
+     * @return a template over the declared relations; never {@code null}
      */
     private static JdbcTemplate database(String discriminator) {
-        DriverManagerDataSource source = new DriverManagerDataSource(
-            "jdbc:h2:mem:cbtrn02cparity" + discriminator
-                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        source.setDriverClassName("org.h2.Driver");
-        JdbcTemplate database = new JdbcTemplate(source);
-        database.execute("DROP ALL OBJECTS");
+        Objects.requireNonNull(discriminator, "A per-case store is named after the case that owns it");
+        JdbcTemplate database = new JdbcTemplate(new RecordImageDataSource());
         createRelation(database, DALYTRAN_DSNAME, DalyTranRecord.RECORD_LENGTH);
         createRelation(database, TRANSACT_DSNAME, TranRecord.RECORD_LENGTH);
         createRelation(database, SYSTRAN_DSNAME, TranRecord.RECORD_LENGTH);
@@ -931,41 +1106,59 @@ final class CBTRN02CParityTest {
     /**
      * Creates one relation at its copybook-declared width.
      *
-     * <p>{@code VARCHAR} rather than {@code CHAR} on purpose: {@code CHAR} pads and strips trailing
-     * spaces, and a record whose trailing {@code FILLER} span is spaces would come back short - which
-     * would move every later offset and turn gate G21 into a test that cannot fail.
+     * <p>The store never pads and never strips: a record whose trailing {@code FILLER} span is spaces is
+     * held with those spaces, which is what keeps gate G21 a test that can fail. A {@code CHAR} column
+     * would have padded and stripped them, moving every later offset.
      *
-     * @param database the per-case database
-     * @param dsname   the dataset name, used as a delimited identifier
+     * @param database the per-case template
+     * @param dsname   the dataset name
      * @param width    the copybook-declared record length
      */
     private static void createRelation(JdbcTemplate database, String dsname, int width) {
-        database.execute("CREATE TABLE \"" + dsname + "\" ("
-            + IMAGE_COLUMN + " VARCHAR(" + width + "))");
+        store(database).define(dsname, IMAGE_COLUMN, ColumnForm.CHARACTER, width);
+    }
+
+    /**
+     * The store behind a per-case template.
+     *
+     * @param database the per-case template
+     * @return the relations it serves
+     */
+    private static RecordImageStore store(JdbcTemplate database) {
+        return ((RecordImageDataSource) Objects.requireNonNull(database.getDataSource(),
+            "A per-case template always has its store behind it")).store();
     }
 
     /**
      * Inserts one record image verbatim.
      *
-     * @param database the per-case database
+     * @param database the per-case template
      * @param dsname   the dataset name
      * @param image    the record image, already normalised to its copybook width
      */
     private static void seedRow(JdbcTemplate database, String dsname, String image) {
-        database.update("INSERT INTO \"" + dsname + "\" VALUES (?)", image);
+        store(database).seed(dsname, image);
     }
 
     /**
      * Reads a relation back.
      *
-     * @param database the per-case database
+     * <p>The store holds rows in write order, which is the physical-record order
+     * {@code carddemo.physical-sequence.expression} names. An ordering clause over the record-image
+     * column asks for key order instead, so the rows are sorted; any other clause is write order and the
+     * rows are returned as stored.
+     *
+     * @param database the per-case template
      * @param dsname   the dataset name
      * @param ordering the {@code ORDER BY} clause that makes the result deterministic
      * @return the record images in that order; never {@code null}
      */
     private static List<String> rowsOf(JdbcTemplate database, String dsname, String ordering) {
-        return database.queryForList(
-            "SELECT " + IMAGE_COLUMN + " FROM \"" + dsname + "\"" + ordering, String.class);
+        List<String> rows = new ArrayList<>(store(database).rows(dsname));
+        if (ordering.contains(IMAGE_COLUMN)) {
+            rows.sort(Comparator.naturalOrder());
+        }
+        return rows;
     }
 
     // =============================================================================================
@@ -1031,9 +1224,11 @@ final class CBTRN02CParityTest {
             new TransactionRepository(database, bindings, charset, RecordImageForm.CHARACTER,
                 WRITE_ORDER),
             rejectWriter(database, bindings, charset, rejects),
+            stepDeclaredUnitOfWork(database),
             new SuppliedBean<SysoutSink>(sysout),
             clock);
     }
+
 
     /**
      * The daily-transaction repository, arranged only where a case needs the third arm of the read
@@ -1271,6 +1466,46 @@ final class CBTRN02CParityTest {
     // =============================================================================================
 
     /**
+     * Every case's declared stimulus decodes, and every arrangement the program has a seam for is
+     * declared by some case.
+     *
+     * <p>{@link #scenarioFrom(String, ParityCase.UnitStimulus)} refuses a malformed declaration rather
+     * than defaulting it, so a mistyped call-site name fails with the five legal names in the message
+     * instead of running cleanly while the case's expectations describe a failure. What this adds is the
+     * other direction: each of the five seams is named by some case, because an arrangement nothing
+     * declares is a guard arm nothing drives - and four of the five are the only way their arm can be
+     * reached at all, since seeded rows cannot produce an {@code INVALID KEY} on a record just read for
+     * update, a refused {@code OPEN} or {@code WRITE}, or a permanent error on a sequential read.
+     *
+     * <p>It also pins that {@link Scenario#CLEAN} is the majority. A directory where every case arranged
+     * something would be a directory that never exercised the ordinary path.
+     */
+    @Test
+    @DisplayName("decodes every case's stimulus and declares all five arrangements at least once")
+    void everyCaseDeclaresADecodableArrangement() {
+        Map<Scenario, List<String>> byScenario = new LinkedHashMap<>();
+        for (ParityCase parityCase : cases()) {
+            Scenario decoded = scenarioOf(parityCase);
+            assertThat(decoded)
+                .as("%s/%s declares a stimulus that does not decode", PROGRAM, parityCase.caseId())
+                .isNotNull();
+            byScenario.computeIfAbsent(decoded, key -> new ArrayList<>()).add(parityCase.caseId());
+        }
+
+        for (Scenario scenario : Scenario.values()) {
+            assertThat(byScenario.get(scenario))
+                .as("no case declares %s, so the seam it arranges is reached by nothing in this "
+                    + "directory", scenario)
+                .isNotNull()
+                .isNotEmpty();
+        }
+        assertThat(byScenario.get(Scenario.CLEAN))
+            .as("the ordinary path - every operation succeeding and the case decided by its seeded rows "
+                + "alone - must be the majority, or the directory never exercises it")
+            .hasSizeGreaterThan(ParityHarness.CASES_PER_PROGRAM / 2);
+    }
+
+    /**
      * The four reject reasons, byte for byte, and the two that deliberately share a text (practice B4).
      *
      * <p>Transcribed from {@code app/cbl/CBTRN02C.cbl:386}, {@code :398}, {@code :411}, {@code :418} and
@@ -1466,6 +1701,7 @@ final class CBTRN02CParityTest {
             new CardXrefRepository(database, bindings, charset, RecordImageForm.CHARACTER),
             accounts, balances, master,
             rejectWriter(database, bindings, charset, new CollectingRejects(Scenario.CLEAN)),
+            stepDeclaredUnitOfWork(database),
             new SuppliedBean<SysoutSink>(sysout), pinnedClock());
         RunOutcome outcome = inStepUnitOfWork(() -> posting.postTransactions(sysout));
 

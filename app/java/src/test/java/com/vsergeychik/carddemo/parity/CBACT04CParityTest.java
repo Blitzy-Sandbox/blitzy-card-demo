@@ -7,6 +7,7 @@ import com.vsergeychik.carddemo.account.model.AccountRecord;
 import com.vsergeychik.carddemo.account.model.DisclosureGroupRecord;
 import com.vsergeychik.carddemo.card.CardXrefRepository;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
+import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
@@ -31,6 +32,7 @@ import com.vsergeychik.carddemo.transaction.model.TranRecord;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.time.Clock;
+import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,12 +46,16 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The twenty-case parity gate for {@code CBACT04C}, the interest calculator - and the
@@ -179,9 +185,11 @@ final class CBACT04CParityTest {
 
     /**
      * The physical-record ordinal a sequential output is read back in, exactly as
-     * {@code application-test.yml} configures {@code carddemo.physical-sequence.expression}: H2's own
-     * row-identifier pseudo-column, which increases with each insert and therefore returns records in
-     * the order they were written.
+     * {@code application-test.yml} configures {@code carddemo.physical-sequence.expression}: the shipped
+     * test profile names H2's row-identifier pseudo-column, which increases with each insert and therefore
+     * returns records in the order they were written. The record-image store behind this suite holds rows
+     * in write order for the same reason, so an ordering over this expression means the same thing to
+     * both.
      */
     private static final PhysicalSequence WRITE_ORDER = PhysicalSequence.of("_ROWID_");
 
@@ -259,6 +267,14 @@ final class CBACT04CParityTest {
 
     /** {@code app/jcl/INTCALC.jcl} declares one step and no {@code COND}, so nothing gates it. */
     private static final boolean STEP_IS_UNGATED = false;
+
+    /**
+     * The {@code PARM} the hand-arranged runs in this class declare - {@code app/jcl/INTCALC.jcl:22}.
+     *
+     * <p>The declarative cases carry their own, read through {@link #requiredParmDate(Invocation)}; this
+     * is for the runs assembled here, so that no arrangement invents an identifier prefix of its own.
+     */
+    private static final String PINNED_PARM_DATE = "2022071800";
 
     /** The type {@code carddemo.jobs} declares the {@code parmDate} parameter as. */
     private static final String PARM_DATE_TYPE = "string";
@@ -544,6 +560,136 @@ final class CBACT04CParityTest {
     }
 
     /**
+     * The {@code SYSTRAN} generation is discarded when the step ends abnormally, and the account master
+     * is not part of what that removes.
+     *
+     * <p>Two dataset dispositions meet on the abend path and they are not the same disposition.
+     * {@code app/jcl/INTCALC.jcl:37-41} allocates {@code //TRANSACT} as {@code DISP=(NEW,CATLG,DELETE)},
+     * so a step that ends abnormally leaves no generation at all - a partial one is a dataset the
+     * mainframe would not leave. {@code //ACCTFILE} at {@code :33-34} is {@code DISP=SHR} over a
+     * {@code RECOVERY(NONE)} cluster, so the {@code REWRITE} at {@code :356} stands exactly as it
+     * completed. The run below reaches both: the first category balance breaks, rewrites its account and
+     * writes its transaction, and the second names an account the master does not hold, which is the
+     * {@code INVALID KEY} arm at {@code :372-391}.
+     *
+     * <p>Read as a pair with the control run above it. Without the control the empty generation would
+     * prove nothing, because a run that never wrote a record also leaves nothing behind.
+     */
+    @Test
+    @DisplayName("an abnormal end discards the SYSTRAN generation and spares the rewritten account")
+    void theAbnormalDispositionDiscardsTheGenerationAndSparesTheAccountMaster() {
+        final String firstAccount = "00000000001";
+        final String secondAccount = "00000000002";
+
+        JdbcTemplate reaching = arrangementWritingOneTransaction("dispositionNormal", firstAccount,
+            null);
+        CapturedSysout reachingSysout = new CapturedSysout();
+        long recordsRead = job(reaching, ParityHarness.fixedClockAt(
+            ParityHarness.DEFAULT_PINNED_CLOCK), reachingSysout, PINNED_PARM_DATE,
+            ParityHarness.FIXTURE_CHARSET).calculateInterest(PINNED_PARM_DATE, reachingSysout);
+
+        assertThat(recordsRead)
+            .withFailMessage("This run reaches end of file having read the one category balance it was "
+                + "given, so WS-RECORD-COUNT at GOBACK is one. Anything else means the run did not take "
+                + "the path this test is about.")
+            .isEqualTo(1L);
+        assertThat(rowsOf(reaching, SYSTRAN_DSNAME, WRITE_ORDER.orderByClause()))
+            .withFailMessage("10000.00 at 15.00 is 125.00, which is not zero, so :214 is true and "
+                + "1300-B-WRITE-TX writes exactly one record. Without that write this test would prove "
+                + "nothing about the disposition, because an empty generation is also what a run that "
+                + "never wrote leaves behind.")
+            .hasSize(1);
+
+        JdbcTemplate abending = arrangementWritingOneTransaction("dispositionAbnormal", firstAccount,
+            secondAccount);
+        CapturedSysout abendingSysout = new CapturedSysout();
+        AccountInterestCalcJob abendingJob = job(abending, ParityHarness.fixedClockAt(
+            ParityHarness.DEFAULT_PINNED_CLOCK), abendingSysout, PINNED_PARM_DATE,
+            ParityHarness.FIXTURE_CHARSET);
+
+        assertThatThrownBy(() -> abendingJob.calculateInterest(PINNED_PARM_DATE, abendingSysout))
+            .isInstanceOf(AbendException.class)
+            .satisfies(raised -> assertThat(((AbendException) raised).getReturnCode())
+                .withFailMessage("app/cbl/CBACT04C.cbl:378-381 moves 12 into APPL-RESULT before the "
+                    + "abend, so the run's RETURN-CODE is 12.")
+                .isEqualTo(AccountInterestCalcJob.APPL_RESULT_FATAL));
+        assertThat(abendingSysout.lines())
+            .withFailMessage("The abend must be the one this arrangement forces - the INVALID KEY "
+                + "phrase at :374-375 for the account the second category balance names.")
+            .contains(AccountInterestCalcJob.ACCOUNT_NOT_FOUND_PREFIX + secondAccount);
+        assertThat(rowsOf(abending, SYSTRAN_DSNAME, WRITE_ORDER.orderByClause()))
+            .withFailMessage("The abended run wrote one record and then abended, and DISP=(NEW,CATLG,"
+                + "DELETE) deletes the generation a step allocated when the step ends abnormally. A "
+                + "generation left behind here is a partial dataset the mainframe would not leave.")
+            .isEmpty();
+
+        // The control. The break rewrote account 1 before the run abended on account 2, and ACCTFILE's
+        // DISP=SHR keeps it: 194.00 seeded plus 125.00 of interest is 319.00, and both cycle amounts
+        // were zeroed at :353-354.
+        AccountRecord left = AccountRecord.decode(
+            storedAccount(abending, firstAccount).getBytes(ParityHarness.FIXTURE_CHARSET),
+            ParityHarness.FIXTURE_CHARSET);
+        assertThat(left.getAcctCurrBal())
+            .withFailMessage("app/cbl/CBACT04C.cbl:352 adds WS-TOTAL-INT to ACCT-CURR-BAL and :356 "
+                + "rewrites it. That rewrite is durable under DISP=SHR and must survive the abend that "
+                + "followed it, so the account master is not part of what the disposition removes.")
+            .isEqualByComparingTo(new BigDecimal("319.00"));
+        assertThat(left.getAcctCurrCycCredit()).isEqualByComparingTo(new BigDecimal("0.00"));
+        assertThat(left.getAcctCurrCycDebit()).isEqualByComparingTo(new BigDecimal("0.00"));
+    }
+
+    /**
+     * One category balance for {@code firstAccount}, optionally a second for an account the master does
+     * not hold, and the account, cross-reference and disclosure-group records the first one needs.
+     *
+     * <p>Account {@code firstAccount} holds 194.00 and carries group {@code A000000000}, whose rate is
+     * 15.00: 10000.00 at 15.00 over 1200 is 125.00 exactly, so the transaction written is non-zero and
+     * the rewritten balance is 319.00 with no truncation to reason about.
+     *
+     * @param discriminator  the per-arrangement database name, so two arrangements never share a store
+     * @param firstAccount   the account the first category balance names
+     * @param unknownAccount an account named by a second category balance and absent from the master, or
+     *                       {@code null} for the control arrangement
+     * @return a template over the arranged store
+     */
+    private static JdbcTemplate arrangementWritingOneTransaction(String discriminator,
+                                                                String firstAccount,
+                                                                String unknownAccount) {
+        JdbcTemplate database = database(discriminator);
+        seedRow(database, TCATBALF_DSNAME,
+            firstAccount + "01" + "0001" + "0000100000{" + "0".repeat(22));
+        if (unknownAccount != null) {
+            seedRow(database, TCATBALF_DSNAME,
+                unknownAccount + "01" + "0001" + "0000100000{" + "0".repeat(22));
+        }
+        seedRow(database, ACCTDATA_DSNAME, accountImage(firstAccount, "00000001940{",
+            "00000000000{", "00000000000{", "A000000000"));
+        String crossReference = "9680294154603697" + "000000001" + firstAccount;
+        seedRow(database, CARDXREF_DSNAME,
+            crossReference + " ".repeat(CardXrefRecord.RECORD_LENGTH - crossReference.length()));
+        seedRow(database, CARDXREF_AIX_DSNAME,
+            crossReference + " ".repeat(CardXrefRecord.RECORD_LENGTH - crossReference.length()));
+        seedRow(database, DISCGRP_DSNAME, "A000000000" + "01" + "0001" + "00150{" + "0".repeat(28));
+        return database;
+    }
+
+    /**
+     * The stored image of one account, found by its key at offset zero.
+     *
+     * @param database the arranged store
+     * @param acctId   the eleven-byte account identifier
+     * @return the record image
+     */
+    private static String storedAccount(JdbcTemplate database, String acctId) {
+        return rowsOf(database, ACCTDATA_DSNAME, " ORDER BY " + IMAGE_COLUMN + " ASC").stream()
+            .filter(image -> image.startsWith(acctId))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("The account master no longer holds " + acctId
+                + ", although app/jcl/INTCALC.jcl:33-34 binds ACCTFILE DISP=SHR and nothing in "
+                + "CBACT04C deletes a record"));
+    }
+
+    /**
      * The generated identifier's geometry, which is why {@code PARM} is character data (rule R1, and the
      * {@code STRING} at {@code :476-480}).
      *
@@ -754,31 +900,29 @@ final class CBACT04CParityTest {
     //  THE DATASETS, AS RELATIONS
     //
     //  Every dataset this program touches is a relation holding one fixed-width record image per row,
-    //  which is the shape the repositories read and write through JDBC. No DDL is authored for the
-    //  application: these are the test's own relations, created and dropped inside one case, and no
-    //  schema, migration, entity mapping or version column exists anywhere in this module (gate G44).
+    //  which is the shape the repositories read and write through JDBC. Gate G44 - no DDL, no schema
+    //  migration, no entity annotation and no generated table definition anywhere in this module - holds
+    //  literally here: a relation is DECLARED to a RecordImageDataSource, which is a store of record
+    //  images with no schema, so no data-definition statement is executed at all. Everything above the
+    //  driver is unchanged: the real JdbcTemplate, the real repositories, DatasetRelation's real composed
+    //  statements and RecordImageForm's real column read.
     // =============================================================================================
 
     /**
      * A private in-memory database for one case, with the seven relations this step addresses.
      *
-     * <p>The database is named after the case, so two cases never share one and the name is derived
-     * rather than generated - there is no counter and no random component, hence no static mutable state
-     * (practice B9) and nothing that varies between runs (practice B7). {@code DROP ALL OBJECTS} makes
-     * the setup idempotent, which matters because {@code DB_CLOSE_DELAY=-1} deliberately keeps the
-     * database alive for the JVM: {@code DriverManagerDataSource} opens a connection per operation, and
-     * without it the relations would vanish between the seed and the run.
+     * <p>Each case gets a store of its own, so two cases never share one and nothing is carried between
+     * runs - there is no counter and no random component, hence no static mutable state (practice B9) and
+     * nothing that varies between runs (practice B7). Nothing has to be made idempotent either, because a
+     * fresh store starts empty rather than outliving the case that made it.
      *
-     * @param discriminator the case identifier, or another name unique within this class
-     * @return a template over the seven created relations; never {@code null}
+     * @param discriminator the case identifier, retained so a diagnostic can name the case a store
+     *                      belongs to
+     * @return a template over the seven declared relations; never {@code null}
      */
     private static JdbcTemplate database(String discriminator) {
-        DriverManagerDataSource source = new DriverManagerDataSource(
-            "jdbc:h2:mem:cbact04cparity" + discriminator
-                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        source.setDriverClassName("org.h2.Driver");
-        JdbcTemplate database = new JdbcTemplate(source);
-        database.execute("DROP ALL OBJECTS");
+        Objects.requireNonNull(discriminator, "A per-case store is named after the case that owns it");
+        JdbcTemplate database = new JdbcTemplate(new RecordImageDataSource());
         createRelation(database, TCATBALF_DSNAME, TranCatBalRecord.RECORD_LENGTH);
         createRelation(database, ACCTDATA_DSNAME, AccountRecord.RECORD_LENGTH);
         createRelation(database, CARDXREF_DSNAME, CardXrefRecord.RECORD_LENGTH);
@@ -790,43 +934,61 @@ final class CBACT04CParityTest {
     }
 
     /**
-     * Creates one relation at its copybook-declared width.
+     * Declares one relation at its copybook-declared width.
      *
-     * <p>{@code VARCHAR} rather than {@code CHAR} on purpose: {@code CHAR} pads and strips trailing
-     * spaces, and a record whose trailing {@code FILLER} span is spaces would come back short - which
-     * would move every later offset and turn gate G21 into a test that cannot fail.
+     * <p>The store never pads and never strips: a record whose trailing {@code FILLER} span is spaces is
+     * held with those spaces, which is what keeps gate G21 a test that can fail. A {@code CHAR} column
+     * would have padded and stripped them, moving every later offset.
      *
-     * @param database the per-case database
-     * @param dsname   the dataset name, used as a delimited identifier
+     * @param database the per-case template
+     * @param dsname   the dataset name
      * @param width    the copybook-declared record length
      */
     private static void createRelation(JdbcTemplate database, String dsname, int width) {
-        database.execute("CREATE TABLE \"" + dsname + "\" ("
-            + IMAGE_COLUMN + " VARCHAR(" + width + "))");
+        store(database).define(dsname, IMAGE_COLUMN, ColumnForm.CHARACTER, width);
     }
 
     /**
-     * Inserts one record image verbatim.
+     * Stores one record image verbatim.
      *
-     * @param database the per-case database
+     * @param database the per-case template
      * @param dsname   the dataset name
      * @param image    the record image, already normalised to its copybook width
      */
     private static void seedRow(JdbcTemplate database, String dsname, String image) {
-        database.update("INSERT INTO \"" + dsname + "\" VALUES (?)", image);
+        store(database).seed(dsname, image);
+    }
+
+    /**
+     * The store behind a per-case template.
+     *
+     * @param database the per-case template
+     * @return the relations it serves
+     */
+    private static RecordImageStore store(JdbcTemplate database) {
+        return ((RecordImageDataSource) Objects.requireNonNull(database.getDataSource(),
+            "A per-case template always has its store behind it")).store();
     }
 
     /**
      * Reads a relation back.
      *
-     * @param database the per-case database
+     * <p>The store holds rows in write order, which is the physical-record order
+     * {@code carddemo.physical-sequence.expression} names. An ordering clause over the record-image
+     * column asks for key order instead, so the rows are sorted; any other clause is write order and the
+     * rows are returned as stored.
+     *
+     * @param database the per-case template
      * @param dsname   the dataset name
      * @param ordering the {@code ORDER BY} clause that makes the result deterministic
      * @return the record images in that order; never {@code null}
      */
     private static List<String> rowsOf(JdbcTemplate database, String dsname, String ordering) {
-        return database.queryForList(
-            "SELECT " + IMAGE_COLUMN + " FROM \"" + dsname + "\"" + ordering, String.class);
+        List<String> rows = new ArrayList<>(store(database).rows(dsname));
+        if (ordering.contains(IMAGE_COLUMN)) {
+            rows.sort(Comparator.naturalOrder());
+        }
+        return rows;
     }
 
     /**

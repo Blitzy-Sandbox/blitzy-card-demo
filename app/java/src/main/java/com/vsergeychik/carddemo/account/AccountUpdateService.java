@@ -13,6 +13,7 @@ import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Locale;
@@ -758,13 +759,54 @@ public class AccountUpdateService {
      *                          accepted and means the cleared state {@code :876} establishes on every
      *                          pass - see {@link #isReturnMessageOff(String)}
      * @param codec             the codec carrying the code page, and the owner of every pad, truncate
-     *                          and concatenate rule used here
+     *                          and concatenate rule used here. It <strong>must</strong> carry the code
+     *                          page both repositories read and write in - see
+     *                          {@link #requireDatasetCodePage(FixedWidthCodec)}, because the two images
+     *                          this paragraph stages are decoded into records with it and then written
      * @return the outcome, never {@code null}
      * @throws NullPointerException     if {@code navigationContext}, {@code oldDetails},
      *                                  {@code newDetails} or {@code codec} is {@code null}
-     * @throws IllegalArgumentException if {@code oldDetails} is not the {@link DetailGroup#OLD} group or
-     *                                  {@code newDetails} is not the {@link DetailGroup#NEW} group
+     * @throws IllegalArgumentException if {@code oldDetails} is not the {@link DetailGroup#OLD} group,
+     *                                  {@code newDetails} is not the {@link DetailGroup#NEW} group, or
+     *                                  {@code codec} does not carry the repositories' own code page
      */
+    /**
+     * Refuses a codec that does not carry the code page the two datasets are actually stored in.
+     *
+     * <p><strong>Why this is a guard and not a conversion.</strong> Steps 8 to 11 stage an account image
+     * and a customer image as characters, decode each into its record with {@code codec.charset()}, and
+     * hand the records to the repositories, which write {@code record.toByteArray()} verbatim. Nothing
+     * downstream transcodes. So a codec over a different code page does not produce a rejected write or
+     * a visible failure - it produces a written record whose every byte outside the invariant range is
+     * wrong, in the dataset, silently. An earlier revision passed a hard-coded {@code US-ASCII} codec
+     * from the controller while production reads and writes {@code IBM037}, and the
+     * {@code US-ASCII} test profile made the two agree, which is exactly why no test caught it.
+     *
+     * <p>Both repositories are checked, and against each other implicitly: each staged image is decoded
+     * with the same codec, so a deployment whose account master and customer master were bound to
+     * different code pages could not be served by one call at all, and saying so here is better than
+     * writing one of the two correctly.
+     *
+     * <p>{@link IllegalArgumentException} rather than a {@link WriteResult} outcome: this is a wiring
+     * mistake in the caller, not a file status {@code COACTUPC} can report on a screen, and there is no
+     * {@code EVALUATE} arm at {@code :4076-4103} for it.
+     *
+     * @param codec the caller's codec; never {@code null} by the time this runs
+     * @throws IllegalArgumentException if the codec's code page is not the one both repositories use
+     */
+    private void requireDatasetCodePage(FixedWidthCodec codec) {
+        Charset acctCharset = accountRepository.datasetCharset();
+        Charset custCharset = customerRepository.datasetCharset();
+        if (!codec.charset().equals(acctCharset) || !codec.charset().equals(custCharset)) {
+            throw new IllegalArgumentException("The codec passed to 9600-WRITE-PROCESSING carries code "
+                    + "page " + codec.charset().name() + ", but the account master is stored in "
+                    + acctCharset.name() + " and the customer master in " + custCharset.name() + ". "
+                    + "The staged 300-byte and 500-byte images are decoded with this codec and written "
+                    + "verbatim, so a mismatch would corrupt every byte outside the invariant range "
+                    + "instead of failing; the caller must pass the active dataset codec.");
+        }
+    }
+
     public WriteResult writeProcessing(String ccAcctId,
                                       NavigationContext navigationContext,
                                       AccountUpdateDetails oldDetails,
@@ -781,6 +823,9 @@ public class AccountUpdateService {
                 + "MOVE with a declared width, and the codec owns the pad and truncate rules");
         requireGroup(oldDetails, DetailGroup.OLD, "ACUP-OLD-DETAILS", "669-756");
         requireGroup(newDetails, DetailGroup.NEW, "ACUP-NEW-DETAILS", "757-855");
+        // Last of the four, and deliberately: the three above are decided from the arguments alone, so a
+        // malformed call is still refused without asking a repository anything.
+        requireDatasetCodePage(codec);
 
         try {
             return unitOfWork.execute(UNIT_OF_WORK_DESCRIPTION, () -> {

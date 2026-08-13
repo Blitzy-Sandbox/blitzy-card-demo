@@ -18,6 +18,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Objects;
 
@@ -113,13 +114,20 @@ import java.util.Objects;
  *
  * <h2>{@code SYSOUT}, and where the lines actually go</h2>
  *
- * <p>{@code CBCUS01C}'s entire observable output is that {@code DISPLAY} sequence.
- * {@link CustomerService} accumulates it in a {@link Sysout} it returns, which is what parity cases are
- * judged against. This class is what puts it on the real spool.
+ * <p>{@code CBCUS01C}'s entire observable output is that {@code DISPLAY} sequence. This class is what
+ * puts it on the real spool, and it does so <strong>as the read runs</strong>: the step calls
+ * {@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)}, the streaming entry point, so each
+ * line reaches the sink at the moment the program emits it and nothing holds a copy. The
+ * {@link Sysout}-returning overloads that accumulate the whole sequence exist for parity cases and unit
+ * tests, which have to compare it; a batch run must not use them. {@code READCUST.jcl} places no ceiling
+ * on the customer master, and every record contributes two 500-character lines, so retaining the
+ * sequence would cost memory proportional to the dataset for output already written - and would delay
+ * the first spooled line until end-of-file.
  *
  * <p>The destination is an injected {@link SysoutSink} when the context publishes one - which is how a
- * test captures the exact line sequence - and {@link CustomerService#standardOutputSysoutSink()}
- * otherwise. Both the sink type and the default are {@link CustomerService}'s, deliberately: the
+ * test captures the exact line sequence - and {@link CustomerService#standardOutput(Charset)} over
+ * {@link CustomerService#datasetCharset()} otherwise. Both the sink type and the default are
+ * {@link CustomerService}'s, deliberately: the
  * {@code SYSOUT} of {@value CustomerService#PROGRAM_ID} belongs to the translation of
  * {@value CustomerService#PROGRAM_ID}, and a second sink type declared here would be a second
  * definition of one program's output - the kind of duplicate that lets a spooled line and a
@@ -146,10 +154,12 @@ import java.util.Objects;
  *
  * <p><strong>A failing run's lines reach the spool too.</strong> On the mainframe the {@code DISPLAY}
  * statements a run performed before it abended are already in the spool - {@code CEE3ABD} does not
- * retract them - so the sink is written from a {@code finally} and the abend is rethrown afterwards.
- * That is why the tasklet holds the {@link Sysout} itself instead of using
+ * retract them. Streaming gives that for nothing: each line is at the destination the moment the program
+ * emits it, so the error text, the rendered file status and {@code ABENDING PROGRAM} that the three fatal
+ * arms write before the throw are spooled without the tasklet doing anything to preserve them. This is
+ * the other reason the streaming entry point is used rather than
  * {@link CustomerService#readAndPrintCustomerFile()}: a run that abends never returns an
- * {@link Execution}, and the only way to emit what it did display is to have held the sink beforehand.
+ * {@link Execution}, so a caller that waited for one would have nothing to emit.
  *
  * <h2>The exit status</h2>
  *
@@ -161,11 +171,12 @@ import java.util.Objects;
  *
  * <h2>State</h2>
  *
- * <p>A {@code @Configuration} class is a singleton, so nothing per-run lives on it: the {@link Sysout}
- * and every item of {@code WORKING-STORAGE} are created per execution (practice <strong>B9</strong>,
- * gate <strong>G53</strong>). Its four fields - the batch scaffolding, the service, the resolved sink
- * and the validated step contract - are all {@code final}, and all four are settled by the time the
- * constructor returns. There is no counter, no cursor and no accumulated total: the read count a run
+ * <p>A {@code @Configuration} class is a singleton, so nothing per-run lives on it: the per-run
+ * {@link Sysout} façade and every item of {@code WORKING-STORAGE} are created inside the service call,
+ * once per execution (practice <strong>B9</strong>, gate <strong>G53</strong>). Its four fields - the
+ * batch scaffolding, the service, the resolved sink and the validated step contract - are all
+ * {@code final}, and all four are settled by the time the constructor returns. There is no counter, no
+ * cursor, no accumulated total and <strong>no retained line sequence</strong>: the read count a run
  * reports is a local of the tasklet call, so two executions of this bean cannot observe each other and
  * the parity cases may run in any order, and in parallel, and still agree.
  *
@@ -257,13 +268,21 @@ public class CustomerFileReaderJob {
      * deciding how they are decoded - belongs to the layer that does it, and this class reads none. The
      * parameter list is the enforcement, so the omissions are also scan-conclusive.
      *
+     * <p>That last omission is why the default {@code SYSOUT} sink below is built over
+     * {@link CustomerService#datasetCharset()} and not over a charset of this class's choosing: the
+     * spooled lines are the customer master's own stored characters, so the honest code page for them is
+     * the one the record was read in, and only {@link CustomerService} knows it. Asking is correct here;
+     * accepting a {@code Charset} parameter would let a deployment spool one program's records in a code
+     * page the same program did not read them in.
+     *
      * @param batchConfig        the module's batch scaffolding; never {@code null}
      * @param customerService    the translation of {@value CustomerService#PROGRAM_ID}; never
      *                           {@code null}
      * @param sysoutSinkProvider provider for an injected {@code SYSOUT} destination, consulted once and
-     *                           defaulted to {@link CustomerService#standardOutputSysoutSink()} when the
-     *                           context declares none; never {@code null}, though it may resolve to
-     *                           nothing
+     *                           defaulted to the service's own
+     *                           {@link CustomerService#standardOutputSysoutSink()} - which encodes in the
+     *                           active dataset code page - when the context declares none; never
+     *                           {@code null}, though it may resolve to nothing
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if the contract is absent, names another program, or gates this
      *                               job's only step
@@ -282,7 +301,13 @@ public class CustomerFileReaderJob {
         Objects.requireNonNull(sysoutSinkProvider, "A SYSOUT sink provider is required; it may resolve "
                 + "to no bean, in which case the standard output stream is used");
 
-        this.sysoutSink = sysoutSinkProvider.getIfAvailable(CustomerService::standardOutputSysoutSink);
+        // //SYSOUT DD SYSOUT=*  - app/jcl/READCUST.jcl:11. Resolved once so the destination cannot
+        // change between two records of a run. The service owns the repository, so it owns the code
+        // page the customer master is read in - which is the code page a displayed 500-byte record has
+        // to be encoded in. Asking it for the sink rather than for the charset keeps that knowledge in
+        // one place, and never the platform default (practice B8).
+        this.sysoutSink =
+                sysoutSinkProvider.getIfAvailable(this.customerService::standardOutputSysoutSink);
         this.stepContract = requireUngatedStep(batchConfig);
     }
 
@@ -379,10 +404,25 @@ public class CustomerFileReaderJob {
      * <p>The read count is step metadata rather than COBOL output - {@code CBCUS01C} keeps no counter of
      * its own - so it is reported to the framework and never displayed.
      *
-     * <p>The {@code finally} is what puts a failing run's {@code DISPLAY} lines on the spool: the three
-     * fatal arms each emit their error text, the rendered file status and {@code ABENDING PROGRAM}
-     * before the throw leaves the service, and on the mainframe those lines are in the spool whether or
-     * not the step went on to complete. Nothing is caught, so the abend still reaches the framework.
+     * <p><strong>Every line goes to the sink as the program emits it, and none is retained.</strong>
+     * {@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)} writes one call per
+     * {@code DISPLAY} straight to the resolved destination, so a record's two 500-character images are
+     * spooled and forgotten before the next record is read. The {@link Execution}-returning overloads
+     * hold the whole sequence in a list instead, which is right for a parity case that has to compare it
+     * and wrong for a batch run: {@code READCUST.jcl} puts no ceiling on the customer master, so
+     * retaining the sequence would cost memory proportional to the dataset - for output that has already
+     * been written - and would hold the first line back until end-of-file.
+     *
+     * <p><strong>A failing run's lines reach the spool too, and streaming is what makes that
+     * automatic.</strong> The three fatal arms each emit their error text, the rendered file status and
+     * {@code ABENDING PROGRAM} before the throw leaves the service, so by the time the exception
+     * arrives here those lines are already at the destination - exactly as on the mainframe, where
+     * {@code CEE3ABD} does not retract what a run displayed. No {@code finally} is needed to achieve it,
+     * and nothing is caught, so the abend still reaches the framework.
+     *
+     * <p>An abending run reports no read count, which is unchanged: the count is returned by the call
+     * that threw, so the loop below never runs. On the mainframe the step's read count is likewise not a
+     * figure the abending program published.
      *
      * @param contribution the step's contribution, which the read count is reported to
      * @param chunkContext the framework's chunk context; unused, because a tasklet that runs once has
@@ -393,16 +433,14 @@ public class CustomerFileReaderJob {
      *                        fatal
      */
     private RepeatStatus executeStep(StepContribution contribution, ChunkContext chunkContext) {
-        Sysout sysout = new Sysout();
-        try {
-            Execution execution = readAndPrintCustomerFile(sysout);
-            for (int recorded = 0; recorded < execution.recordsRead(); recorded++) {
-                contribution.incrementReadCount();
-            }
-            return RepeatStatus.FINISHED;
-        } finally {
-            spool(sysout.lines());
+        int recordsRead = customerService.readAndPrintCustomerFileTo(sysoutSink);
+
+        // Step metadata, not COBOL output: CBCUS01C keeps no counter, so this is reported and never
+        // displayed. One call per record, which is what READCUST.jcl's step reports as read.
+        for (int recorded = 0; recorded < recordsRead; recorded++) {
+            contribution.incrementReadCount();
         }
+        return RepeatStatus.FINISHED;
     }
 
     /**
@@ -418,23 +456,6 @@ public class CustomerFileReaderJob {
      */
     public Execution readAndPrintCustomerFile(Sysout sysout) {
         return customerService.readAndPrintCustomerFile(sysout);
-    }
-
-    /**
-     * Writes an accumulated {@code DISPLAY} sequence to the resolved {@code SYSOUT} destination.
-     *
-     * <p>In order, verbatim, and one call per line - a {@code DISPLAY} produces one line. Nothing is
-     * trimmed: a raw {@code CUSTOMER-RECORD} image ends in the 168 spaces of {@code CVCUS01Y}'s
-     * trailing {@code FILLER}, and they are part of the emitted line (gate G21).
-     *
-     * @param lines the lines to emit, in emission order; must not be {@code null}
-     * @throws NullPointerException if {@code lines} is {@code null}
-     */
-    private void spool(List<String> lines) {
-        Objects.requireNonNull(lines, "A run always has a line sequence, empty or not");
-        for (String line : lines) {
-            sysoutSink.write(line);
-        }
     }
 
     /**

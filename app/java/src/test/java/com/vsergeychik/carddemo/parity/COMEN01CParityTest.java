@@ -517,9 +517,9 @@ class COMEN01CParityTest {
             List.of("repository", "jdbctemplate", "datasource", "connection", "entitymanager");
 
     // =================================================================================================
-    // Section 5 - case dispatch. Every one of the twenty case identifiers appears exactly once, and
-    // the absence of a default arm is deliberate: a new case that nobody wired up must not run
-    // through some fallback adapter and pass.
+    // Section 5 - case dispatch, by declared unit kind. There is no table of case identifiers here and
+    // no arm keyed on one: a case's own unitKind selects its adapter, so a renumbered case keeps the
+    // adapter it declares and a case file added without a Java change is dispatched correctly.
     // =================================================================================================
 
     /**
@@ -544,13 +544,28 @@ class COMEN01CParityTest {
      */
     private static final byte UNRESOLVABLE_AID = (byte) 0x07;
 
-    /** Case identifiers driven through {@link MainMenuController} as a plain Java object. */
-    private static final List<String> CONTROLLER_CASES = List.of("case01", "case16", "case20");
+    /**
+     * The {@link ParityCase.UnitStimulus#PERMITTED_ENVIRONMENT_KEYS} entry a case names to run over an
+     * option table other than the copybook's own.
+     *
+     * <p>{@code app/cpy/COMEN02Y.cpy} carries {@code 'U'} in all ten {@code CDEMO-MENU-OPT-USRTYPE}
+     * columns and its {@code OCCURS 12} slots past the populated range are storage rather than data, so
+     * the table is the one input to this program that cannot be expressed as a seeded row. That is why
+     * the key exists.
+     */
+    private static final String MENU_TABLE_VARIANT_KEY = "MENU_TABLE_VARIANT";
 
-    /** Case identifiers driven through {@link MainMenuService} with the copybook option table. */
-    private static final List<String> SERVICE_CASES =
-            List.of("case02", "case03", "case04", "case05", "case06", "case07", "case08", "case13",
-                    "case14", "case15");
+    /**
+     * The variant naming {@link #adminOnlyFirstEntryTable()} - the copybook's first entry with its
+     * authorisation column changed to {@code 'A'} and nothing else, offered as the only active option.
+     */
+    private static final String ADMIN_ONLY_FIRST_ENTRY_VARIANT = "ADMIN_ONLY_FIRST_ENTRY";
+
+    /**
+     * The variant naming {@link #adminOnlySlotThreeTable()} - four valued entries with an active count
+     * of one, the third carrying {@code 'A'}, so an option the guard rejects still finds a real column.
+     */
+    private static final String ADMIN_ONLY_SLOT_THREE_VARIANT = "ADMIN_ONLY_SLOT_THREE";
 
     // =================================================================================================
     // Section 6 - the gate itself.
@@ -638,59 +653,143 @@ class COMEN01CParityTest {
     }
 
     /**
-     * Every case is dispatched by name, and no case falls through to a default adapter.
+     * Every case resolves to an adapter, and the adapter it resolves to is the one its declared unit
+     * kind names.
      *
-     * <p>{@link #unitFor(ParityCase)} has no fallback arm, so a case nobody wired up throws rather
-     * than running through some default adapter and reporting a clean diff for the wrong reason. This
-     * test is what turns that throw into a named failure at build time.
+     * <p>{@link #unitFor(ParityCase)} reads {@link ParityCase#unitKind()} and nothing else, so this is
+     * total by construction rather than by a table someone has to keep in step with the directory. What
+     * is worth asserting is that the totality is real: every case yields a non-null adapter, and no case
+     * declares a kind this program has no adapter for - a {@code BATCH_JOB} or {@code SUBPROGRAM}
+     * declaration on an online transaction would otherwise fall into the service arm and run.
      */
     @Test
-    @DisplayName("dispatches all twenty cases by name, with no case falling through")
-    void everyCaseIsDispatchedByName() {
+    @DisplayName("resolves every case to the adapter its declared unit kind names")
+    void everyCaseIsDispatchedByItsDeclaredUnitKind() {
         List<String> dispatched = new ArrayList<>();
         for (ParityCase parityCase : cases()) {
             assertThat(unitFor(parityCase))
-                    .describedAs("%s has no adapter", parityCase.caseId())
+                    .describedAs("%s resolves to no adapter", parityCase.caseId())
                     .isNotNull();
+            assertThat(parityCase.unitKind())
+                    .describedAs("%s declares %s, and %s is an online transaction reached as either a "
+                            + "service or a controller; no other kind has an adapter here",
+                            parityCase.caseId(), parityCase.unitKind(), PROGRAM)
+                    .isIn(UnitKind.SERVICE, UnitKind.CONTROLLER_POJO);
             dispatched.add(parityCase.caseId());
         }
 
         assertThat(dispatched).hasSize(ParityHarness.CASES_PER_PROGRAM).doesNotHaveDuplicates();
-        assertThat(CONTROLLER_CASES).doesNotHaveDuplicates();
-        assertThat(SERVICE_CASES).doesNotHaveDuplicates();
-        assertThat(CONTROLLER_CASES).doesNotContainAnyElementsOf(SERVICE_CASES);
     }
 
     /**
-     * The declared unit kind matches the adapter that will be used, for every case.
+     * The declared unit kinds are exactly seventeen {@link UnitKind#SERVICE} and three
+     * {@link UnitKind#CONTROLLER_POJO}, and the three are the ones the class documentation names.
      *
-     * <p>{@link ParityHarness#run(ParityCase, UnitKind, ParityUnit)} already refuses a mismatch, but
-     * it refuses it one case at a time and only when that case runs. Checking the whole set here turns
-     * a mis-declared fixture into one failure that names it.
+     * <p>{@link ParityHarness#run(ParityCase, UnitKind, ParityUnit)} already refuses a mismatch between
+     * the declared kind and the adapter, but it refuses it one case at a time and only when that case
+     * runs. Counting the whole set here turns a mis-declared fixture into one failure that names it.
      *
-     * <p>The split is not arbitrary: the authorisation filter is the <strong>service's</strong> work,
-     * not the controller's, so every case that drives the filter must be a {@code SERVICE} case, and
-     * the three {@code CONTROLLER_POJO} cases are exactly the ones that need the header fields or the
+     * <p>The split is not arbitrary: the authorisation filter is the <strong>service's</strong> work, not
+     * the controller's, so every case that drives the filter must be a {@code SERVICE} case, and the
+     * three {@code CONTROLLER_POJO} cases are exactly the ones that need the header fields or the
      * seventy-eight-byte {@code ERRMSGO} the controller alone produces.
      */
     @Test
-    @DisplayName("declares SERVICE for the seventeen service cases and CONTROLLER_POJO for the three")
-    void everyCaseDeclaresTheUnitKindItsAdapterConstructs() {
-        for (ParityCase parityCase : cases()) {
-            UnitKind expected = CONTROLLER_CASES.contains(parityCase.caseId())
-                    ? UnitKind.CONTROLLER_POJO
-                    : UnitKind.SERVICE;
-            assertThat(parityCase.unitKind())
-                    .describedAs("%s is dispatched as %s but declares %s", parityCase.caseId(),
-                            expected, parityCase.unitKind())
-                    .isEqualTo(expected);
-        }
-        assertThat(cases().stream().filter(one -> one.unitKind() == UnitKind.CONTROLLER_POJO).count())
-                .isEqualTo(CONTROLLER_CASES.size());
-        assertThat(cases().stream().filter(one -> one.unitKind() == UnitKind.SERVICE).count())
+    @DisplayName("declares SERVICE for seventeen cases and CONTROLLER_POJO for case01, case16, case20")
+    void theDeclaredUnitKindsAreSeventeenServicesAndThreeControllers() {
+        List<String> controllers = cases().stream()
+                .filter(one -> one.unitKind() == UnitKind.CONTROLLER_POJO)
+                .map(ParityCase::caseId)
+                .toList();
+        List<String> services = cases().stream()
+                .filter(one -> one.unitKind() == UnitKind.SERVICE)
+                .map(ParityCase::caseId)
+                .toList();
+
+        assertThat(controllers)
+                .describedAs("the three cases that need the controller are the ones observing the six "
+                        + "POPULATE-HEADER-INFO fields and the 78-byte ERRMSGO truncation")
+                .containsExactly("case01", "case16", "case20");
+        assertThat(services)
                 .describedAs("the filter cases must be SERVICE cases, because the filter is the "
                         + "service's job and the controller cannot reach it")
-                .isEqualTo(ParityHarness.CASES_PER_PROGRAM - CONTROLLER_CASES.size());
+                .hasSize(ParityHarness.CASES_PER_PROGRAM - controllers.size());
+        assertThat(services.size() + controllers.size())
+                .isEqualTo(ParityHarness.CASES_PER_PROGRAM);
+    }
+
+    /**
+     * Both option-table variants the authorisation filter needs are actually declared by some case, and
+     * only by a case whose declared inputs can reach the arm the variant exists for.
+     *
+     * <p>{@code app/cpy/COMEN02Y.cpy} carries {@code 'U'} in all ten of its authorisation columns, so
+     * without a declared variant the true arm of {@code app/cbl/COMEN01C.cbl:136-137} is unreachable and
+     * gate {@code G30}'s claim that every arm is exercised would be false. This is what guarantees the
+     * declarations exist rather than trusting that they do, and it names any variant string no adapter
+     * arm implements - which the adapter would refuse at run time, one case at a time.
+     */
+    @Test
+    @DisplayName("declares both admin-only table variants, on cases whose inputs reach their arms")
+    void theCaseSetDeclaresBothOptionTableVariants() {
+        Map<String, List<String>> byVariant = new LinkedHashMap<>();
+        for (ParityCase parityCase : cases()) {
+            parityCase.unitStimulus().environmentValue(MENU_TABLE_VARIANT_KEY).ifPresent(variant -> {
+                assertThat(variant)
+                        .describedAs("%s declares a variant no adapter arm implements", parityCase.caseId())
+                        .isIn(ADMIN_ONLY_FIRST_ENTRY_VARIANT, ADMIN_ONLY_SLOT_THREE_VARIANT);
+                byVariant.computeIfAbsent(variant, key -> new ArrayList<>()).add(parityCase.caseId());
+                assertThat(parityCase.unitKind())
+                        .describedAs("%s declares an option table, and only a SERVICE run is handed one",
+                                parityCase.caseId())
+                        .isEqualTo(UnitKind.SERVICE);
+                assertThat(parityCase.screenRequest().mapFields().get(OPTION_INPUT_FIELD))
+                        .describedAs("%s declares an option table to drive the filter, and the filter "
+                                + "needs an entered option to subscript with", parityCase.caseId())
+                        .isNotNull();
+            });
+        }
+
+        assertThat(byVariant.get(ADMIN_ONLY_FIRST_ENTRY_VARIANT))
+                .describedAs("the refusal and the administrator isolation both run over this variant, "
+                        + "and they are a controlled comparison: one byte of CDEMO-USER-TYPE apart")
+                .isNotNull()
+                .hasSizeGreaterThanOrEqualTo(2);
+        assertThat(byVariant.get(ADMIN_ONLY_SLOT_THREE_VARIANT))
+                .describedAs("and the ungated filter after a failed validation runs over this one")
+                .isNotNull()
+                .isNotEmpty();
+    }
+
+    /**
+     * Some case declares a {@code CDEMO-USER-TYPE} satisfying neither {@code 88}, so the pass-through
+     * assertion is not only ever exercised on a byte the program has a name for.
+     *
+     * <p>{@code app/cpy/COCOM01Y.cpy} declares {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'}, and the field is {@code PIC X(01)} - so 254 other bytes
+     * are possible and the program names none of them. Because
+     * {@code app/cbl/COMEN01C.cbl:149-150} are commented out, such a byte must cross the whole dispatch
+     * path unchanged, and a translation that had implemented line 150 - defaulting the type from a
+     * security-file lookup, say - would be caught by that case alone. Every case declaring {@code 'A'}
+     * or {@code 'U'} would pass a defaulting translation.
+     */
+    @Test
+    @DisplayName("declares a CDEMO-USER-TYPE satisfying neither 88, so the pass-through is not vacuous")
+    void theCaseSetDeclaresAUserTypeSatisfyingNeitherCondition() {
+        List<String> neither = new ArrayList<>();
+        for (ParityCase parityCase : cases()) {
+            String declared = parityCase.screenRequest().commarea().get(NavigationContext.USER_TYPE_FIELD);
+            if (declared != null && !ADMIN_ONLY_USRTYPE.equals(declared)
+                    && !REGULAR_USER_USRTYPE.equals(declared)) {
+                neither.add(parityCase.caseId());
+            }
+        }
+
+        assertThat(neither)
+                .describedAs("no case declares a %s outside {'%s','%s'}, so nothing proves the field is "
+                        + "inbound only: a translation that defaulted it from SEC-USR-TYPE would pass "
+                        + "every case in the directory", NavigationContext.USER_TYPE_FIELD,
+                        ADMIN_ONLY_USRTYPE, REGULAR_USER_USRTYPE)
+                .isNotEmpty();
     }
 
     /**
@@ -766,10 +865,24 @@ class COMEN01CParityTest {
                                 field.getKey())
                         .isEqualTo(commareaWidths.get(field.getKey()));
             }
-            assertThat(parityCase.expectedResponse().navigation())
-                    .describedAs("%s must pin all sixteen COMMAREA fields, because the differ compares "
-                            + "the navigation context in both directions", parityCase.caseId())
-                    .hasSameSizeAs(commareaWidths);
+            // A case states the communication area completely or states its absence completely; a
+            // partial map would leave the unpinned fields unchecked in both directions. Absence is only
+            // reachable through the bare XCTL PROGRAM(CDEMO-TO-PROGRAM) at
+            // app/cbl/COMEN01C.cbl:175-177, which names no COMMAREA option - a RETURN always carries the
+            // area, because line 109 states COMMAREA(CARDDEMO-COMMAREA) unconditionally.
+            if (parityCase.expectedResponse().navigation().isEmpty()) {
+                assertThat(parityCase.expectedResponse().termination())
+                        .describedAs("%s pins no COMMAREA field, which only the no-COMMAREA transfer at "
+                                + "app/cbl/COMEN01C.cbl:175-177 can produce; a RETURN always carries the area",
+                                parityCase.caseId())
+                        .isEqualTo(ParityCase.Termination.XCTL);
+            } else {
+                assertThat(parityCase.expectedResponse().navigation())
+                        .describedAs("%s must pin all sixteen COMMAREA fields, because the differ "
+                                + "compares the navigation context in both directions",
+                                parityCase.caseId())
+                        .hasSameSizeAs(commareaWidths);
+            }
 
             for (var send : parityCase.expectedResponse().sends()) {
                 for (Map.Entry<String, String> field : send.fields().entrySet()) {
@@ -1088,49 +1201,72 @@ class COMEN01CParityTest {
     }
 
     // =================================================================================================
-    // Section 8 - the adapters. One per shape, chosen by case identifier, each constructing its unit
-    // and calling it as a plain object. Assertions that need the unit itself live inside the adapter,
-    // where the instance is in scope; an AssertionError raised there is an Error rather than an
-    // Exception, so the harness lets it through untouched and the failure reads at its own call site.
+    // Section 8 - the adapters. Two, one per declared unit kind, each constructing its unit and calling
+    // it as a plain object. Assertions that need the unit itself live inside the adapter, where the
+    // instance is in scope; an AssertionError raised there is an Error rather than an Exception, so the
+    // harness lets it through untouched and the failure reads at its own call site. Probes that used to
+    // be adapters of their own are applied here instead - unconditionally where they hold on every
+    // path, and otherwise guarded by the declaration that produces the run rather than by an ordinal.
     // =================================================================================================
 
     /**
-     * The adapter one case is run through, selected by name.
+     * The adapter one case is run through, selected by the unit kind the case declares.
      *
-     * <p>No fallback arm, deliberately: a case identifier nobody wired up throws here instead of
-     * running through a default adapter and reporting a clean diff for the wrong reason.
+     * <h2>Why this is two arms and not ten</h2>
+     * <p>It used to be a {@code switch} over {@code case01}..{@code case20} choosing between ten
+     * adapters, and that is the defect it now fixes. Eight of the ten were the service adapter plus one
+     * extra probe - the out-of-range subscript, the ungated filter after a failed validation, the
+     * refused regular user, the never-refused administrator, the user-type pass-through, the seeded
+     * security file, the statelessness round trip - and attaching a probe to an ordinal meant three
+     * things went wrong at once. A case file gave no indication which probe it was subject to, or which
+     * option table it ran over; renumbering a case silently moved both to a different run; and the
+     * probes that were <em>unconditionally</em> true - the dead record is dead on every path, and a
+     * stateless service is stateless on every path - were asserted for one case out of seventeen.
+     *
+     * <p>{@link #runService(Invocation)} now applies every probe, selecting each from the declaration
+     * that produces the run: the option table variant the case names, the option it enters, the user
+     * type its communication area carries, the dataset it seeds. Nothing reads
+     * {@link ParityCase#caseId()} to decide anything.
      *
      * @param parityCase the case about to run
      * @return how to construct and call its unit
-     * @throws IllegalArgumentException if the case identifier has no adapter
      */
     private static ParityUnit unitFor(ParityCase parityCase) {
-        return switch (parityCase.caseId()) {
-            case "case01", "case16", "case20" -> COMEN01CParityTest::runController;
-            case "case09" -> COMEN01CParityTest::runOutOfRangeSubscript;
-            case "case10" -> COMEN01CParityTest::runUngatedFilterAfterFailedValidation;
-            case "case11" -> COMEN01CParityTest::runRegularUserRefused;
-            case "case12" -> COMEN01CParityTest::runAdministratorNeverRefused;
-            case "case17" -> COMEN01CParityTest::runUserTypePassThrough;
-            case "case18" -> COMEN01CParityTest::runWithSecurityFileSeeded;
-            case "case19" -> COMEN01CParityTest::runThreeTimesForStatelessness;
-            case "case02", "case03", "case04", "case05", "case06", "case07", "case08", "case13",
-                    "case14", "case15" -> COMEN01CParityTest::runService;
-            default -> throw new IllegalArgumentException("Case " + parityCase.caseId()
-                    + " of " + PROGRAM + " has no adapter. Every case is dispatched by name and there "
-                    + "is no fallback, because a case running through some default adapter would "
-                    + "report a diff count of zero for a run nobody chose.");
-        };
+        return parityCase.unitKind() == UnitKind.CONTROLLER_POJO
+                ? COMEN01CParityTest::runController
+                : COMEN01CParityTest::runService;
     }
 
     /**
      * The service adapter: construct {@link MainMenuService}, hand it the three values
-     * {@code COMEN01C} consults, and record what it produced against the copybook option table.
+     * {@code COMEN01C} consults, and record what it produced.
      *
      * <p>Also asserts, per case, the one thing the differ cannot see on a transfer path. Lines 117 to
      * 125 normalise {@code OPTIONI} and echo the result into {@code OPTIONO}, but an
      * {@code EXEC CICS XCTL} sends no map - so on those paths there is no {@code ScreenSend} to carry
      * the echoed value and it is checked here instead.
+     *
+     * <h2>Every probe, on every service case</h2>
+     * <ul>
+     *   <li>{@linkplain #assertDeadWorkingStorageStaysDead the record and the file name
+     *       {@code COMEN01C} never references} and {@linkplain #assertStatelessAcrossThreeCalls
+     *       statelessness across three calls} are <strong>unconditional</strong>.</li>
+     *   <li>{@linkplain #assertSeededDatasetsAreUntouched a seeded dataset is left exactly as seeded},
+     *       guarded by the case having seeded one.</li>
+     *   <li>{@linkplain #assertOutOfRangeSubscriptIsTolerated the ungated filter reading a subscript no
+     *       {@code OCCURS 12} table could address}, guarded by the entered option normalising above the
+     *       table bound - which is the only way that read happens.</li>
+     *   <li>{@linkplain #assertUserTypePassesThroughUnaltered {@code CDEMO-USER-TYPE} travelling through
+     *       unaltered} is <strong>unconditional</strong> too: lines 149 and 150 are commented out on
+     *       every path, so the pass-through is a property of the program rather than of one input. That
+     *       the case set declares a type satisfying <em>neither</em> {@code 88} - which is what makes the
+     *       pass-through non-vacuous - is asserted by
+     *       {@link #theCaseSetDeclaresAUserTypeSatisfyingNeitherCondition()}.</li>
+     *   <li>the authorisation filter's own arms, guarded by the case declaring
+     *       {@code MENU_TABLE_VARIANT}: which arm is then chosen by the entered option and the declared
+     *       user type, because {@code app/cpy/COMEN02Y.cpy} carries {@code 'U'} in all ten of its
+     *       columns and no seeded row can vary one.</li>
+     * </ul>
      *
      * @param invocation the seeded inputs, the pinned clock and the codec
      * @return {@code null}, meaning the recorder holds the observation
@@ -1138,43 +1274,212 @@ class COMEN01CParityTest {
     private static UnitOutcome runService(Invocation invocation) {
         MainMenuService service = service(invocation.codec());
         MainMenuInput input = inputOf(invocation);
+        MainMenuOptionTable declaredTable = declaredOptionTable(invocation);
+        MainMenuOptionTable table = declaredTable == null
+                ? MainMenuOptionTable.copybook()
+                : declaredTable;
+        Map<String, List<String>> seededBefore = snapshotOfSeededRows(invocation);
 
-        MainMenuOutcome outcome = service.handle(input);
+        MainMenuOutcome outcome = handle(service, input, declaredTable);
 
         assertServiceInvariants(service, input, outcome);
+        assertDeadWorkingStorageStaysDead(service, outcome);
+        assertStatelessAcrossThreeCalls(invocation, input, declaredTable, outcome);
+        assertSeededDatasetsAreUntouched(invocation, seededBefore, service);
+
+        OptionalInt normalised = service.normaliseOption(input.option()).option();
+        if (normalised.isPresent() && normalised.getAsInt() > OCCURS_TABLE_SIZE) {
+            assertOutOfRangeSubscriptIsTolerated(service, normalised.getAsInt(), outcome);
+        }
+        assertUserTypePassesThroughUnaltered(input, outcome);
+        if (declaredTable != null) {
+            assertAuthorisationFilterArm(service, input, table, normalised, outcome);
+        }
+
         recordServiceOutcome(invocation, outcome);
         return null;
     }
 
     /**
-     * {@code case09}: the ungated filter subscripting the option table with a value no COBOL table
-     * could address.
+     * Calls the service the way the case declared it, with or without an injected option table.
      *
-     * <p>Option 99 is rejected by the guard at {@code app/cbl/COMEN01C.cbl:128}, and the filter at line
-     * 136 nevertheless evaluates {@code CDEMO-MENU-OPT-USRTYPE(99)} on a table declared
-     * {@code OCCURS 12}. The bounded read must yield nothing and must not throw, because the COBOL does
-     * neither: without {@code SSRANGE} it computes an offset and reads whatever bytes are there, and an
-     * exception would be a crash the source does not produce. So both the outcome and the absence of a
-     * throw are asserted, and so is the fact that the message on the screen is the option rejection
-     * rather than the No access text - which is what a filter that read stray bytes as {@code 'A'}
-     * would have produced.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
+     * @param service the service under test
+     * @param input the three values the program consults
+     * @param declaredTable the injected table, or {@code null} to run over the copybook's own
+     * @return what the service produced
      */
-    private static UnitOutcome runOutOfRangeSubscript(Invocation invocation) {
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
+    private static MainMenuOutcome handle(MainMenuService service, MainMenuInput input,
+                                          MainMenuOptionTable declaredTable) {
+        return declaredTable == null ? service.handle(input) : service.handle(input, declaredTable);
+    }
+
+    /**
+     * The option table a case declares through {@code MENU_TABLE_VARIANT}, or {@code null} for the
+     * copybook's own.
+     *
+     * <p>{@code app/cpy/COMEN02Y.cpy} carries {@code 'U'} in all ten {@code CDEMO-MENU-OPT-USRTYPE}
+     * columns, so the true arm of the filter at {@code app/cbl/COMEN01C.cbl:136-137} cannot be reached
+     * from the shipped table at all - and it must still be exercised. The {@code OCCURS 12} slots are
+     * storage rather than data and no dataset seeds them, which makes the table the one input to this
+     * program that cannot be expressed as a seeded row. That is precisely why
+     * {@link ParityCase.UnitStimulus#PERMITTED_ENVIRONMENT_KEYS} names the key.
+     *
+     * <p>Each variant differs from the shipped table in exactly one column, so the authorisation column
+     * is the only variable under test and every composed menu line stays byte-identical to the real one.
+     * An unrecognised variant is refused rather than ignored: a control an adapter silently drops is a
+     * case that passes for the wrong reason.
+     *
+     * @param invocation the run, whose declared stimulus names the variant if it needs one
+     * @return the injected table, or {@code null} when the case declares no variant
+     * @throws IllegalArgumentException if the case names a variant this adapter does not implement
+     */
+    private static MainMenuOptionTable declaredOptionTable(Invocation invocation) {
+        String variant = invocation.stimulus()
+                .environmentValue(MENU_TABLE_VARIANT_KEY)
+                .orElse(null);
+        if (variant == null) {
+            return null;
+        }
+        return switch (variant) {
+            case ADMIN_ONLY_FIRST_ENTRY_VARIANT -> adminOnlyFirstEntryTable();
+            case ADMIN_ONLY_SLOT_THREE_VARIANT -> adminOnlySlotThreeTable();
+            default -> throw new IllegalArgumentException(invocation.caseId()
+                    + " declares MENU_TABLE_VARIANT '" + variant + "', and the only variants " + PROGRAM
+                    + " has arms for are '" + ADMIN_ONLY_FIRST_ENTRY_VARIANT + "' and '"
+                    + ADMIN_ONLY_SLOT_THREE_VARIANT + "'. Honouring an unknown variant by running the "
+                    + "copybook table would make the declaration do nothing in silence.");
+        };
+    }
+
+    /**
+     * The rows every seeded dataset holds before the run, so "nothing was touched" can be asserted
+     * rather than assumed.
+     *
+     * @param invocation the run, whose datasets are whatever the case seeded
+     * @return the rows per binding key, in declaration order
+     */
+    private static Map<String, List<String>> snapshotOfSeededRows(Invocation invocation) {
+        Map<String, List<String>> snapshot = new LinkedHashMap<>();
+        invocation.datasets()
+                .forEach((key, dataset) -> snapshot.put(key, List.copyOf(dataset.rows())));
+        return snapshot;
+    }
+
+    /**
+     * Requires every seeded row to survive the run byte for byte, and the translation to hold no
+     * data-access collaborator at all.
+     *
+     * <p>{@code COMEN01C} opens no dataset. The second half is what makes the emptiness of both record
+     * channels a property of the code rather than of one particular input: a service with no repository
+     * field cannot have read anything, whatever it was handed.
+     *
+     * @param invocation the run
+     * @param before the rows each dataset held before the run
+     * @param service the service the run went through
+     */
+    private static void assertSeededDatasetsAreUntouched(Invocation invocation,
+                                                         Map<String, List<String>> before,
+                                                         MainMenuService service) {
+        before.forEach((key, rows) -> {
+            SeededDataset dataset = invocation.dataset(key);
+            if (USRSEC_DATASET_KEY.equals(key)) {
+                assertThat(dataset.recordLength())
+                        .describedAs("app/cpy/CSUSR01Y.cpy declares SEC-USER-DATA at 80 bytes, so the "
+                                + "seed must have been padded from the 57 characters "
+                                + "app/jcl/DUSRSECJ.jcl carries")
+                        .isEqualTo(SecUserRecord.RECORD_LENGTH);
+            }
+            assertThat(dataset.rows())
+                    .describedAs("%s opens no dataset, so every row seeded into %s must be exactly as "
+                            + "it was seeded", PROGRAM, key)
+                    .isEqualTo(rows);
+        });
+        assertNoDataAccessCollaborator(service);
+    }
+
+    /**
+     * Requires the record and the file name {@code COMEN01C} never references to stay dead.
+     *
+     * <p>{@code COPY CSUSR01Y} brings in {@code SEC-USER-DATA} and line 150 -
+     * {@code MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE} - is the program's only mention of any of its
+     * fields, and it is commented out. {@code WS-USRSEC-FILE} is likewise never moved anywhere. Both
+     * survive the translation because a declaration is part of what the program is, and both are checked
+     * on every service run rather than on one.
+     *
+     * @param service the service the run went through
+     * @param outcome what the run produced
+     */
+    private static void assertDeadWorkingStorageStaysDead(MainMenuService service,
+                                                          MainMenuOutcome outcome) {
+        assertThat(service.secUserData())
+                .describedAs("implementing line 150 would need SEC-USR-TYPE, and the record COPY "
+                        + "CSUSR01Y brings in is never read: it stays exactly as initialised")
+                .isEqualTo(SecUserRecord.blank());
+        assertThat(service.usrSecFileName())
+                .describedAs("WS-USRSEC-FILE VALUE 'USRSEC  ' - the logical file name padded to its "
+                        + "declared PIC X(08), with the source literal's two trailing spaces intact")
+                .isEqualTo(USRSEC_FILE_NAME)
+                .hasSize(USRSEC_FILE_NAME_LENGTH);
+        assertThat(observableStrings(outcome))
+                .describedAs("the dead declaration must not leak onto the screen: WS-USRSEC-FILE is "
+                        + "never moved anywhere, so its value must appear in no field of the response")
+                .noneMatch(image -> image.contains(USRSEC_DATASET_KEY));
+    }
+
+    /**
+     * Requires the same invocation to produce the same outcome three times over.
+     *
+     * <p>Gates {@code G37} and {@code G40}, and rule {@code R6}. Twice against one service instance and
+     * once against a freshly constructed one. All three outcomes must be equal: a translation holding
+     * {@code WS-ERR-FLG}, {@code WS-MESSAGE}, {@code WS-OPTION} or {@code WS-IDX} in a field of a
+     * singleton bean would leak the first call into the second, and a translation keeping the
+     * communication area in a server-side session would have nothing to return. Only the outcome the
+     * caller already holds is reported, because one invocation produces one response.
+     *
+     * @param invocation the run, for the codec each fresh service is built over
+     * @param input the three values the program consults
+     * @param declaredTable the injected table, or {@code null}
+     * @param first the outcome the caller will report
+     */
+    private static void assertStatelessAcrossThreeCalls(Invocation invocation, MainMenuInput input,
+                                                        MainMenuOptionTable declaredTable,
+                                                        MainMenuOutcome first) {
+        MainMenuService shared = service(invocation.codec());
+        assertThat(handle(shared, input, declaredTable))
+                .describedAs("a second service instance handed the identical input must produce the "
+                        + "identical outcome; anything else means the outcome depended on something "
+                        + "outside the request")
+                .isEqualTo(first);
+        assertThat(handle(shared, input, declaredTable))
+                .describedAs("and a second call on that same instance must produce it again; anything "
+                        + "else means per-request working storage became a field")
+                .isEqualTo(first);
+        assertThat(first.navigationContext())
+                .describedAs("the communication area travels in the payload, which is the only reason "
+                        + "it is comparable at all")
+                .isNotNull();
+        assertNoMutableState(shared);
+    }
+
+    /**
+     * The ungated filter subscripting the option table with a value no COBOL table could address.
+     *
+     * <p>Reached whenever the entered option normalises above the {@code OCCURS 12} bound: the guard at
+     * {@code app/cbl/COMEN01C.cbl:128} rejects it, {@code PERFORM} returns, and line 136 nevertheless
+     * evaluates {@code CDEMO-MENU-OPT-USRTYPE} at that subscript. The bounded read must yield nothing
+     * and must not throw, because the COBOL does neither: without {@code SSRANGE} it computes an offset
+     * and reads whatever bytes are there, and an exception would be a crash the source does not produce.
+     * So both the outcome and the absence of a throw are asserted, and so is the fact that the message
+     * on the screen is the option rejection rather than the No access text - which is what a filter that
+     * read stray bytes as {@code 'A'} would have produced.
+     *
+     * @param service the service the run went through
+     * @param wsOption the normalised option, known to exceed the table bound
+     * @param outcome what the run produced
+     */
+    private static void assertOutOfRangeSubscriptIsTolerated(MainMenuService service, int wsOption,
+                                                            MainMenuOutcome outcome) {
         MainMenuOptionTable copybook = MainMenuOptionTable.copybook();
-
-        MainMenuOutcome outcome = service.handle(input);
-        assertServiceInvariants(service, input, outcome);
-
-        int wsOption = service.normaliseOption(input.option()).option().orElseThrow();
-        assertThat(wsOption)
-                .describedAs("the subscript the filter reads is far outside the OCCURS 12 range, which "
-                        + "is the whole point of the case")
-                .isGreaterThan(OCCURS_TABLE_SIZE);
         for (int subscript : new int[] {0, OCCURS_TABLE_SIZE + 1, wsOption, Integer.MAX_VALUE}) {
             assertThatNoException()
                     .describedAs("the ungated filter must tolerate subscript %d: COBOL without SSRANGE "
@@ -1193,292 +1498,146 @@ class COMEN01CParityTest {
         assertThat(outcome.errorFlag())
                 .describedAs("line 130 MOVE 'Y' TO WS-ERR-FLG, which then suppresses the dispatch")
                 .isTrue();
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
     }
 
     /**
-     * {@code case10}: both {@code IF} statements fire in one pass, and the second paint wins.
+     * {@code CDEMO-USER-TYPE} and {@code CDEMO-USER-ID} travel through unaltered, on every path.
      *
-     * <p>The table's active count is 1, so option 3 is rejected at
-     * {@code app/cbl/COMEN01C.cbl:128} and line 133 paints the option rejection. {@code PERFORM}
-     * returns, so control reaches line 136, where slot 3 carries {@code 'A'} and the caller is a
-     * regular user - both conjuncts true - and line 142 repaints with the No access text. The terminal
-     * shows the second send, which is why the recorded message is the No access one. Were the filter
-     * hoisted into the validation's {@code ELSE}, this case would carry the option rejection instead.
+     * <p>{@code app/cbl/COMEN01C.cbl:149-150} - {@code MOVE SEC-USR-ID TO CDEMO-USER-ID} and
+     * {@code MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE} - are both commented out, and line 150 is the
+     * program's only mention of any {@code SEC-USER-DATA} field, so nothing here derives, defaults or
+     * looks up either value. Whatever arrived must come back exactly as it arrived, whichever branch the
+     * run took, which is why this is asserted on every service case rather than on one.
      *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
+     * <p>A byte satisfying one of the two {@code 88}s would make the assertion weak but not wrong; a
+     * byte satisfying neither is what makes it strong, and
+     * {@link #theCaseSetDeclaresAUserTypeSatisfyingNeitherCondition()} requires the set to contain one.
+     *
+     * <p>Silent on the {@code EIBCALEN = 0} path, and necessarily so: lines 82 to 84 divert before any
+     * communication area exists, so there is no inbound value for anything to pass through. That is the
+     * one path where the assertion has no subject rather than a subject it might get wrong.
+     *
+     * @param input the three values the program consults
+     * @param outcome what the run produced
      */
-    private static UnitOutcome runUngatedFilterAfterFailedValidation(Invocation invocation) {
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-        MainMenuOptionTable table = adminOnlySlotThreeTable();
+    private static void assertUserTypePassesThroughUnaltered(MainMenuInput input,
+                                                             MainMenuOutcome outcome) {
+        if (input.navigationContext() == null) {
+            return;
+        }
+        assertThat(outcome.navigationContext().userType())
+                .describedAs("line 150 is COMMENTED OUT, so CDEMO-USER-TYPE is inbound only and must "
+                        + "cross the whole dispatch path unchanged")
+                .isEqualTo(input.navigationContext().userType());
+        assertThat(outcome.navigationContext().userId())
+                .describedAs("line 149 is commented out too, so CDEMO-USER-ID is likewise untouched")
+                .isEqualTo(input.navigationContext().userId());
+    }
 
-        MainMenuOutcome outcome = service.handle(input, table);
-        assertServiceInvariants(service, input, outcome);
-
-        int wsOption = service.normaliseOption(input.option()).option().orElseThrow();
-        assertThat(wsOption)
-                .describedAs("the entered option must exceed the table's active count so the guard at "
-                        + "line 128 rejects it first")
-                .isGreaterThan(table.activeCount());
-        assertThat(table.optionWithinTable(wsOption).orElseThrow().menuOptUsrType())
-                .describedAs("and slot %d must still be a valued entry carrying 'A', so the filter at "
-                        + "line 137 has something to find", wsOption)
+    /**
+     * The authorisation filter's arms, on a run over a declared option table.
+     *
+     * <p>Which arm is under test is decided by the run's own declared inputs, not by its ordinal. All
+     * three variants of the situation share one precondition - the injected entry differs from the
+     * copybook's in the authorisation column alone - and then diverge:
+     * <ul>
+     *   <li>the entered option <strong>above</strong> the table's active count is the ungated-filter
+     *       case: both {@code IF} statements fire in one pass and the second paint wins;</li>
+     *   <li>within the count and a regular user is the refusal;</li>
+     *   <li>within the count and an administrator is the isolation of the filter's first conjunct - the
+     *       column really is {@code 'A'}, and the transfer happens anyway.</li>
+     * </ul>
+     *
+     * @param service the service the run went through
+     * @param input the three values the program consults
+     * @param table the declared table the run went over
+     * @param normalised the normalised option, absent when the entry was blank
+     * @param outcome what the run produced
+     */
+    private static void assertAuthorisationFilterArm(MainMenuService service, MainMenuInput input,
+                                                     MainMenuOptionTable table,
+                                                     OptionalInt normalised,
+                                                     MainMenuOutcome outcome) {
+        assertThat(normalised)
+                .describedAs("a declared option table exists to drive the filter, and the filter needs "
+                        + "a subscript; a blank option would never reach it")
+                .isPresent();
+        int wsOption = normalised.getAsInt();
+        MenuOption injected = table.optionWithinTable(wsOption).orElseThrow();
+        assertThat(injected.menuOptUsrType())
+                .describedAs("slot %d must be a valued entry carrying 'A', so the filter at line 137 "
+                        + "has something to find", wsOption)
                 .isEqualTo(ADMIN_ONLY_USRTYPE);
+        MenuOption copybook = MenuOptions.optionBySubscript(wsOption).orElseThrow();
+        assertThat(injected.menuOptName())
+                .describedAs("the authorisation column is the only thing the variant varies, which is "
+                        + "what keeps the composed menu line byte-identical to the real one")
+                .isEqualTo(copybook.menuOptName());
+        assertThat(injected.menuOptPgmName()).isEqualTo(copybook.menuOptPgmName());
+        assertThat(injected.menuOptUsrType()).isNotEqualTo(copybook.menuOptUsrType());
         assertThat(service.isAdminOnlyOption(table, OptionalInt.of(wsOption)))
-                .describedAs("the filter is reached with a subscript the validation already rejected, "
-                        + "and it fires")
+                .describedAs("the filter's SECOND conjunct - the column at the entered subscript really "
+                        + "is 'A' - holds for every variant run")
                 .isTrue();
-        assertThat(outcome.message())
-                .describedAs("line 142's paint overwrites line 133's, so the No access text is what the "
-                        + "terminal shows - NOT the option rejection")
-                .isEqualTo(picX(NO_ACCESS_MESSAGE, WS_MESSAGE_LENGTH))
-                .isNotEqualTo(picX(INVALID_OPTION_MESSAGE, WS_MESSAGE_LENGTH));
-        assertThat(outcome.hasNextProgram())
-                .describedAs("line 145's IF NOT ERR-FLG-ON is false, so the dispatch is suppressed")
-                .isFalse();
-        assertThat(outcome.optionLines())
-                .describedAs("BUILD-MENU-OPTIONS loops to the stub's active count of %d, so only "
-                        + "OPTN001O is composed and the other eleven lines are the spaces line 241 "
-                        + "leaves", table.activeCount())
-                .isEqualTo(STUB_MENU_LINES);
 
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
+        if (wsOption > table.activeCount()) {
+            assertThat(input.navigationContext().isUser())
+                    .describedAs("both conjuncts must hold for line 142 to repaint, so the caller is a "
+                            + "regular user")
+                    .isTrue();
+            assertThat(outcome.message())
+                    .describedAs("the guard at line 128 rejected the option and painted at 133; "
+                            + "PERFORM returned, line 136 found both conjuncts true, and line 142's "
+                            + "paint overwrote it - so the No access text is what the terminal shows. "
+                            + "Were the filter hoisted into the validation's ELSE, this would carry the "
+                            + "option rejection instead")
+                    .isEqualTo(picX(NO_ACCESS_MESSAGE, WS_MESSAGE_LENGTH))
+                    .isNotEqualTo(picX(INVALID_OPTION_MESSAGE, WS_MESSAGE_LENGTH));
+            assertThat(outcome.hasNextProgram())
+                    .describedAs("line 145's IF NOT ERR-FLG-ON is false, so the dispatch is suppressed")
+                    .isFalse();
+            assertThat(outcome.optionLines())
+                    .describedAs("BUILD-MENU-OPTIONS loops to the table's active count of %d, so only "
+                            + "OPTN001O is composed and the other eleven lines are the spaces line 241 "
+                            + "leaves", table.activeCount())
+                    .isEqualTo(STUB_MENU_LINES);
+            return;
+        }
 
-    /**
-     * {@code case11}: a regular user refused an admin-only option, with no prior rejection.
-     *
-     * <p>The option is valid for the stub's active count, so the guard at lines 127 to 134 does not
-     * fire and the filter is reached clean. Line 138 sets the flag, line 140 moves the thirty-three
-     * character literal and line 142 paints; line 145 is then false and no successor is named. The stub
-     * differs from the copybook's first entry in <strong>nothing but the authorisation column</strong>,
-     * which is asserted here so the composed menu line cannot become a second variable.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runRegularUserRefused(Invocation invocation) {
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-        MainMenuOptionTable table = adminOnlyFirstEntryTable();
+        if (input.navigationContext().isUser()) {
+            assertThat(outcome.errorFlag())
+                    .describedAs("line 138 SET ERR-FLG-ON TO TRUE - a SET here where line 130 used "
+                            + "MOVE 'Y'")
+                    .isTrue();
+            assertThat(outcome.message())
+                    .describedAs("line 140's literal carries a trailing space that padding to PIC X(80) "
+                            + "makes invisible, and the emitted image is what is compared")
+                    .isEqualTo(picX(NO_ACCESS_MESSAGE, WS_MESSAGE_LENGTH));
+            assertThat(outcome.hasNextProgram())
+                    .describedAs("the dispatch at 146-155 is suppressed by the flag")
+                    .isFalse();
+            assertThat(outcome.messageColourOverridden())
+                    .describedAs("only the coming-soon path touches ERRMSGC, so a refusal stays red")
+                    .isFalse();
+            assertThat(outcome.optionLines())
+                    .describedAs("the variant offers one option, so the paint composes OPTN001O alone - "
+                            + "and that line is byte-identical to the copybook's first")
+                    .isEqualTo(STUB_MENU_LINES);
+            return;
+        }
 
-        MainMenuOutcome outcome = service.handle(input, table);
-        assertServiceInvariants(service, input, outcome);
-
-        MenuOption stubbed = table.optionBySubscript(1).orElseThrow();
-        MenuOption copybook = MenuOptions.optionBySubscript(1).orElseThrow();
-        assertThat(stubbed.menuOptName()).isEqualTo(copybook.menuOptName());
-        assertThat(stubbed.menuOptPgmName()).isEqualTo(copybook.menuOptPgmName());
-        assertThat(stubbed.menuOptUsrType())
-                .describedAs("the authorisation column is the only thing this stub varies")
-                .isEqualTo(ADMIN_ONLY_USRTYPE)
-                .isNotEqualTo(copybook.menuOptUsrType());
-        assertThat(input.navigationContext().isUser())
-                .describedAs("88 CDEMO-USRTYP-USER must hold for line 136's first conjunct")
-                .isTrue();
-        assertThat(outcome.errorFlag())
-                .describedAs("line 138 SET ERR-FLG-ON TO TRUE - a SET here where line 130 used MOVE 'Y'")
-                .isTrue();
-        assertThat(outcome.message())
-                .describedAs("line 140's literal carries a trailing space that padding to PIC X(80) "
-                        + "makes invisible, and the emitted image is what is compared")
-                .isEqualTo(picX(NO_ACCESS_MESSAGE, WS_MESSAGE_LENGTH));
-        assertThat(outcome.hasNextProgram())
-                .describedAs("the dispatch at 146-155 is suppressed by the flag")
-                .isFalse();
-        assertThat(outcome.messageColourOverridden())
-                .describedAs("only the coming-soon path touches ERRMSGC, so a refusal stays red")
-                .isFalse();
-        assertThat(outcome.optionLines())
-                .describedAs("the stub offers one option, so the paint composes OPTN001O alone - and "
-                        + "that line is byte-identical to the copybook's first")
-                .isEqualTo(STUB_MENU_LINES);
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case12}: the filter's first conjunct isolated - an administrator is never refused.
-     *
-     * <p>The table and the option are identical to {@code case11}'s and only
-     * {@code CDEMO-USER-TYPE} differs, so the two cases are a controlled comparison: one byte of input
-     * produces a painted refusal versus a transfer. {@code 88 CDEMO-USRTYP-USER} is false for
-     * {@code 'A'}, so {@code app/cbl/COMEN01C.cbl:136} cannot fire whatever the column says.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runAdministratorNeverRefused(Invocation invocation) {
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-        MainMenuOptionTable table = adminOnlyFirstEntryTable();
-
-        MainMenuOutcome outcome = service.handle(input, table);
-        assertServiceInvariants(service, input, outcome);
-
-        assertThat(input.navigationContext().isUser())
-                .describedAs("the caller is an administrator, so the first conjunct is false")
-                .isFalse();
-        assertThat(input.navigationContext().isAdmin()).isTrue();
-        assertThat(service.isAdminOnlyOption(table, OptionalInt.of(1)))
-                .describedAs("the SECOND conjunct is still true - the column really is 'A' - which is "
-                        + "what makes this an isolation of the first")
+        assertThat(input.navigationContext().isAdmin())
+                .describedAs("the remaining arm isolates the filter's first conjunct, so the caller "
+                        + "must be an administrator")
                 .isTrue();
         assertThat(outcome.errorFlag()).isFalse();
         assertThat(outcome.nextProgram())
                 .describedAs("the dispatch at 152-155 transfers to the entry's own target program")
-                .isEqualTo(picX(OPTION_PROGRAMS.get(0), NavigationContext.TO_PROGRAM_LENGTH));
+                .isEqualTo(picX(injected.menuOptPgmName(), NavigationContext.TO_PROGRAM_LENGTH));
         assertThat(outcome.nextProgramCarriesCommarea())
                 .describedAs("line 154 specifies COMMAREA(CARDDEMO-COMMAREA), unlike the transfer at "
                         + "175-177")
                 .isTrue();
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case17}: {@code CDEMO-USER-TYPE} travels through unaltered, even when it names neither
-     * condition.
-     *
-     * <p>{@code app/cbl/COMEN01C.cbl:150} - {@code MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE} - is commented
-     * out, and it is the program's only mention of any {@code SEC-USER-DATA} field, so nothing here
-     * derives, defaults or looks up the user type. A byte that satisfies neither
-     * {@code 88 CDEMO-USRTYP-ADMIN} nor {@code 88 CDEMO-USRTYP-USER} must therefore come back exactly
-     * as it arrived, and the dead record the program declares must stay blank throughout.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runUserTypePassThrough(Invocation invocation) {
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-
-        String suppliedUserType = input.navigationContext().userType();
-        assertThat(input.navigationContext().isAdmin())
-                .describedAs("the supplied type satisfies neither 88, which is what makes the "
-                        + "pass-through non-vacuous")
-                .isFalse();
-        assertThat(input.navigationContext().isUser()).isFalse();
-
-        MainMenuOutcome outcome = service.handle(input);
-        assertServiceInvariants(service, input, outcome);
-
-        assertThat(outcome.navigationContext().userType())
-                .describedAs("line 150 is COMMENTED OUT, so CDEMO-USER-TYPE is inbound only and must "
-                        + "cross the whole dispatch path unchanged")
-                .isEqualTo(suppliedUserType);
-        assertThat(outcome.navigationContext().userId())
-                .describedAs("line 149 is commented out too, so CDEMO-USER-ID is likewise untouched")
-                .isEqualTo(input.navigationContext().userId());
-        assertThat(service.secUserData())
-                .describedAs("implementing line 150 would need SEC-USR-TYPE, and the record COPY "
-                        + "CSUSR01Y brings in is never read: it stays exactly as initialised")
-                .isEqualTo(SecUserRecord.blank());
-        assertThat(outcome.hasNextProgram())
-                .describedAs("the filter's first conjunct is false for this type, so the option is "
-                        + "dispatched rather than refused")
-                .isTrue();
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case18}: the security file is seeded and available, and nothing touches it.
-     *
-     * <p>Reads the seeded rows before and after the run and requires them identical, then requires the
-     * translation to hold no data-access collaborator at all - which is what makes the emptiness of
-     * both record channels a property of the code rather than of this particular input.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runWithSecurityFileSeeded(Invocation invocation) {
-        SeededDataset usrsec = invocation.dataset(USRSEC_DATASET_KEY);
-        assertThat(usrsec.recordLength())
-                .describedAs("app/cpy/CSUSR01Y.cpy declares SEC-USER-DATA at 80 bytes, so the seed must "
-                        + "have been padded from the 57 characters app/jcl/DUSRSECJ.jcl carries")
-                .isEqualTo(SecUserRecord.RECORD_LENGTH);
-        List<String> before = List.copyOf(usrsec.rows());
-
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-        MainMenuOutcome outcome = service.handle(input);
-        assertServiceInvariants(service, input, outcome);
-
-        assertThat(usrsec.rows())
-                .describedAs("COMEN01C opens no dataset, so every seeded row must be exactly as it was "
-                        + "seeded")
-                .isEqualTo(before);
-        assertThat(service.usrSecFileName())
-                .describedAs("WS-USRSEC-FILE VALUE 'USRSEC  ' - the logical file name padded to its "
-                        + "declared PIC X(08), with the source literal's two trailing spaces intact")
-                .isEqualTo(USRSEC_FILE_NAME)
-                .hasSize(USRSEC_FILE_NAME_LENGTH);
-        assertThat(observableStrings(outcome))
-                .describedAs("the dead declaration must not leak onto the screen: WS-USRSEC-FILE is "
-                        + "never moved anywhere, so its value must appear in no field of the response")
-                .noneMatch(image -> image.contains(USRSEC_DATASET_KEY));
-        assertNoDataAccessCollaborator(service);
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
-     * {@code case19}: statelessness, driven by running the same invocation three times.
-     *
-     * <p>Gates {@code G37} and {@code G40}, and rule {@code R6}. Twice against one service instance and
-     * once against a freshly constructed one. All three outcomes must be equal: a translation holding
-     * {@code WS-ERR-FLG}, {@code WS-MESSAGE}, {@code WS-OPTION} or {@code WS-IDX} in a field of a
-     * singleton bean would leak the first call into the second, and a translation keeping the
-     * communication area in a server-side session would have nothing to return. Only the first outcome
-     * is reported, because one invocation produces one response.
-     *
-     * <p>The case ends in the {@code XCTL} at {@code app/cbl/COMEN01C.cbl:175-177}, reached from the
-     * {@code DFHPF3} arm, and it is the one case in the directory that carries a fully populated
-     * communication area: line 97 overwrites {@code CDEMO-TO-PROGRAM} while the other fifteen fields
-     * must survive the round trip byte for byte, so a leak anywhere in the area is visible rather
-     * than hidden behind an initialised image. The transfer target arrives as a {@code nextProgram}
-     * response field rather than as a server-side forward - which is the whole of what {@code G40}
-     * asks of the eight {@code XCTL} sites.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runThreeTimesForStatelessness(Invocation invocation) {
-        MainMenuService shared = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-
-        MainMenuOutcome first = shared.handle(input);
-        MainMenuOutcome second = shared.handle(input);
-        MainMenuOutcome third = service(invocation.codec()).handle(input);
-
-        assertServiceInvariants(shared, input, first);
-        assertThat(second)
-                .describedAs("a second call on the same instance must produce the identical outcome; "
-                        + "anything else means per-request working storage became a field")
-                .isEqualTo(first);
-        assertThat(third)
-                .describedAs("a fresh instance must produce the identical outcome; anything else means "
-                        + "the outcome depended on something outside the request")
-                .isEqualTo(first);
-        assertThat(first.navigationContext().toFixedWidth(invocation.codec()))
-                .describedAs("CARDDEMO-COMMAREA travels in the payload at exactly the %d bytes "
-                        + "app/cpy/COCOM01Y.cpy declares, which is the only reason it is comparable",
-                        COMMAREA_LENGTH)
-                .hasSize(COMMAREA_LENGTH);
-        assertNoMutableState(shared);
-
-        recordServiceOutcome(invocation, first);
-        return null;
     }
 
     /**
@@ -2343,19 +2502,33 @@ class COMEN01CParityTest {
     }
 
     /**
-     * The sixteen {@code CARDDEMO-COMMAREA} field images, keyed by the copybook's own names.
+     * The sixteen {@code CARDDEMO-COMMAREA} field images, keyed by the copybook's own names - or none at
+     * all, when the response carries no communication area.
      *
      * <p>Produced by encoding the area and decoding it field by field, so the images are the bytes the
      * area actually holds rather than a rendering of the record's Java components: a {@code PIC 9(11)}
      * account identifier reads back zero-filled to eleven digits and a {@code PIC X(25)} name
      * space-padded to twenty-five, which is what the differ compares.
      *
+     * <p>A {@code null} area yields an <strong>empty map</strong>, which is what
+     * {@code FieldDiffer.ObservedResponse} documents as "a response carrying no commarea field" and what
+     * the differ compares in both directions - so an empty expectation is enforced rather than skipped.
+     * The one path that produces it is the bare {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} at
+     * {@code app/cbl/COMEN01C.cbl:175-177}, which names no {@code COMMAREA}, so its target is entered with
+     * {@code EIBCALEN = 0}. The service observations are unaffected: at the moment of that transfer the
+     * program's own {@code CARDDEMO-COMMAREA} still holds all sixteen values, and the service outcome is
+     * where that is pinned. What the transfer hands to the target is the separate fact, and it is the one
+     * a controller response states.
+     *
      * @param codec   the run's codec
-     * @param context the area as the program left it
-     * @return the field images in copybook declaration order
+     * @param context the area as the program left it, or {@code null} when the transfer carries none
+     * @return the field images in copybook declaration order, or an empty map
      */
     private static Map<String, String> navigationImages(FixedWidthCodec codec,
             NavigationContext context) {
+        if (context == null) {
+            return Map.of();
+        }
         return codec.deserialise(NavigationContext.LAYOUT, context.toFixedWidth(codec));
     }
 

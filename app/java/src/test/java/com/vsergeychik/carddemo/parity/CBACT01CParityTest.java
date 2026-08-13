@@ -26,14 +26,15 @@ import org.mockito.Mockito;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -171,10 +172,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  *
  * <h2>Independence</h2>
- * <p>Every case runs against a private in-memory relation of its own, named after a fresh
- * {@link UUID}, and shuts it down afterwards. This class holds no mutable state, static or
- * otherwise, so the twenty cases may run in any order, repeatedly, or in parallel and each observes
- * exactly what it seeded. That is also why the four sibling readers - {@code CBACT02C},
+ * <p>Every case runs against a private record-image store of its own, created inside the case and
+ * unreachable from any other, so there is nothing to shut down and nothing to leak. This class holds no
+ * mutable state, static or otherwise, so the twenty cases may run in any order, repeatedly, or in parallel
+ * and each observes exactly what it seeded. That is also why the four sibling readers - {@code CBACT02C},
  * {@code CBACT03C} and {@code CBCUS01C} share this program's open / read-loop / display / close
  * shape - keep parity classes of their own instead of a shared abstract base: each drives a different
  * dataset at a different record width with a different display format, and a shared base would report
@@ -228,6 +229,14 @@ class CBACT01CParityTest {
      * {@code app/cbl/CBACT01C.cbl:L179-L183}. Composed through the class that owns the paragraph's
      * shape rather than transcribed, so a change to either would show up as a failure here.
      */
+    /**
+     * The {@code <VERB>-<DD>} name a case declares an arranged {@code OPEN INPUT} status at.
+     *
+     * <p>{@code app/cbl/CBACT01C.cbl:L135}, guarded at {@code :L136-L140}. Built from the repository's
+     * own DD constant, so a rename cannot leave a case file naming a site that matches nothing.
+     */
+    private static final String OPEN_ACCTFILE_SITE = "OPEN-" + DD_NAME;
+
     private static final String PERMANENT_ERROR_LINE =
             FileStatus.toDisplayLine(AccountRepository.PERMANENT_ERROR_STATUS);
 
@@ -355,11 +364,22 @@ class CBACT01CParityTest {
                                 + "9999-ABEND-PROGRAM performs CALL 'CEE3ABD' at L173", where,
                                 AccountRepository.APPL_RESULT_FATAL)
                         .isEqualTo(AccountRepository.APPL_RESULT_FATAL);
+                String declaredOpenStatus = declaredCase.unitStimulus().callSiteOutcomes()
+                        .values().stream()
+                        .map(ParityCase.CallSiteOutcome::status)
+                        .filter(java.util.Objects::nonNull)
+                        .findFirst()
+                        .orElse(AccountRepository.PERMANENT_ERROR_STATUS);
                 assertThat(texts)
                         .as("%s: the fatal arm is the error literal, the rendered status and the abend "
-                                + "banner, in that order, and the run never reaches L85", where)
+                                + "banner, in that order, and the run never reaches L85. The status line "
+                                + "is rendered from the status the run actually reported - the declared "
+                                + "one where the case declares a seam, and AccountRepository's frozen "
+                                + "permanent error otherwise - so a case cannot pin a line for a byte no "
+                                + "code path produced", where)
                         .hasSizeGreaterThanOrEqualTo(4)
-                        .endsWith(PERMANENT_ERROR_LINE, AbendException.ABEND_DISPLAY_TEXT)
+                        .endsWith(FileStatus.toDisplayLine(declaredOpenStatus),
+                                AbendException.ABEND_DISPLAY_TEXT)
                         .doesNotContain(AccountBalanceJob.END_OF_EXECUTION);
                 assertThat(texts.get(texts.size() - 3))
                         .as("%s: the error literal is the one belonging to the paragraph that failed",
@@ -418,18 +438,19 @@ class CBACT01CParityTest {
      * @return {@code null}, meaning the recorder holds the outcome
      */
     private UnitOutcome runAccountBalanceJob(Invocation invocation) {
-        JdbcTemplate template = freshDatabase();
-        boolean ranToCompletion = false;
-        try {
-            SeededDataset seeded = invocation.hasDataset(DD_NAME) ? invocation.dataset(DD_NAME) : null;
-            if (seeded != null) {
-                createRelation(template, seeded.recordLength());
-                seedRelation(template, seeded);
-            }
+        RecordImageDataSource backend = new RecordImageDataSource();
+        JdbcTemplate template = new JdbcTemplate(backend);
+        SeededDataset seeded = invocation.hasDataset(DD_NAME) ? invocation.dataset(DD_NAME) : null;
+        if (seeded != null) {
+            declareRelation(backend, seeded.recordLength());
+            seedRelation(backend, seeded);
+        }
+        {
 
             UnitOutcome.Builder recorder = invocation.recorder();
             SysoutSink sysout = recorder::display;
-            AccountBalanceJob job = accountBalanceJob(template, sysout);
+            AccountBalanceJob job = accountBalanceJob(template, sysout,
+                    declaredOpenStatus(invocation));
             try {
                 job.readAndPrintAccountFile(sysout);
 
@@ -438,12 +459,9 @@ class CBACT01CParityTest {
                 // the abend's own return code instead.
                 recorder.returnCode(AccountBalanceJob.RETURN_CODE_NORMAL_END);
             } finally {
-                reportFinalState(template, seeded, recorder);
+                reportFinalState(backend, seeded, recorder);
             }
-            ranToCompletion = true;
             return null;
-        } finally {
-            discard(template, ranToCompletion);
         }
     }
 
@@ -473,15 +491,13 @@ class CBACT01CParityTest {
      * @param seeded   the dataset as it was seeded, or {@code null} when the case declared none
      * @param recorder where the final state is reported
      */
-    private void reportFinalState(JdbcTemplate template, SeededDataset seeded,
+    private void reportFinalState(RecordImageDataSource backend, SeededDataset seeded,
             UnitOutcome.Builder recorder) {
         if (seeded == null || seeded.recordLength() != AccountRecord.RECORD_LENGTH) {
             return;
         }
-        List<String> stored = template.queryForList(
-                "SELECT " + RECORD_IMAGE_COLUMN + " FROM \"" + TEST_DSNAME + "\" ORDER BY "
-                        + RECORD_IMAGE_COLUMN,
-                String.class);
+        List<String> stored = new java.util.ArrayList<>(backend.store().rows(TEST_DSNAME));
+        stored.sort(java.util.Comparator.naturalOrder());
         recorder.finalState(DD_NAME, AccountRecord.LAYOUT, stored);
     }
 
@@ -490,42 +506,29 @@ class CBACT01CParityTest {
     // =============================================================================================
 
     /**
-     * A private in-memory database for one case, with no relation in it yet.
+     * Declares the relation the repository will discover: one column, holding the record image.
      *
-     * <p>The name carries a fresh {@link UUID}, so no two invocations - in any order, repeated, or
-     * concurrent - can reach each other's data. A counter would have done the same job and would have
-     * been static mutable state, which this class has none of.
+     * <p>No DDL. The relation is <em>declared</em> to a {@link RecordImageDataSource}, which is a store of
+     * record images and not a schema, so gate <strong>G44</strong> - no DDL, no schema migration, no entity
+     * annotation and no generated table definition anywhere in this module - holds with nothing to
+     * reinterpret. Everything above the driver is unchanged: the real {@code JdbcTemplate}, the real
+     * {@link AccountRepository}, {@code DatasetRelation}'s real composed statements and
+     * {@code RecordImageForm}'s real column read all run exactly as they do against a site's gateway.
      *
-     * <p>{@code DB_CLOSE_DELAY=-1} keeps the database alive between operations, which is required
-     * rather than convenient: the template borrows and returns a connection per operation, and an
-     * in-memory database is otherwise discarded with its last connection - taking the relation with
-     * it between the {@code OPEN} and the first {@code READ}.
+     * <p>The width is the one the case's own rows measure rather than the copybook's 300, so a case seeding
+     * a row of another width really does store a row of that width. Widening it to 300 would let the store
+     * pad the difference away and the fatal read arm of {@code case13} and {@code case14} would never be
+     * reached.
      *
-     * @return a template over the empty database
-     */
-    private JdbcTemplate freshDatabase() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:parity-" + PROGRAM + '-' + UUID.randomUUID()
-                        + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
-                "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        return new JdbcTemplate(dataSource);
-    }
-
-    /**
-     * Creates the relation the repository will discover: one column, holding the record image.
+     * <p>The column is named {@value #RECORD_IMAGE_COLUMN} rather than anything the repository could have
+     * assumed, because the repository discovers the name from metadata; a store that imposed a name would
+     * make that discovery assert nothing.
      *
-     * <p>The column is declared at the width the case's own rows measure rather than at the copybook's
-     * 300, so a case seeding a row of another width really does store a row of that width. Widening
-     * it to 300 would let the backend pad the difference away and the fatal read arm of {@code case13}
-     * and {@code case14} would never be reached.
-     *
-     * @param template    the template over this case's database
+     * @param backend     the store backing this case
      * @param recordWidth the width the seeded rows measure
      */
-    private void createRelation(JdbcTemplate template, int recordWidth) {
-        template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (" + RECORD_IMAGE_COLUMN
-                + " VARCHAR(" + recordWidth + "))");
+    private void declareRelation(RecordImageDataSource backend, int recordWidth) {
+        backend.define(TEST_DSNAME, RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER, recordWidth);
     }
 
     /**
@@ -535,46 +538,11 @@ class CBACT01CParityTest {
      * order whatever order the records were loaded in, and {@code case09} exists to prove the
      * translation does the same - so the seed must be free to disagree with the read order.
      *
-     * @param template the template over this case's relation
-     * @param seeded   the dataset as the harness seeded it
+     * @param backend the store backing this case
+     * @param seeded  the dataset as the harness seeded it
      */
-    private void seedRelation(JdbcTemplate template, SeededDataset seeded) {
-        for (String row : seeded.rows()) {
-            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", row);
-        }
-    }
-
-    /**
-     * Discards this case's in-memory database.
-     *
-     * <p>{@code DB_CLOSE_DELAY=-1} keeps a database alive for the rest of the JVM, so a case that did
-     * not discard its own would accumulate one per invocation. This is where they are discarded.
-     *
-     * <p>A failure to discard is reported only when the run itself succeeded. A run that is already
-     * failing owns the exception the caller needs - the abend it did not expect, or the difference the
-     * differ was about to render - and replacing it with one raised while tidying up would hide
-     * exactly the finding the case exists to produce. Nothing is lost by not reporting it either: the
-     * database is private to this one invocation and unreachable from any other.
-     *
-     * <p>Nothing about the failure is logged. The only thing a driver's message could add here is the
-     * record it was handed, and an account row carries {@code ACCT-CURR-BAL} and both credit limits.
-     *
-     * @param template        the template over this case's database
-     * @param ranToCompletion whether the run finished without an exception of its own
-     * @throws IllegalStateException if the database could not be discarded after a successful run
-     */
-    private void discard(JdbcTemplate template, boolean ranToCompletion) {
-        try {
-            template.execute("SHUTDOWN");
-        } catch (DataAccessException failure) {
-            if (ranToCompletion) {
-                throw new IllegalStateException("The private in-memory relation backing a " + PROGRAM
-                        + " parity case could not be discarded, so this case has leaked a database "
-                        + "into the rest of the run. Reported rather than swallowed because the run "
-                        + "itself succeeded, which means there is no earlier failure this one could "
-                        + "be hiding.", failure);
-            }
-        }
+    private void seedRelation(RecordImageDataSource backend, SeededDataset seeded) {
+        backend.store().seed(TEST_DSNAME, seeded.rows());
     }
 
     // =============================================================================================
@@ -588,9 +556,79 @@ class CBACT01CParityTest {
      * @param sysout   where the displayed lines are captured
      * @return the job
      */
-    private AccountBalanceJob accountBalanceJob(JdbcTemplate template, SysoutSink sysout) {
-        return new AccountBalanceJob(batchScaffolding(), accountRepository(template),
-                new DeclaredBean<>(sysout));
+    private AccountBalanceJob accountBalanceJob(JdbcTemplate template, SysoutSink sysout,
+            String declaredOpenStatus) {
+        return new AccountBalanceJob(batchScaffolding(),
+                accountRepository(template, declaredOpenStatus), new DeclaredBean<>(sysout));
+    }
+
+    /**
+     * The {@code FILE STATUS} a case declares its {@code OPEN INPUT} reports, or {@code null} to let the
+     * relation decide.
+     *
+     * <p>One seam, and it exists for one branch. {@code 9910-DISPLAY-IO-STATUS} at
+     * {@code app/cbl/CBACT01C.cbl:L175-L188} has two arms: the extended arm when {@code IO-STATUS} is
+     * not numeric or {@code IO-STAT1 = '9'}, which packs the second byte into a binary field and renders
+     * {@code NNNN9000}; and the {@code ELSE} arm at {@code :L184-L186}, which zero-fills and renders the
+     * two-digit status as {@code NNNN00nn}. An absent relation reports
+     * {@link AccountRepository#PERMANENT_ERROR_STATUS} - {@code '9'} followed by a NUL - so it reaches
+     * the extended arm and <strong>only</strong> the extended arm. No arrangement of seeded rows can
+     * reach the {@code ELSE} arm, because every status the data itself can produce is either {@code '00'}
+     * or that permanent error.
+     *
+     * <p>So the numeric status is declared, and the two arms are pinned by two cases that differ in their
+     * declarations rather than in nothing at all.
+     *
+     * @param invocation the run
+     * @return the declared two-character status, or {@code null}
+     * @throws IllegalArgumentException if the case declares a site this program has none of, a shape the
+     *     site cannot report, more than one site, or a status that would reach the extended arm anyway
+     */
+    private static String declaredOpenStatus(Invocation invocation) {
+        Map<String, ParityCase.CallSiteOutcome> declared = invocation.stimulus().callSiteOutcomes();
+        if (declared.isEmpty()) {
+            return null;
+        }
+        if (declared.size() != 1) {
+            throw new IllegalArgumentException(PROGRAM + '/' + invocation.caseId() + " declares outcomes "
+                    + "at " + declared.keySet() + ". This program has one substitutable seam - the "
+                    + "OPEN INPUT at app/cbl/CBACT01C.cbl:L135 - and its fatal arm abends, so a second "
+                    + "arrangement could never be reached.");
+        }
+        Map.Entry<String, ParityCase.CallSiteOutcome> entry = declared.entrySet().iterator().next();
+        if (!OPEN_ACCTFILE_SITE.equals(entry.getKey())) {
+            throw new IllegalArgumentException(PROGRAM + '/' + invocation.caseId() + " declares an "
+                    + "outcome at '" + entry.getKey() + "', and the only site is '" + OPEN_ACCTFILE_SITE
+                    + "'. Every other status this program distinguishes is reachable from the seed: an "
+                    + "absent relation for the fatal arms, and stored rows for the normal one.");
+        }
+        ParityCase.CallSiteOutcome outcome = entry.getValue();
+        if (outcome.resp() != null || outcome.isRefused() || outcome.afterRecords() != null) {
+            throw new IllegalArgumentException(PROGRAM + '/' + invocation.caseId() + " declares a RESP, a "
+                    + "refusal or a record count at " + OPEN_ACCTFILE_SITE + ". CBACT01C is a batch "
+                    + "program reached by EXEC PGM= in app/jcl/READACCT.jcl and its OPEN reports a "
+                    + "two-character FILE STATUS; a refusal is what an absent relation already produces, "
+                    + "and declaring one here would say nothing the seed does not.");
+        }
+        String status = outcome.status();
+        if (status == null) {
+            throw new IllegalArgumentException(PROGRAM + '/' + invocation.caseId() + " names "
+                    + OPEN_ACCTFILE_SITE + " without a status, which substitutes nothing.");
+        }
+        if (FileStatus.isOk(status)) {
+            throw new IllegalArgumentException(PROGRAM + '/' + invocation.caseId() + " declares status '"
+                    + status + "' at " + OPEN_ACCTFILE_SITE + ", which is the successful open the seeded "
+                    + "relation already produces.");
+        }
+        if (status.charAt(0) == '9') {
+            throw new IllegalArgumentException(PROGRAM + '/' + invocation.caseId() + " declares status '"
+                    + status + "' at " + OPEN_ACCTFILE_SITE + ". A status beginning '9' reaches the "
+                    + "extended arm of 9910-DISPLAY-IO-STATUS, which an absent relation already reaches - "
+                    + "so declaring one would duplicate a case rather than distinguish it. This seam "
+                    + "exists for the ELSE arm at app/cbl/CBACT01C.cbl:L184-L186, which needs a NUMERIC "
+                    + "status whose first character is not '9'.");
+        }
+        return status;
     }
 
     /**
@@ -602,9 +640,23 @@ class CBACT01CParityTest {
      * @param template the template over this case's relation
      * @return the repository
      */
-    private AccountRepository accountRepository(JdbcTemplate template) {
-        return new AccountRepository(template, datasetBindings(), DATASET_CHARSET,
+    private AccountRepository accountRepository(JdbcTemplate template, String declaredOpenStatus) {
+        AccountRepository real = new AccountRepository(template, datasetBindings(), DATASET_CHARSET,
                 RecordImageForm.CHARACTER);
+        if (declaredOpenStatus == null) {
+            return real;
+        }
+        // The handle is a spy over a real one, so everything except the open status it reports is the
+        // production code path: the job still reads openStatus() from an AccountFile, still closes it,
+        // and still renders through the same FileStatus rendering the other cases use.
+        AccountRepository arranged = Mockito.spy(real);
+        Mockito.doAnswer(call -> {
+            AccountRepository.AccountFile handle =
+                    Mockito.spy(real.open(AccountRepository.OpenMode.INPUT));
+            Mockito.doReturn(declaredOpenStatus).when(handle).openStatus();
+            return handle;
+        }).when(arranged).open(AccountRepository.OpenMode.INPUT);
+        return arranged;
     }
 
     /**

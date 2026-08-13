@@ -20,9 +20,10 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -32,8 +33,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.step.tasklet.Tasklet;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Component;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -281,7 +284,7 @@ class CBSTM03BParityTest {
         ParityHarness harness = ParityHarness.usAscii();
 
         FieldDiffer.DiffResult result = harness.judge(parityCase, ParityCase.UnitKind.COMPONENT,
-            invocation -> drive(parityCase.caseId(), invocation));
+            invocation -> drive(parityCase, invocation));
 
         assertThat(result.count())
             .as("the parity gate for %s/%s. A module is not complete until its diff count is zero "
@@ -341,20 +344,28 @@ class CBSTM03BParityTest {
     }
 
     /**
-     * Guards the call script table against the case set drifting away from it.
+     * Every case declares a decodable call script, and pins one area image per {@code CALL}.
      *
-     * <p>The scripts live in Java rather than in the case files because {@link ParityCase} admits no
-     * script member - {@code jobParameters} belongs to {@code BATCH_JOB} alone - and because the
-     * harness's design puts construction and invocation in the per-program test. That split is
-     * sound, but it means a twenty-first case, or a renamed one, would reach {@link #script(String)}
-     * and be refused there rather than here. This asserts the pairing up front, so the failure names
-     * the missing script instead of surfacing as one unrunnable case.
+     * <p>The scripts live in the case files, which is where the behaviour under test belongs: this
+     * subroutine's entire contract is a DD name plus a one-character operation code, so the sequence of
+     * calls <em>is</em> what a case asserts. {@link #scriptOf(ParityCase)} refuses a case that declares
+     * none, and refuses a malformed one rather than defaulting it, but it does so one case at a time and
+     * only when that case runs. Decoding the whole set here turns a drifted fixture into one failure that
+     * names it.
+     *
+     * <p>The second assertion is the one that keeps a script honest: one 1040-byte
+     * {@code LK-M03B-AREA} expectation per call, so a script that grew a call would leave it unasserted
+     * and a script that lost one would assert a call that never happened. It also covers every one of the
+     * six operation codes across the set, because two of them - {@code W} and {@code Z} - are declared by
+     * {@code app/cbl/CBSTM03B.cbl:107-108} and tested by nothing in the source, and preserving dead code
+     * means driving it (practice B5).
      */
     @Test
-    @DisplayName("every case has a call script, and every script has at least one CALL")
-    void everyCaseHasACallScript() {
+    @DisplayName("declares a decodable script per case, one area image per CALL, all six op codes")
+    void everyCaseDeclaresADecodableCallScript() {
+        Set<Operation> exercised = EnumSet.noneOf(Operation.class);
         for (ParityCase parityCase : cases()) {
-            List<Call> steps = script(parityCase.caseId());
+            List<Call> steps = scriptOf(parityCase);
 
             assertThat(steps)
                 .as("the call script for %s/%s. A case with no CALL would assert nothing about a "
@@ -367,7 +378,13 @@ class CBSTM03BParityTest {
                     + "or assert one that never happened",
                     PROGRAM, parityCase.caseId(), steps.size())
                 .hasSize(steps.size());
+            steps.forEach(step -> exercised.add(step.oper()));
         }
+
+        assertThat(exercised)
+            .as("all six of the 88-level operation codes app/cbl/CBSTM03B.cbl:103-108 declares must be "
+                + "issued by some case, including the two the source itself never tests")
+            .containsExactlyInAnyOrder(Operation.values());
     }
 
     // =============================================================================================
@@ -624,197 +641,124 @@ class CBSTM03BParityTest {
      */
     private record Call(String dd, Operation oper, String key, int keyLength, boolean zeroRc,
                         boolean clearFldt) {
-
-        /** A non-keyed call with both of the caller's resets applied. */
-        private static Call of(String dd, Operation oper) {
-            return new Call(dd, oper, Request.blankKey(), 0, true, true);
-        }
-
-        /** A non-keyed call that leaves the record area exactly as the previous call left it. */
-        private static Call keeping(String dd, Operation oper) {
-            return new Call(dd, oper, Request.blankKey(), 0, true, false);
-        }
-
-        /** A keyed call with both of the caller's resets applied. */
-        private static Call keyed(String dd, String key, int keyLength) {
-            return new Call(dd, Operation.READ_K, key, keyLength, true, true);
-        }
-
-        /** A keyed call that leaves the record area as the previous call left it. */
-        private static Call keyedKeeping(String dd, String key, int keyLength) {
-            return new Call(dd, Operation.READ_K, key, keyLength, true, false);
-        }
-
-        /**
-         * A call that supplies a key and a key length alongside an operation <em>other</em> than the
-         * keyed read, with both of the caller's resets applied.
-         *
-         * <p>This is how a case reaches an unsupported DD-and-operation combination while still
-         * carrying the operands a real caller would have left in the area. Neither operand is
-         * consulted: the {@code MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN)} reference modification that
-         * would read them appears only inside the two {@code IF M03B-READ-K} blocks
-         * ({@code CBSTM03B.CBL:189} and {@code :214}), so an operation that fails that guard never
-         * evaluates either. Pinning that both come back unmodified is a large part of what such a
-         * case asserts, and it cannot be pinned with {@link #of} because that supplies a blank key.
-         */
-        private static Call keyedAs(String dd, Operation oper, String key, int keyLength) {
-            return new Call(dd, oper, key, keyLength, true, true);
-        }
-
-        /** A call that resets neither - how a stale status is carried into the next call. */
-        private static Call stale(String dd, Operation oper) {
-            return new Call(dd, oper, Request.blankKey(), 0, false, false);
-        }
     }
 
     /**
-     * The call script for one case.
+     * The call script one case declares, decoded from its {@link ParityCase.UnitStimulus}.
      *
-     * <p>The scripts live here rather than in the case files because {@link ParityCase} has no member
-     * that could carry one: {@code jobParameters} belongs to {@code BATCH_JOB} alone, and a
-     * {@code COMPONENT} case declares only its inputs and its expectations. That is the harness's
-     * own division of labour - the case states what is true, the per-program test states how the
-     * unit is reached - and it is the reason a {@code ParityUnit} is supplied by the caller at all.
+     * <p><strong>Nothing here reads {@link ParityCase#caseId()}.</strong> It used to: a {@code switch}
+     * over {@code case01}..{@code case20} held twenty hand-written {@code List<Call>} scripts, and that
+     * was the defect this replaces. The sequence of calls <em>is</em> the behaviour under test for this
+     * program - {@code PROCEDURE DIVISION USING LK-M03B-AREA} dispatches on a DD name and an operation
+     * code, and nothing else happens - so a case file that did not state its own sequence was a case file
+     * that did not describe what it asserts. Renumbering a case silently gave it a different script, and
+     * a twenty-first case would have thrown from a {@code default} arm.
      *
-     * <p>Each script is a transcription of the {@code CBSTM03A} idiom for the paragraph it stands
-     * for, and the expected area transcript in the matching case file was derived from the same
-     * script by reading {@code CBSTM03B}'s rules - never by running this code.
+     * <p>{@link ParityCase.UnitStimulus#operationScript()} carries it now, one
+     * {@link ParityCase.ScriptedOperation} per {@code CALL}, in issue order. Each declares the DD name
+     * as {@code LK-M03B-DD} carries it, the operation as one of the six {@code 88}-level codes, the key
+     * and key length as {@code LK-M03B-KEY} and {@code LK-M03B-KEY-LN} carry them, and the two caller
+     * idioms the source distinguishes:
+     * <ul>
+     *   <li>{@code status} - the value handed in as {@code LK-M03B-RC}. Declared {@code "00"} for the
+     *       {@code MOVE ZERO TO WS-M03B-RC} every real call site issues; omitted to carry the previous
+     *       call's status forward, which is the only way to observe a fall-through exit that assigns
+     *       nothing new.</li>
+     *   <li>{@code primesRecordArea} - whether the caller issues
+     *       {@code MOVE SPACES TO WS-M03B-FLDT} first. {@code app/cbl/CBSTM03A.CBL:L350}, {@code :L745}
+     *       and {@code :L834} do; {@code :L857-860} conspicuously does not, and that omission is what
+     *       makes "at end of file the record area is returned unchanged" an assertion with content.</li>
+     * </ul>
      *
-     * @param caseId {@code case01} through {@code case20}
+     * <p>Each script is a transcription of the {@code CBSTM03A} idiom for the paragraph it stands for,
+     * and the expected area transcript in the same case file was derived from the same script by reading
+     * {@code CBSTM03B}'s rules - never by running this code.
+     *
+     * @param parityCase the case whose script to decode
      * @return the calls to issue, in order; never empty
-     * @throws IllegalArgumentException if the case identifier has no script, which is what a
-     *     twenty-first or a renamed case looks like from here
+     * @throws IllegalArgumentException if the case declares no script, if an operation names a code this
+     *     program does not declare, or if the stimulus declares a member this program has no use for
      */
-    private static List<Call> script(String caseId) {
-        String trnx = StatementGenerationJobB.TRNXFILE_DD;
-        String xref = StatementGenerationJobB.XREFFILE_DD;
-        String cust = StatementGenerationJobB.CUSTFILE_DD;
-        String acct = StatementGenerationJobB.ACCTFILE_DD;
-        int custKey = StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH;
-        int acctKey = StatementGenerationJobB.ACCTFILE_CALLER_KEY_LENGTH;
+    private static List<Call> scriptOf(ParityCase parityCase) {
+        ParityCase.UnitStimulus stimulus = parityCase.unitStimulus();
+        if (!stimulus.callSiteOutcomes().isEmpty()) {
+            throw new IllegalArgumentException(parityCase.caseId() + " of " + PROGRAM + " declares a "
+                + "callSiteOutcome. CBSTM03B is the call site: every status it reports it computes from "
+                + "the DD's own FILE STATUS area over the seeded relation, so a substituted outcome here "
+                + "would replace the subject with the substitution.");
+        }
+        if (!stimulus.stepStatuses().isEmpty()) {
+            throw new IllegalArgumentException(parityCase.caseId() + " of " + PROGRAM + " declares a "
+                + "step status. CBSTM03B is a called subprogram with no EXEC PGM= anywhere in app/jcl, "
+                + "so no preceding job step gates it.");
+        }
+        if (!stimulus.environment().isEmpty()) {
+            throw new IllegalArgumentException(parityCase.caseId() + " of " + PROGRAM + " declares an "
+                + "environment variant. CBSTM03B reads four relations and a linkage area and nothing "
+                + "else; none of the permitted keys names anything it can observe.");
+        }
 
-        return switch (caseId) {
-            // TRNXFILE - ACCESS MODE IS SEQUENTIAL. OPEN, READ, end of file, and CLOSE both after a
-            // browse (case03) and straight after the OPEN (case05).
-            case "case01" -> List.of(Call.of(trnx, Operation.OPEN));
-            case "case02" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ));
-            case "case03" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
-                Call.of(trnx, Operation.READ), Call.keeping(trnx, Operation.CLOSE));
-            // End of file, transcribed from the one caller site that actually reaches it:
-            // 8500-READTRNX-READ (:818-853) issues MOVE SPACES TO WS-M03B-FLDT (:834) before every
-            // CALL, so the read that finds nothing left is a primed read and LK-M03B-FLDT comes back
-            // as 1000 spaces. Exactly two rows are seeded and exactly two reads precede this one, so
-            // the third READ is at the end of the file by construction rather than by fixture size.
-            // The unprimed direction - "at end of file the record area is returned unchanged" - is
-            // pinned by case08 on XREFFILE, which is where :857-860's omission of the MOVE SPACES
-            // makes it an assertion with content.
-            case "case04" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
-                Call.of(trnx, Operation.READ), Call.of(trnx, Operation.READ));
-            // A CLOSE with no READ between it and the OPEN: the third guard (:146) reached only
-            // after the first two (:135, :140) were evaluated and failed, and - because :857-860
-            // omits the MOVE SPACES that :745 and :834 issue - LK-M03B-FLDT arrives blank and comes
-            // back blank, so "a CLOSE assigns no record area" is pinned in the direction case03,
-            // which closes after two reads, cannot reach.
-            case "case05" -> List.of(Call.of(trnx, Operation.OPEN),
-                Call.keeping(trnx, Operation.CLOSE));
+        List<ParityCase.ScriptedOperation> declared = stimulus.operationScript();
+        if (declared.isEmpty()) {
+            throw new IllegalArgumentException(parityCase.caseId() + " of " + PROGRAM + " declares no "
+                + "operationScript. The sequence of CALLs is the whole behaviour of a subroutine whose "
+                + "contract is one DD name and one operation code, so a case with no script asserts "
+                + "nothing about it. Declare the calls in the case file, in issue order.");
+        }
 
-            // 'K' against a SEQUENTIAL DD - the other half of the capability asymmetry case14 and
-            // case15 pin from the RANDOM side. 1000-TRNXFILE-PROC guards OPEN (:135), READ (:140)
-            // and CLOSE (:146) and has no IF M03B-READ-K, so all three conditions are false and
-            // control falls into 1900-EXIT (:151-152), which still moves TRNXFILE-STATUS into
-            // LK-M03B-RC. The OPEN before it is what makes the stale status '00' rather than
-            // undefined: TRNXFILE-STATUS is declared at :83-85 with no VALUE clause. The key and
-            // the 32-byte TRNX-KEY length are supplied and never read, because the MOVE LK-M03B-KEY
-            // (1:LK-M03B-KEY-LN) that would read them lives only at :189 and :214.
-            case "case06" -> List.of(Call.of(trnx, Operation.OPEN),
-                Call.keyed(trnx, TRNXFILE_UNUSED_KEY, StatementGenerationJobB.TRNXFILE_KEY_LENGTH));
+        List<Call> script = new ArrayList<>(declared.size());
+        for (ParityCase.ScriptedOperation operation : declared) {
+            script.add(callFrom(parityCase.caseId(), operation));
+        }
+        return List.copyOf(script);
+    }
 
-            // XREFFILE - the second SEQUENTIAL file, seeded from the 36-byte cardxref fixture.
-            case "case07" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
-                Call.of(xref, Operation.READ), Call.of(xref, Operation.READ),
-                Call.keeping(xref, Operation.CLOSE));
-            case "case08" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
-                Call.keeping(xref, Operation.READ), Call.keeping(xref, Operation.CLOSE));
-            // The same boundary as case08, taken from the other side. Case 08 reaches end of file
-            // with the area left as the previous call returned it, which proves READ ... INTO at
-            // app/cbl/CBSTM03B.CBL:165 assigns nothing on AT END; this one reaches it the way the
-            // real call site does, because 1000-XREFFILE-GET-NEXT issues MOVE SPACES TO
-            // WS-M03B-FLDT at app/cbl/CBSTM03A.CBL:350 before every one of its calls - so every
-            // step here is Call.of and the end-of-file image comes back at 1000 spaces. It also
-            // consumes TWO seeded rows before the third READ, so end of file is a scripted event
-            // rather than a property of how many rows the fixture happens to hold. A translation
-            // that carried the previous record forward on AT END passes case08 and fails here; one
-            // that blanked the area on AT END passes here and fails case08.
-            case "case09" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
-                Call.of(xref, Operation.READ), Call.of(xref, Operation.READ));
+    /**
+     * Decodes one declared operation into the call this gate issues.
+     *
+     * @param caseId the case, for a diagnostic only - never for a decision
+     * @param declared the declared operation
+     * @return the call
+     * @throws IllegalArgumentException if the status is anything other than {@code '00'} or absent, or if
+     *     a key is declared without a length or a length without a key
+     */
+    private static Call callFrom(String caseId, ParityCase.ScriptedOperation declared) {
+        Operation oper = operationNamed(caseId, declared.operation());
+        boolean primesStatus = declared.status() != null;
+        if (primesStatus && !FileStatus.OK.equals(declared.status())) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares status '"
+                + declared.status() + "' on a scripted call. The only value a real call site hands in is "
+                + "the '" + FileStatus.OK + "' of MOVE ZERO TO WS-M03B-RC; any other value would be a "
+                + "status this gate invented rather than one CBSTM03B computed. Omit the member to carry "
+                + "the previous call's status forward, which is how a stale status is observed.");
+        }
+        if ((declared.key() == null) != (declared.keyLength() == null)) {
+            throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares a key without a "
+                + "length, or a length without a key. LK-M03B-KEY is read as "
+                + "LK-M03B-KEY (1:LK-M03B-KEY-LN), so one without the other names no bytes.");
+        }
+        String key = declared.key() == null ? Request.blankKey() : declared.key();
+        int keyLength = declared.keyLength() == null ? 0 : declared.keyLength();
+        return new Call(declared.dd(), oper, key, keyLength, primesStatus,
+            declared.primesRecordAreaOrDefault());
+    }
 
-            // CUSTFILE - ACCESS MODE IS RANDOM. OPEN, CLOSE, and the keyed READ taken both ways:
-            // the miss in case 11, and in case 12 the hit that pins the whole 500-byte CUSTREC
-            // record field by field. Case 12's key is not arbitrary - 000000050 is the
-            // XREF-CUST-ID of row 0 of app/data/ASCII/cardxref.txt, so it is the value the
-            // statement flow actually carries out of the cross-reference and into
-            // app/cbl/CBSTM03A.CBL:368 2000-CUSTFILE-GET. The OPEN on this DD is asserted by all
-            // three of the cases below and again in case14 and case20; the plain READ that reaches
-            // no IF at all on a RANDOM file is asserted on this DD in case 14 and on ACCTFILE in
-            // case 15.
-            case "case10" -> List.of(Call.of(cust, Operation.OPEN),
-                Call.keyed(cust, "000000011", custKey), Call.keeping(cust, Operation.CLOSE));
-            case "case11" -> List.of(Call.of(cust, Operation.OPEN),
-                Call.keyed(cust, "000000099", custKey));
-            case "case12" -> List.of(Call.of(cust, Operation.OPEN),
-                Call.keyed(cust, "000000050", custKey));
-
-            // ACCTFILE - the second RANDOM file, whose RECORD KEY is PIC 9(11) rather than PIC X.
-            case "case13" -> List.of(Call.of(acct, Operation.OPEN),
-                Call.keyed(acct, "00000000011", acctKey), Call.keeping(acct, Operation.CLOSE));
-
-            // 'R' against a RANDOM DD, on the CUSTFILE status area specifically (gate G47) - the
-            // other half of the capability asymmetry case06 pins from the SEQUENTIAL side.
-            // 3000-CUSTFILE-PROC guards OPEN (:183), READ-K (:188) and CLOSE (:195) and has no
-            // IF M03B-READ, because CUSTFILE is ACCESS MODE IS RANDOM (:45), so all three
-            // conditions are false and control falls into 3900-EXIT (:200-201), which still moves
-            // CUSTFILE-STATUS into LK-M03B-RC. The OPEN before it is what makes the stale status
-            // '00' rather than undefined: CUSTFILE-STATUS is declared at :91-93 with no VALUE
-            // clause. The key and its length are the ones app/cbl/CBSTM03A.CBL:372-374 computes -
-            // 000000050 and +9 - and they are supplied and never read, because the
-            // MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) that would read them sits inside the guard this
-            // operation fails. The row that key names is the single seeded row, so the case proves
-            // the operands are ignored against a record that is present rather than absent.
-            case "case14" -> List.of(Call.of(cust, Operation.OPEN),
-                Call.keyedAs(cust, Operation.READ, "000000050", custKey));
-
-            case "case15" -> List.of(Call.stale(acct, Operation.READ), Call.of(acct, Operation.OPEN),
-                Call.keeping(acct, Operation.READ));
-
-            // FD-ACCT-DATA, declared twice at two different widths, read in one run.
-            case "case16" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
-                Call.of(acct, Operation.OPEN), Call.keyed(acct, "00000000001", acctKey));
-
-            // The two declared-but-dead operation codes (practice B5).
-            case "case17" -> List.of(Call.of(acct, Operation.OPEN),
-                Call.keyed(acct, "00000000099", acctKey), Call.keeping(acct, Operation.WRITE));
-            case "case18" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
-                Call.keeping(xref, Operation.READ), Call.keeping(xref, Operation.REWRITE));
-
-            // WHEN OTHER (gate G48) - the status must come back stale, not fresh.
-            case "case19" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
-                Call.keeping(xref, Operation.READ), Call.stale(UNRECOGNISED_DD, Operation.READ),
-                Call.stale(UNRECOGNISED_DD, Operation.OPEN));
-
-            // Four independent FILE STATUS areas (gate G47), as a ten-call interleaving.
-            case "case20" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(xref, Operation.OPEN),
-                Call.of(cust, Operation.OPEN), Call.of(acct, Operation.OPEN),
-                Call.of(cust, Operation.CLOSE), Call.keyed(cust, "000000001", custKey),
-                Call.of(trnx, Operation.READ), Call.of(xref, Operation.READ),
-                Call.keyed(acct, "00000000001", acctKey),
-                Call.keyed(cust, "000000001", custKey));
-
-            default -> throw new IllegalArgumentException("No call script is declared for case '"
-                + caseId + "' of " + PROGRAM + ". Every case file must be paired with the sequence "
-                + "of CALLs it describes, because ParityCase carries inputs and expectations but no "
-                + "script - jobParameters belongs to BATCH_JOB alone. Add the script here, next to "
-                + "the nineteen others, so the case and the calls it asserts stay side by side.");
-        };
+    /**
+     * Resolves a declared one-character operation code to the enum member it names.
+     *
+     * @param caseId the case, for the diagnostic
+     * @param code the declared code
+     * @return the matching operation
+     * @throws IllegalArgumentException if no operation carries that code
+     */
+    private static Operation operationNamed(String caseId, String code) {
+        for (Operation candidate : Operation.values()) {
+            if (candidate.image().equals(code)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares operation '" + code
+            + "', which is not one of the six 88-level codes app/cbl/CBSTM03B.cbl:103-108 declares.");
     }
 
     /**
@@ -834,20 +778,21 @@ class CBSTM03BParityTest {
      * expected value here would turn the case's own expectation into the observation it is compared
      * against.
      *
-     * @param caseId the case whose script to replay
+     * @param parityCase the case whose declared script to replay
      * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
      * @return the outcome the recorder holds
      */
-    private ParityHarness.UnitOutcome drive(String caseId, ParityHarness.Invocation invocation) {
+    private ParityHarness.UnitOutcome drive(ParityCase parityCase,
+                                            ParityHarness.Invocation invocation) {
         Map<String, ParityHarness.SeededDataset> seeded = invocation.datasets();
-        JdbcTemplate template = seededTemplate(seeded);
-        StatementGenerationJobB subroutine = subroutine(template);
+        RecordImageDataSource backend = seededBackend(seeded);
+        StatementGenerationJobB subroutine = subroutine(new JdbcTemplate(backend));
         ParityHarness.UnitOutcome.Builder recorder = invocation.recorder();
 
         String rc = StatementGenerationJobB.UNTOUCHED_STATUS;
         String fldt = StatementGenerationJobB.SPACES_FLDT;
         try (Session session = subroutine.newSession()) {
-            for (Call step : script(caseId)) {
+            for (Call step : scriptOf(parityCase)) {
                 if (step.zeroRc()) {
                     rc = FileStatus.OK;
                 }
@@ -868,7 +813,7 @@ class CBSTM03BParityTest {
             if (!seeded.containsKey(dd)) {
                 continue;
             }
-            recorder.finalState(dd, layoutOf(dd), storedRows(template, dd));
+            recorder.finalState(dd, layoutOf(dd), storedRows(backend, dd));
         }
         return recorder.build();
     }
@@ -898,33 +843,33 @@ class CBSTM03BParityTest {
      * <p>The column is declared at the seeded width rather than at the copybook width. The two agree
      * for every case here, and stating the seeded one means a disagreement would surface as the
      * {@code '04'} record-length conflict COBOL reports rather than being papered over by a wider
-     * column. The database name carries a fresh {@link UUID}, so two cases - and two clones running
-     * in parallel - can never share one; no counter is kept, because a mutable static field is
-     * exactly what practice B9 and gate G53 forbid.
+     * column. Each case gets a store of its own, so two cases - and two clones running in parallel -
+     * can never share one; no counter is kept, because a mutable static field is exactly what practice
+     * B9 and gate G53 forbid.
+     *
+     * <p><strong>No DDL.</strong> A relation here is declared to a {@link RecordImageDataSource}, which
+     * holds record images and has no schema, so gate <strong>G44</strong> - no DDL, no schema migration,
+     * no entity annotation and no generated table definition anywhere in this module - holds with nothing
+     * to reinterpret. Everything above the driver is unchanged: the real {@code JdbcTemplate}, the real
+     * {@link StatementGenerationJobB}, {@code DatasetRelation}'s real composed statements and
+     * {@code RecordImageForm}'s real column read all run as they do against a site's gateway.
      *
      * @param seeded the datasets the harness seeded, keyed by binding key
-     * @return a template over the seeded relations
+     * @return a data source over the seeded relations
      */
-    private static JdbcTemplate seededTemplate(Map<String, ParityHarness.SeededDataset> seeded) {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-            "jdbc:h2:mem:cbstm03b" + UUID.randomUUID().toString().replace("-", "")
-                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-
+    private static RecordImageDataSource seededBackend(
+            Map<String, ParityHarness.SeededDataset> seeded) {
+        RecordImageDataSource backend = new RecordImageDataSource();
         for (String dd : StatementGenerationJobB.DD_NAMES) {
             ParityHarness.SeededDataset dataset = seeded.get(dd);
             if (dataset == null) {
                 continue;
             }
-            String relation = delimited(dsnameOf(dd));
-            template.execute("CREATE TABLE " + relation + " (" + delimited(RECORD_IMAGE_COLUMN)
-                + " VARCHAR(" + dataset.recordLength() + "))");
-            for (String row : dataset.rows()) {
-                template.update("INSERT INTO " + relation + " VALUES (?)", row);
-            }
+            backend.define(dsnameOf(dd), RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER,
+                    dataset.recordLength());
+            backend.store().seed(dsnameOf(dd), dataset.rows());
         }
-        return template;
+        return backend;
     }
 
     /**
@@ -934,15 +879,14 @@ class CBSTM03BParityTest {
      * the image in all four of these datasets - which is what a {@code KSDS} guarantees and what the
      * expectation in each case file is stated in.
      *
-     * @param template the template over the seeded relations
+     * @param backend the store holding the seeded relations
      * @param dd the binding key whose relation to read
      * @return every stored row, in ascending order
      */
-    private static List<String> storedRows(JdbcTemplate template, String dd) {
-        String column = delimited(RECORD_IMAGE_COLUMN);
-        List<String> rows = template.query("SELECT " + column + " FROM " + delimited(dsnameOf(dd))
-            + " ORDER BY " + column + " ASC", (resultSet, rowNumber) -> resultSet.getString(1));
-        return new ArrayList<>(rows);
+    private static List<String> storedRows(RecordImageDataSource backend, String dd) {
+        List<String> rows = new ArrayList<>(backend.store().rows(dsnameOf(dd)));
+        rows.sort(java.util.Comparator.naturalOrder());
+        return rows;
     }
 
     /**

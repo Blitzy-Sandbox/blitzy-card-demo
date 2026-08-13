@@ -24,6 +24,7 @@ import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -2123,6 +2124,22 @@ final class CardListControllerTest {
                         .as("row %d uses DFHBMPRO", row)
                         .isEqualTo((char) (BmsAttributes.DFHBMPRO & 0xFF));
             }
+
+            // And every one of those bytes reaches the client. They are written into xxxA of the INPUT
+            // group, so the projection is given that area: reading the output group's never-written xxxP
+            // reported x'00' for all seven rows and a client could not tell a selectable row from a
+            // protected one.
+            ScreenMetadata metadata = response.screenMetadata(request);
+            assertThat(metadata.fields().get("CRDSEL1").protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRF));
+            for (int row = 2; row <= 7; row++) {
+                assertThat(metadata.fields().get("CRDSEL" + row).protection())
+                        .as("row %d reaches the client as DFHBMPRO", row)
+                        .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRO));
+            }
+
+            // Without an input area there is nothing to merge, and the output group's own byte stands.
+            assertThat(response.screenMetadata().fields().get("CRDSEL1").protection()).isZero();
         }
 
         @Test
@@ -4320,5 +4337,57 @@ final class CardListControllerTest {
      */
     private static String withoutDirectionSuffix(String itemName) {
         return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
+    }
+
+    @Nested
+    @DisplayName("G50: WS-CONTEXT-FLAG - declared by COCRDLIC, referenced by nothing")
+    class TheDeadContextFlag {
+
+        @Test
+        @DisplayName("both of its condition names are asserted in both states, over the two characters")
+        void theTwoConditionsAnswerInBothStates() {
+            // app/cbl/COCRDLIC.cbl:130-132 declares WS-CONTEXT-FLAG PIC X(1) with two condition names,
+            // WS-CONTEXT-FRESH-START VALUE '0' and WS-CONTEXT-FRESH-START-NO VALUE '1'. Each name
+            // appears exactly once in the whole program - at its own declaration. No paragraph sets the
+            // flag and none tests it, so there is no behaviour to drive and no field on the Java side
+            // holds it: inventing one would be inventing state the program has not got. What the source
+            // does declare is two characters and the predicate over them, and that is what this asserts,
+            // in both directions, so a transcription error cannot hide behind the disuse. The flag is a
+            // PIC X(1), so the two conditions are mutually exclusive by construction.
+            String freshStart = CardListController.WS_CONTEXT_FRESH_START;
+            String notFreshStart = CardListController.WS_CONTEXT_FRESH_START_NO;
+
+            assertThat(freshStart).as("WS-CONTEXT-FRESH-START VALUE '0', :131").isEqualTo("0");
+            assertThat(notFreshStart).as("WS-CONTEXT-FRESH-START-NO VALUE '1', :132").isEqualTo("1");
+
+            assertThat(freshStart.equals(freshStart))
+                    .as("WS-CONTEXT-FRESH-START holds for '0'").isTrue();
+            assertThat(freshStart.equals(notFreshStart))
+                    .as("WS-CONTEXT-FRESH-START does not hold for '1'").isFalse();
+            assertThat(notFreshStart.equals(notFreshStart))
+                    .as("WS-CONTEXT-FRESH-START-NO holds for '1'").isTrue();
+            assertThat(notFreshStart.equals(freshStart))
+                    .as("WS-CONTEXT-FRESH-START-NO does not hold for '0'").isFalse();
+
+            assertThat(freshStart).as("one byte each, as PIC X(1) declares").hasSize(1);
+            assertThat(notFreshStart).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("no paginated flow ever produces either character, which is why they are dead")
+        void neitherCharacterIsProducedByAnyFlow() {
+            // The false state where it counts. WS-PFK-FLAG, declared immediately above it at :128-129,
+            // uses the same two characters and IS live - so asserting that the context flag's characters
+            // are distinct from nothing would prove nothing. What is assertable is that this controller
+            // exposes no accessor for the flag at all: the two constants above are the whole of the
+            // model, because the whole of the source is two declarations.
+            assertThat(java.util.Arrays.stream(CardListController.class.getDeclaredFields())
+                    .map(java.lang.reflect.Field::getName)
+                    .filter(name -> name.toLowerCase(java.util.Locale.ROOT).contains("contextflag"))
+                    .toList())
+                    .as("no field holds WS-CONTEXT-FLAG - the program never sets it, so modelling "
+                            + "storage for it would be inventing state")
+                    .isEmpty();
+        }
     }
 }

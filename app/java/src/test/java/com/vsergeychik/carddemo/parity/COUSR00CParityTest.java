@@ -37,8 +37,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -370,33 +372,34 @@ final class COUSR00CParityTest {
     }
 
     /**
-     * A private in-memory relation for one case.
+     * A private record-image store for one case, with no DDL anywhere in reach.
      *
-     * <p>The database name is derived from the case identifier rather than from a counter, so the run
-     * is deterministic (practice B7) and this class holds no mutable static state (practice B9): two
-     * cases cannot see each other's rows, and the same case seeds the same database on every run.
+     * <p>Each case gets a store of its own, so two cases cannot see each other's rows and the same case
+     * observes exactly what it seeded on every run (practices B7 and B9). Nothing static is held and there
+     * is no shared database to name.
+     *
+     * <p>A {@code null} row list means <strong>the relation is never declared</strong>, which is how this
+     * suite expresses an unreachable dataset: every statement naming it fails with the class-42
+     * {@code SQLSTATE} an absent relation reports, which is the class {@code BackendDiagnostic} sorts on
+     * and which Spring translates into a {@code DataAccessException} exactly as a driver's would. That
+     * replaces a {@code DROP TABLE} and satisfies gate <strong>G44</strong> - no DDL, no schema migration,
+     * no entity annotation and no generated table definition anywhere in this module - with nothing to
+     * reinterpret. Everything above the driver is unchanged: the real {@code JdbcTemplate}, the real
+     * {@link SecUserRepository}, {@code DatasetRelation}'s real composed statements and
+     * {@code RecordImageForm}'s real column read.
      *
      * @param invocation the run, which supplies the case identifier
-     * @param rows       the record images to insert in ascending key order, or {@code null} for a
-     *                   database with no relation at all
-     * @return a template over that database
+     * @param rows       the record images to store in ascending key order, or {@code null} for a store
+     *                   in which the relation is not declared at all
+     * @return a template over that store
      */
     private static JdbcTemplate relation(final Invocation invocation, final List<String> rows) {
-        String database = "cousr00c_" + invocation.caseId() + (rows == null ? "_unreachable" : "");
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:" + database + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("DROP TABLE IF EXISTS \"" + TEST_DSNAME + '"');
-        if (rows == null) {
-            return template;
+        RecordImageDataSource backend = new RecordImageDataSource();
+        if (rows != null) {
+            backend.define(TEST_DSNAME, RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER, RECORD_LENGTH);
+            backend.store().seed(TEST_DSNAME, rows);
         }
-        template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (" + RECORD_IMAGE_COLUMN
-                + " VARCHAR(" + RECORD_LENGTH + "))");
-        for (String row : rows) {
-            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", row);
-        }
-        return template;
+        return new JdbcTemplate(backend);
     }
 
     /**

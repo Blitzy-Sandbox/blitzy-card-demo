@@ -424,6 +424,14 @@ public class TranCategoryRepository {
     private static final int KEYED_READ_ROW_LIMIT = 2;
 
     /**
+     * How many rows the unreadable-row probe transfers at most: {@value}.
+     *
+     * <p>One, because the probe asks a yes-or-no question. Whether the dataset holds one unreadable row or
+     * fifty does not change what the read reports, so nothing past the first is fetched.
+     */
+    private static final int UNREADABLE_ROW_PROBE_LIMIT = 1;
+
+    /**
      * How many rows a unique key may legitimately select: {@value}.
      *
      * <p>Named rather than written as a bare {@code 1} in the comparison, because the comparison is the
@@ -482,8 +490,11 @@ public class TranCategoryRepository {
      * what makes a read after a close describe the dataset afresh rather than reuse a statement over a
      * relation that may since have been de-allocated. That is the same lifecycle
      * {@link TranTypeRepository} keeps, and the two classes are deliberately identical in it.
+     *
+     * <p>Both statements it holds come out of the <em>same</em> describe, so a keyed read pays one metadata
+     * round trip rather than two and cannot fail while composing the second having succeeded on the first.
      */
-    private volatile String keyedReadStatement;
+    private volatile Statements statements;
 
     /**
      * Assembles the repository from the module's shared {@link JdbcTemplate}, the DD-name-keyed dataset
@@ -909,7 +920,7 @@ public class TranCategoryRepository {
     /**
      * The keyed-read statement, resolving and caching it on first use.
      *
-     * <p>Reads {@link #keyedReadStatement} once into a local so a concurrent {@link #close()} cannot
+     * <p>Reads {@link #statements} once into a local so a concurrent {@link #close()} cannot
      * turn a non-{@code null} check into a {@code null} dereference, which is the standard shape for a
      * lazily published {@code volatile}.
      *
@@ -923,14 +934,26 @@ public class TranCategoryRepository {
      * @throws DataAccessException   if the dataset cannot be described
      * @throws IllegalStateException if the dataset presents no usable record-image column
      */
-    private String keyedReadStatement() {
-        String resolved = this.keyedReadStatement;
+    private Statements statements() {
+        Statements resolved = this.statements;
         if (resolved != null) {
             return resolved;
         }
-        String composed = resolveKeyedStatement();
-        this.keyedReadStatement = composed;
+        Statements composed = resolveStatements();
+        this.statements = composed;
         return composed;
+    }
+
+    /**
+     * The statements this repository sends, composed from one describe.
+     *
+     * @param selectByKey         the keyed read: the record whose image begins with the
+     *                            {@value #KEY_LENGTH}-byte {@code TRAN-CAT-KEY}
+     * @param probeUnreadableRows the rows whose record-image column holds nothing. Not a COBOL operation:
+     *                            it is what lets {@code INVALID KEY} be proved rather than assumed - see
+     *                            {@link TranCategoryRepository#provenAbsence(String)}
+     */
+    private record Statements(String selectByKey, String probeUnreadableRows) {
     }
 
     /**
@@ -960,7 +983,7 @@ public class TranCategoryRepository {
         try {
             return probeDatasetAvailability("CLOSE");
         } finally {
-            this.keyedReadStatement = null;
+            this.statements = null;
             this.relation.forgetRecordImageColumn();
         }
     }
@@ -1012,7 +1035,7 @@ public class TranCategoryRepository {
             // establishes that the dataset is addressable AND names the record-image column the keyed
             // read is composed over, so an OPEN INPUT that succeeds leaves nothing left to discover and
             // the report's per-line lookups issue one query each rather than two.
-            this.keyedReadStatement = resolveKeyedStatement();
+            this.statements = resolveStatements();
             return FileStatus.OK;
         } catch (IllegalStateException unusable) {
             // The relation resolved but presents nothing at the record-image position, so there is no
@@ -1151,12 +1174,12 @@ public class TranCategoryRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private ReadResult readByKeyImage(String keyImage) {
-        String statement;
+        Statements sql;
         try {
             // Resolved once by open() and reused here. Only an unopened dataset - or one read after a
             // close - reaches the backend from this line, and then only for the one describe that names
             // the record-image column.
-            statement = keyedReadStatement();
+            sql = statements();
         } catch (DataAccessException unreachable) {
             return ReadResult.other(PERMANENT_ERROR_STATUS, logRefusal(unreachable, "describe the "
                     + DD_NAME + " dataset '" + relation.dsname() + "' to read it by key"));
@@ -1164,7 +1187,7 @@ public class TranCategoryRepository {
 
         List<byte[]> rows;
         try {
-            rows = fetch(statement, KEY_SPAN.pattern(keyImage));
+            rows = fetch(sql.selectByKey(), KEY_SPAN.pattern(keyImage));
         } catch (DataAccessException translated) {
             // WHEN OTHER. Reported as a status, exactly as the COBOL keeps only the status, so the
             // caller's own guard chain decides what to do about it - and carrying the backend's own
@@ -1185,8 +1208,13 @@ public class TranCategoryRepository {
         }
         if (rows.isEmpty()) {
             // The INVALID KEY condition at app/cbl/CBTRN03C.cbl:506. A normal branch in the caller, and
-            // never an exception: the caller displays the key, renders '23' and abends.
-            return ReadResult.notFound();
+            // never an exception: the caller displays the key, renders '23' and abends. But only once the
+            // absence has been PROVED. Both halves of TRAN-CAT-KEY live inside the record image
+            // (app/cpy/CVTRA04Y.cpy:5-7), so a row whose record-image column holds nothing has no knowable
+            // key and the keyed LIKE predicate cannot match it: SQL evaluates every comparison against a
+            // null as UNKNOWN. Reporting INVALID KEY while such a row sits in the dataset would abend the
+            // report on the claim that a category is undefined when it may well be defined.
+            return provenAbsence(sql.probeUnreadableRows());
         }
         if (rows.size() > UNIQUE_KEY_ROW_COUNT) {
             // A 6-byte primary key selected more than one row, which a KSDS defined KEYS(6 0) cannot do.
@@ -1227,6 +1255,66 @@ public class TranCategoryRepository {
         return ReadResult.found(TranCategoryRecord.decode(recordImage, codec.charset()));
     }
 
+    /**
+     * Reports {@code INVALID KEY} only once no row of the dataset is <strong>unreadable</strong>, and the
+     * {@code WHEN OTHER} outcome when one is.
+     *
+     * <h2>Why the absence has to be proved</h2>
+     * <p>Both halves of {@code TRAN-CAT-KEY} live <em>inside</em> the record image - they are its leading
+     * six bytes - so a row whose record-image column holds nothing has no knowable key and the keyed
+     * {@code LIKE} cannot match it: SQL evaluates every comparison against a null as {@code UNKNOWN}. That
+     * leaves the read with no matching row and, on the face of it, {@code INVALID KEY}. But
+     * {@code INVALID KEY} is a positive claim: {@code app/cbl/CBTRN03C.cbl:504-512} displays
+     * {@code 'INVALID TRAN CATG KEY : '}, renders {@code '23'} and abends the report on it. Making that
+     * claim while an unreadable row sits in the relation reports a record that is present as absent -
+     * exactly what the {@code recordImage == null} arm above already refuses to do for a row it can see.
+     *
+     * <p>The proof is one row-limited read on the not-found path only. A read that found its record is
+     * untouched: a VSAM {@code READ} of a key that resolves does not fail because another record in the
+     * cluster is damaged.
+     *
+     * <p>The key is deliberately absent from every diagnostic here, as it is from this class's refused-read
+     * arm: the key is already in the caller's own {@code DISPLAY} line, and these messages are wiring
+     * diagnostics.
+     *
+     * @param unreadableRowsProbe the statement selecting the rows whose record-image column holds nothing
+     * @return {@link ReadResult#notFound()} when the absence is established, the {@code WHEN OTHER}
+     *         outcome when it is not; never {@code null}
+     */
+    private ReadResult provenAbsence(String unreadableRowsProbe) {
+        List<byte[]> unreadable;
+        try {
+            unreadable = fetchUnreadableRows(unreadableRowsProbe);
+        } catch (DataAccessException translated) {
+            // The probe established nothing, so the absence stays unproved. Reported on the arm a refused
+            // read is reported on rather than as INVALID KEY, which would be the unsupported claim this
+            // probe exists to prevent.
+            return ReadResult.other(PERMANENT_ERROR_STATUS, logRefusal(translated, "establish that the "
+                    + DD_NAME + " dataset '" + relation.dsname() + "' holds no unreadable row before "
+                    + "reporting a key as absent"));
+        }
+        if (unreadable == null) {
+            // As on the keyed read: a template that yielded no result object has told us nothing, and
+            // nothing does not establish an absence.
+            LOG.error("The " + DD_NAME + " dataset yielded no result object at all for the unreadable-row "
+                    + "probe, so a keyed read's INVALID KEY could not be established; reporting file "
+                    + "status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + " rather than reporting as absent a record that may be present");
+            return ReadResult.other(PERMANENT_ERROR_STATUS);
+        }
+        if (unreadable.isEmpty()) {
+            // A genuine INVALID KEY: nothing matched the key and no row of the dataset is unreadable, so
+            // the absence is established rather than assumed.
+            return ReadResult.notFound();
+        }
+        LOG.error("A keyed read of the " + DD_NAME + " dataset matched no row, but the dataset holds a row "
+                + "with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
+                + " - and TRAN-CAT-KEY is part of that image, so that row's key cannot be known; reporting "
+                + "file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                + " rather than reporting as absent a category that may well be defined");
+        return ReadResult.other(PERMANENT_ERROR_STATUS);
+    }
+
     // =================================================================================================
     // Statement resolution and row transfer. This is the one place a SQL identifier is decided for this
     // dataset, and the one place the backend is asked to describe it.
@@ -1261,10 +1349,27 @@ public class TranCategoryRepository {
      *                               at all
      */
     String resolveKeyedStatement() {
+        return resolveStatements().selectByKey();
+    }
+
+    /**
+     * Describes the dataset once and composes every statement over the column it names.
+     *
+     * <p>One describe for both, deliberately: the unreadable-row probe qualifies the keyed read's
+     * {@code INVALID KEY}, so composing it from a describe of its own would let a read succeed or fail
+     * depending on which of its two statements was being composed rather than on the dataset.
+     *
+     * @return the composed statements; never {@code null}
+     * @throws DataAccessException   if the dataset cannot be described
+     * @throws IllegalStateException if the dataset presents no usable record-image column
+     */
+    private Statements resolveStatements() {
         ResultSetExtractor<String> columnNameExtractor =
                 TranCategoryRepository::extractRecordImageColumnName;
         String columnName = jdbcTemplate.query(relation.describeStatement(), columnNameExtractor);
-        return relation.selectByKey(relation.rememberRecordImageColumn(columnName));
+        String recordImageColumn = relation.rememberRecordImageColumn(columnName);
+        return new Statements(relation.selectByKey(recordImageColumn),
+                relation.selectUnreadableRows(recordImageColumn));
     }
 
     /**
@@ -1325,6 +1430,37 @@ public class TranCategoryRepository {
             List<byte[]> images = new ArrayList<>(KEYED_READ_ROW_LIMIT);
             int rowNumber = 0;
             while (images.size() < KEYED_READ_ROW_LIMIT && resultSet.next()) {
+                images.add(recordImageMapper.mapRow(resultSet, rowNumber++));
+            }
+            return images;
+        };
+        return jdbcTemplate.query(creator, extractor);
+    }
+
+    /**
+     * Executes the unreadable-row probe, transferring at most one row.
+     *
+     * <p>The same shape as {@link #fetch(String, String)} - a limited statement and an extractor that stops
+     * at the limit, reading the image through {@link #mapRecordImage(ResultSet, int)} - so the probe cannot
+     * drift from the read it qualifies and exercises no code path the reads do not. It binds no parameter:
+     * the predicate is {@code IS NULL} over the record-image column, which names no key.
+     *
+     * @param probeStatement the composed unreadable-row select
+     * @return the rows found, at most one, or {@code null} if the template yielded no result at all
+     * @throws DataAccessException if the backend refuses
+     */
+    private List<byte[]> fetchUnreadableRows(String probeStatement) {
+        PreparedStatementCreator creator = connection -> {
+            PreparedStatement prepared = connection.prepareStatement(probeStatement);
+            prepared.setMaxRows(UNREADABLE_ROW_PROBE_LIMIT);
+            prepared.setFetchSize(UNREADABLE_ROW_PROBE_LIMIT);
+            return prepared;
+        };
+        RowMapper<byte[]> recordImageMapper = this::mapRecordImage;
+        ResultSetExtractor<List<byte[]>> extractor = resultSet -> {
+            List<byte[]> images = new ArrayList<>(UNREADABLE_ROW_PROBE_LIMIT);
+            int rowNumber = 0;
+            while (images.size() < UNREADABLE_ROW_PROBE_LIMIT && resultSet.next()) {
                 images.add(recordImageMapper.mapRow(resultSet, rowNumber++));
             }
             return images;

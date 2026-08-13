@@ -13,6 +13,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -1500,15 +1501,28 @@ public final class TransactionListResponse {
         }
 
         /**
-         * A diagnostic rendering naming each field by its verbatim COBOL name. Values are shown as
-         * stored, with their padding intact, because the padding is part of the field.
+         * A diagnostic rendering naming each field by its verbatim COBOL name.
+         *
+         * <p>The two transaction identifiers bounding the page are masked to their last
+         * {@value SensitiveDiagnostics#REVEALED_TRAILING_DIGITS} characters at stored width, for the same
+         * reason the ten row identifiers are - see {@link TransactionListResponse#disclosureOf(String)}.
+         * They are masked here as well as there because this cursor is appended to
+         * {@link TransactionListResponse#toString()}, and a first and last identifier bounding a page is
+         * the same disclosure as the identifiers inside it. Zero-filled sequentials differ only in their
+         * trailing digits, so a paging defect is still exactly as diagnosable.
+         *
+         * <p>Everything else is shown as stored, with its padding intact, because the padding is part of
+         * the field: the page number, the more-pages flag and both selection fields carry no personal
+         * data and are what a paging or selection defect is read from.
          *
          * @return a single-line description; never {@code null}
          */
         @Override
         public String toString() {
-            return "CDEMO-CT00-INFO[" + TRNID_FIRST_FIELD + "='" + trnidFirst + "', "
-                    + TRNID_LAST_FIELD + "='" + trnidLast + "', "
+            return "CDEMO-CT00-INFO[" + TRNID_FIRST_FIELD + "='"
+                    + SensitiveDiagnostics.maskIdentifier(trnidFirst) + "', "
+                    + TRNID_LAST_FIELD + "='"
+                    + SensitiveDiagnostics.maskIdentifier(trnidLast) + "', "
                     + PAGE_NUM_FIELD + "=" + pageNum + ", "
                     + NEXT_PAGE_FLG_FIELD + "='" + nextPageFlg + "', "
                     + TRN_SEL_FLG_FIELD + "='" + trnSelFlg + "', "
@@ -4106,9 +4120,24 @@ public final class TransactionListResponse {
      * A diagnostic rendering: the header fields, the ten rows and the error line, each named by its
      * verbatim item name, followed by the navigation targets and the browse cursor.
      *
-     * <p>Values are shown as stored, with their padding intact, because the padding is part of the
-     * field. Nothing is masked or elided - this payload carries no credential, and hiding a field here
-     * would make a parity investigation harder for no benefit.
+     * <p>Every item is <strong>named</strong>, so a pagination, selection or field-highlight parity
+     * failure reads exactly as it did. What each item's <em>value</em> discloses is decided by
+     * {@link #disclosureOf(String)} and applied by {@link SensitiveDiagnostics#render}. A plainly
+     * rendered value is shown as stored, with its padding intact, because the padding is part of the
+     * field.
+     *
+     * <p>The reason this rendering needed a decision at all is not a credential - {@code COTRN00} carries
+     * none - but the shape of what it holds: ten transaction identifiers beside ten dates, ten
+     * descriptions and ten amounts is one cardholder's financial history, rendered in full, in a build
+     * log. Every one of those identifiers is a {@code TRANSACT} key, and the record it opens carries
+     * {@code TRAN-CARD-NUM}, so masking them is what detaches the rest of the page from any subject. The
+     * dates, descriptions and amounts then stay legible, because proving an amount matches the COBOL byte
+     * for byte is this migration's entire purpose and an unattributable page discloses nobody.
+     *
+     * <p>This masks the rendering and nothing else. Every item is still a JSON member, every accessor
+     * still returns its stored value in full, and {@link #payloadFieldValues()} is unaffected - so
+     * comparison is untouched and a wrong transaction identifier is still a difference and is still
+     * reported, against the item name that carries it.
      *
      * @return a multi-line description; never {@code null}
      */
@@ -4116,7 +4145,9 @@ public final class TransactionListResponse {
     public String toString() {
         StringBuilder text = new StringBuilder(OUTPUT_MAP_GROUP_NAME).append("[\n");
         for (Map.Entry<String, String> entry : payloadFieldValues().entrySet()) {
-            text.append("  ").append(entry.getKey()).append("='").append(entry.getValue())
+            text.append("  ").append(entry.getKey()).append("='")
+                    .append(SensitiveDiagnostics.render(disclosureOf(entry.getKey()),
+                            entry.getValue()))
                     .append("'\n");
         }
         text.append("  nextProgram='").append(nextProgram).append("'\n")
@@ -4125,6 +4156,49 @@ public final class TransactionListResponse {
                 .append("  ").append(cursor).append('\n')
                 .append(']');
         return text.toString();
+    }
+
+    /**
+     * How much of one {@code COTRN00} item a diagnostic rendering may disclose.
+     *
+     * <p>Classified here rather than in {@link SensitiveDiagnostics} because a symbolic map is a closed,
+     * compile-time set of names taken straight from {@code app/cpy-bms/COTRN00.CPY}, so this type can
+     * enumerate its own sensitive items exactly.
+     *
+     * <p>The eleven identifiers are matched by the mapset's own documented stem rather than listed one by
+     * one, and that is not a loose heuristic: {@link #ROW_COUNT} is fixed at ten by
+     * {@code app/cbl/COTRN00C.cbl}'s page size, {@link #FIELD_COUNT} is fixed by the mapset, and
+     * {@code TRNID} is the mapset's own stem - a new field on this screen would need a new stem, which
+     * would not silently match. Matching on the stem also makes the trailing {@code O} of an output item
+     * irrelevant, so {@code TRNID01O} and {@code TRNID01} classify alike. {@code TRNIDINO}, the filter
+     * field, starts with the same stem as the rows it filters and is classified with them, which is
+     * correct: it holds the same kind of value. {@code TRNNAMEO} shares three letters with the stem and is
+     * not one of them, which is why the stem is {@code TRNID} and not {@code TRN}.
+     *
+     * <p>Everything else is plain, deliberately, and the ten descriptions are the case worth stating.
+     * {@code TRAN-DESC} describes a purchase, not a person - a merchant and what was bought - and the
+     * module already renders exactly this data plainly on the single-transaction screen, where
+     * {@code TransactionViewResponse} classifies its own {@code TDESC} together with the merchant name,
+     * city and postcode as screen furniture. Reducing it to a length here and not there would put two
+     * policies on one copybook field. The ten amounts and ten dates are what a parity difference on this
+     * screen consists of, and with all eleven identifiers masked none of them is attributable to
+     * anybody; the selection flags, page number, error line and titles carry no personal data at all.
+     *
+     * <p>Package-private rather than private so that the safe default - an unnamed item is withheld
+     * rather than published - is asserted directly by test.
+     *
+     * @param itemName the symbolic-map output item name as {@code app/cpy-bms/COTRN00.CPY} spells it,
+     *                 trailing {@code O} suffix included
+     * @return its classification, never {@code null}
+     */
+    static SensitiveDiagnostics.Disclosure disclosureOf(String itemName) {
+        if (itemName == null) {
+            return SensitiveDiagnostics.Disclosure.REDACTED_VALUE;
+        }
+        if (itemName.startsWith("TRNID")) {
+            return SensitiveDiagnostics.Disclosure.IDENTIFIER;
+        }
+        return SensitiveDiagnostics.Disclosure.PLAIN;
     }
 
     // =================================================================================================

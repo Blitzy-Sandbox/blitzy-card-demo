@@ -198,16 +198,16 @@
       "recordLength": 300
     },
     {
-      "dataset": "CUSTDAT",
-      "channel": "WRITES",
-      "rowCount": 0,
-      "recordLength": 500
-    },
-    {
       "dataset": "ACCTDAT",
       "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
     },
     {
       "dataset": "CUSTDAT",
@@ -217,9 +217,21 @@
     },
     {
       "dataset": "CXACAIX",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CXACAIX",
       "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 50
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
     },
     {
       "dataset": "CARDDAT",

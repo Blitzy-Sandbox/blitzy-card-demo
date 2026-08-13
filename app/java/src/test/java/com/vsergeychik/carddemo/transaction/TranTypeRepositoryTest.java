@@ -43,6 +43,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -299,11 +300,14 @@ class TranTypeRepositoryTest {
      * that named the wrong offset, the wrong width, or failed to escape a metacharacter would select
      * the wrong rows here exactly as it would against a real relation.
      *
-     * <p>One deliberate departure from a real backend: a seeded {@code null} image is always
-     * returned rather than filtered out, because a real {@code LIKE} cannot match {@code NULL} and
-     * the repository's "there is a row and its image cannot be read" guard would otherwise be
-     * unreachable. That guard is right to exist - a driver answering {@code null} for a column it
-     * declared non-null is exactly the misbehaviour it defends against - so it is reached this way.
+     * <p>A seeded {@code null} image models a row the dataset holds and cannot present. SQL evaluates
+     * every comparison against a null as {@code UNKNOWN}, so such a row is <strong>not</strong>
+     * returned by a keyed {@code LIKE} here either - that faithfulness is what makes the
+     * unreadable-row probe reachable, and a stub that let a null satisfy the keyed predicate would
+     * hide the whole not-found-must-be-proved path. The repository's defensive "the driver handed back
+     * a matched row with no value" guard is still reachable, through the explicit
+     * {@link #presentingUnreadableRowsToKeyedReads()} opt-in, because it is right to exist: a driver
+     * answering {@code null} for a column it declared non-null is exactly what it defends against.
      *
      * <p>Residual risk R-E applies and is not pretended away: no driver for the production VSAM
      * backend is available in this build, so what is exercised is everything on this side of the
@@ -345,6 +349,26 @@ class TranTypeRepositoryTest {
 
         /** Whether the template yields no result object at all. */
         private boolean yieldingNothing;
+
+        /**
+         * Whether the unreadable-row probe - and only the probe - is refused.
+         *
+         * <p>Separate from {@link #failingOnRead}, and it has to be: the not-found path issues two
+         * statements, and only a backend that answers the keyed read and then refuses the probe
+         * reaches the arm where an absence could not be established.
+         */
+        private boolean failingOnProbe;
+
+        /** Whether the probe answers with no result object at all, having answered the read. */
+        private boolean probeYieldingNothing;
+
+        /**
+         * Whether a keyed {@code LIKE} is allowed to return a seeded {@code null} row.
+         *
+         * <p>Off by default because real SQL cannot do it. Switched on only to reach the repository's
+         * defensive guard for a driver that hands back a matched row carrying no value.
+         */
+        private boolean unreadableRowsMatchKeyedReads;
 
         /**
          * The statement text the repository prepared on the current keyed read.
@@ -409,6 +433,21 @@ class TranTypeRepositoryTest {
 
         Backend yieldingNothing() {
             yieldingNothing = true;
+            return this;
+        }
+
+        Backend failingOnProbe() {
+            failingOnProbe = true;
+            return this;
+        }
+
+        Backend probeYieldingNothing() {
+            probeYieldingNothing = true;
+            return this;
+        }
+
+        Backend presentingUnreadableRowsToKeyedReads() {
+            unreadableRowsMatchKeyedReads = true;
             return this;
         }
 
@@ -502,8 +541,21 @@ class TranTypeRepositoryTest {
             boundOperands.clear();
             creator.createPreparedStatement(connection());
 
-            statementsSent.add(preparedSql.get(0));
+            String statement = preparedSql.get(0);
+            statementsSent.add(statement);
             requireReachable();
+            if (isUnreadableRowProbe(statement)) {
+                // The probe binds no operand: its predicate is IS NULL and names no key.
+                if (failingOnProbe) {
+                    throw new DataAccessResourceFailureException(
+                            "the unreadable-row probe cannot be answered");
+                }
+                if (probeYieldingNothing) {
+                    return null;
+                }
+                ResultSetExtractor<?> probeExtractor = invocation.getArgument(1);
+                return probeExtractor.extractData(rowsResultSet(unreadableRows()));
+            }
             if (failingOnRead) {
                 throw new DataAccessResourceFailureException("the data component cannot be read");
             }
@@ -529,7 +581,7 @@ class TranTypeRepositoryTest {
                 if (matches.size() == DUPLICATE_DETECTION_LIMIT) {
                     break;
                 }
-                if (row == null || matcher.matcher(row).matches()) {
+                if (row == null ? unreadableRowsMatchKeyedReads : matcher.matcher(row).matches()) {
                     matches.add(row);
                 }
             }
@@ -550,6 +602,36 @@ class TranTypeRepositoryTest {
             when(resultSet.getString(TranTypeRepository.RECORD_IMAGE_COLUMN_INDEX))
                     .thenAnswer(call -> rows.get(cursor[0]));
             return resultSet;
+        }
+
+        /**
+         * The rows the dataset holds and cannot present: what {@code ... IS NULL} selects.
+         *
+         * @return one entry per seeded {@code null}, capped at the one row the probe asks for
+         */
+        private List<String> unreadableRows() {
+            List<String> unreadable = new ArrayList<>(1);
+            for (String row : stored) {
+                if (row == null) {
+                    unreadable.add(null);
+                    break;
+                }
+            }
+            return unreadable;
+        }
+
+        /**
+         * Whether a statement is the unreadable-row probe rather than a keyed read.
+         *
+         * <p>Recognised by its trailing {@code IS NULL} predicate, which is the whole of
+         * {@link com.vsergeychik.carddemo.common.DatasetRelation#selectUnreadableRows(String)} and
+         * which this repository's only other statement - a keyed {@code LIKE} - never ends with.
+         *
+         * @param statement the statement the repository prepared
+         * @return whether it is the probe
+         */
+        private static boolean isUnreadableRowProbe(String statement) {
+            return statement.endsWith(" IS NULL");
         }
 
         private void requireReachable() {
@@ -1317,6 +1399,118 @@ class TranTypeRepositoryTest {
         }
 
         @Test
+        @DisplayName("a matched row carrying no record image is reported, never treated as absent")
+        void aMatchedRowWithNoRecordImageIsReported() {
+            // The driver is made to hand the matched row back although its column holds nothing, which real
+            // SQL cannot do - NULL LIKE ? is UNKNOWN. That is the point: this is the repository's defensive
+            // guard against a driver answering null for a column it declared non-null, and it is reached
+            // deliberately rather than by a stub that quietly mismodels SQL.
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            List<String> withUnreadable = new ArrayList<>();
+            withUnreadable.add(null);
+            backend(template).storing(withUnreadable).presentingUnreadableRowsToKeyedReads();
+
+            ReadResult result = repository(template).readByTranType("01");
+
+            assertThat(result.isNotFound())
+                    .as("there IS a record; it simply cannot be read")
+                    .isFalse();
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.status()).isEqualTo(TranTypeRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: an unreadable row is not reported as INVALID KEY")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            // A row the dataset holds and cannot present. TRAN-TYPE is the leading two bytes of the record
+            // image, so SQL evaluates the keyed LIKE against a null image as UNKNOWN and the read matches
+            // nothing - which looks exactly like INVALID KEY and is not: that row's key is unknowable and
+            // may be the one asked for. CBTRN03C:496-500 displays, moves 23 and abends on the claim.
+            List<String> withUnreadable = new ArrayList<>(fixtureRows());
+            withUnreadable.add(null);
+
+            ReadResult result = seeded(withUnreadable).readByTranType("99");
+
+            assertThat(result.isNotFound())
+                    .as("the unreadable row's key cannot be known, so no absence can be asserted")
+                    .isFalse();
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.status()).isEqualTo(TranTypeRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key still reports '23'")
+        void aGenuinelyAbsentKeyIsStillNotFound() {
+            // No row of the fixture is unreadable, so the absence is established rather than assumed.
+            assertThat(seededWithFixture().readByTranType("99").status())
+                    .isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a read that found its record is unaffected by an unreadable row")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            List<String> withUnreadable = new ArrayList<>(fixtureRows());
+            withUnreadable.add(null);
+
+            // A VSAM READ of a key that resolves does not fail because another record is damaged, so the
+            // proof is confined to the not-found path and no successful read pays for it.
+            assertThat(seeded(withUnreadable).readByTranType("01").isFound()).isTrue();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a refused probe is reported rather than reported as absent")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            backend(template).storing(fixtureRows()).failingOnProbe();
+
+            ReadResult result = repository(template).readByTranType("99");
+
+            assertThat(result.isNotFound())
+                    .as("the probe established nothing, so the absence stays unproved")
+                    .isFalse();
+            assertThat(result.status()).isEqualTo(TranTypeRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.diagnostic())
+                    .as("the driver's own diagnosis reaches the caller")
+                    .isPresent();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a probe answering with no result object is reported, not absent")
+        void aProbeYieldingNoResultObjectIsReportedRatherThanAbsent() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            backend(template).storing(fixtureRows()).probeYieldingNothing();
+
+            ReadResult result = repository(template).readByTranType("99");
+
+            assertThat(result.isNotFound())
+                    .as("nothing came back, so nothing was established")
+                    .isFalse();
+            assertThat(result.status()).isEqualTo(TranTypeRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: the probe runs only on the not-found path, and binds no key")
+        void theProbeRunsOnlyOnTheNotFoundPathAndBindsNoKey() {
+            JdbcTemplate found = mock(JdbcTemplate.class);
+            backend(found).storing(fixtureRows());
+            JdbcTemplate missing = mock(JdbcTemplate.class);
+            backend(missing).storing(fixtureRows());
+
+            repository(found).readByTranType("01");
+            repository(missing).readByTranType("99");
+
+            assertThat(backend(found).statementsSent())
+                    .as("a successful read pays for no probe")
+                    .noneMatch(sent -> sent.endsWith(" IS NULL"));
+            assertThat(backend(missing).statementsSent())
+                    .as("the not-found path proves the absence before reporting it")
+                    .anyMatch(sent -> sent.endsWith(" IS NULL"));
+            assertThat(backend(missing).patternsBound())
+                    .as("the probe names no key: only the keyed read binds a pattern")
+                    .hasSize(1);
+        }
+
+        @Test
         @DisplayName("a not-found is not an end of file: a keyed read has reached the end of nothing")
         void aNotFoundIsNotAnEndOfFile() {
             TranTypeRepository repository = seededWithFixture();
@@ -2061,19 +2255,42 @@ class TranTypeRepositoryTest {
                     continue;
                 }
                 boolean safelyPublished = Modifier.isVolatile(field.getModifiers())
-                        && field.getType() == String.class;
+                        && isDeeplyImmutable(field.getType());
                 if (!safelyPublished) {
                     unsafe.add(field.getName() + " (" + field.getType().getSimpleName() + ")");
                 }
             }
 
             assertThat(unsafe)
-                    .as("a @Repository is a singleton shared across threads. The keyed-read statement "
-                            + "is resolved lazily because the record-image column is discovered from "
-                            + "the backend, so it cannot be final - but it holds an immutable String "
-                            + "published through a volatile write, and recomputing it yields the same "
-                            + "text, so no lock is needed and no per-request state lives on the bean")
+                    .as("a @Repository is a singleton shared across threads. The statements are resolved "
+                            + "lazily because the record-image column is discovered from the backend, so "
+                            + "the field cannot be final - but it holds an immutable value published "
+                            + "through a volatile write, and recomposing it yields the same text, so no "
+                            + "lock is needed and no per-request state lives on the bean")
                     .isEmpty();
+        }
+
+        /**
+         * Whether a type can be published through a {@code volatile} write without a lock: it must have
+         * no mutable state of its own.
+         *
+         * <p>A {@link String} qualifies, and so does a record whose every component is itself deeply
+         * immutable - which is what the statement memo is. Anything else does not, because a caller
+         * reading the field could then observe it mid-mutation, and that is precisely the shared mutable
+         * state practice B9 and gate G53 forbid.
+         *
+         * @param type the field's declared type
+         * @return whether it is safe to publish through a volatile write
+         */
+        private static boolean isDeeplyImmutable(Class<?> type) {
+            if (type == String.class || type.isPrimitive()) {
+                return true;
+            }
+            if (!type.isRecord()) {
+                return false;
+            }
+            return Arrays.stream(type.getRecordComponents())
+                    .allMatch(component -> isDeeplyImmutable(component.getType()));
         }
 
         @Test

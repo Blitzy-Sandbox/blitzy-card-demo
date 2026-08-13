@@ -314,29 +314,32 @@ public final class TransactionAddRequest {
     /**
      * Characters in the {@code CCARD-AID} token form of {@link #getAid()}: five.
      *
-     * <p>{@link #AID_LENGTH} above is the width of {@code EIBAID} itself, and it is not this. The
-     * member accepts <strong>either</strong> form, so its declared width is the wider of the two:
+     * <p>{@link #AID_LENGTH} above is the width of {@code EIBAID} itself, and it is not this. The width
+     * declared here is the token's, because a token-shaped value must be <em>accepted</em> by the
+     * binder - it is refused for what it says, not for how wide it is - and the two forms mean different
+     * things:
      *
      * <ul>
      *   <li><strong>One character</strong> is the raw {@code EIBAID} byte, whose numeric value
      *       <em>is</em> the attention identifier - {@code DFHENTER} as {@code U+007D}. That is what
-     *       {@code COTRN01C}'s {@code EVALUATE EIBAID} at {@code :112} compares and it stays accepted
-     *       unchanged.</li>
-     *   <li><strong>Two to five characters</strong> is the mnemonic token, five wide to match
-     *       {@code 10 CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy} and the width
-     *       {@code common.PfKeyResolver.AID_TOKEN_LENGTH} publishes. It is the form every response of
-     *       this module publishes and the form the nine sibling screens accept, so a client that
-     *       echoes what it was given states the key this way.</li>
+     *       {@code COTRN01C}'s {@code EVALUATE EIBAID} at {@code :112} compares, and it is the only
+     *       form in this member that identifies a key. The same byte may instead be stated as an
+     *       unsigned {@code 0}-{@code 255} integer on the {@code eibaid} query parameter, which wins
+     *       when both are sent.</li>
+     *   <li><strong>Two to five characters</strong> is the {@code CCARD-AID} mnemonic token this
+     *       module's responses publish. It is <strong>derived metadata, not an input</strong>:
+     *       {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto
+     *       {@code 'PFK01'}-{@code 'PFK12'}, so {@code 'PFK03'} cannot say whether PF3 or PF15 was
+     *       pressed - and this program's arms distinguish them, since {@code :115} transfers on
+     *       {@code DFHPF3} while {@code DFHPF15} reaches {@code WHEN OTHER}. A token therefore names no
+     *       key this program can identify and takes {@code WHEN OTHER} at {@code :130-134}, which is
+     *       the arm the source writes for a key it does not handle.</li>
      * </ul>
      *
-     * <p>Before the member was widened, this route alone accepted only the byte form while its nine
-     * siblings accepted only the token form, so one {@code aid} member carried two incompatible value
-     * spaces across one API and {@code "ENTER"} - the value this route's own responses publish - was
-     * refused here with a width violation. {@code COTRN01C} copies neither {@code CVCRD01Y} nor
-     * {@code CSSTRPFY}, so the token form is the module's convention rather than this program's
-     * copybook; accepting it changes no arm of the {@code EVALUATE}, only the spelling a caller may use
-     * to reach one. {@code common.PfKeyResolver.AidKey#token()} space-pads the shorter mnemonics to
-     * this width, so a caller must not trim what it produces.
+     * <p>{@code COTRN01C} copies neither {@code CVCRD01Y} nor {@code CSSTRPFY}: it compares
+     * {@code EIBAID} itself, so there is no fold in this program to invert and reconstructing one was
+     * the defect. {@code common.PfKeyResolver.AidKey#token()} space-pads the shorter mnemonics to this
+     * width, which is why the width is five.
      */
     public static final int AID_TOKEN_LENGTH = 5;
 
@@ -952,14 +955,16 @@ public final class TransactionAddRequest {
      * {@code String} rather than an enum so this payload stays free of any dependency the migration
      * plan does not grant it.
      *
-     * <p>Two spellings reach the same {@code EVALUATE}: the raw {@code EIBAID} byte, one character
-     * wide, and the {@code CCARD-AID} mnemonic token this module's responses publish, up to
-     * {@value #AID_TOKEN_LENGTH} wide. The declared width is therefore
-     * {@value #AID_TOKEN_LENGTH} and not {@value #AID_LENGTH}, and
-     * {@code TransactionAddController#eibAidOf(String)} decides which form it was given by its length.
-     * The default is spaces at that width, which states no key and takes {@code WHEN OTHER} at
-     * {@code :130-134} - the same arm a single space byte takes, so widening the default changed no
-     * outcome.
+     * <p>The key is identified by <strong>one character whose code point is the raw {@code EIBAID}
+     * byte</strong>, or by the unsigned {@code eibaid} query parameter, which wins when both are sent.
+     * A value of {@value #AID_LENGTH} to {@value #AID_TOKEN_LENGTH} characters is the {@code CCARD-AID}
+     * mnemonic token, which this module publishes on the way out but does not read on the way in: the
+     * token folds {@code DFHPF13}-{@code DFHPF24} onto {@code DFHPF1}-{@code DFHPF12} and so cannot
+     * distinguish PF3 from PF15, a distinction {@code :115} makes. The declared width is therefore
+     * {@value #AID_TOKEN_LENGTH} - wide enough to accept and answer a token rather than refuse it on
+     * width - and {@code TransactionAddController#eibAidOf(String)} decides what it was given by its
+     * length. The default is spaces at that width, which states no key and takes {@code WHEN OTHER} at
+     * {@code :130-134} - the same arm a single space byte takes.
      */
     @Size(max = AID_TOKEN_LENGTH)
     private String aid = spaces(AID_TOKEN_LENGTH);

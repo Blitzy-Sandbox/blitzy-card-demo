@@ -4,6 +4,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 
@@ -752,11 +753,125 @@ public class SignOnService {
     }
 
     /**
+     * The two data spans of the symbolic map that {@code COSGN00C} both reads and transmits, as they
+     * stand when the task leaves.
+     *
+     * <h2>Why one span is two names</h2>
+     * {@code app/cpy-bms/COSGN00.CPY:85} declares {@code 01 COSGN0AO REDEFINES COSGN0AI}, so the input
+     * group and the output group are the <em>same storage</em>. Both views give every field a seven-byte
+     * prologue - {@code xxxL COMP PIC S9(4)} plus {@code xxxF} plus a four-byte filler on the input side,
+     * {@code FILLER X(3)} plus {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} on the output
+     * side - so the data items line up exactly: {@code USERIDI} and {@code USERIDO} are one eight-byte
+     * span at one offset, and so are {@code PASSWDI} and {@code PASSWDO}.
+     *
+     * <p>The consequence is behavioural, not academic. {@code EXEC CICS RECEIVE MAP} at {@code :110-115}
+     * writes the received user id and password into those two spans, and the
+     * {@code EXEC CICS SEND MAP ... FROM(COSGN0AO)} at {@code :151-157} then transmits <em>whatever
+     * those spans hold</em>. {@code COSGN00C} never moves anything into {@code USERIDO} or
+     * {@code PASSWDO}, and it does not need to: on any repaint that follows a receive, the values it
+     * received are already sitting in the spans it sends. So an error repaint echoes the identifier the
+     * operator typed, and it re-transmits the password field too - dark, because
+     * {@code app/bms/COSGN00.bms:175} declares {@code ATTRB=(DRK,FSET,UNPROT)}, but transmitted.
+     *
+     * <p>This record carries that fact to the controller so the projection is a transcription rather
+     * than a decision. It is the answer to one question - what do the two spans hold? - and the answer
+     * has exactly two shapes:
+     *
+     * <ul>
+     *   <li>{@link #received(String, String)} - the {@code RECEIVE} ran, and the spans hold the images it
+     *       delivered. That is the ENTER arm at {@code :86-87} and everything it reaches.</li>
+     *   <li>{@link #UNTRANSMITTED} - the {@code RECEIVE} did not run, so the spans hold
+     *       {@code LOW-VALUES}. On the cold-start path {@code :81}'s {@code MOVE LOW-VALUES TO COSGN0AO}
+     *       puts them there explicitly; on the PF3 and invalid-key paths they were never written at all,
+     *       and {@code COPY COSGN00} at {@code :50} brings the group into {@code WORKING-STORAGE} with no
+     *       {@code VALUE} clause, so a fresh task finds binary zeros.</li>
+     * </ul>
+     *
+     * <p>{@link #passwdi()} is the plaintext password image. It is a component because the span is
+     * transmitted and a field-for-field diff of the map area reports it; it is kept out of
+     * {@link #toString()} because being transmitted to a terminal is not the same as being written to a
+     * log. That is the same split {@code user.dto.SignOnRequest} makes.
+     *
+     * @param useridi the {@code USERIDI}/{@code USERIDO} span, exactly
+     *                {@value SignOnService#USER_ID_LENGTH} characters
+     * @param passwdi the {@code PASSWDI}/{@code PASSWDO} span, exactly
+     *                {@value SignOnService#PASSWORD_LENGTH} characters
+     */
+    public record MapInputArea(String useridi, String passwdi) {
+
+        /**
+         * Checks both declared widths, so a composition error is caught here rather than surfacing as a
+         * short field in a projected screen.
+         *
+         * @throws NullPointerException     if either image is {@code null}
+         * @throws IllegalArgumentException if either image departs from its declared width
+         */
+        public MapInputArea {
+            Objects.requireNonNull(useridi, "The USERIDI span is PIC X(" + USER_ID_LENGTH + ") and is "
+                    + "never null; use UNTRANSMITTED where no RECEIVE ran");
+            Objects.requireNonNull(passwdi, "The PASSWDI span is PIC X(" + PASSWORD_LENGTH + ") and is "
+                    + "never null; use UNTRANSMITTED where no RECEIVE ran");
+            if (useridi.length() != USER_ID_LENGTH) {
+                throw new IllegalArgumentException("USERIDI is PIC X(" + USER_ID_LENGTH
+                        + ") (app/cpy-bms/COSGN00.CPY:78) but the image is " + useridi.length()
+                        + " character(s) wide");
+            }
+            if (passwdi.length() != PASSWORD_LENGTH) {
+                throw new IllegalArgumentException("PASSWDI is PIC X(" + PASSWORD_LENGTH
+                        + ") (app/cpy-bms/COSGN00.CPY:84) but the image is " + passwdi.length()
+                        + " character(s) wide");
+            }
+        }
+
+        /**
+         * The spans on the three paths that never perform the {@code RECEIVE}: cold start, PF3 and the
+         * invalid-key arm. Both are {@code LOW-VALUES} at their declared width.
+         */
+        public static final MapInputArea UNTRANSMITTED =
+                new MapInputArea(ScreenFieldImage.unpainted(USER_ID_LENGTH),
+                        ScreenFieldImage.unpainted(PASSWORD_LENGTH));
+
+        /**
+         * The spans as {@code EXEC CICS RECEIVE MAP} at {@code :110-115} delivered them.
+         *
+         * @param useridi the {@code USERIDI} image, at its declared width
+         * @param passwdi the {@code PASSWDI} image, at its declared width
+         * @return the area, never {@code null}
+         * @throws NullPointerException     if either image is {@code null}
+         * @throws IllegalArgumentException if either image departs from its declared width
+         */
+        public static MapInputArea received(String useridi, String passwdi) {
+            return new MapInputArea(useridi, passwdi);
+        }
+
+        /**
+         * A rendering that names the user id and withholds the password.
+         *
+         * <p>The record's generated {@code toString} would publish the plaintext credential in every log
+         * line and debugger view that touched an outcome, which is a disclosure the program never makes -
+         * the span reaches a terminal as dark field data, not a log. The marker is a constant rather than
+         * a mask of the value, so neither the password nor its length nor whether one was supplied can be
+         * inferred. {@code equals} and {@code hashCode} stay as the record generates them: they are value
+         * semantics and disclose nothing.
+         *
+         * @return a rendering safe to log, never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "MapInputArea[useridi=" + useridi
+                    + ", passwdi=" + SensitiveDiagnostics.REDACTED + ']';
+        }
+    }
+
+    /**
      * Everything one run of {@code COSGN00C} produced, and everything the controller needs to build its
      * response - so that the controller itself makes no decision.
      *
-     * <p>The submitted password is <strong>not</strong> a component and there is no accessor for it. It
-     * is consumed inside {@link SignOnService#readUserSecFile} and discarded there.
+     * <p>The submitted password is not carried as a value of its own and there is no accessor for it: it
+     * is consumed inside {@link SignOnService#readUserSecFile} and discarded there. What
+     * {@link #mapInputArea()} carries is the {@code PASSWDO} <em>span of the map</em>, which
+     * {@code COSGN0AO REDEFINES COSGN0AI} makes the same storage the receive wrote and the send
+     * transmits - a screen field, not a credential store. It is withheld from every rendering.
      *
      * @param signedOn             whether the plaintext comparison at {@code :223} succeeded and the
      *                             program transferred control. True on exactly one path
@@ -788,6 +903,11 @@ public class SignOnService {
      *                             {@code :238} pass to the next program. Never {@code null} - the source
      *                             always returns an area, even on the cold-start path
      * @param receive              the outcome of the {@code RECEIVE MAP}
+     * @param mapInputArea         the {@code USERIDI}/{@code USERIDO} and {@code PASSWDI}/{@code PASSWDO}
+     *                             spans as they stand at exit - the images a repaint re-transmits,
+     *                             because {@code COSGN0AO REDEFINES COSGN0AI}. Never {@code null};
+     *                             {@link MapInputArea#UNTRANSMITTED} on the three paths that never
+     *                             receive the map
      * @param resolvedAid          the token {@link PfKeyResolver} maps {@link SignOnInput#eibAid()} onto,
      *                             or empty for a byte it recognises no mapping for. Carried for
      *                             diagnostics; on the first-entry path the program never consults the
@@ -807,6 +927,7 @@ public class SignOnService {
                                 Termination termination,
                                 NavigationContext navigationContext,
                                 ReceiveOutcome receive,
+                                MapInputArea mapInputArea,
                                 Optional<PfKeyResolver.AidKey> resolvedAid,
                                 Optional<FileStatus.Outcome> readOutcome) {
 
@@ -836,6 +957,9 @@ public class SignOnService {
                     + "an area back or on, on every path");
             Objects.requireNonNull(receive, "A receive outcome is required; use "
                     + "ReceiveOutcome.NOT_PERFORMED on a path that never receives the map");
+            Objects.requireNonNull(mapInputArea, "The map input area is required: COSGN0AO REDEFINES "
+                    + "COSGN0AI, so those two spans are what a repaint transmits. Use "
+                    + "MapInputArea.UNTRANSMITTED on a path that never receives the map");
             Objects.requireNonNull(resolvedAid, "The resolved AID is an Optional, never null");
             Objects.requireNonNull(readOutcome, "The read outcome is an Optional, never null; it is "
                     + "empty on the paths that never read USRSEC");
@@ -996,6 +1120,9 @@ public class SignOnService {
                     CursorField.USER_ID,
                     true,
                     ReceiveOutcome.NOT_PERFORMED,
+                    // :81's MOVE LOW-VALUES TO COSGN0AO put the two spans there explicitly, and no
+                    // RECEIVE follows on this path, so that is what the SEND at :151-157 transmits.
+                    MapInputArea.UNTRANSMITTED,
                     resolvedAid,
                     Optional.empty());
         }
@@ -1036,6 +1163,9 @@ public class SignOnService {
                 CursorField.NONE,
                 false,
                 ReceiveOutcome.NOT_PERFORMED,
+                // :91-94 performs no RECEIVE and no MOVE LOW-VALUES either: COPY COSGN00 at :50 brings
+                // the group in with no VALUE clause, so a fresh task finds binary zeros in both spans.
+                MapInputArea.UNTRANSMITTED,
                 resolvedAid,
                 Optional.empty());
     }
@@ -1118,6 +1248,12 @@ public class SignOnService {
         String useridi = receivedFieldImage(input.userId(), USER_ID_LENGTH);
         String passwdi = receivedFieldImage(input.password(), PASSWORD_LENGTH);
 
+        // Those same two spans ARE USERIDO and PASSWDO - COSGN0AO REDEFINES COSGN0AI at
+        // app/cpy-bms/COSGN00.CPY:85 - so whatever the receive delivered is what any SEND MAP below
+        // re-transmits, without the program moving anything into an output item. Carried from here so the
+        // controller transcribes it rather than deciding it.
+        MapInputArea mapInputArea = MapInputArea.received(useridi, passwdi);
+
         boolean errorFlag = false;
         String wsMessage = spaces(MESSAGE_LENGTH);
         CursorField cursorField = CursorField.NONE;
@@ -1155,7 +1291,7 @@ public class SignOnService {
         // path that set the flag skips the file read entirely - the read is gated, the normalisation
         // above is not.
         if (!errorFlag) {
-            return readUserSecFile(normalised, wsUserId, wsUserPwd, receive, resolvedAid);
+            return readUserSecFile(normalised, wsUserId, wsUserPwd, receive, mapInputArea, resolvedAid);
         }
 
         // Either validation arm: the screen was painted at :122 or :127 and :98 then returns the area,
@@ -1166,6 +1302,7 @@ public class SignOnService {
                 cursorField,
                 false,
                 receive,
+                mapInputArea,
                 resolvedAid,
                 Optional.empty());
     }
@@ -1249,6 +1386,7 @@ public class SignOnService {
                                           String wsUserId,
                                           String wsUserPwd,
                                           ReceiveOutcome receive,
+                                          MapInputArea mapInputArea,
                                           Optional<PfKeyResolver.AidKey> resolvedAid) {
 
         // :211-219 EXEC CICS READ DATASET('USRSEC  ') RIDFLD(WS-USER-ID) KEYLENGTH(8). No UPDATE
@@ -1281,8 +1419,8 @@ public class SignOnService {
                         .withPgmEnter();
 
                 // :230-240 IF CDEMO-USRTYP-ADMIN ... ELSE ... END-IF.
-                return transferControl(signedOn, resolveNextProgram(signedOn), receive, resolvedAid,
-                        readOutcome);
+                return transferControl(signedOn, resolveNextProgram(signedOn), receive, mapInputArea,
+                        resolvedAid, readOutcome);
             }
 
             // :241-246 ELSE - the password did not match.
@@ -1300,6 +1438,7 @@ public class SignOnService {
                     CursorField.PASSWORD,
                     false,
                     receive,
+                    mapInputArea,
                     resolvedAid,
                     readOutcome);
         }
@@ -1312,6 +1451,7 @@ public class SignOnService {
                     CursorField.USER_ID,
                     false,
                     receive,
+                    mapInputArea,
                     resolvedAid,
                     readOutcome);
         }
@@ -1323,6 +1463,7 @@ public class SignOnService {
                 CursorField.USER_ID,
                 false,
                 receive,
+                mapInputArea,
                 resolvedAid,
                 readOutcome);
     }
@@ -1378,6 +1519,8 @@ public class SignOnService {
      * @param cursorField          the length item that received the {@code MOVE -1}
      * @param resetAllOutputFields whether {@code MOVE LOW-VALUES TO COSGN0AO} ran first
      * @param receive              the receive outcome
+     * @param mapInputArea         the two spans the {@code SEND} re-transmits, since
+     *                             {@code COSGN0AO REDEFINES COSGN0AI}
      * @param resolvedAid          the resolved attention identifier
      * @param readOutcome          how the file read classified, or empty if no read happened
      * @return the outcome
@@ -1388,6 +1531,7 @@ public class SignOnService {
                                            CursorField cursorField,
                                            boolean resetAllOutputFields,
                                            ReceiveOutcome receive,
+                                           MapInputArea mapInputArea,
                                            Optional<PfKeyResolver.AidKey> resolvedAid,
                                            Optional<FileStatus.Outcome> readOutcome) {
         return new SignOnOutcome(false,
@@ -1402,6 +1546,7 @@ public class SignOnService {
                 Termination.RETURN_TRANSID,
                 context,
                 receive,
+                mapInputArea,
                 resolvedAid,
                 readOutcome);
     }
@@ -1425,6 +1570,10 @@ public class SignOnService {
      * <p>The error flag stays clear: signing off with PF3 is not an error, and {@code :88-90} sets no
      * flag.
      *
+     * <p>The map area is {@link MapInputArea#UNTRANSMITTED}: this arm is reached from {@code :88-90}
+     * without a {@code RECEIVE}, so the two spans hold the {@code LOW-VALUES} a fresh task found in them.
+     * Nothing is sent from the map on this path in any case.
+     *
      * @param context     the communication area as received
      * @param message     {@code WS-MESSAGE}, the thank-you text at its declared width
      * @param resolvedAid the resolved attention identifier
@@ -1445,6 +1594,7 @@ public class SignOnService {
                 Termination.RETURN_NO_TRANSID,
                 context,
                 ReceiveOutcome.NOT_PERFORMED,
+                MapInputArea.UNTRANSMITTED,
                 resolvedAid,
                 Optional.empty());
     }
@@ -1461,16 +1611,23 @@ public class SignOnService {
      * <p>No message is produced and no screen is painted - {@code XCTL} does not return, so
      * {@code SEND-SIGNON-SCREEN} is not performed and {@code :98} is not reached.
      *
-     * @param signedOn    the communication area with the five sign-on fields set
-     * @param nextProgram the transfer target, at its declared width
-     * @param receive     the receive outcome
-     * @param resolvedAid the resolved attention identifier
-     * @param readOutcome how the file read classified
+     * <p>The map area is still carried, and it still holds the images the {@code RECEIVE} delivered: an
+     * {@code XCTL} transfers control without sending anything, so the two spans are left exactly as
+     * {@code :110-115} wrote them. The controller projects no map field on this path - there was no
+     * {@code SEND} - and the area is reported so the state the transaction transferred in is visible.
+     *
+     * @param signedOn     the communication area with the five sign-on fields set
+     * @param nextProgram  the transfer target, at its declared width
+     * @param receive      the receive outcome
+     * @param mapInputArea the two spans as the receive left them
+     * @param resolvedAid  the resolved attention identifier
+     * @param readOutcome  how the file read classified
      * @return the outcome
      */
     private SignOnOutcome transferControl(NavigationContext signedOn,
                                           String nextProgram,
                                           ReceiveOutcome receive,
+                                          MapInputArea mapInputArea,
                                           Optional<PfKeyResolver.AidKey> resolvedAid,
                                           Optional<FileStatus.Outcome> readOutcome) {
         return new SignOnOutcome(true,
@@ -1485,6 +1642,7 @@ public class SignOnService {
                 Termination.XCTL,
                 signedOn,
                 receive,
+                mapInputArea,
                 resolvedAid,
                 readOutcome);
     }

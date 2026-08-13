@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
@@ -173,6 +174,19 @@ final class CBACT02CParityTest {
      * {@code app/cbl/CBACT02C.cbl:23} cannot drift apart.
      */
     private static final String PROGRAM = AccountBalanceReaderJob.PROGRAM_ID;
+
+    /**
+     * The call site a case names to arrange a failed {@code OPEN} - {@code 0000-CARDFILE-OPEN}. Spelt
+     * {@code <VERB>-<DD>} so a case file reads as the paragraph does, and validated by
+     * {@link ParityCase.UnitStimulus} rather than by convention here.
+     */
+    private static final String OPEN_SITE = "OPEN-" + AccountBalanceReaderJob.DD_NAME;
+
+    /** The call site for the sequential read - {@code 1000-CARDFILE-GET-NEXT}. */
+    private static final String READ_SITE = "READ-" + AccountBalanceReaderJob.DD_NAME;
+
+    /** The call site for the close - {@code 9000-CARDFILE-CLOSE}. */
+    private static final String CLOSE_SITE = "CLOSE-" + AccountBalanceReaderJob.DD_NAME;
 
     /**
      * A deliberately synthetic dataset name for the {@code CARDFILE} binding.
@@ -993,7 +1007,7 @@ final class CBACT02CParityTest {
      *                        {@code 9999-ABEND-PROGRAM} does
      */
     private static ParityHarness.UnitOutcome driveCbact02c(final ParityHarness.Invocation invocation) {
-        final Scenario scenario = Scenario.forCase(invocation.caseId());
+        final Scenario scenario = Scenario.from(invocation.stimulus());
         final Charset datasetCharset = invocation.charset();
         final CardRepository cardRepository = stubbedCardMaster(
                 scenario, invocation.dataset(AccountBalanceReaderJob.DD_NAME), datasetCharset);
@@ -1366,7 +1380,36 @@ final class CBACT02CParityTest {
 
         /** A response with no two-character batch equivalent, reported as {@code '9'} plus a feedback
          * byte of binary zero. */
-        INVALID_REQUEST
+        INVALID_REQUEST;
+
+        /**
+         * The terminator a declared CICS response corresponds to.
+         *
+         * <p>Three responses end this loop fatally and each takes a different path through
+         * {@code 1000-CARDFILE-GET-NEXT}, so the correspondence is stated once here rather than at every
+         * call site: {@code DFHRESP(NOTFND)} becomes {@code '23'}, {@code DFHRESP(DUPREC)} becomes
+         * {@code '22'} and carries a record with it, and {@code DFHRESP(INVREQ)} has no two-character
+         * equivalent at all and becomes the permanent-error convention.
+         *
+         * @param site the call site the response was declared at, for the failure message
+         * @param resp the declared response
+         * @return the terminator it produces
+         * @throws IllegalArgumentException if the response is not one the loop ends fatally on. An
+         *     orderly end of file is declared by naming no read site at all, because it is the absence
+         *     of an arrangement rather than one
+         */
+        private static Terminator ofResponse(final String site, final int resp) {
+            return switch (resp) {
+                case FileStatus.NOTFND -> NOT_FOUND;
+                case FileStatus.DUPREC -> DUPLICATE_KEY;
+                case FileStatus.INVREQ -> INVALID_REQUEST;
+                default -> throw new IllegalArgumentException("Call site " + site + " declares RESP "
+                        + resp + ", which is not one of the three this loop ends fatally on: "
+                        + FileStatus.NOTFND + " (NOTFND), " + FileStatus.DUPREC + " (DUPREC) and "
+                        + FileStatus.INVREQ + " (INVREQ). An orderly end of file is declared by naming "
+                        + "no read site at all.");
+            };
+        }
     }
 
     /**
@@ -1444,117 +1487,105 @@ final class CBACT02CParityTest {
         }
 
         /**
-         * The shape of the named case.
+         * The shape a case declares, decoded from its {@code unitStimulus}.
          *
-         * <p>Exhaustive over {@code case01}..{@code case20} with no default that guesses: an
-         * unrecognised identifier is a case file that exists with no scenario behind it, and running
-         * it as though it were an ordinary full-file read would report a plausible failure against
-         * the wrong run.
+         * <p>This was a {@code switch} over {@code case01}..{@code case20} returning a run shape, and
+         * that is the defect it now fixes. The shape is an input to the run - how the {@code OPEN}
+         * answers, how many records the loop is given, how the loop ends, whether the {@code CLOSE}
+         * succeeds - and while it lived here, no case file said which of those it was running under: a
+         * reader of {@code parity/CBACT02C/case10.json} saw three abend lines and nothing at all about
+         * the refused open that produced them. It also made {@link ParityCase#caseId()} configuration
+         * rather than identity, so renumbering a case silently changed what it did and a case file with
+         * no arm threw or, in a switch with a default, quietly ran the wrong shape.
          *
-         * @param caseId the case identifier the harness is running
+         * <p>The case now names one of this program's three call sites - {@code OPEN-CARDFILE},
+         * {@code READ-CARDFILE}, {@code CLOSE-CARDFILE} - and gives it the outcome it reports. This
+         * module reports its card-file outcomes as CICS responses rather than as file statuses, because
+         * {@code CardRepository} exists mainly for seventeen online callers, so a site declares
+         * {@code resp} or, for a dataset that cannot be reached at all, {@code refused}. A read declares
+         * {@code afterRecords} for the number of rows delivered before it fails. A case that declares
+         * nothing runs the whole file, which is what most of them do.
+         *
+         * @param stimulus the stimulus the case declares
          * @return that case's run shape; never {@code null}
-         * @throws IllegalStateException if the identifier has no declared shape
+         * @throws IllegalArgumentException if a declared call site is not one of the three, if a site
+         *     declares a shape it cannot report, or if the case declares a kind of stimulus this program
+         *     has no use for
          */
-        private static Scenario forCase(final String caseId) {
-            return switch (caseId) {
-                // --- Normal completions: RETURN-CODE 0, both banners, one line per record. ---
-                case "case01" -> wholeFile();          // all 50 fixture rows
-                case "case02" -> wholeFile();          // the dataset is empty, so no row is read
-                case "case03" -> wholeFile();          // fixture row 0
-                case "case04" -> wholeFile();          // fixture row 49 - the last-record boundary
-                case "case05" -> wholeFile();          // fixture rows 43..49
-                case "case06" -> wholeFile();          // fixture rows 0..1
-                case "case07" -> wholeFile();          // fixture rows 45..49 - the tail window
-                // Three inline rows declared in CARD-NUM sequence.  :30-32 make CARDFILE a KSDS read
-                // sequentially on RECORD KEY IS FD-CARD-NUM, so the READ walks the key sequence and
-                // not the load order; this run pins that the delivered order is the key order.  It is
-                // a wholeFile() run and not a closeFailing() one because this folder's twenty fixtures
-                // spend their four abending OPEN shapes, their four abending READ shapes and their
-                // two abending CLOSE shapes elsewhere, and this is the one run that can carry the
-                // ordering assertion.
-                case "case15" -> wholeFile();          // inline rows, ascending CARD-NUM
+        private static Scenario from(final ParityCase.UnitStimulus stimulus) {
+            if (!stimulus.operationScript().isEmpty() || !stimulus.linkage().isEmpty()
+                    || !stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
+                throw new IllegalArgumentException(PROGRAM + " calls no subprogram, takes no linkage, "
+                        + "follows no conditional job step and runs under no environmental variant: its "
+                        + "only stimulus is its seeded rows and the outcome of one of its three call "
+                        + "sites.");
+            }
+            int openResp = FileStatus.NORMAL;
+            boolean openRefused = false;
+            int recordsDelivered = EVERY_SEEDED_ROW;
+            Terminator terminator = Terminator.END_OF_FILE;
+            boolean closeRefused = false;
+            for (final Map.Entry<String, ParityCase.CallSiteOutcome> declared
+                    : stimulus.callSiteOutcomes().entrySet()) {
+                final String site = declared.getKey();
+                final ParityCase.CallSiteOutcome outcome = declared.getValue();
+                switch (site) {
+                    case OPEN_SITE -> {
+                        if (outcome.isRefused()) {
+                            openRefused = true;
+                        } else {
+                            openResp = requireResponse(site, outcome);
+                        }
+                    }
+                    case CLOSE_SITE -> {
+                        requireRefusal(site, outcome);
+                        closeRefused = true;
+                    }
+                    case READ_SITE -> {
+                        recordsDelivered = outcome.recordsBefore();
+                        terminator = Terminator.ofResponse(site, requireResponse(site, outcome));
+                    }
+                    default -> throw new IllegalArgumentException("Call site " + site + " is not one "
+                            + "of " + PROGRAM + "'s three: " + OPEN_SITE + ", " + READ_SITE + " and "
+                            + CLOSE_SITE + ". A site nothing answers to arranges nothing, and the case "
+                            + "would assert the opposite of what it says.");
+                    }
+            }
+            return new Scenario(openResp, openRefused, recordsDelivered, terminator, closeRefused);
+        }
 
-                // An inline row synthesized from carddata.txt row 1 with CARD-ACTIVE-STATUS set to
-                // 'N'.  It reads and displays exactly as an active card does, which is the claim:
-                // CBACT02C contains no reference to CARD-ACTIVE-STATUS, so there is no status filter
-                // for a run shape to express.  All fifty fixture rows carry 'Y', which is why the row
-                // is inline rather than a range over the fixture.
-                case "case11" -> wholeFile();
+        /**
+         * @param site the call site, for the failure message
+         * @param outcome the declared outcome
+         * @return the CICS response it reports
+         * @throws IllegalArgumentException if the site declares a two-character FILE STATUS, which this
+         *     module's card-file seams never report: {@code CardRepository} answers with a response and
+         *     the job translates it, so a status here would bypass the translation under test
+         */
+        private static int requireResponse(final String site,
+                                           final ParityCase.CallSiteOutcome outcome) {
+            if (outcome.status() != null || outcome.resp() == null) {
+                throw new IllegalArgumentException("Call site " + site + " must declare a CICS RESP. "
+                        + "CardRepository reports this program's outcomes as responses and "
+                        + AccountBalanceReaderJob.class.getSimpleName() + " translates them to a FILE "
+                        + "STATUS, so declaring the status directly would skip the translation this "
+                        + "case exists to judge.");
+            }
+            return outcome.resp();
+        }
 
-                // An inline row synthesized from carddata.txt row 1 with CARD-EMBOSSED-NAME X(50) and
-                // CARD-EXPIRAION-DATE X(10) both blanked, so one-based offsets 31-90 are sixty
-                // consecutive spaces.  A normal completion for the same reason case11 is one: the
-                // program inspects no record field, so a blank name and a blank date are displayed
-                // exactly as stored and there is no validation, defaulting or rejection arm for a run
-                // shape to express.  What it pins is the whitespace fidelity of the pass-through -
-                // a trimmed, collapsed or nulled span would shorten the image and shift every offset
-                // after it - and it is the lower-boundary complement of case13, which fills the same
-                // X(50) span to all fifty bytes.  Inline rather than a fixture range because all
-                // fifty fixture rows carry a populated name and a populated date.
-                case "case14" -> wholeFile();
-
-                // --- 0000-CARDFILE-OPEN failures: :121 is two-armed, so anything but '00' abends.
-                //     The remaining status the open can report, '23', is driven at unit level by
-                //     AccountBalanceReaderJobTest.OpenStatusLadder, which walks '10', '22', '23' and an
-                //     untranslatable response through this same two-armed guard (gate G47). ---
-                case "case08" -> openReporting(FileStatus.ENDFILE);  // '10' - still a failure here
-                case "case09" -> openReporting(FileStatus.LENGERR);  // no batch equivalent -> '9'
-                case "case10" -> openRefusedOutright();              // unreachable -> '9'
-                // DUPREC, not DUPKEY: :32 declares RECORD KEY IS FD-CARD-NUM over the base KSDS, so a
-                // duplicate reported to this program is one on the base key. Both map to '22', and '22'
-                // is the last status the open can report that no other case in this directory forces -
-                // the open-side counterpart of case12, which reports the same status on the first READ.
-                case "case16" -> openReporting(FileStatus.DUPREC);    // '22'
-
-                // --- 1000-CARDFILE-GET-NEXT failures: :101, then the arm at :110-113. ---
-                case "case12" -> readFailingAfter(0, Terminator.DUPLICATE_KEY);
-                case "case13" -> readFailingAfter(0, Terminator.INVALID_REQUEST);
-                // Two of its three inline rows are delivered and the third READ reports '23', so the
-                // row still sitting in the dataset is never read - which is what proves the loop
-                // reads one record at a time rather than pre-reading or buffering its input.  case20
-                // also leaves a row behind but on the extended '9' arm rather than on '23'.  This run
-                // fails strictly mid-stream, over an input small enough that the unread row is
-                // written out in the case file.  The count is 2 and not EVERY_SEEDED_ROW for exactly
-                // that reason - readSequence would otherwise deliver all three and the third image
-                // would appear.  It is this folder's only '23' at the READ site, so the shape stated
-                // here is the whole of that coverage (gate G47).
-                case "case17" -> readFailingAfter(2, Terminator.NOT_FOUND);
-                // One of its two seeded rows is delivered and displayed, and the second READ reports a
-                // response with no two-character batch equivalent, so the status becomes
-                // PERMANENT_ERROR_STATUS and 9910 renders it on the extended arm at :162-168.  That
-                // pairing - the extended arm reached from the READ with a record line already emitted -
-                // is this folder's only instance: case13 reaches the same arm from the READ but fails
-                // before its first record, and case18 and case19 reach it with records emitted but from
-                // the CLOSE.  INVALID_REQUEST rather than NOT_FOUND for that reason, and 1 rather than
-                // EVERY_SEEDED_ROW so the second row stays unread - the same seeded window case05
-                // completes cleanly over, which is what isolates the injected condition from the data.
-                case "case20" -> readFailingAfter(1, Terminator.INVALID_REQUEST);
-
-                // --- 9000-CARDFILE-CLOSE failure: :139 takes its ELSE, and :85 is never reached.
-                //     case18 and case19 are the two fixtures in this folder that force it, and the
-                //     only two whose read pass completes in full and still abends: the open answers
-                //     '00', every seeded row is delivered and displayed, the loop ends on a clean
-                //     end-of-file, and only then does the CLOSE refuse.  Between them they are the
-                //     third and last call site of the 9910 paragraph the OPEN and READ cases leave
-                //     unreached - case08, case09, case10 and case16 reach 9910 from the OPEN, and
-                //     case12, case13, case17 and case20 from the READ - so they are this directory's
-                //     whole coverage of the close site's error arm
-                //     (gate G47) and of the end banner at :85 being lost while an emitted record line
-                //     stands: case18 states it over a single inline overpunch row, case19 over three
-                //     fixture rows.  The 8 -> 12 arithmetic ladder of :137, :140 and :142 stays pinned
-                //     at unit level by AccountBalanceReaderJobTest.Close and .CloseArithmeticLadder,
-                //     which drive :139's ELSE, the lost end banner and the ladder itself (gates G47
-                //     and G28). ---
-                case "case18" -> closeFailing();       // inline overpunch row, then the CLOSE refuses
-                case "case19" -> closeFailing();       // fixture rows 0..2, then the CLOSE refuses
-
-                default -> throw new IllegalStateException("No run shape is declared for "
-                        + PROGRAM + '/' + caseId + ". Every one of the "
-                        + ParityHarness.CASES_PER_PROGRAM + " case files must name a scenario here, "
-                        + "because a batch case cannot declare a forced outcome - ParityCase refuses a "
-                        + "screenRequest on a BATCH_JOB case - so this switch is the only place the "
-                        + "shape of a failing OPEN, READ or CLOSE can come from.");
-            };
+        /**
+         * @param site the call site, for the failure message
+         * @param outcome the declared outcome
+         * @throws IllegalArgumentException if the outcome is anything but a refusal
+         */
+        private static void requireRefusal(final String site,
+                                          final ParityCase.CallSiteOutcome outcome) {
+            if (!outcome.isRefused() || outcome.resp() != null || outcome.status() != null) {
+                throw new IllegalArgumentException("Call site " + site + " reports no outcome of its "
+                        + "own: ending a browse either succeeds or is refused. Declare "
+                        + "\"refused\": true.");
+            }
         }
     }
 }

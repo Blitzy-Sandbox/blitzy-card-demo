@@ -210,7 +210,10 @@ import java.util.List;
  *                             {@code app/cbl/COMEN01C.cbl:187}. Exactly
  *                             {@value #ERR_MSG_LENGTH} - never 80 and never 50
  * @param navigationContext    the echoed {@code CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy},
- *                             160 bytes and returned unaltered
+ *                             160 bytes and returned unaltered - or {@code null} on the one path that
+ *                             carries none, the bare {@code XCTL} of
+ *                             {@code app/cbl/COMEN01C.cbl:175-177}, which enters the sign-on program
+ *                             with {@code EIBCALEN = 0}
  * @param nextProgram          the {@code EXEC CICS XCTL} target the client should call next
  * @param nextMapset           the mapset owning the next map; {@value #MAPSET_NAME} for this screen
  * @param nextMap              the next map to render; {@value #MAP_NAME} for this screen
@@ -738,7 +741,9 @@ public record MainMenuResponse(
      * assignments to it are commented out at {@code app/cbl/COMEN01C.cbl:149-150}, so whatever arrives
      * must be echoed back byte-identically.
      *
-     * @param newNavigationContext the communication area to echo
+     * @param newNavigationContext the communication area to echo, or {@code null} for the one path that
+     *                             carries none - the bare {@code XCTL} of
+     *                             {@code app/cbl/COMEN01C.cbl:175-177}
      * @return a new response differing only in {@link #navigationContext()}, never {@code null}
      */
     public MainMenuResponse withNavigationContext(NavigationContext newNavigationContext) {
@@ -809,7 +814,13 @@ public record MainMenuResponse(
         private String option = ScreenFieldImage.unpainted(OPTION_LENGTH);
         private String errMsg = ScreenFieldImage.unpainted(ERR_MSG_LENGTH);
 
-        /** Defaults to an initial 160-byte communication area rather than {@code null}. */
+        /**
+         * Defaults to an initial 160-byte communication area rather than {@code null}.
+         *
+         * <p>A default, not a floor: {@link #navigationContext(NavigationContext)} accepts {@code null}
+         * and keeps it, because the no-{@code COMMAREA} transfer at {@code app/cbl/COMEN01C.cbl:175-177}
+         * has no area to echo.
+         */
         private NavigationContext navigationContext = NavigationContext.empty();
 
         private String nextProgram;
@@ -944,15 +955,32 @@ public record MainMenuResponse(
         }
 
         /**
-         * Sets the communication area to echo, stored by reference and never altered.
+         * Sets the communication area to echo, stored by reference and never altered - {@code null}
+         * included, because on one path {@code null} is the answer.
          *
-         * @param value the communication area; {@code null} restores an initial 160-byte area, since a
-         *              response with no conversation state at all would not be a faithful stand-in for
-         *              a CICS {@code COMMAREA}
+         * <p>{@code COMEN01C} leaves through two different {@code XCTL} statements.
+         * {@code app/cbl/COMEN01C.cbl:152-155} names {@code COMMAREA(CARDDEMO-COMMAREA)} and passes the
+         * area on. {@code :175-177} - {@code RETURN-TO-SIGNON-SCREEN} - is a bare
+         * {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} with <strong>no {@code COMMAREA} option at all</strong>,
+         * so {@code COSGN00C} is entered with {@code EIBCALEN = 0} and takes its cold start at
+         * {@code app/cbl/COSGN00C.cbl:80-83}: every output field cleared, the cursor on the user id, no
+         * validation and no read of {@code USRSEC}.
+         *
+         * <p>Substituting an initial area for {@code null} here would erase exactly that. The client would
+         * be handed a 160-byte communication area to send on to sign-on, sign-on would find
+         * {@code EIBCALEN} non-zero, and it would run its <em>re-entry</em> path instead of its cold
+         * start - a different program flow reached from a transfer that, on the mainframe, cannot reach
+         * it. So {@code null} is stored as {@code null} and serialises as JSON {@code null}, which is
+         * this payload's way of saying "no communication area travelled".
+         *
+         * <p>The builder's default is still an initial area, so {@link MainMenuResponse#initial()} and
+         * every path that does not deliberately state {@code null} are unchanged.
+         *
+         * @param value the communication area, or {@code null} when the transfer carries none
          * @return this builder
          */
         public Builder navigationContext(NavigationContext value) {
-            this.navigationContext = value == null ? NavigationContext.empty() : value;
+            this.navigationContext = value;
             return this;
         }
 

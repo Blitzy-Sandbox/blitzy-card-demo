@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.user;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -9,7 +11,6 @@ import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
-import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.SecUserRepository.HeldRecord;
@@ -23,7 +24,9 @@ import jakarta.validation.Valid;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import org.apache.commons.logging.Log;
@@ -33,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -237,6 +241,37 @@ public class UserDeleteController {
     /** The name of the {@value #USERS_PATH} template variable, bound explicitly rather than inferred. */
     public static final String USER_ID_VARIABLE = "userId";
 
+    /**
+     * The query parameter carrying the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value.
+     *
+     * <p>{@link AidRequestParameter#CANONICAL_NAME}, the one spelling every online route accepts, so the
+     * key is named the same way here as on the user list this screen is reached from. It is the carrier
+     * that can name any of the 26 attention identifiers, including the twelve high function keys a folded
+     * {@code CCARD-AID} token cannot distinguish from their low twins - which on this screen is the
+     * difference between an invalid-key message and a deleted record.
+     */
+    public static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /** The accepted alternate spelling of {@value #EIBAID_PARAM} - see {@link AidRequestParameter}. */
+    public static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
+
+    /** The lowest value an unsigned {@code EIBAID} byte can carry. */
+    static final int AID_MIN = 0;
+
+    /** The highest value an unsigned {@code EIBAID} byte can carry. */
+    static final int AID_MAX = 255;
+
+    /**
+     * The width of the raw {@code EIBAID} form of {@link UserDeleteRequest#aid()}: one character.
+     *
+     * <p>{@link PfKeyResolver#AID_TOKEN_LENGTH} is five, the width of the {@code CCARD-AID} token this
+     * module's responses publish; this is the width of the byte lines 108 to 130 evaluate.
+     */
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
+
     // =================================================================================================
     // Transfer targets. Three literals, each at the line that moves it into CDEMO-TO-PROGRAM.
     // =================================================================================================
@@ -367,6 +402,14 @@ public class UserDeleteController {
      * refusal names the member the caller can find in its own request body.
      */
     static final String USRIDIN_MEMBER = "usridin";
+
+    /**
+     * The payload member carrying the {@code CCARD-AID} token, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller with an eleven-field body knows which member contradicted the raw
+     * byte it also sent.
+     */
+    static final String AID_MEMBER = "aid";
 
 
     /** {@code FNAMEI PIC X(20)} - {@code app/cpy-bms/COUSR03.CPY:66}. */
@@ -542,25 +585,48 @@ public class UserDeleteController {
      *
      * @param userId  the user id from the path; the resource's identity, and the value both
      *                {@code USRIDIN} and {@code CDEMO-CU03-USR-SELECTED} carry once bound
+     * <h4>Why the raw {@code EIBAID} byte matters more on this screen than on any other</h4>
+     * {@code COUSR03C} tests {@code EIBAID} inline and does not copy {@code app/cpy/CSSTRPFY.cpy}, so on
+     * the terminal {@code PF17} matches none of its five {@code WHEN} clauses and paints "invalid key".
+     * The copybook folds {@code PF17} onto {@code 'PFK05'}, and {@code PFK05} is this program's
+     * <strong>confirm-and-delete</strong> arm at lines 121-122. A caller restricted to the five-character
+     * token therefore cannot express {@code PF17} at all, and a token-driven dispatch would delete a user
+     * record on a key the mainframe rejects. Both spellings of {@link AidRequestParameter} bind here and
+     * carry all 256 values, and a stated byte is resolved <em>without</em> the fold - see
+     * {@link PfKeyResolver#resolveWithoutFolding(byte)} - so {@code PF17} reaches {@code WHEN OTHER}. A
+     * request that sends neither parameter keeps the token decode it always had.
+     *
      * @param request the inbound screen, validated against the symbolic map's declared widths;
      *                {@code null} when no body was sent, which is {@code EIBCALEN = 0}
+     * @param eibaid  {@code EIBAID} as an unsigned {@code 0}-{@code 255} byte under
+     *                {@value #EIBAID_PARAM}, optional. Absent it is read from the payload's own
+     *                one-character {@code aid} image; stated it wins, because an integer names any of the
+     *                256 values where a folded token cannot - and on this screen the fold would put
+     *                {@code PF17} on the delete arm
+     * @param eibAid  the same value under {@value #EIBAID_PARAM_ALIAS}; at most one need be sent
      * @return the outbound screen - the eleven map fields, the communication area and the navigation
      *         triple; never {@code null}
      * @throws NullPointerException     if {@code userId} is {@code null}
-     * @throws IllegalArgumentException if {@code userId} is wider than {@code USRIDIN}
+     * @throws IllegalArgumentException if {@code userId} is wider than {@code USRIDIN}, if the stated AID
+     *                                  byte is outside {@code 0}-{@code 255}, or if both spellings are
+     *                                  present and disagree
      */
+    // The two AID parameters are appended last: Spring binds by the name in the annotation and never by
+    // position, so the two arguments this method already had keep their meaning for every direct caller.
     @DeleteMapping(path = USERS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Transactional
     public ScreenResponse<UserDeleteResponse> deleteUser(
             @PathVariable(USER_ID_VARIABLE) String userId,
-            @Valid @RequestBody(required = false) UserDeleteRequest request) {
+            @Valid @RequestBody(required = false) UserDeleteRequest request,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
         Objects.requireNonNull(userId, "A user id is required in the path: it is the record's key, and "
                 + "on first entry it is CDEMO-CU03-USR-SELECTED");
         requireIdentityFits(userId);
         UserDeleteRequest received = bindPathIdentity(userId, request);
-        String aidToken = received == null ? null : received.aid();
         String usrSelected = received == null ? userId : received.cu03Info().usrSelected();
-        ProgramState state = mainPara(received, aidOfToken(aidToken), usrSelected);
+        ProgramState state = mainPara(received,
+                resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid), received), usrSelected);
         return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
@@ -585,16 +651,22 @@ public class UserDeleteController {
      *
      * <p>{@code COUSR03C} reads the id from two places, and which one it reads depends on the turn:
      * {@code CDEMO-CU03-USR-SELECTED} on first entry [lines 99-102], and {@code USRIDINI} on re-entry
-     * [lines 145, 160, 177 and 189]. Leaving either one as the caller sent it would leave a second,
-     * independently client-controlled statement of the resource's identity - which is how a URI naming
-     * one user could delete another, and how a blank {@code USRIDIN} could reach the read and the delete
-     * with no key at all. Both are set from the path, so neither can happen.
+     * [lines 145, 160, 177 and 189]. <strong>So the path seeds the first entry and is ignored on a
+     * re-entry.</strong> On first entry - a payload carrying no communication area, or one whose context
+     * is not re-entry - both the extension's selected id and the {@code USRIDIN} slot are written from
+     * the path, which is exactly what line 99's {@code MOVE CDEMO-CU03-USR-SELECTED TO USRIDINI} does
+     * with the id the list screen handed over. The value is written at {@code USRIDIN}'s declared
+     * {@code PIC X(08)} width, because that is what the field holds on a terminal; the path has already
+     * been required to fit, so the {@code MOVE} only pads.
      *
-     * <p>The value is written at {@code USRIDIN}'s declared {@code PIC X(08)} width, because that is what
-     * the field holds on a terminal and what a client echoing the painted screen will send back; the path
-     * has already been required to fit, so the {@code MOVE} only pads. Every other member of the payload
-     * - the ten remaining map fields, the communication area, the AID token and the extension's other
-     * five items - travels exactly as the caller delivered it.
+     * <p>On a re-entry the received {@code USRIDINI} is carried through <strong>exactly as it
+     * arrived</strong>. Typing another user id over the painted screen and then pressing PF5 is the
+     * source's own delete sequence [{@code :145}, {@code :160}, {@code :177}, {@code :189}], and the
+     * program's own validation - {@code 'User ID can NOT be empty...'} for a blank field, {@code 'User ID
+     * NOT found...'} for one that names no record - is what governs it. Overwriting the field from the
+     * URI would discard the operator's typed id, and refusing the request for differing from the URI
+     * would answer a state the legacy screen produces. Every other member of the payload travels exactly
+     * as the caller delivered it.
      *
      * @param userId  the path variable, already known to fit {@value #USR_ID_IN_LENGTH} characters
      * @param request the bound body, or {@code null} for {@code EIBCALEN = 0}
@@ -605,11 +677,11 @@ public class UserDeleteController {
         if (request == null) {
             return null;
         }
-        // The URI and USRIDIN state the same key, so the payload's member must not contradict it:
-        // overwriting it silently discarded the operator's own typed identity with no message, on a
-        // route whose action is a delete. Absent, blank, LOW-VALUES or the URI's key agree.
-        ScreenInputRejectedException.requireKeyAgreement(USRIDIN_MEMBER, userId, request.usrIdIn(),
-                USR_ID_IN_LENGTH, codec);
+        if (request.navigationContext() != null && request.navigationContext().isReenter()) {
+            // :106-107 - RECEIVE-USRDEL-SCREEN then EVALUATE EIBAID. The screen's own key is what the
+            // program reads from here on, so nothing about the payload is rewritten.
+            return request;
+        }
         String identity = codec.movePicX(userId, USR_ID_IN_LENGTH);
         Cu03Info extension = request.cu03Info();
         return new UserDeleteRequest(request.trnName(),
@@ -634,40 +706,79 @@ public class UserDeleteController {
     }
 
     // =================================================================================================
-    // Attention-identifier resolution. COUSR03C tests EIBAID inline and does not copy CSSTRPFY, but the
-    // module resolves keys through one resolver for all seventeen online programs; the boolean outcomes
-    // are identical, and the resolver's explicit no-match result joins WHEN OTHER.
+    // Attention-identifier resolution. COUSR03C tests EIBAID inline and does not copy CSSTRPFY, so the
+    // module's one resolver is used in its NON-FOLDING form here: the boolean outcomes are then identical
+    // to the source's five WHEN clauses, and the resolver's explicit no-match result joins WHEN OTHER.
+    // Folding would be wrong on this screen specifically - PFK05 is the delete arm - and not merely
+    // imprecise.
     // =================================================================================================
 
     /**
-     * Maps a {@code CCARD-AID} token back onto its key.
+     * Reads the raw {@code EIBAID} byte out of the payload's {@code aid} member.
      *
-     * <p>The payload carries the attention identifier as the five-character token
-     * {@link PfKeyResolver} produces from {@code EIBAID}, because a raw byte cannot travel in JSON. This
-     * is the inverse: the token is matched against {@link AidKey#token()} exactly, including the trailing
-     * padding {@code PA1} and {@code PA2} carry, and a token that matches none of the sixteen yields an
-     * empty result.
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention identifier,
+     * so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF5} - this screen's confirm-delete key
+     * - as {@code U+00F5}, and the {@code EVALUATE EIBAID} at lines 108 to 130 compares exactly that.
      *
-     * <p>An empty result - whether because no token was supplied, because it was blank, or because it
-     * named nothing the resolver defines - reaches the {@code WHEN OTHER} arm of
-     * {@code EVALUATE EIBAID}, which is the answer the source gives to any key that is not one of its
-     * five. It is deliberately <strong>not</strong> defaulted to {@link AidKey#ENTER}: this program, unlike
-     * {@code COCRDLIC}, does not fold unhandled keys onto ENTER, and quietly doing so here would perform
-     * a lookup the operator never asked for.
+     * <p><strong>Any other width, and an absent value, yield {@link CicsAid#DFHNULL}</strong>, which
+     * {@link PfKeyResolver#resolve(byte)} matches to no condition name at all and which is none of the
+     * five values this program names. It therefore reaches the {@code WHEN OTHER} arm at lines 126 to 129,
+     * which is the answer the source gives to any key that is not one of its five. It is deliberately
+     * <strong>not</strong> defaulted to {@code DFHENTER}: this program, unlike {@code COCRDLIC}, does not
+     * fold unhandled keys onto ENTER, and quietly doing so here would perform a lookup the operator never
+     * asked for.
      *
-     * @param token the {@code CCARD-AID} token, or {@code null} when the caller named no key
-     * @return the matching key, or {@link Optional#empty()} when the token names none; never {@code null}
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK05'} stands for {@code DFHPF5} <em>and</em> {@code DFHPF17}. Decoding it had
+     * to choose, and choosing {@code DFHPF5} <strong>deleted the user</strong> for a {@code PF17} press
+     * the source answers with the invalid-key message at lines 126 to 129 - the most consequential fold in
+     * this module, because the key it folds onto is the one that destroys a record. {@code COUSR03C} does
+     * not copy {@code CSSTRPFY}: it compares {@code EIBAID} itself, so the fold is not its behaviour and
+     * there is nothing to invert. The token survives as derived metadata on the way out, where
+     * {@link PfKeyResolver#resolve(byte)} produces it.
+     *
+     * <p>A character above {@link #MAX_AID_CODE_POINT} is reported as {@code DFHNULL} rather than
+     * narrowed: {@code EIBAID} is one byte, so a cast of {@code U+01F5} would keep its low eight bits and
+     * land on {@code 0xF5}, which <em>is</em> {@code DFHPF5}, the delete key.
+     *
+     * @param aidImage the {@code aid} member as it arrived, or {@code null} when the caller named no key
+     * @return the raw attention-identifier byte; never throws
      */
-    public static Optional<AidKey> aidOfToken(String token) {
-        if (token == null) {
-            return Optional.empty();
+    public static byte eibAidOf(String aidImage) {
+        if (aidImage == null || aidImage.length() != RAW_AID_LENGTH) {
+            return CicsAid.DFHNULL;
         }
-        for (AidKey candidate : AidKey.values()) {
-            if (candidate.token().equals(token)) {
-                return Optional.of(candidate);
-            }
+        char stated = aidImage.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return CicsAid.DFHNULL;
         }
-        return Optional.empty();
+        return (byte) stated;
+    }
+
+    /**
+     * Resolves the byte lines 108 to 130 evaluate, from the query parameter or from the payload.
+     *
+     * <p>The parameter wins when present, because an unsigned {@code 0}-{@code 255} integer can name any
+     * of the 26 attention identifiers. When it is absent the payload's own one-character {@code aid} image
+     * is read; {@link #eibAidOf(String)} states what any other width means.
+     *
+     * <p>An image stated beside a disagreeing byte is refused rather than dropped, which is the shared
+     * rule in {@link AidRequestParameter#requireStatedAid(String, Integer, String, FixedWidthCodec)}:
+     * discarding the caller's own statement of the key is the fault this parameter exists to remove.
+     *
+     * @param eibaid  the stated byte as an unsigned value, or {@code null} if neither spelling was sent
+     * @param request the inbound screen; may be {@code null}, which is {@code EIBCALEN = 0}
+     * @return the raw attention-identifier byte
+     * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0}-{@code 255}, or the payload
+     *                                  states a different key beside it
+     */
+    byte resolveEibAid(Integer eibaid, UserDeleteRequest request) {
+        String aidImage = request == null ? null : request.aid();
+        if (eibaid == null) {
+            return eibAidOf(aidImage);
+        }
+        return AidRequestParameter.requireStatedAid(AID_MEMBER, eibaid, aidImage, codec);
     }
 
     // =================================================================================================
@@ -675,26 +786,16 @@ public class UserDeleteController {
     // =================================================================================================
 
     /**
-     * {@code MAIN-PARA} driven by a raw {@code EIBAID} byte - the form the source itself is written in.
+     * {@code MAIN-PARA} - the program's entry point, lines 82 to 137, driven by a raw {@code EIBAID} byte
+     * - the form the source itself is written in.
      *
-     * <p>The byte is mapped through {@link PfKeyResolver#resolve(byte)}, whose empty result means the AID
-     * matched none of the twenty-eight {@code CSSTRPFY} tests. Both kinds of unhandled key are therefore
-     * reachable from here and are distinct: {@code CicsAid.DFHPF7} resolves to {@link AidKey#PFK07},
-     * which this program does not handle, and {@code CicsAid.DFHPA3} resolves to nothing at all -
-     * {@code CSSTRPFY} does not test PA3. Both land on {@code WHEN OTHER}.
-     *
-     * @param request     the inbound screen, or {@code null} for {@code EIBCALEN = 0}
-     * @param eibAid      the raw EBCDIC attention-identifier byte, as CICS places it in {@code EIBAID}
-     * @param usrSelected {@code CDEMO-CU03-USR-SELECTED}; consulted on first entry only, and may be
-     *                    {@code null}
-     * @return the state at the moment the task returned to CICS or transferred; never {@code null}
-     */
-    public ProgramState mainPara(UserDeleteRequest request, byte eibAid, String usrSelected) {
-        return mainPara(request, PfKeyResolver.resolve(eibAid), usrSelected);
-    }
-
-    /**
-     * {@code MAIN-PARA} - the program's entry point, lines 82 to 137.
+     * <p>The byte is compared, not folded. {@link PfKeyResolver#isEnter(byte)} and its siblings are
+     * equalities against one constant each, so {@code DFHPF17} does <em>not</em> behave as {@code DFHPF5}
+     * here - which is what {@code EIBAID = DFHPF5} means, and it matters more on this screen than on any
+     * other, because {@code PF5} is the key that deletes the record. Both kinds of unhandled key reach
+     * {@code WHEN OTHER} and are indistinguishable there, exactly as on a terminal: {@code DFHPF7}, a key
+     * {@code CSSTRPFY} names but this program has no arm for, and {@code DFHPA3}, which {@code CSSTRPFY}
+     * does not name at all.
      *
      * <p>Returns the terminal {@link ProgramState} rather than only the response, because four
      * observable things this program produces have no home in the map's payload: the
@@ -719,16 +820,12 @@ public class UserDeleteController {
      * </ol>
      *
      * @param request     the inbound screen, or {@code null} for {@code EIBCALEN = 0}
-     * @param aidKey      the resolved attention identifier; empty means no key matched, which is
-     *                    {@code WHEN OTHER}
+     * @param eibAid      the raw EBCDIC attention-identifier byte, as CICS places it in {@code EIBAID}
      * @param usrSelected {@code CDEMO-CU03-USR-SELECTED}; consulted on first entry only, and may be
      *                    {@code null}
      * @return the state at the moment the task returned to CICS or transferred; never {@code null}
-     * @throws NullPointerException if {@code aidKey} is {@code null}
      */
-    public ProgramState mainPara(UserDeleteRequest request, Optional<AidKey> aidKey, String usrSelected) {
-        Objects.requireNonNull(aidKey, "A resolved AID is required as an Optional, never null; empty is "
-                + "how PfKeyResolver reports that the byte matched none of the tested AIDs");
+    public ProgramState mainPara(UserDeleteRequest request, byte eibAid, String usrSelected) {
         ProgramState state = new ProgramState();
 
         // The 34-byte extension arrives with the communication area and leaves with it, unchanged apart
@@ -770,7 +867,7 @@ public class UserDeleteController {
             // L107  PERFORM RECEIVE-USRDEL-SCREEN
             receiveUsrdelScreen(state, request);
             // L108-130  EVALUATE EIBAID
-            dispatchAid(state, aidKey);
+            dispatchAid(state, eibAid);
         }
         return returnToCics(state);
     }
@@ -818,62 +915,72 @@ public class UserDeleteController {
      * {@code EVALUATE EIBAID} - lines 108 to 130.
      *
      * <p>The five keys the program handles and its {@code WHEN OTHER}, in source order. A COBOL
-     * {@code EVALUATE} takes the first matching arm and the arms here test distinct constants, so a
-     * {@code switch} preserves both the outcome and the order in which a reader meets them.
+     * {@code EVALUATE} takes the first matching arm and the arms here test distinct constants, so an
+     * ordered {@code if} chain preserves both the outcome and the order in which a reader meets them.
      *
-     * <p>{@code WHEN OTHER} is reached two ways, and both matter: a key the resolver mapped but this
-     * program does not handle - PF1, PF7, CLEAR and so on - and a key the resolver mapped to nothing at
-     * all, which is an empty {@code aidKey}.
+     * <p>Each test is {@link PfKeyResolver}'s byte equality against one constant, which is what
+     * {@code EIBAID = DFHPF5} is. Nothing is folded on the way in, so a {@code PF17} press does not reach
+     * the {@code PF5} arm and delete a record; it reaches {@code WHEN OTHER}, where the source puts it.
+     *
+     * <p>{@code WHEN OTHER} is reached three ways and they are indistinguishable there, exactly as on a
+     * terminal: a key {@code CSSTRPFY} names but this program has no arm for - PF1, PF7, CLEAR and so on -
+     * a key {@code CSSTRPFY} does not name at all, such as PA3, and {@code DFHNULL}, which is what the
+     * payload's {@code aid} member states when it carries no identifiable byte.
      *
      * @param state  the per-request working storage
-     * @param aidKey the resolved attention identifier; empty is {@code WHEN OTHER}
+     * @param eibAid the raw attention-identifier byte
      */
-    private void dispatchAid(ProgramState state, Optional<AidKey> aidKey) {
-        if (aidKey.isEmpty()) {
-            invalidKey(state);
+    private void dispatchAid(ProgramState state, byte eibAid) {
+        // L109-110  WHEN DFHENTER
+        if (PfKeyResolver.isEnter(eibAid)) {
+            processEnterKey(state);
             return;
         }
-        switch (aidKey.get()) {
-            // L109-110  WHEN DFHENTER
-            case ENTER -> processEnterKey(state);
 
-            // L111-118  WHEN DFHPF3. Resolve a return target, then transfer - and nothing else. There is
-            // deliberately NO delete here: COUSR02C performs UPDATE-USER-INFO on its own PF3 arm at
-            // lines 111-119, and this program does not. The asymmetry is the source's, and it stands.
-            case PFK03 -> {
-                // L112  IF CDEMO-FROM-PROGRAM = SPACES OR LOW-VALUES
-                if (isSpacesOrLowValues(state.commarea().fromProgram())) {
-                    // L113  MOVE 'COADM01C' TO CDEMO-TO-PROGRAM
-                    state.setCommarea(state.commarea()
-                            .withToProgram(codec.movePicX(LIT_ADMIN_PGM, TO_PROGRAM_LENGTH)));
-                } else {
-                    // L115-116  MOVE CDEMO-FROM-PROGRAM TO CDEMO-TO-PROGRAM
-                    state.setCommarea(state.commarea()
-                            .withToProgram(codec.movePicX(state.commarea().fromProgram(),
-                                    TO_PROGRAM_LENGTH)));
-                }
-                // L118  PERFORM RETURN-TO-PREV-SCREEN
-                returnToPrevScreen(state);
-            }
-
-            // L119-120  WHEN DFHPF4
-            case PFK04 -> clearCurrentScreen(state);
-
-            // L121-122  WHEN DFHPF5 - the confirm key, and the only route to the delete.
-            case PFK05 -> deleteUserInfo(state);
-
-            // L123-125  WHEN DFHPF12
-            case PFK12 -> {
-                // L124  MOVE 'COADM01C' TO CDEMO-TO-PROGRAM
+        // L111-118  WHEN DFHPF3. Resolve a return target, then transfer - and nothing else. There is
+        // deliberately NO delete here: COUSR02C performs UPDATE-USER-INFO on its own PF3 arm at
+        // lines 111-119, and this program does not. The asymmetry is the source's, and it stands.
+        if (PfKeyResolver.isPf3(eibAid)) {
+            // L112  IF CDEMO-FROM-PROGRAM = SPACES OR LOW-VALUES
+            if (isSpacesOrLowValues(state.commarea().fromProgram())) {
+                // L113  MOVE 'COADM01C' TO CDEMO-TO-PROGRAM
                 state.setCommarea(state.commarea()
                         .withToProgram(codec.movePicX(LIT_ADMIN_PGM, TO_PROGRAM_LENGTH)));
-                // L125  PERFORM RETURN-TO-PREV-SCREEN
-                returnToPrevScreen(state);
+            } else {
+                // L115-116  MOVE CDEMO-FROM-PROGRAM TO CDEMO-TO-PROGRAM
+                state.setCommarea(state.commarea()
+                        .withToProgram(codec.movePicX(state.commarea().fromProgram(),
+                                TO_PROGRAM_LENGTH)));
             }
-
-            // L126-129  WHEN OTHER
-            default -> invalidKey(state);
+            // L118  PERFORM RETURN-TO-PREV-SCREEN
+            returnToPrevScreen(state);
+            return;
         }
+
+        // L119-120  WHEN DFHPF4
+        if (PfKeyResolver.isPf4(eibAid)) {
+            clearCurrentScreen(state);
+            return;
+        }
+
+        // L121-122  WHEN DFHPF5 - the confirm key, and the only route to the delete.
+        if (PfKeyResolver.isPf5(eibAid)) {
+            deleteUserInfo(state);
+            return;
+        }
+
+        // L123-125  WHEN DFHPF12
+        if (PfKeyResolver.isPf12(eibAid)) {
+            // L124  MOVE 'COADM01C' TO CDEMO-TO-PROGRAM
+            state.setCommarea(state.commarea()
+                    .withToProgram(codec.movePicX(LIT_ADMIN_PGM, TO_PROGRAM_LENGTH)));
+            // L125  PERFORM RETURN-TO-PREV-SCREEN
+            returnToPrevScreen(state);
+            return;
+        }
+
+        // L126-129  WHEN OTHER
+        invalidKey(state);
     }
 
     /**
@@ -1593,27 +1700,38 @@ public class UserDeleteController {
      * {@code <field> NOT = SPACES AND LOW-VALUES}.
      *
      * <p>The program spells the same predicate both ways - line 99 negated, lines 112, 145, 177 and 199
-     * plain - and both reduce to "does this field hold nothing but blanks". Blanks means the space
-     * character or the null byte {@code LOW-VALUES} clears a field to, and a field holding a mixture of
-     * the two is still blank.
+     * plain. {@code = SPACES OR LOW-VALUES} is COBOL's abbreviated combined relation, and it expands to
+     * {@code = SPACES OR <field> = LOW-VALUES}: <strong>two separate whole-item comparisons</strong>,
+     * each against a figurative constant that fills the item's entire length.
+     *
+     * <p><strong>A mixture of the two therefore equals neither, and the condition is false.</strong> An
+     * item holding, say, four spaces then four nulls is not all-spaces and is not all-low-values, so
+     * COBOL treats it as a value the operator supplied rather than as an empty field. Reporting a mixed
+     * image as blank would take the empty arm where the source takes the populated one.
      *
      * <p>An absent value is blank: a payload member the caller omitted is exactly a screen field the
-     * terminal transmitted nothing for.
+     * terminal transmitted nothing for, which CICS leaves as {@code LOW-VALUES} - so it satisfies the
+     * second comparison rather than being a third rule of its own.
      *
      * @param value the field's characters, or {@code null} when the member was absent
-     * @return whether the field holds nothing but spaces and low-values
+     * @return whether the field is entirely spaces or entirely low-values
      */
     static boolean isSpacesOrLowValues(String value) {
         if (value == null) {
             return true;
         }
+        boolean allSpaces = true;
+        boolean allLowValues = true;
         for (int index = 0; index < value.length(); index++) {
             char character = value.charAt(index);
-            if (character != ' ' && character != LOW_VALUE) {
-                return false;
+            if (character != ' ') {
+                allSpaces = false;
+            }
+            if (character != LOW_VALUE) {
+                allLowValues = false;
             }
         }
-        return true;
+        return allSpaces || allLowValues;
     }
 
     /**
@@ -1835,6 +1953,67 @@ public class UserDeleteController {
      * nothing in this program moves it anywhere, this class never renders it, and
      * {@link SecUserRecord#toString()} withholds it.
      */
+    public static final String ERR_MSG_COLOUR_ITEM = "ERRMSGC";
+
+    /**
+     * One {@code EXEC CICS SEND MAP}: what the map area held at that moment.
+     *
+     * <p>{@code SEND MAP ... FROM(COUSR3AO)} transmits the whole area, so a snapshot is eleven values and
+     * not the subset the send happened to change. The colour byte travels alongside rather than inside,
+     * because {@code ERRMSGC} is an attribute item and not one of the eleven {@code DFHMDF} fields; a
+     * default of {@code DFHDFCOL} is what {@code MOVE LOW-VALUES TO COUSR3AO} leaves in every attribute
+     * position on a send the program reached without moving a colour.
+     *
+     * @param fields       the eleven {@code xxxO} values at this send; unmodifiable
+     * @param errMsgColour {@code ERRMSGC OF COUSR3AO} at this send
+     */
+    public record Send(Map<String, String> fields, byte errMsgColour) {
+
+        /**
+         * Copies the field map so the snapshot cannot change after the fact.
+         *
+         * @throws NullPointerException if {@code fields} is {@code null}
+         */
+        public Send {
+            Objects.requireNonNull(fields, "A send carries the field values it painted; use an empty map "
+                    + "for none rather than null");
+            fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+        }
+
+        /**
+         * The colour byte's copybook mnemonic.
+         *
+         * @return {@code DFHNEUTR}, {@code DFHRED}, {@code DFHGREEN} or {@code DFHDFCOL}; never
+         *         {@code null}
+         */
+        public String errMsgColourMnemonic() {
+            return BmsAttributes.colourMnemonic(errMsgColour);
+        }
+
+        /**
+         * The attribute items this send set, keyed by the item name the copybook spells.
+         *
+         * <p>One entry, {@code ERRMSGC}, because that is the only attribute item {@code COUSR03C} ever
+         * moves a value into - lines 285, 317 and 353. Listing the other attribute items of
+         * {@code COUSR3AO} would claim an assertion the program does not support.
+         *
+         * @return an unmodifiable single-entry map from {@code ERRMSGC} to its mnemonic
+         */
+        public Map<String, String> attributes() {
+            return Map.of(ERR_MSG_COLOUR_ITEM, errMsgColourMnemonic());
+        }
+
+        /**
+         * One field's value at this send.
+         *
+         * @param cobolName the {@code xxxO} item name, as the copybook spells it
+         * @return the value, or {@code null} when this snapshot has no such field
+         */
+        public String value(String cobolName) {
+            return fields.get(cobolName);
+        }
+    }
+
     public static final class ProgramState {
 
         /** {@code 01 COUSR3AI} and its {@code 01 COUSR3AO} redefinition: the one screen buffer. */
@@ -1918,7 +2097,7 @@ public class UserDeleteController {
         private boolean transferred;
 
         /** How many times {@code EXEC CICS SEND MAP} was executed; a send is not terminal here. */
-        private int sendCount;
+        private final List<Send> sends = new ArrayList<>(3);
 
         /** Every {@code DISPLAY} the execution emitted, in order - lines 294 and 330. */
         private final List<String> displayLines = new ArrayList<>();
@@ -2283,15 +2462,38 @@ public class UserDeleteController {
          * successful fetch sends twice and a failed confirm sends twice as well. Each send re-derives the
          * whole screen, so {@link #response()} is what the last one painted.
          *
-         * @return the number of sends
+         * @return the number of sends - {@code sends().size()}, named for readability
          */
         public int sendCount() {
-            return sendCount;
+            return sends.size();
         }
 
-        /** Records one {@code EXEC CICS SEND MAP ... ERASE CURSOR}. */
+        /**
+         * One entry per {@code EXEC CICS SEND MAP}, in order.
+         *
+         * <p>Why the count alone is not enough: {@code EXEC CICS SEND MAP ... FROM(COUSR3AO)} sends the
+         * <strong>whole</strong> map area, so a path that sends twice put eleven values on the terminal
+         * twice - and they were not the same eleven both times. Arrival from the user list is the clearest
+         * case: the lookup paints the record and the prompt, and the unconditional send that follows paints
+         * it again after the type has been resolved. {@link #response()} holds only what the last send
+         * painted, so without these snapshots the earlier ones are unobservable and a parity case can only
+         * assert the final screen.
+         *
+         * @return the snapshots; unmodifiable, possibly empty, never {@code null}
+         */
+        public List<Send> sends() {
+            return Collections.unmodifiableList(sends);
+        }
+
+        /**
+         * Records one {@code EXEC CICS SEND MAP ... ERASE CURSOR}.
+         *
+         * <p>Captures what went to the terminal rather than only that something did: the eleven
+         * {@code xxxO} values as this send left them, keyed by the names {@code app/cpy-bms/COUSR03.CPY}
+         * spells, plus the {@code ERRMSGC} colour byte in force at that moment.
+         */
         public void recordSend() {
-            this.sendCount++;
+            sends.add(new Send(response().fieldValues(), errMsgColour));
         }
 
         /**

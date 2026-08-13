@@ -250,7 +250,8 @@ import jakarta.validation.constraints.Size;
         ResponseOnlyMembers.NEXT_MAPSET,
         ResponseOnlyMembers.NEXT_MAP,
         ResponseOnlyMembers.SCREEN_METADATA,
-        ResponseOnlyMembers.ROLE})
+        ResponseOnlyMembers.ROLE,
+        ResponseOnlyMembers.PLAIN_TEXT})
 public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname") String trnName,
                             @Size(max = TITLE01_LENGTH) String title01,
                             @Size(max = CURDATE_LENGTH) @JsonProperty("curdate") String curDate,

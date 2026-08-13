@@ -1,7 +1,7 @@
 {
   "program": "COACTUPC",
   "caseId": "case06",
-  "description": "WHEN DFHRESP(NOTFND) of 9300-GETACCTDATA-BYACCT at :3716-3734 - the ACCTDAT miss, and the one case in this folder whose subject is a VERIFIED LATENT DEFECT rather than a branch. The intuitive expectation here is wrong, and saying why is the whole point of the case. THE DEAD GUARD. 9000-READ-ACCT at :3608-3644 is a four-range guard chain, and it guards its second read with IF DID-NOT-FIND-ACCT-IN-ACCTDAT GO TO 9000-READ-ACCT-EXIT at :3627-3629. DID-NOT-FIND-ACCT-IN-ACCTDAT is an 88-level on WS-RETURN-MSG PIC X(75) at :499-500 whose VALUE is the literal 'Did not find this account in account master file', so the guard fires only if WS-RETURN-MSG holds exactly that text. 9300's NOTFND arm never puts it there: the statement SET DID-NOT-FIND-ACCT-IN-ACCTDAT TO TRUE at :3719 IS COMMENTED OUT - an asterisk in column 7, re-inspected byte by byte because the entire case rests on it. The arm instead SETs INPUT-ERROR at :3717 and FLG-ACCTFILTER-NOT-OK at :3718 and, guarded by IF WS-RETURN-MSG-OFF at :3720, composes a DIFFERENT text by STRING at :3723-3733. THE GUARD AT :3627 THEREFORE NEVER FIRES. Execution continues: :3631 MOVEs CDEMO-CUST-ID into WS-CARD-RID-CUST-ID and :3633-3634 PERFORMS 9400-GETCUSTDATA-BYCUST with the customer identifier the SUCCESSFUL cross-reference read supplied, 9400 takes WHEN DFHRESP(NORMAL) at :3764-3765 and SETs FOUND-CUST-IN-MASTER, the second guard at :3636-3638 is dead for the same reason - its SET at :3769 is commented out too, and case07 owns that half - and so :3642-3643 PERFORMS 9500-STORE-FETCHED-DATA, which stores an ACUP-OLD-DETAILS snapshot built from an ACCOUNT-RECORD that no read ever filled. This case encodes that continuation. A case that expected an early exit here would be asserting a program this repository does not contain, and practice B5 requires the expectation reproduce the odd thing the COBOL does rather than the tidy thing a corrected program would do. THE COMPOSED MESSAGE, operand by operand, all DELIMITED BY SIZE so each contributes its full declared width: 'Account:' (8, :3724), WS-CARD-RID-ACCT-ID-X (11, the PIC X(11) redefinition at :382-383), ' not found in' (13, :3726), ' Acct Master file.Resp:' (23, :3727 - the period is followed IMMEDIATELY by 'Resp:', with NO space, unlike 9200's ' Cross ref file.  Resp:' at :3678 which carries TWO spaces and which case05 pins), ERROR-RESP (10, :401), ' Reas:' (6, :3729) and ERROR-RESP2 (10, :405). 8+11+13+23+10+6+10 is 81 characters into a PIC X(75) receiver, so the receiver fills and the last six characters are lost - four of ERROR-RESP2's ten survive as '0000'. The two response codes are not case data and cannot drift: a keyed miss reports no CICS RESP, so the fallback is DFHRESP(NOTFND) = FileStatus.NOTFND = 13 with RESP2 = 0, and MOVE WS-RESP-CD PIC S9(09) COMP TO ERROR-RESP PIC X(10) at :3721-3722 renders nine unsigned digits left justified with one pad space, giving '000000013 ' and '000000000 ' - which is why TWO spaces separate the digits from ' Reas:'. :2981 then MOVEs the 75 characters into ERRMSGO PIC X(78), appending three. THE UNREAD ACCOUNT RECORD, and the convention this case uses. ACCOUNT-RECORD is COPY CVACT01Y at :640, its own 01 group in WORKING-STORAGE and not among the three areas INITIALIZE names at :866-868, so it exists whether or not a read filled it and holds what COBOL leaves in an uninitialised group: SPACES in every PIC X span and ZERO in every numeric one. That is the convention adopted here, and it is chosen because it is what the read-outcome contract already implies rather than because it is convenient - common.FileStatus publishes the outcome vocabulary and account.AccountRepository.ReadResult is a DISCRIMINATED OUTCOME (found, notFound, or a status) that returns to its caller and never decides to abend on the caller's behalf, so a missed EXEC CICS READ INTO(ACCOUNT-RECORD) leaves the receiving group untouched rather than absent, unfilled rather than null. The resulting ACUP-OLD-DETAILS snapshot is therefore ASYMMETRIC, and that asymmetry is the observable behaviour: the customer half is populated from the real row - ACUP-OLD-CUST-ID-X 000000001, ACUP-OLD-CUST-SSN-X 020973888, ACUP-OLD-CUST-DOB-YEAR/-MON/-DAY 1961, 06 and 08, ACUP-OLD-CUST-FICO-SCORE-X 274, the three names Immanuel, Madeline and Kessler at their declared 25, the three address lines, NC, USA, ACUP-OLD-CUST-ADDR-ZIP 12546 at PIC X(10), the two phone numbers in their (NNN)NNN-NNNN form, the government identifier, the EFT account and the primary-holder indicator Y - while the account half is the allocated state: ACUP-OLD-ACCT-ID-X 00000000000, ACUP-OLD-ACTIVE-STATUS one space, all five monetary views ACUP-OLD-CURR-BAL-N, -CREDIT-LIMIT-N, -CASH-CREDIT-LIMIT-N, -CURR-CYC-CREDIT-N and -CURR-CYC-DEBIT-N at 0.00 at scale exactly 2, the nine date components four and two spaces each, and ACUP-OLD-GROUP-ID ten spaces. Those values are stated here rather than pinned as a record because ACUP-OLD-DETAILS is not a dataset: it is WS-THIS-PROGCOMMAREA, which COMMON-RETURN at :1010-1013 places immediately after the 160-byte CARDDEMO-COMMAREA, and this model compares that shared image only. The snapshot is nonetheless OBSERVABLE in the navigation image, and that is where it is asserted: 9500 at :3805 MOVEs ACCT-ID into CDEMO-ACCT-ID, so the navigation carries 00000000000 even though :1815 had already MOVEd the valid 00000000001 there from CC-ACCT-ID, and :3810 MOVEs ACCT-ACTIVE-STATUS into CDEMO-ACCT-STATUS, leaving one space. CDEMO-ACCT-ID reading as eleven zeros after a request for account 00000000001 IS the fingerprint of the 9500 run that should not have happened, and it is the single strongest assertion in this case. THE PATH INTO THE READ, identical to case04's up to 9300. EIBCALEN is 1033 - 160 for CARDDEMO-COMMAREA plus 873 for WS-THIS-PROGCOMMAREA - so the left disjunct of the commarea gate at :880 is false, and CDEMO-FROM-PROGRAM is spaces rather than COMEN01C so the right disjunct at :881-882 is false too: the ELSE at :887-892 restores both areas from DFHCOMMAREA. The carried CDEMO-PGM-CONTEXT is 1, so CDEMO-PGM-ENTER is false and CDEMO-PGM-REENTER is true, and ACUP-CHANGE-ACTION arrives ACUP-DETAILS-NOT-FETCHED. AID DFHENTER passes the validity gate at :906-912 on its first disjunct, so the remap at :914-916 does nothing. The order-sensitive EVALUATE TRUE at :921 - arms :927 CCARD-AID-PFK03, :964 ACUP-DETAILS-NOT-FETCHED AND CDEMO-PGM-ENTER, :966 CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER, :979 ACUP-CHANGES-OKAYED-AND-DONE, :980 ACUP-CHANGES-FAILED, :996 OTHER - lands on WHEN OTHER because the context is REENTER and not ENTER, and that arm performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP and leaves by the forward-only GO TO COMMON-RETURN at :1003. 1100-RECEIVE-MAP at :1051-1058 finds ACCTSIDI neither '*' nor SPACES and MOVEs it into CC-ACCT-ID and ACUP-NEW-ACCT-ID-X, then :1060-1062 GO TOes its exit because the details are unfetched, so ACCTSIDI is the only received field there can be. 1200-EDIT-MAP-INPUTS at :1433-1449 edits ONLY the search key, and 1210-EDIT-ACCOUNT at :1783-1817 finds CC-ACCT-ID numeric and CC-ACCT-ID-N non-zero, so its ELSE at :1814-1816 MOVEs CC-ACCT-ID to CDEMO-ACCT-ID and SETs FLG-ACCTFILTER-ISVALID - the guard 2000-DECIDE-ACTION's first arm tests at :2573 before SETting WS-RETURN-MSG-OFF at :2574 and performing 9000-READ-ACCT at :2575. Because FOUND-CUST-IN-MASTER is set when the chain returns, :2577-2579 SETs ACUP-SHOW-DETAILS - and it does so even though the account read FAILED, which is the second consequence of the dead guard. THE READ OUTCOMES, both arms of gate G47 in ONE pass. 9200-GETCARDXREF-BYACCT at :3654-3662 reads DATASET(LIT-CARDXREFNAME-ACCT-PATH) = CXACAIX with RIDFLD(WS-CARD-RID-ACCT-ID-X) and takes its NORMAL arm at :3665-3667, MOVEing XREF-CUST-ID 000000001 into CDEMO-CUST-ID and XREF-CARD-NUM 9680294154603697 into CDEMO-CARD-NUM; CXACAIX is an alternate-index PATH over the CCXREF base and is reached through the one CardXrefRepository's alternate-key finder, never a second table or a second repository (gate G45). The live guard that follows at :3620-3622 tests FLG-ACCTFILTER-NOT-OK and does not fire. 9300 then reads DATASET(LIT-ACCTFILENAME) = ACCTDAT with the same 11-byte RIDFLD, KEYLENGTH 11, INTO(ACCOUNT-RECORD) LENGTH 300 - and MISSES, which is the NOTFND arm of gate G47 on that call site. 9400 reads DATASET(LIT-CUSTFILENAME) = CUSTDAT with a 9-byte RIDFLD INTO(CUSTOMER-RECORD) LENGTH 500 and takes NORMAL, which is the same gate's NORMAL arm on a different call site in the same pass. The three EVALUATE WS-RESP-CD statements keep their source WHEN order - NORMAL, NOTFND, OTHER - exactly (gate G30). THE SEED, and how the miss is arranged without touching the oracle. Measured over the whole fixtures, every XREF-ACCT-ID in cardxref.txt has a matching acctdata.txt row, so an account-master miss is impossible from the unmodified data and the case must curate. It curates by OMISSION ONLY and only in this fixture's own inputs: acctdata.txt zero-based row 0 IS account 00000000001, the account this case asks for, so ACCTDAT is seeded from fixture rows 1 through 49 - forty-nine rows of exactly 300 bytes, every one byte-identical to the fixture - and the target row is simply never seeded. No row's bytes are altered, nothing is derived, and app/data/ASCII/acctdata.txt is not written to: the COBOL, copybook, BMS, JCL, CSD and data trees are the parity oracle and stay read-only (practice B3). CXACAIX and CUSTDAT are seeded from the COMPLETE unmodified fixtures, all 50 rows each, so the alternate-key finder and the customer keyed read have to discriminate on their keys rather than return the only row present. cardxref.txt is seeded RAW at 36 bytes and is NOT pre-padded: CVACT03Y declares 50 and the fixture omits the trailing FILLER, so the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies the fourteen spaces once, at seed time, before anything decodes a row, and the final-state image is asserted at the copybook's 50 (gate G16, risk R-F). Pre-padding the input would double-pad it. THE RECORD EXPECTATIONS. There is deliberately NO ACCTDAT row projection, because the row this case is about is the one that is not there and a projection would have to invent it; the assertion is made at dataset level instead, where ACCTDAT is pinned on the final-state channel at exactly 49 rows of 300 bytes - the positive statement that the file was opened, holds real records, and holds no record for 00000000001. CXACAIX row 48 is pinned as four fields plus the complete 50-byte image, ending in FILLER PIC X(14) as fourteen spaces, and CUSTDAT row 0 as nineteen fields in app/cpy/CVCUS01Y.cpy order plus the complete 500-byte image, ending in FILLER PIC X(168) as one hundred and sixty-eight spaces. Field names are the copybook's verbatim and FILLER is an addressable span rather than a gap: pinning both the fields and the whole image is what makes the total width an assertion, and a record missing a FILLER is short by exactly that span (gates G19 and G21). THE SCREEN, composed from the five rules 3000-SEND-MAP applies at :2650-2661. 3100-SCREEN-INIT MOVEs LOW-VALUES to CACTUPAO at :2669 and assigns the six header items at :2673-2690. 3200-SETUP-SCREEN-VARS takes its ELSE at :2702 because the context is REENTER, and because CC-ACCT-ID-N is not zero the ELSE at :2706-2707 echoes CC-ACCT-ID into ACCTSIDO as 00000000001 - the account the operator asked for is still shown, even though no such account was found. Its order-sensitive EVALUATE at :2710-2724 lands on WHEN ACUP-SHOW-DETAILS at :2715, not on WHEN ACUP-DETAILS-NOT-FETCHED at :2711 and not on WHEN CC-ACCT-ID-N = 0 at :2712, so 3202-SHOW-ORIGINAL-VALUES runs and 3201-SHOW-INITIAL-VALUES never does. 3202's first guard at :2793-2794 is IF FOUND-ACCT-IN-MASTER OR FOUND-CUST-IN-MASTER - OR, not AND - and the customer flag IS set, so the fifteen account moves at :2795-2824 DO run over the unread record: ACSTTUSO one space, the nine date components four and two spaces each, AADDGRPO ten spaces, and the five monetary items each rendered through WS-EDIT-CURRENCY-9-2-F PIC +ZZZ,ZZZ,ZZZ.99 at :371 as '+           .00' - the sign is forced, all nine Z positions are suppressed because the integer part is zero and both insertion commas are blanked with them, and the two fraction positions survive because the mask ends .99 and not .ZZ, giving exactly the 15 characters ACRDLIMI declares in app/cpy-bms/COACTUP.CPY. The customer guard at :2827 then paints the twenty-six customer items from the real row, with the width-driven truncations the fixture forces: ACSZIPCO PIC X(5) keeps 12546 of a PIC X(10) source, the SSN is split by reference modification at :2829-2831 into 020, 97 and 3888, the two phone numbers by :2846-2857 into 908/119/8310 and 373/693/8684 from the first thirteen bytes of their 15-byte spans, and ACSCITYO takes CUST-ADDR-LINE-3 at :2841 because address line three IS the city on this screen. All fifty-four fields are therefore assigned and not one is LOW-VALUES. 3250-SETUP-INFOMSG at :2957-2977 is order-sensitive as well, and its arm was DERIVED rather than assumed: CDEMO-PGM-ENTER at :2958 is false, ACUP-DETAILS-NOT-FETCHED at :2960 is false because :2578 replaced it, so WHEN ACUP-SHOW-DETAILS at :2962 wins and SETs PROMPT-FOR-CHANGES - WS-INFO-MSG PIC X(40) holding the 39-character literal at :470-471, note its trailing period - which :2979 MOVEs into INFOMSGO PIC X(45) right-space-padded to 45. FKEYSO, FKEY05O and FKEY12O are the mapset's own INITIAL text and are never assigned by the program at all. THE ATTRIBUTE PLANES. :3171-3173 does not fire because CDEMO-LAST-MAPSET is seven spaces rather than the card-list mapset. :3176-3178 DOES fire because FLG-ACCTFILTER-NOT-OK is set, so ACCTSIDC carries DFHRED. :3180-3184 does NOT fire because FLG-ACCTFILTER-BLANK is false, so no '*' is written over ACCTSIDO - red WITHOUT the marker, which is exactly FieldAttributeSetter's rule and the whole of gate G38 on this path: the context IS REENTER so CSSETATY's precondition is satisfied, and the reason only one field is red is that only one thing failed. :3186-3189 then GO TOes 3300-SETUP-SCREEN-ATTRS-EXIT because FLG-ACCTFILTER-NOT-OK is set, so all thirty-nine CSSETATY expansions from :3208 onwards are SKIPPED rather than executed as no-ops - a different route to the same result as case04, and stated as such rather than copied. Every other colour is therefore the default DFHDFCOL and every highlight the default DFHDFHI, both x'00' exactly as MOVE LOW-VALUES left them, except the information line: 3390-SETUP-INFOMSG-ATTRS at :3567-3571 finds WS-NO-INFO-MESSAGE false - there IS a message - and moves DFHBMASB, a field attribute drawn from a different section of DFHBMSCA than the item's own plane, which is reproduced rather than normalised. FKEY05 and FKEY12 stay hidden because :3573 needs ACUP-CHANGES-MADE and :3578 needs PROMPT-FOR-CONFIRMATION and the state is ACUP-SHOW-DETAILS with the change prompt. The xxxA items 3310-PROTECT-ALL-ATTRS and 3320-UNPROTECT-FEW-ATTRS write are deliberately NOT declared: they are items of the input redefine CACTUPAI, not of the sent CACTUPAO. THE CURSOR is ACCTSIDL, and it is reached by the THIRD arm of the order-sensitive EVALUATE at :3009 rather than by WHEN OTHER: FOUND-ACCOUNT-DATA at :3010 is false because 3202 and 3250 left WS-INFO-MSG holding the change prompt rather than 'Details of selected account shown above', NO-CHANGES-DETECTED at :3011 is false because WS-RETURN-MSG holds the composed error, and WHEN FLG-ACCTFILTER-NOT-OK at :3013 is TRUE, so :3015 MOVEs -1 into ACCTSIDL. COBOL positions the cursor by moving -1 into a symbolic-map length item, so the xxxL item IS the cursor. THE NEXT TARGET is COACTUPC / COACTUP / CACTUPA, from :1031-1033 and :3591-3592, and the termination is RETURN_TRANSID from :1015-1018 - never XCTL, because the only XCTL in this program is in the PF03 arm at :956-959 which this path does not reach. STATELESSNESS (rule R6, gate G37): every scrap of conversation state travels in the payload and none is held server side. Inbound it is the 1033-byte EIBCALEN, the AID, the sixteen carried CARDDEMO-COMMAREA fields and one received map field; outbound it is the sixteen navigation fields, where 9500 has replaced CDEMO-CUST-ID with 000000001, the three customer names, CDEMO-ACCT-ID with eleven ZEROS and CDEMO-ACCT-STATUS with a space from the unread record, while CDEMO-CARD-NUM keeps the 9680294154603697 the cross-reference supplied and CDEMO-PGM-CONTEXT stays 1, and CDEMO-FROM-TRANID, -FROM-PROGRAM, -TO-TRANID, -TO-PROGRAM, -USER-ID, -USER-TYPE, -LAST-MAP and -LAST-MAPSET stay exactly as they arrived because only the PF03 arm at :944-950 writes them. NOTHING IS WRITTEN. COACTUPC's write verbs are the read-for-update and REWRITE pairs inside 9600-WRITE-PROCESSING at :3888-4105, which only the PF05 confirmation arm at :2602-2605 reaches, so expectedWrites is empty as a POSITIVE assertion and the three seeded datasets are pinned unchanged on the final-state channel as the other half of it. RETURN CODE 0: COACTUPC never sets a COBOL RETURN-CODE - the identifier does not occur anywhere in its 4,236 lines - because it is pseudo-conversational and ends at EXEC CICS RETURN. expectedMessages is EMPTY, and that is deliberate rather than incidental. Only ONE error text is produced on this path - first-message-wins, because every message write in this program is wrapped in IF WS-RETURN-MSG-OFF, :2574 SET it off, 9300's NOTFND arm consumed it at :3720, and 9400 succeeding means it adds nothing - and that one text is asserted byte-exactly where the program actually put it, in ERRMSGO at its declared 78, beside INFOMSGO at its declared 45. It is not repeated in expectedMessages, because MessageChannel publishes DISPLAY_LINE, WS_MESSAGE_80 and SCREEN_ERRMSG_78 and this path emits no DISPLAY and no SEND-PLAIN-TEXT at all; an entry there would assert an emission that never happened. A DOCUMENTED SOURCE ODDITY, recorded without being asserted: DID-NOT-FIND-ACCT-IN-CARDXREF is declared TWICE under WS-RETURN-MSG with two DIFFERENT values - 'Did not find this account in account card xref file' at :497-498 and 'Did not find this account in cards database' at :513-514. Neither is ever SET anywhere in COACTUPC, so no case in this folder may assert either text and this one does not. Both declarations are left exactly as written; tidying either would be an unrequested behaviour change (practice B5). TWO GATES ARE NOT APPLICABLE and are recorded as such rather than silently skipped. G32 does not apply: COACTUPC's fifty-one GO TOs all target an -EXIT label, COMMON-RETURN or a forward stage, and CBSTM03A is the only program in the migration whose GO TOs form implicit loops. G35 does not apply: CALL 'CEE3ABD' occurs zero times in COACTUPC - the nine sites are all in batch programs - and the EXEC CICS ABEND ABCODE('9999') in ABEND-ROUTINE at :4203-4226 is not reached, because a NOTFND is an outcome the program handles rather than a condition it abends on. G51 is honoured by unitKind CONTROLLER_POJO: account.AccountUpdateController is constructed directly with fixture-backed repositories and its handler called as a plain method - no MockMvc, no TestRestTemplate, no servlet container and no HTTP anywhere in the path. G15 and G18 place this case sixth of the twenty this program owns, and the module is not complete until the diff count is zero across all twenty. PROVENANCE (practice B12). Every expected value above was derived STATICALLY, by structured reading of the exact lines named - :382-383, :389-406, :463-471, :479, :497-502, :513-514, :640, :866-868, :880-916, :921-1003, :1010-1018, :1031-1033, :1051-1062, :1433-1449, :1783-1817, :2562-2580, :2649-2661, :2698-2724, :2787-2864, :2955-2981, :3009-3015, :3171-3189, :3567-3581, :3591-3592, :3608-3644, :3650-3667, :3701-3734 with :3719 inspected character by character, and :3752-3765 - and by DECODING the named fixture rows against the named copybook offsets, CVACT03Y at 50 and CVCUS01Y at 500, cross-checked against the xxxI PICTURE clauses of app/cpy-bms/COACTUP.CPY, the DFHMDF definitions and INITIAL text of app/bms/COACTUP.bms, the commarea layout of app/cpy/COCOM01Y.cpy, the titles in app/cpy/COTTL01Y.cpy, the file definitions in app/csd/CARDDEMO.CSD and the real data in app/data/ASCII/acctdata.txt, custdata.txt and cardxref.txt. It was NEVER captured from, recorded against or replayed from any execution of the legacy COBOL. Executing it is empirically impossible in this environment - no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository - and this static derivation is the recorded substitute for an execution baseline, escalated as risk R-A of the migration plan rather than silently absorbed. Every record image and every screen value here is US-ASCII, named explicitly on the request and never taken from a platform default (practice B8), the clock is pinned to 2022-07-19T23:15:59 which is this source revision's own timestamp so CURDATEO and CURTIMEO are fixed literals no wall clock can reach (practice B7), and every collection is ordered so a reader can follow it against the source (practice B7). No user-specified rule governs this fixture - review_rules returns exactly 'No user rules provided' - so the practices cited throughout are the enterprise-standard substitutes the migration plan records, not invented rules, and their absence is not treated as licence to assert less. One authoring note: COACTUPCParityTest currently declares its twenty scenarios in Java rather than loading them from this directory, and allocates its own case06 to a different scenario; the divergence in NUMBERING is recorded here rather than resolved by inventing a different scenario, because the scenario itself - the ACCTDAT miss whose guard cannot fire - is what this case is specified to pin.",
+  "description": "WHEN DFHRESP(NOTFND) of 9300-GETACCTDATA-BYACCT at :3716-3734 - the ACCTDAT miss, and the one case in this folder whose subject is a VERIFIED LATENT DEFECT rather than a branch. The intuitive expectation here is wrong, and saying why is the whole point of the case. THE DEAD GUARD. 9000-READ-ACCT at :3608-3644 is a four-range guard chain, and it guards its second read with IF DID-NOT-FIND-ACCT-IN-ACCTDAT GO TO 9000-READ-ACCT-EXIT at :3627-3629. DID-NOT-FIND-ACCT-IN-ACCTDAT is an 88-level on WS-RETURN-MSG PIC X(75) at :499-500 whose VALUE is the literal 'Did not find this account in account master file', so the guard fires only if WS-RETURN-MSG holds exactly that text. 9300's NOTFND arm never puts it there: the statement SET DID-NOT-FIND-ACCT-IN-ACCTDAT TO TRUE at :3719 IS COMMENTED OUT - an asterisk in column 7, re-inspected byte by byte because the entire case rests on it. The arm instead SETs INPUT-ERROR at :3717 and FLG-ACCTFILTER-NOT-OK at :3718 and, guarded by IF WS-RETURN-MSG-OFF at :3720, composes a DIFFERENT text by STRING at :3723-3733. THE GUARD AT :3627 THEREFORE NEVER FIRES. Execution continues: :3631 MOVEs CDEMO-CUST-ID into WS-CARD-RID-CUST-ID and :3633-3634 PERFORMS 9400-GETCUSTDATA-BYCUST with the customer identifier the SUCCESSFUL cross-reference read supplied, 9400 takes WHEN DFHRESP(NORMAL) at :3764-3765 and SETs FOUND-CUST-IN-MASTER, the second guard at :3636-3638 is dead for the same reason - its SET at :3769 is commented out too, and case07 owns that half - and so :3642-3643 PERFORMS 9500-STORE-FETCHED-DATA, which stores an ACUP-OLD-DETAILS snapshot built from an ACCOUNT-RECORD that no read ever filled. This case encodes that continuation. A case that expected an early exit here would be asserting a program this repository does not contain, and practice B5 requires the expectation reproduce the odd thing the COBOL does rather than the tidy thing a corrected program would do. THE COMPOSED MESSAGE, operand by operand, all DELIMITED BY SIZE so each contributes its full declared width: 'Account:' (8, :3724), WS-CARD-RID-ACCT-ID-X (11, the PIC X(11) redefinition at :382-383), ' not found in' (13, :3726), ' Acct Master file.Resp:' (23, :3727 - the period is followed IMMEDIATELY by 'Resp:', with NO space, unlike 9200's ' Cross ref file.  Resp:' at :3678 which carries TWO spaces and which case05 pins), ERROR-RESP (10, :401), ' Reas:' (6, :3729) and ERROR-RESP2 (10, :405). 8+11+13+23+10+6+10 is 81 characters into a PIC X(75) receiver, so the receiver fills and the last six characters are lost - four of ERROR-RESP2's ten survive as '0000'. The two response codes are not case data and cannot drift: a keyed miss reports no CICS RESP, so the fallback is DFHRESP(NOTFND) = FileStatus.NOTFND = 13 with RESP2 = 0, and MOVE WS-RESP-CD PIC S9(09) COMP TO ERROR-RESP PIC X(10) at :3721-3722 renders nine unsigned digits left justified with one pad space, giving '000000013 ' and '000000000 ' - which is why TWO spaces separate the digits from ' Reas:'. :2981 then MOVEs the 75 characters into ERRMSGO PIC X(78), appending three. THE UNREAD ACCOUNT RECORD, and the convention this case uses. ACCOUNT-RECORD is COPY CVACT01Y at :640, its own 01 group in WORKING-STORAGE and not among the three areas INITIALIZE names at :866-868, so it exists whether or not a read filled it and holds what COBOL leaves in an uninitialised group: SPACES in every PIC X span and ZERO in every numeric one. That is the convention adopted here, and it is chosen because it is what the read-outcome contract already implies rather than because it is convenient - common.FileStatus publishes the outcome vocabulary and account.AccountRepository.ReadResult is a DISCRIMINATED OUTCOME (found, notFound, or a status) that returns to its caller and never decides to abend on the caller's behalf, so a missed EXEC CICS READ INTO(ACCOUNT-RECORD) leaves the receiving group untouched rather than absent, unfilled rather than null. The resulting ACUP-OLD-DETAILS snapshot is therefore ASYMMETRIC, and that asymmetry is the observable behaviour: the customer half is populated from the real row - ACUP-OLD-CUST-ID-X 000000001, ACUP-OLD-CUST-SSN-X 020973888, ACUP-OLD-CUST-DOB-YEAR/-MON/-DAY 1961, 06 and 08, ACUP-OLD-CUST-FICO-SCORE-X 274, the three names Immanuel, Madeline and Kessler at their declared 25, the three address lines, NC, USA, ACUP-OLD-CUST-ADDR-ZIP 12546 at PIC X(10), the two phone numbers in their (NNN)NNN-NNNN form, the government identifier, the EFT account and the primary-holder indicator Y - while the account half is the allocated state: ACUP-OLD-ACCT-ID-X 00000000000, ACUP-OLD-ACTIVE-STATUS one space, all five monetary views ACUP-OLD-CURR-BAL-N, -CREDIT-LIMIT-N, -CASH-CREDIT-LIMIT-N, -CURR-CYC-CREDIT-N and -CURR-CYC-DEBIT-N at 0.00 at scale exactly 2, the nine date components four and two spaces each, and ACUP-OLD-GROUP-ID ten spaces. Those values are stated here rather than pinned as a record because ACUP-OLD-DETAILS is not a dataset: it is WS-THIS-PROGCOMMAREA, which COMMON-RETURN at :1010-1013 places immediately after the 160-byte CARDDEMO-COMMAREA, and this model compares that shared image only. The snapshot is nonetheless OBSERVABLE in the navigation image, and that is where it is asserted: 9500 at :3805 MOVEs ACCT-ID into CDEMO-ACCT-ID, so the navigation carries 00000000000 even though :1815 had already MOVEd the valid 00000000001 there from CC-ACCT-ID, and :3810 MOVEs ACCT-ACTIVE-STATUS into CDEMO-ACCT-STATUS, leaving one space. CDEMO-ACCT-ID reading as eleven zeros after a request for account 00000000001 IS the fingerprint of the 9500 run that should not have happened, and it is the single strongest assertion in this case. THE PATH INTO THE READ, identical to case04's up to 9300. EIBCALEN is 1033 - 160 for CARDDEMO-COMMAREA plus 873 for WS-THIS-PROGCOMMAREA - so the left disjunct of the commarea gate at :880 is false, and CDEMO-FROM-PROGRAM is spaces rather than COMEN01C so the right disjunct at :881-882 is false too: the ELSE at :887-892 restores both areas from DFHCOMMAREA. The carried CDEMO-PGM-CONTEXT is 1, so CDEMO-PGM-ENTER is false and CDEMO-PGM-REENTER is true, and ACUP-CHANGE-ACTION arrives ACUP-DETAILS-NOT-FETCHED. AID DFHENTER passes the validity gate at :906-912 on its first disjunct, so the remap at :914-916 does nothing. The order-sensitive EVALUATE TRUE at :921 - arms :927 CCARD-AID-PFK03, :964 ACUP-DETAILS-NOT-FETCHED AND CDEMO-PGM-ENTER, :966 CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER, :979 ACUP-CHANGES-OKAYED-AND-DONE, :980 ACUP-CHANGES-FAILED, :996 OTHER - lands on WHEN OTHER because the context is REENTER and not ENTER, and that arm performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP and leaves by the forward-only GO TO COMMON-RETURN at :1003. 1100-RECEIVE-MAP at :1051-1058 finds ACCTSIDI neither '*' nor SPACES and MOVEs it into CC-ACCT-ID and ACUP-NEW-ACCT-ID-X, then :1060-1062 GO TOes its exit because the details are unfetched, so ACCTSIDI is the only received field there can be. 1200-EDIT-MAP-INPUTS at :1433-1449 edits ONLY the search key, and 1210-EDIT-ACCOUNT at :1783-1817 finds CC-ACCT-ID numeric and CC-ACCT-ID-N non-zero, so its ELSE at :1814-1816 MOVEs CC-ACCT-ID to CDEMO-ACCT-ID and SETs FLG-ACCTFILTER-ISVALID - the guard 2000-DECIDE-ACTION's first arm tests at :2573 before SETting WS-RETURN-MSG-OFF at :2574 and performing 9000-READ-ACCT at :2575. Because FOUND-CUST-IN-MASTER is set when the chain returns, :2577-2579 SETs ACUP-SHOW-DETAILS - and it does so even though the account read FAILED, which is the second consequence of the dead guard. THE READ OUTCOMES, both arms of gate G47 in ONE pass. 9200-GETCARDXREF-BYACCT at :3654-3662 reads DATASET(LIT-CARDXREFNAME-ACCT-PATH) = CXACAIX with RIDFLD(WS-CARD-RID-ACCT-ID-X) and takes its NORMAL arm at :3665-3667, MOVEing XREF-CUST-ID 000000001 into CDEMO-CUST-ID and XREF-CARD-NUM 9680294154603697 into CDEMO-CARD-NUM; CXACAIX is an alternate-index PATH over the CCXREF base and is reached through the one CardXrefRepository's alternate-key finder, never a second table or a second repository (gate G45). The live guard that follows at :3620-3622 tests FLG-ACCTFILTER-NOT-OK and does not fire. 9300 then reads DATASET(LIT-ACCTFILENAME) = ACCTDAT with the same 11-byte RIDFLD, KEYLENGTH 11, INTO(ACCOUNT-RECORD) LENGTH 300 - and MISSES, which is the NOTFND arm of gate G47 on that call site. 9400 reads DATASET(LIT-CUSTFILENAME) = CUSTDAT with a 9-byte RIDFLD INTO(CUSTOMER-RECORD) LENGTH 500 and takes NORMAL, which is the same gate's NORMAL arm on a different call site in the same pass. The three EVALUATE WS-RESP-CD statements keep their source WHEN order - NORMAL, NOTFND, OTHER - exactly (gate G30). THE SEED, and how the miss is arranged without touching the oracle. Measured over the whole fixtures, every XREF-ACCT-ID in cardxref.txt has a matching acctdata.txt row, so an account-master miss is impossible from the unmodified data and the case must curate. It curates by OMISSION ONLY and only in this fixture's own inputs: acctdata.txt zero-based row 0 IS account 00000000001, the account this case asks for, so ACCTDAT is seeded from fixture rows 1 through 49 - forty-nine rows of exactly 300 bytes, every one byte-identical to the fixture - and the target row is simply never seeded. No row's bytes are altered, nothing is derived, and app/data/ASCII/acctdata.txt is not written to: the COBOL, copybook, BMS, JCL, CSD and data trees are the parity oracle and stay read-only (practice B3). CXACAIX and CUSTDAT are seeded from the COMPLETE unmodified fixtures, all 50 rows each, so the alternate-key finder and the customer keyed read have to discriminate on their keys rather than return the only row present. cardxref.txt is seeded RAW at 36 bytes and is NOT pre-padded: CVACT03Y declares 50 and the fixture omits the trailing FILLER, so the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies the fourteen spaces once, at seed time, before anything decodes a row, and the final-state image is asserted at the copybook's 50 (gate G16, risk R-F). Pre-padding the input would double-pad it. THE RECORD EXPECTATIONS. There is deliberately NO ACCTDAT row projection, because the row this case is about is the one that is not there and a projection would have to invent it; the assertion is made at dataset level instead, where ACCTDAT is pinned on the final-state channel at exactly 49 rows of 300 bytes - the positive statement that the file was opened, holds real records, and holds no record for 00000000001. CXACAIX row 48 is pinned as four fields plus the complete 50-byte image, ending in FILLER PIC X(14) as fourteen spaces, and CUSTDAT row 0 as nineteen fields in app/cpy/CVCUS01Y.cpy order plus the complete 500-byte image, ending in FILLER PIC X(168) as one hundred and sixty-eight spaces. Field names are the copybook's verbatim and FILLER is an addressable span rather than a gap: pinning both the fields and the whole image is what makes the total width an assertion, and a record missing a FILLER is short by exactly that span (gates G19 and G21). THE SCREEN, composed from the five rules 3000-SEND-MAP applies at :2650-2661. 3100-SCREEN-INIT MOVEs LOW-VALUES to CACTUPAO at :2669 and assigns the six header items at :2673-2690. 3200-SETUP-SCREEN-VARS takes its ELSE at :2702 because the context is REENTER, and because CC-ACCT-ID-N is not zero the ELSE at :2706-2707 echoes CC-ACCT-ID into ACCTSIDO as 00000000001 - the account the operator asked for is still shown, even though no such account was found. Its order-sensitive EVALUATE at :2710-2724 lands on WHEN ACUP-SHOW-DETAILS at :2715, not on WHEN ACUP-DETAILS-NOT-FETCHED at :2711 and not on WHEN CC-ACCT-ID-N = 0 at :2712, so 3202-SHOW-ORIGINAL-VALUES runs and 3201-SHOW-INITIAL-VALUES never does. 3202's first guard at :2793-2794 is IF FOUND-ACCT-IN-MASTER OR FOUND-CUST-IN-MASTER - OR, not AND - and the customer flag IS set, so the fifteen account moves at :2795-2824 DO run over the unread record: ACSTTUSO one space, the nine date components four and two spaces each, AADDGRPO ten spaces, and the five monetary items each rendered through WS-EDIT-CURRENCY-9-2-F PIC +ZZZ,ZZZ,ZZZ.99 at :371 as '+           .00' - the sign is forced, all nine Z positions are suppressed because the integer part is zero and both insertion commas are blanked with them, and the two fraction positions survive because the mask ends .99 and not .ZZ, giving exactly the 15 characters ACRDLIMI declares in app/cpy-bms/COACTUP.CPY. The customer guard at :2827 then paints the twenty-six customer items from the real row, with the width-driven truncations the fixture forces: ACSZIPCO PIC X(5) keeps 12546 of a PIC X(10) source, the SSN is split by reference modification at :2829-2831 into 020, 97 and 3888, the two phone numbers by :2846-2857 into 908/119/8310 and 373/693/8684 from the first thirteen bytes of their 15-byte spans, and ACSCITYO takes CUST-ADDR-LINE-3 at :2841 because address line three IS the city on this screen. All fifty-four fields are therefore assigned and not one is LOW-VALUES. 3250-SETUP-INFOMSG at :2957-2977 is order-sensitive as well, and its arm was DERIVED rather than assumed: CDEMO-PGM-ENTER at :2958 is false, ACUP-DETAILS-NOT-FETCHED at :2960 is false because :2578 replaced it, so WHEN ACUP-SHOW-DETAILS at :2962 wins and SETs PROMPT-FOR-CHANGES - WS-INFO-MSG PIC X(40) holding the 39-character literal at :470-471, note its trailing period - which :2979 MOVEs into INFOMSGO PIC X(45) right-space-padded to 45. FKEYSO, FKEY05O and FKEY12O are the mapset's own INITIAL text and are never assigned by the program at all. THE ATTRIBUTE PLANES. :3171-3173 does not fire because CDEMO-LAST-MAPSET is seven spaces rather than the card-list mapset. :3176-3178 DOES fire because FLG-ACCTFILTER-NOT-OK is set, so ACCTSIDC carries DFHRED. :3180-3184 does NOT fire because FLG-ACCTFILTER-BLANK is false, so no '*' is written over ACCTSIDO - red WITHOUT the marker, which is exactly FieldAttributeSetter's rule and the whole of gate G38 on this path: the context IS REENTER so CSSETATY's precondition is satisfied, and the reason only one field is red is that only one thing failed. :3186-3189 then GO TOes 3300-SETUP-SCREEN-ATTRS-EXIT because FLG-ACCTFILTER-NOT-OK is set, so all thirty-nine CSSETATY expansions from :3208 onwards are SKIPPED rather than executed as no-ops - a different route to the same result as case04, and stated as such rather than copied. Every other colour is therefore the default DFHDFCOL and every highlight the default DFHDFHI, both x'00' exactly as MOVE LOW-VALUES left them, except the information line: 3390-SETUP-INFOMSG-ATTRS at :3567-3571 finds WS-NO-INFO-MESSAGE false - there IS a message - and moves DFHBMASB, a field attribute drawn from a different section of DFHBMSCA than the item's own plane, which is reproduced rather than normalised. FKEY05 and FKEY12 stay hidden because :3573 needs ACUP-CHANGES-MADE and :3578 needs PROMPT-FOR-CONFIRMATION and the state is ACUP-SHOW-DETAILS with the change prompt. The xxxA items 3310-PROTECT-ALL-ATTRS and 3320-UNPROTECT-FEW-ATTRS write are deliberately NOT declared: they are items of the input redefine CACTUPAI, not of the sent CACTUPAO. THE CURSOR is ACCTSIDL, and it is reached by the THIRD arm of the order-sensitive EVALUATE at :3009 rather than by WHEN OTHER: FOUND-ACCOUNT-DATA at :3010 is false because 3202 and 3250 left WS-INFO-MSG holding the change prompt rather than 'Details of selected account shown above', NO-CHANGES-DETECTED at :3011 is false because WS-RETURN-MSG holds the composed error, and WHEN FLG-ACCTFILTER-NOT-OK at :3013 is TRUE, so :3015 MOVEs -1 into ACCTSIDL. COBOL positions the cursor by moving -1 into a symbolic-map length item, so the xxxL item IS the cursor. THE NEXT TARGET is COACTUPC / COACTUP / CACTUPA, from :1031-1033 and :3591-3592, and the termination is RETURN_TRANSID from :1015-1018 - never XCTL, because the only XCTL in this program is in the PF03 arm at :956-959 which this path does not reach. STATELESSNESS (rule R6, gate G37): every scrap of conversation state travels in the payload and none is held server side. Inbound it is the 1033-byte EIBCALEN, the AID, the sixteen carried CARDDEMO-COMMAREA fields and one received map field; outbound it is the sixteen navigation fields, where 9500 has replaced CDEMO-CUST-ID with 000000001, the three customer names, CDEMO-ACCT-ID with eleven ZEROS and CDEMO-ACCT-STATUS with a space from the unread record, while CDEMO-CARD-NUM keeps the 9680294154603697 the cross-reference supplied and CDEMO-PGM-CONTEXT stays 1, and CDEMO-FROM-TRANID, -FROM-PROGRAM, -TO-TRANID, -TO-PROGRAM, -USER-ID, -USER-TYPE, -LAST-MAP and -LAST-MAPSET stay exactly as they arrived because only the PF03 arm at :944-950 writes them. NOTHING IS WRITTEN. COACTUPC's write verbs are the read-for-update and REWRITE pairs inside 9600-WRITE-PROCESSING at :3888-4105, which only the PF05 confirmation arm at :2602-2605 reaches, so expectedWrites is empty as a POSITIVE assertion and the three seeded datasets are pinned unchanged on the final-state channel as the other half of it. RETURN CODE 0: COACTUPC never sets a COBOL RETURN-CODE - the identifier does not occur anywhere in its 4,236 lines - because it is pseudo-conversational and ends at EXEC CICS RETURN. expectedMessages is EMPTY, and that is deliberate rather than incidental. Only ONE error text is produced on this path - first-message-wins, because every message write in this program is wrapped in IF WS-RETURN-MSG-OFF, :2574 SET it off, 9300's NOTFND arm consumed it at :3720, and 9400 succeeding means it adds nothing - and that one text is asserted byte-exactly where the program actually put it, in ERRMSGO at its declared 78, beside INFOMSGO at its declared 45. It is not repeated in expectedMessages, because MessageChannel publishes DISPLAY_LINE, WS_MESSAGE_80 and SCREEN_ERRMSG_78 and this path emits no DISPLAY and no SEND-PLAIN-TEXT at all; an entry there would assert an emission that never happened. A DOCUMENTED SOURCE ODDITY, recorded without being asserted: DID-NOT-FIND-ACCT-IN-CARDXREF is declared TWICE under WS-RETURN-MSG with two DIFFERENT values - 'Did not find this account in account card xref file' at :497-498 and 'Did not find this account in cards database' at :513-514. Neither is ever SET anywhere in COACTUPC, so no case in this folder may assert either text and this one does not. Both declarations are left exactly as written; tidying either would be an unrequested behaviour change (practice B5). TWO GATES ARE NOT APPLICABLE and are recorded as such rather than silently skipped. G32 does not apply: COACTUPC's fifty-one GO TOs all target an -EXIT label, COMMON-RETURN or a forward stage, and CBSTM03A is the only program in the migration whose GO TOs form implicit loops. G35 does not apply: CALL 'CEE3ABD' occurs zero times in COACTUPC - the nine sites are all in batch programs - and the EXEC CICS ABEND ABCODE('9999') in ABEND-ROUTINE at :4203-4226 is not reached, because a NOTFND is an outcome the program handles rather than a condition it abends on. G51 is honoured by unitKind CONTROLLER_POJO: account.AccountUpdateController is constructed directly with fixture-backed repositories and its handler called as a plain method - no MockMvc, no TestRestTemplate, no servlet container and no HTTP anywhere in the path. G15 and G18 place this case sixth of the twenty this program owns, and the module is not complete until the diff count is zero across all twenty. PROVENANCE (practice B12). Every expected value above was derived STATICALLY, by structured reading of the exact lines named - :382-383, :389-406, :463-471, :479, :497-502, :513-514, :640, :866-868, :880-916, :921-1003, :1010-1018, :1031-1033, :1051-1062, :1433-1449, :1783-1817, :2562-2580, :2649-2661, :2698-2724, :2787-2864, :2955-2981, :3009-3015, :3171-3189, :3567-3581, :3591-3592, :3608-3644, :3650-3667, :3701-3734 with :3719 inspected character by character, and :3752-3765 - and by DECODING the named fixture rows against the named copybook offsets, CVACT03Y at 50 and CVCUS01Y at 500, cross-checked against the xxxI PICTURE clauses of app/cpy-bms/COACTUP.CPY, the DFHMDF definitions and INITIAL text of app/bms/COACTUP.bms, the commarea layout of app/cpy/COCOM01Y.cpy, the titles in app/cpy/COTTL01Y.cpy, the file definitions in app/csd/CARDDEMO.CSD and the real data in app/data/ASCII/acctdata.txt, custdata.txt and cardxref.txt. It was NEVER captured from, recorded against or replayed from any execution of the legacy COBOL. Executing it is empirically impossible in this environment - no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository - and this static derivation is the recorded substitute for an execution baseline, escalated as risk R-A of the migration plan rather than silently absorbed. Every record image and every screen value here is US-ASCII, named explicitly on the request and never taken from a platform default (practice B8), the clock is pinned to 2022-07-19T23:15:59 which is this source revision's own timestamp so CURDATEO and CURTIMEO are fixed literals no wall clock can reach (practice B7), and every collection is ordered so a reader can follow it against the source (practice B7). No user-specified rule governs this fixture - review_rules returns exactly 'No user rules provided' - so the practices cited throughout are the enterprise-standard substitutes the migration plan records, not invented rules, and their absence is not treated as licence to assert less. One authoring note: COACTUPCParityTest currently declares its twenty scenarios in Java rather than loading them from this directory, and allocates its own case06 to a different scenario; the divergence in NUMBERING is recorded here rather than resolved by inventing a different scenario, because the scenario itself - the ACCTDAT miss whose guard cannot fire - is what this case is specified to pin.\n\nOBSERVATION SCOPE, STATED SO IT CANNOT BE MISREAD AS AN OMISSION. COACTUPC contains no DISPLAY verb - no CICS program does - so this case declares no DISPLAY_LINE and no SCREEN_ERRMSG_78 message. WS-RETURN-MSG PIC X(75) at :479 leaves the program through MOVE WS-RETURN-MSG TO ERRMSGO OF CACTUPAO at :2981 followed by EXEC CICS SEND MAP, and ERRMSGO is pinned byte for byte inside expectedResponse.sends at its declared PIC X(78) width. Declaring it a second time on a message channel would make one difference report as two and would invent an emission the program does not perform. The eighty-byte WS-DATE-VALIDATION-RESULT of each CALL 'CSUTLDTC' (app/cpy/CSUTLDPY.cpy:293 into app/cpy/CSUTLDWY.cpy:60-85) IS declared, on the WS_MESSAGE_80 channel and in call order, because nothing in the response exposes it and its count is itself an assertion about how far the edit chain ran.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CXACAIX": {
@@ -248,6 +248,246 @@
   "expectedFinalState": [
     {
       "dataset": "CXACAIX",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000002400000000024              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 10,
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 11,
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 12,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 13,
+      "expectedBytes": "326076361233756000000001000000000010              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 14,
+      "expectedBytes": "376628198415515400000004100000000041              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 15,
+      "expectedBytes": "394024601614148900000001900000000019              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 16,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 17,
+      "expectedBytes": "401150089177736700000001300000000013              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 18,
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 19,
+      "expectedBytes": "453478410271395100000003600000000036              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 20,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 21,
+      "expectedBytes": "540709985047986600000002100000000021              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 22,
+      "expectedBytes": "565683054498121600000004600000000046              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 23,
+      "expectedBytes": "567118447850584400000001800000000018              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 24,
+      "expectedBytes": "578735122887933900000004700000000047              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 25,
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 26,
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 27,
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 28,
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 29,
+      "expectedBytes": "650923036255381600000003000000000030              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 30,
+      "expectedBytes": "672300046320776400000002800000000028              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 31,
+      "expectedBytes": "672705519061601400000001600000000016              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 32,
+      "expectedBytes": "683267604769808700000003300000000033              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 33,
+      "expectedBytes": "702663761503227700000003100000000031              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 34,
+      "expectedBytes": "705826726183775200000004300000000043              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 35,
+      "expectedBytes": "709414275105555100000003200000000032              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 36,
+      "expectedBytes": "725150814918888300000002900000000029              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 37,
+      "expectedBytes": "737933563466114200000004500000000045              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 38,
+      "expectedBytes": "742768486342320900000001100000000011              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 39,
+      "expectedBytes": "744387098889753000000003800000000038              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 40,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 41,
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 42,
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 43,
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 44,
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 45,
+      "expectedBytes": "905629793166401100000002500000000025              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 46,
+      "expectedBytes": "934910747586921400000001700000000017              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 47,
+      "expectedBytes": "950173372142989300000000900000000009              "
+    },
+    {
+      "dataset": "CXACAIX",
       "rowIndex": 48,
       "fields": {
         "XREF-CARD-NUM": "9680294154603697",
@@ -256,6 +496,256 @@
         "FILLER": "              "
       },
       "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 49,
+      "expectedBytes": "980558340899658800000004000000000040              "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 1,
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 2,
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 3,
+      "expectedBytes": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 4,
+      "expectedBytes": "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 5,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 6,
+      "expectedBytes": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 7,
+      "expectedBytes": "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 8,
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 9,
+      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 10,
+      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 11,
+      "expectedBytes": "00000000013Y00000000410{00000075420{00000049220{2017-10-012024-08-042024-08-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 12,
+      "expectedBytes": "00000000014Y00000000150{00000022540{00000002120{2010-12-042025-12-112025-12-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 13,
+      "expectedBytes": "00000000015Y00000004890{00000084410{00000038330{2009-10-062025-06-092025-06-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 14,
+      "expectedBytes": "00000000016Y00000007330{00000089220{00000026320{2014-09-112024-01-252024-01-2500000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 15,
+      "expectedBytes": "00000000017Y00000000330{00000005680{00000005100{2014-05-172025-03-012025-03-0100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 16,
+      "expectedBytes": "00000000018Y00000001440{00000029030{00000014960{2018-11-152023-09-102023-09-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 17,
+      "expectedBytes": "00000000019Y00000004800{00000069860{00000037230{2011-12-142025-07-232025-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 18,
+      "expectedBytes": "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 19,
+      "expectedBytes": "00000000021Y00000001120{00000012640{00000001800{2011-10-192023-01-062023-01-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 20,
+      "expectedBytes": "00000000022Y00000000550{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 21,
+      "expectedBytes": "00000000023Y00000001040{00000033770{00000029040{2012-03-152025-03-182025-03-1800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 22,
+      "expectedBytes": "00000000024Y00000004000{00000051740{00000041290{2015-08-082025-02-112025-02-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 23,
+      "expectedBytes": "00000000025Y00000000610{00000081940{00000065820{2012-10-262025-07-102025-07-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 24,
+      "expectedBytes": "00000000026Y00000000460{00000021810{00000013750{2009-04-202024-12-192024-12-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 25,
+      "expectedBytes": "00000000027Y00000002840{00000055720{00000020750{2012-09-302025-07-132025-07-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 26,
+      "expectedBytes": "00000000028Y00000000680{00000008680{00000005470{2015-05-202024-05-092024-05-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 27,
+      "expectedBytes": "00000000029Y00000003390{00000055110{00000043610{2015-11-032024-06-042024-06-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 28,
+      "expectedBytes": "00000000030Y00000000020{00000001200{00000000930{2011-08-262024-06-272024-06-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 29,
+      "expectedBytes": "00000000031Y00000000310{00000011400{00000010770{2017-02-252025-06-082025-06-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 30,
+      "expectedBytes": "00000000032Y00000000300{00000011750{00000008460{2013-11-102025-05-192025-05-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 31,
+      "expectedBytes": "00000000033Y00000004100{00000064040{00000009510{2012-10-112025-10-072025-10-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 32,
+      "expectedBytes": "00000000034Y00000002530{00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 33,
+      "expectedBytes": "00000000035Y00000001660{00000019470{00000015250{2018-02-022025-09-232025-09-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 34,
+      "expectedBytes": "00000000036Y00000001100{00000033280{00000008390{2018-07-182024-12-232024-12-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 35,
+      "expectedBytes": "00000000037Y00000000070{00000004460{00000001660{2016-09-102023-10-242023-10-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 36,
+      "expectedBytes": "00000000038Y00000006120{00000065050{00000034760{2010-08-122023-07-232023-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 37,
+      "expectedBytes": "00000000039Y00000008430{00000097500{00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 38,
+      "expectedBytes": "00000000040Y00000000430{00000058230{00000016740{2010-02-132023-10-272023-10-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 39,
+      "expectedBytes": "00000000041Y00000003750{00000067210{00000034290{2015-02-072023-04-242023-04-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 40,
+      "expectedBytes": "00000000042Y00000003020{00000065630{00000051030{2016-09-192025-09-192025-09-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 41,
+      "expectedBytes": "00000000043Y00000006100{00000061680{00000012060{2012-04-092025-08-292025-08-2900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 42,
+      "expectedBytes": "00000000044Y00000002630{00000068990{00000044320{2018-12-012024-01-172024-01-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 43,
+      "expectedBytes": "00000000045Y00000001860{00000027190{00000006880{2010-12-312025-07-092025-07-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 44,
+      "expectedBytes": "00000000046Y00000003960{00000070070{00000054380{2013-09-062025-06-202025-06-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 45,
+      "expectedBytes": "00000000047Y00000000320{00000023380{00000001590{2014-04-032025-08-232025-08-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 46,
+      "expectedBytes": "00000000048Y00000002260{00000023060{00000006120{2017-03-182025-02-062025-02-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 47,
+      "expectedBytes": "00000000049Y00000001000{00000090480{00000048070{2019-04-062023-09-172023-09-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 48,
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
@@ -282,6 +772,251 @@
         "FILLER": "                                                                                                                                                                        "
       },
       "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 1,
+      "expectedBytes": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 2,
+      "expectedBytes": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 3,
+      "expectedBytes": "000000004Delbert                  Kaia                     Parisian                 638 Blanda Gateway                                Apt. 076                                          Lake Virginie                                     MIUSA39035-0455(801)603-4121  (156)074-6837  660354258000000000000685792491985-01-130040802739Y776                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 4,
+      "expectedBytes": "000000005Treva                    Manley                   Schowalter               5653 Legros Plaza                                 Apt. 968                                          Alvinaport                                        MIUSA02251-1698(978)775-4633  (439)943-7644  611264288000000000006397997541971-09-290006365573Y529                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 5,
+      "expectedBytes": "000000006Ignacio                  Emery                    Douglas                  3963 Yasmin Port                                  Suite 756                                         Port Josephstad                                   VIUSA46713-5148(277)743-4266  (519)010-8739  880329521000000000009755354961994-11-290067163009Y753                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 6,
+      "expectedBytes": "000000007Cooper                   Dennis                   Mayert                   6490 Zakary Locks                                 Apt. 765                                          Madieport                                         ALUSA34206-2974(698)282-4096  (458)199-0016  835138951000000000009590131701977-05-060024571415Y499                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 7,
+      "expectedBytes": "000000008Kelsie                   Jordyn                   Dicki                    0925 Welch Streets                                Apt. 152                                          North Nanniestad                                  SCUSA27610     (345)563-7159  (443)197-1271  295270759000000000001097469911964-03-250033132723Y051                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 8,
+      "expectedBytes": "000000009Melvin                   Regan                    Ondricka                 87893 Samson Flats                                Apt. 135                                          New Braden                                        VIUSA21113     (035)456-1404  (412)440-3130  842035847000000000005682994511975-11-070039446039Y699                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 9,
+      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 10,
+      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 11,
+      "expectedBytes": "000000012Maci                     Alan                     Robel                    80501 Isac Cliffs                                 Suite 623                                         Predovicton                                       MNUSA78861     (584)045-5200  (610)244-0407  666114218000000000009021433511984-02-180061317348Y688                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 12,
+      "expectedBytes": "000000013Mariane                  Oma                      Fadel                    2689 Derick Mission                               Suite 055                                         Bruenfurt                                         ORUSA02322     (875)943-7287  (075)550-6435  757924569000000000001813772201999-03-090044807431Y053                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 13,
+      "expectedBytes": "000000014Chelsea                  Ignacio                  Marks                    747 Dino Lodge                                    Apt. 850                                          West Chase                                        RIUSA12914-8465(141)807-6571  (284)088-9052  655128548000000000005259552221974-11-290048306401Y243                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 14,
+      "expectedBytes": "000000015Aubree                   Elliot                   Hermann                  36365 Ledner Drives                               Suite 882                                         Port Efrainland                                   DEUSA63205-7014(769)100-7971  (366)310-2061  033922034000000000002303699411964-12-060000634612Y681                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 15,
+      "expectedBytes": "000000016Carroll                  Cicero                   Bergstrom                06988 Thiel Falls                                 Suite 148                                         Concepcionland                                    VTUSA84390     (631)343-8667  (938)648-3716  649827971000000000002932657521983-04-270012556599Y326                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 16,
+      "expectedBytes": "000000017Sigrid                   Angeline                 Mann                     95666 Dare Isle                                   Suite 286                                         New Presley                                       FMUSA56181-0584(087)314-2070  (541)003-6606  303334693000000000004976063571979-01-260052356071Y054                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 17,
+      "expectedBytes": "000000018Emile                    Jairo                    White                    133 Bergnaum Square                               Apt. 328                                          Hansenville                                       APUSA96003-5867(303)654-3323  (520)186-2176  385849271000000000000883418211987-03-250086459831Y340                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 18,
+      "expectedBytes": "000000019Hadley                   Sigrid                   Hamill                   6273 Ondricka Meadows                             Apt. 130                                          New Arturoshire                                   RIUSA48161     (817)452-4986  (724)901-6019  439569907000000000002701763871991-01-070036492057Y259                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 19,
+      "expectedBytes": "000000020Carter                   Oren                     Veum                     5845 Allison Valleys                              Suite 934                                         Mitchellmouth                                     MHUSA72362     (618)994-0531  (571)695-4136  717778238000000000003426612931996-04-140036749754Y493                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 20,
+      "expectedBytes": "000000021Jerrold                  Adolphus                 Maggio                   401 Haylie Crest                                  Apt. 320                                          North Myrnaton                                    CAUSA72407     (399)526-3254  (326)193-1118  336490822000000000000276562601977-11-150011744660Y163                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 21,
+      "expectedBytes": "000000022Allene                   Icie                     Brown                    4467 Donnie Crossroad                             Apt. 437                                          Anabelton                                         MDUSA01993-9116(231)251-5792  (494)652-0009  292059024000000000006911598531994-02-200024791470Y597                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 22,
+      "expectedBytes": "000000023Johnson                  Blanca                   Ruecker                  2433 Jacobi Forks                                 Apt. 845                                          Hendersonbury                                     KSUSA78239-9466(981)873-1589  (131)638-5974  944154289000000000002689671221998-12-070075158529Y337                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 23,
+      "expectedBytes": "000000024Stefanie                 Verla                    Dickinson                6367 Stracke River                                Apt. 444                                          East Otho                                         KSUSA15414     (617)348-9142  (330)116-5634  017590544000000000004392446331996-01-240005459662Y711                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 24,
+      "expectedBytes": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 25,
+      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 26,
+      "expectedBytes": "000000027Ward                     Henri                    Jones                    210 Amaya Turnpike                                Suite 180                                         Port Dwight                                       GUUSA07923-8822(935)027-1145  (103)537-5007  980161210000000000008815587571986-11-080050024139Y078                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 27,
+      "expectedBytes": "000000028Hester                   Vesta                    Hane                     06816 Ursula Meadows                              Suite 605                                         South Aurore                                      ASUSA77442-7954(122)357-7257  (050)352-6579  677986013000000000005141877961991-06-050026946180Y114                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 28,
+      "expectedBytes": "000000029Rickie                   Otho                     Daugherty                676 Funk Curve                                    Apt. 375                                          Hayesstad                                         NHUSA01226     (418)291-9023  (795)634-7776  015027332000000000000627456551973-04-050067736493Y552                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 29,
+      "expectedBytes": "000000030Layla                    Dannie                   Ullrich                  269 Eleazar Circle                                Apt. 817                                          Kutchland                                         AKUSA64266     (330)408-6966  (413)347-7306  866102152000000000004920216861965-11-280050520060Y133                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 30,
+      "expectedBytes": "000000031Lucious                  Otto                     O'Connell                919 Swift Valleys                                 Suite 548                                         Hermanborough                                     MSUSA56133-5636(259)414-9625  (118)946-9264  357462348000000000006183105391976-08-030092999757Y058                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 31,
+      "expectedBytes": "000000032Stephany                 Meda                     Fisher                   63452 Kenny Streets                               Apt. 116                                          Predovicburgh                                     AKUSA85943-7605(202)436-5156  (246)296-3533  146204208000000000002062003411980-11-190035970593Y221                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 32,
+      "expectedBytes": "000000033Bernice                  Norbert                  Herman                   877 Kassandra Ranch                               Suite 956                                         Haleyport                                         ARUSA19113-4329(836)743-5487  (640)208-1176  144195105000000000004006054291988-05-190065245171Y469                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 33,
+      "expectedBytes": "000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  548088300000000000001598825331994-03-210067445089Y104                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 34,
+      "expectedBytes": "000000035Angelica                 Damaris                  Dach                     396 Pearl Loop                                    Suite 383                                         Pfefferhaven                                      LAUSA46142     (303)480-9098  (637)710-7367  220547115000000000009771448391987-06-230047435332Y793                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 35,
+      "expectedBytes": "000000036Toney                    Emerald                  Gerhold                  35943 Raleigh Harbor                              Apt. 116                                          Lake Derekburgh                                   ALUSA10932-0480(034)271-9180  (507)529-4523  420360688000000000009420292101991-03-310066461979Y266                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 36,
+      "expectedBytes": "000000037Shany                    Darby                    Walker                   91196 Heaney Turnpike                             Suite 814                                         Lubowitzberg                                      NVUSA11857-8177(052)759-5167  (706)896-1282  891897974000000000005243126321984-12-090066111704Y653                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 37,
+      "expectedBytes": "000000038Angela                   Ceasar                   Ankunding                65482 Zoila Skyway                                Apt. 054                                          East Malachi                                      VAUSA63928-0008(316)640-2650  (148)111-1148  764307306000000000003355621411990-05-280018048939Y446                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 38,
+      "expectedBytes": "000000039Aliyah                   Horace                   Berge                    5761 Pasquale Trail                               Apt. 616                                          New Sabryna                                       IAUSA74267     (089)096-3287  (768)959-4733  510793388000000000005532544031972-08-260061869530Y475                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 39,
+      "expectedBytes": "000000040Davon                    Demond                   Emmerich                 23499 Beer Views                                  Suite 816                                         Erniechester                                      TXUSA87156-8689(463)762-3017  (419)414-2177  054960660000000000003983532991992-01-260087069976Y284                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 40,
+      "expectedBytes": "000000041Lucinda                  Kiana                    Dach                     3220 Yolanda Corner                               Suite 649                                         East Harmonystad                                  VTUSA72971-7481(284)052-5831  (091)234-2144  643942675000000000009196534421967-02-200007315287Y725                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 41,
+      "expectedBytes": "000000042Heather                  Ericka                   Nienow                   5523 Archibald Club                               Apt. 358                                          Reillyland                                        FMUSA83589     (640)954-4538  (565)873-6897  800455633000000000009970299661964-11-030079262985Y044                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 42,
+      "expectedBytes": "000000043Britney                  Jermain                  Waters                   97765 Bernhard Fort                               Apt. 666                                          South Marisaview                                  OKUSA10050-7980(407)042-6952  (438)659-6397  262568593000000000002445558051966-10-160053043599Y558                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 43,
+      "expectedBytes": "000000044Irving                   Kiera                    Emard                    978 Fatima Stream                                 Apt. 110                                          Lake King                                         IDUSA05704-0501(703)484-5840  (537)392-5569  318104527000000000009344209741984-04-040032076778Y145                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 44,
+      "expectedBytes": "000000045Dixie                    Norris                   Beier                    441 Levi Prairie                                  Suite 749                                         Abbottshire                                       NVUSA09048     (697)143-3221  (499)287-7255  352819961000000000008857432862001-12-120027833000Y629                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 45,
+      "expectedBytes": "000000046Cindy                    Kira                     Cremin                   494 Lang Avenue                                   Apt. 937                                          Alexandroview                                     PWUSA63082-4520(358)349-2574  (077)525-9966  656405528000000000007626995771987-12-140017535749Y514                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 46,
+      "expectedBytes": "000000047Rigoberto                Savanna                  Hoeger                   00097 Gleichner Spur                              Apt. 932                                          Port Aidanborough                                 GUUSA31329-6973(946)322-6160  (973)443-8438  029222192000000000005676014721979-02-250022102472Y722                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 47,
+      "expectedBytes": "000000048Lyric                    Mackenzie                Pacocha                  453 Rosina Mountain                               Apt. 011                                          Albertville                                       ORUSA83985-4937(950)497-1005  (004)244-7955  635734407000000000002653928321986-08-170046317382Y746                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 48,
+      "expectedBytes": "000000049Immanuel                 Ellie                    Bednar                   5423 Esther Locks                                 Apt. 142                                          Langoshstad                                       GAUSA12288-3495(843)095-2553  (615)988-9038  813044111000000000004244959812000-01-050058726120Y148                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 49,
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],
   "expectedReturnCode": 0,
@@ -295,15 +1030,33 @@
   "expectedDatasets": [
     {
       "dataset": "CXACAIX",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CXACAIX",
       "channel": "FINAL_STATE",
       "rowCount": 50,
       "recordLength": 50
     },
     {
       "dataset": "ACCTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "ACCTDAT",
       "channel": "FINAL_STATE",
       "rowCount": 49,
       "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
     },
     {
       "dataset": "CUSTDAT",

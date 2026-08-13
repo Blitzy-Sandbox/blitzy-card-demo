@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.user.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.util.List;
 import java.util.Objects;
 
@@ -10,13 +11,13 @@ import java.util.Objects;
  * The outbound payload of {@code POST /api/signon} - CICS transaction {@code CC00}, program
  * {@code app/cbl/COSGN00C.cbl}, mapset {@code app/bms/COSGN00.bms}, map {@code COSGN0A}.
  *
- * <p>It is a field-for-field projection of the {@code xxxO} items of {@code 01 COSGN0AO} in
- * {@code app/cpy-bms/COSGN00.CPY} - <strong>minus the password</strong> - plus the stateless
- * navigation contract that replaces {@code EXEC CICS XCTL}. Nothing is added, nothing is renamed and
+ * <p>It is a field-for-field projection of all {@value #MAPSET_NAMED_FIELD_COUNT} {@code xxxO} items of
+ * {@code 01 COSGN0AO} in {@code app/cpy-bms/COSGN00.CPY}, plus the stateless renderings of
+ * {@code EXEC CICS XCTL} and {@code EXEC CICS SEND TEXT}. Nothing is added, nothing is renamed and
  * nothing is widened: this is a like-for-like language migration, so every width below is the width
  * its {@code PICTURE} clause declares and every name below is the name the mapset gives the field.
  *
- * <h2>The ten map-derived members, in the order the symbolic map declares them</h2>
+ * <h2>The eleven map-derived members, in the order the symbolic map declares them</h2>
  *
  * Each row is traceable to three independent sources that were checked against one another: the
  * {@code xxxO} item that fixes the width, the name-labelled {@code DFHMDF} line that proves the field
@@ -53,43 +54,113 @@ import java.util.Objects;
  *       <td>{@code EXEC CICS ASSIGN SYSID(SYSIDO)} (L202-204)</td></tr>
  *   <tr><td>9</td><td>{@link #userId()}</td><td>{@code USERIDO} (CPY L140)</td>
  *       <td>{@code X(8)}</td><td>{@code USERID} (bms L156)</td>
- *       <td><em>never written</em> - see below</td></tr>
- *   <tr><td>10</td><td>{@link #errMsg()}</td><td>{@code ERRMSGO} (CPY L152)</td>
+ *       <td>{@code EXEC CICS RECEIVE MAP} (L110-115), through the overlay - see below</td></tr>
+ *   <tr><td>10</td><td>{@link #passwd()}</td><td>{@code PASSWDO} (CPY L146)</td>
+ *       <td>{@code X(8)}</td><td>{@code PASSWD} (bms L175)</td>
+ *       <td>{@code EXEC CICS RECEIVE MAP} (L110-115), through the overlay - see below</td></tr>
+ *   <tr><td>11</td><td>{@link #errMsg()}</td><td>{@code ERRMSGO} (CPY L152)</td>
  *       <td><strong>{@code X(78)}</strong></td><td>{@code ERRMSG} (bms L197)</td>
  *       <td>{@code MOVE SPACES} (L78), {@code MOVE WS-MESSAGE} (L149)</td></tr>
  * </table>
  *
- * <h2>Eleven named screen fields, ten members here - the discrepancy, and why it is not an error</h2>
+ * <h2>{@code COSGN0AO REDEFINES COSGN0AI}: the two fields the program transmits without writing</h2>
  *
- * {@code app/bms/COSGN00.bms} declares 37 {@code DFHMDF} fields of which
- * {@value #MAPSET_NAMED_FIELD_COUNT} carry a name, and {@code app/cpy-bms/COSGN00.CPY} declares
- * exactly {@value #MAPSET_NAMED_FIELD_COUNT} {@code xxxI} items and {@value #MAPSET_NAMED_FIELD_COUNT}
- * {@code xxxO} items to match. This payload carries {@value #MAP_FIELD_COUNT}. The missing eleventh is
- * {@code PASSWD}, and it is missing deliberately.
+ * {@code app/cpy-bms/COSGN00.CPY:85} declares the output group as a redefinition of the input group, so
+ * the two are <strong>one piece of storage under two names</strong>. Both views give every field a
+ * seven-byte prologue - on the input side {@code xxxL COMP PIC S9(4)}, {@code xxxF} and a four-byte
+ * filler; on the output side {@code FILLER X(3)} and the {@code xxxC}, {@code xxxP}, {@code xxxH} and
+ * {@code xxxV} attribute bytes - so the data items align exactly. {@code USERIDI} and {@code USERIDO}
+ * are one eight-byte span at one offset. So are {@code PASSWDI} and {@code PASSWDO}.
  *
- * <p>The evidence is short and decisive. {@code grep -n 'OF COSGN0AO' app/cbl/COSGN00C.cbl} returns
- * nine write sites, covering nine distinct fields: {@code ERRMSGO} at L78 and L149, {@code TITLE01O}
- * at L181, {@code TITLE02O} at L182, {@code TRNNAMEO} at L183, {@code PGMNAMEO} at L184,
- * {@code CURDATEO} at L190, {@code CURTIMEO} at L196, {@code APPLIDO} at L199 and {@code SYSIDO} at
- * L203. {@code PASSWDO} appears in none of them. {@code grep -n 'PASSWD'} confirms the negative from
- * the other direction: the program only ever <em>reads</em> {@code PASSWDI OF COSGN0AI} - at L123 to
- * test it for spaces and at L135 to upper-case it - and only ever writes {@code PASSWDL OF COSGN0AI},
- * at L126 and L244, which is the {@code MOVE -1} that positions the cursor rather than a value. So
- * {@code SEND-SIGNON-SCREEN} at L145-157, which sends {@code FROM(COSGN0AO)}, provably sends no
- * password back. The mapset reinforces it: {@code PASSWD} is declared {@code ATTRB=(DRK,FSET,UNPROT)}
- * at bms L175, and {@code DRK} is non-display - the 3270 never shows the field at all.
+ * <p>That is why {@code grep -n 'OF COSGN0AO' app/cbl/COSGN00C.cbl} finding no write to
+ * {@code USERIDO} or {@code PASSWDO} does <em>not</em> mean neither field is sent. It means the program
+ * does not have to write them: {@code EXEC CICS RECEIVE MAP} at L110-115 puts the received user id and
+ * password into those spans, and the {@code EXEC CICS SEND MAP ... FROM(COSGN0AO)} at L151-157 then
+ * transmits whatever the spans hold. An error repaint therefore <strong>echoes the identifier the
+ * operator typed</strong>, which is exactly what a 3270 operator sees when
+ * {@code 'Wrong Password. Try again ...'} comes back with the user-id field still filled in - and it
+ * re-transmits the password field as well.
  *
- * <p>Adding a password member here would therefore <em>invent</em> behaviour the COBOL does not have,
- * which this migration forbids exactly as firmly as it forbids removing behaviour. The discrepancy is
- * recorded here, with its citation, rather than reconciled in either direction: the class is not
- * padded to eleven members, and no other field is dropped to make the count rounder. Both counts are
- * published as {@link #MAP_FIELD_COUNT} and {@link #MAPSET_NAMED_FIELD_COUNT} so the gap is
- * machine-checkable and cannot be closed by accident.
+ * <p>An earlier revision of this type omitted {@code PASSWDO} altogether and left {@code USERIDO} at
+ * {@code LOW-VALUES} on every path, on the strength of that grep. The reasoning was careful and the
+ * conclusion was wrong, because it read the write sites without reading the {@code REDEFINES} on
+ * CPY L85. Runtime review caught it. Both fields are now projected, and what they carry is a fact of
+ * the execution rather than a choice of this type's:
  *
- * <p>Do not generalise the omission, and do not generalise its absence either. The rule is "mirror
- * the program", not "hide passwords" and not "echo passwords": {@code SignOnRequest} carries a
- * password because {@code COSGN00C} reads one, and {@code UserUpdateResponse} carries one because
- * {@code app/cbl/COUSR02C.cbl:169} really does echo it. Each screen is decided from its own source.
+ * <ul>
+ *   <li><strong>The {@code RECEIVE} ran</strong> - the ENTER arm at L86-87 and every path it reaches -
+ *       so the spans hold the images it delivered and a repaint re-transmits them.
+ *       {@link #withReceivedMapArea(String, String)} is that step. The images are the <em>raw</em>
+ *       received values, not the upper-cased ones: {@code MOVE FUNCTION UPPER-CASE(USERIDI)} at L132
+ *       writes {@code WS-USER-ID} and {@code CDEMO-USER-ID}, never back into the span, so a lower-case
+ *       sign-on attempt comes back lower-case in the field and upper-cased in the communication area.
+ *       Both are observable and they legitimately differ.</li>
+ *   <li><strong>The {@code RECEIVE} did not run</strong> - cold start at L80-83, PF3 at L88-90, the
+ *       invalid-key arm at L91-94 - so the spans hold {@code LOW-VALUES}: put there explicitly by
+ *       {@code MOVE LOW-VALUES TO COSGN0AO} at L81 on the first path, and never written at all on the
+ *       other two, where {@code COPY COSGN00} at L50 brings the group into {@code WORKING-STORAGE} with
+ *       no {@code VALUE} clause. {@link #empty()} is that state, and no mutator is needed for it.</li>
+ * </ul>
+ *
+ * <p>{@code PASSWD} is declared {@code ATTRB=(DRK,FSET,UNPROT)} at bms L175. {@code DRK} is
+ * non-display, so the operator never sees the characters - and {@code FSET} sets the modified-data tag,
+ * so the field is returned on the next receive whether or not it was retyped. Neither attribute stops
+ * the value travelling in the datastream, which is why the member is here. The attributes are
+ * presentation and belong to {@code common.BmsAttributes}, not to this payload.
+ *
+ * <p>Being transmitted is not the same as being logged: {@link #toString()} substitutes a constant
+ * marker for {@link #passwd()}, exactly as {@code SignOnRequest} does for its own, so no log line,
+ * exception message or debugger view can publish the credential. {@code equals} and {@code hashCode}
+ * are left as the record generates them, including the password, because they are value semantics and
+ * disclose nothing.
+ *
+ * <p>Do not generalise this either way. The rule is "mirror the program", not "hide passwords" and not
+ * "echo passwords". {@code UserUpdateResponse} carries one because {@code app/cbl/COUSR02C.cbl:169}
+ * moves it into an output item outright; this screen carries one because a {@code REDEFINES} puts it in
+ * the span that is sent. Each screen is decided from its own source.
+ *
+ * <h2>{@code EXEC CICS SEND TEXT}: the one output with no screen field to travel in</h2>
+ *
+ * {@code SEND-PLAIN-TEXT} at L162-172 is the PF3 exit, and it is the only transmission in the program
+ * that is not a map:
+ *
+ * <pre>
+ *  EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE) ERASE FREEKB END-EXEC.  :164-169
+ *  EXEC CICS RETURN END-EXEC.                                                               :171-172
+ * </pre>
+ *
+ * <p>{@code WS-MESSAGE} is {@code PIC X(80)} at L38, so the transmission is exactly
+ * {@value #PLAIN_TEXT_LENGTH} bytes - <strong>not</strong> the {@value #ERRMSG_LENGTH} of
+ * {@code ERRMSGO}, and not a map field at all. Projecting it into the error line would lose the two
+ * rightmost characters and would claim a map was sent when none was; leaving it out would drop the
+ * program's entire answer to PF3. {@link #plainText()} carries it, and
+ * {@link #withPlainText(String)} is the one place it is set. On every other path the member is
+ * {@value #PLAIN_TEXT_LENGTH} spaces, because nothing was transmitted.
+ *
+ * <p>It is a response-only member for the same reason the navigation triple is - the server is
+ * stateless and an observable output has to be expressed as data - and it is registered in
+ * {@code common.ResponseOnlyMembers} so {@code SignOnRequest} tolerates a client echoing it back.
+ *
+ * <h2>Three exits, three shapes</h2>
+ *
+ * <table border="1">
+ *   <caption>What each exit transmits</caption>
+ *   <tr><th>Exit</th><th>Map fields</th><th>{@link #plainText()}</th><th>Navigation</th></tr>
+ *   <tr><td>{@code SEND-SIGNON-SCREEN} (L145-157) - cold start, either blank field, wrong password,
+ *           user not found, unable to verify, invalid key</td>
+ *       <td>painted: the eight header fields, {@code ERRMSGO}, and the two overlay spans</td>
+ *       <td>spaces</td><td>{@code COSGN00} / {@code COSGN0A}, no program</td></tr>
+ *   <tr><td>{@code SEND-PLAIN-TEXT} (L162-172) - PF3</td>
+ *       <td>none but the error line, which L78 blanks on every path before the {@code EVALUATE}</td>
+ *       <td>the {@value #PLAIN_TEXT_LENGTH}-byte thank-you text</td>
+ *       <td>nothing - the conversation ends</td></tr>
+ *   <tr><td>{@code EXEC CICS XCTL} (L231-239) - signed on</td>
+ *       <td>the same: control transfers without a send</td>
+ *       <td>spaces</td><td>{@code COADM01C} or {@code COMEN01C}, no map</td></tr>
+ * </table>
+ *
+ * <p>So a client can tell all three apart from the payload alone, and none of the three claims an
+ * output the program did not make.
  *
  * <h2>Authentication is plaintext, and that is inherited rather than chosen</h2>
  *
@@ -101,18 +172,14 @@ import java.util.Objects;
  * stays visible instead of being buried. Nothing in this type hashes, masks, encrypts, signs or logs a
  * credential, and nothing in this type imports a security framework.
  *
- * <h2>{@code USERID} is declared although the program never writes it</h2>
+ * <h2>{@code CURTIMEO} is nine characters, and that is not a typo</h2>
  *
- * {@code USERIDO} has no write site, yet {@code USERID} is a real name-labelled {@code DFHMDF} at bms
- * L156 with {@code LENGTH=8}, and {@code app/cbl/COSGN00C.cbl:81} initialises the whole output group
- * with {@code MOVE LOW-VALUES TO COSGN0AO} on first entry - so the field is part of the screen's shape
- * whether or not a value is moved into it. It is declared for that reason. Dropping it would tidy the
- * contract, and nothing here is tidied.
- *
- * <p>{@link #curTime()} is {@value #CURTIME_LENGTH} characters for the same reason. The four user
- * screens {@code COUSR00} through {@code COUSR03} declare their time field {@code X(8)}; this one
- * declares {@code X(9)} at CPY L122 and {@code LENGTH=9} at bms L70, with
- * {@code INITIAL='Ahh:mm:ss'}. The extra character is real and is preserved, not regularised.
+ * {@link #curTime()} is {@value #CURTIME_LENGTH} characters. The four user screens {@code COUSR00}
+ * through {@code COUSR03} declare their time field {@code X(8)}; this one declares {@code X(9)} at
+ * CPY L122 and {@code LENGTH=9} at bms L70, with {@code INITIAL='Ahh:mm:ss'}. The extra character is
+ * real and is preserved, not regularised - so the eight characters
+ * {@code common.DateHeader.wsCurtimeHhMmSs} renders are space-padded on the right by the {@code MOVE}
+ * at L196, and the padding is performed deliberately at the call site.
  *
  * <h2>What is deliberately not here</h2>
  *
@@ -131,6 +198,11 @@ import java.util.Objects;
  *   <li><strong>No fixed-width image and no record layout.</strong> Emitting the {@code AO} group as
  *       bytes would require writing the attribute bytes this payload deliberately omits, so no byte
  *       image is offered. Widths are declared and enforced; they are not serialised positionally.</li>
+ *   <li><strong>No {@code withUserId} and no {@code withPasswd}.</strong> The two overlay spans are set
+ *       together, by {@link #withReceivedMapArea(String, String)}, because the receive that fills them
+ *       fills both at once - {@code EXEC CICS RECEIVE MAP} delivers the whole map area, not one field.
+ *       Offering them separately would suggest the program writes them separately, and it writes neither.
+ *       </li>
  *   <li><strong>No truncation.</strong> {@code WS-MESSAGE} is {@code PIC X(80)} at
  *       {@code app/cbl/COSGN00C.cbl:38} while {@code ERRMSGO} is {@code X(78)}, so
  *       {@code MOVE WS-MESSAGE TO ERRMSGO} at L149 loses the two rightmost characters. This type
@@ -262,8 +334,13 @@ import java.util.Objects;
  *                          {@code EXEC CICS ASSIGN} and therefore supplied by configuration here
  * @param sysId             {@code SYSIDO PIC X(8)}: the CICS system identifier, likewise from
  *                          {@code EXEC CICS ASSIGN}
- * @param userId            {@code USERIDO PIC X(8)}: the user identifier field of the screen, a real
- *                          named field that the program never writes
+ * @param userId            {@code USERIDO PIC X(8)}: the user-id field of the screen. The same span as
+ *                          {@code USERIDI}, so on a repaint that follows a receive it carries the
+ *                          identifier the operator typed, verbatim and not upper-cased
+ * @param passwd            {@code PASSWDO PIC X(8)}: the password field of the screen, dark and
+ *                          modified-data-tagged. The same span as {@code PASSWDI}, so a repaint
+ *                          re-transmits the image the receive delivered. Withheld from
+ *                          {@link #toString()}
  * @param errMsg            {@code ERRMSGO PIC X(78)}: the error line at row 23, red and bright
  * @param role              {@code CDEMO-USER-TYPE PIC X(01)}: {@value #ROLE_ADMIN} for an
  *                          administrator, {@value #ROLE_USER} for a regular user, a space before
@@ -272,6 +349,9 @@ import java.util.Objects;
  *                          {@value #NEXT_PROGRAM_ADMIN} or {@value #NEXT_PROGRAM_USER}
  * @param nextMapset        the mapset the client should render next, {@code PIC X(7)}
  * @param nextMap           the map the client should render next, {@code PIC X(7)}
+ * @param plainText         the {@value #PLAIN_TEXT_LENGTH} bytes
+ *                          {@code EXEC CICS SEND TEXT FROM(WS-MESSAGE)} transmitted on the PF3 path,
+ *                          and {@value #PLAIN_TEXT_LENGTH} spaces on every path that sent no text
  * @param navigationContext the {@code CARDDEMO-COMMAREA} carried between calls, never {@code null}
  */
 public record SignOnResponse(@JsonProperty("trnname") String trnName,
@@ -283,11 +363,13 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
                              @JsonProperty("applid") String applId,
                              @JsonProperty("sysid") String sysId,
                              @JsonProperty("userid") String userId,
+                             @JsonProperty("passwd") String passwd,
                              @JsonProperty("errmsg") String errMsg,
                              String role,
                              String nextProgram,
                              String nextMapset,
                              String nextMap,
+                             String plainText,
                              NavigationContext navigationContext) {
 
     // =================================================================================================
@@ -322,6 +404,12 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
 
     /** Symbolic-map item behind {@link #userId()}: {@code USERIDO}, CPY line 140. */
     public static final String USERID_FIELD = "USERIDO";
+
+    /**
+     * Symbolic-map item behind {@link #passwd()}: {@code PASSWDO}, CPY line 146 - the same eight-byte
+     * span as {@code PASSWDI} at CPY line 84, because line 85 redefines the group.
+     */
+    public static final String PASSWD_FIELD = "PASSWDO";
 
     /** Symbolic-map item behind {@link #errMsg()}: {@code ERRMSGO}, CPY line 152. */
     public static final String ERRMSG_FIELD = "ERRMSGO";
@@ -367,6 +455,9 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
     /** {@code USERIDO PIC X(8)}, and {@code USERID ... LENGTH=8} at bms line 159. */
     public static final int USERID_LENGTH = 8;
 
+    /** {@code PASSWDO PIC X(8)}, and {@code PASSWD ... LENGTH=8} at bms line 178. */
+    public static final int PASSWD_LENGTH = 8;
+
     /**
      * {@code ERRMSGO PIC X(78)}, and {@code ERRMSG ... LENGTH=78} at bms line 199.
      *
@@ -396,10 +487,32 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
     /** Width of {@link #nextMap()}: {@code CDEMO-LAST-MAP PIC X(7)}, COCOM01Y line 43. */
     public static final int NEXT_MAP_LENGTH = NavigationContext.LAST_MAP_LENGTH;
 
+    /**
+     * Width of {@link #plainText()}: {@code WS-MESSAGE PIC X(80)} at
+     * {@code app/cbl/COSGN00C.cbl:38}, which is what
+     * {@code SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE)} at L164-169 transmits.
+     *
+     * <p>Eighty, not {@value #ERRMSG_LENGTH}: the plain-text send is not a map field and is not subject
+     * to the {@code MOVE WS-MESSAGE TO ERRMSGO} narrowing at L149.
+     */
+    public static final int PLAIN_TEXT_LENGTH = 80;
+
+    /**
+     * The name {@link #plainText()} is diagnosed under - the working-storage item the {@code SEND TEXT}
+     * sends from, since the transmission has no symbolic-map item of its own.
+     */
+    public static final String PLAIN_TEXT_MEMBER = "WS-MESSAGE";
+
+    /**
+     * What {@link #toString()} prints in place of {@link #passwd()} - a constant, so the rendering cannot
+     * disclose the credential, its length, or whether one was carried.
+     */
+    private static final String PASSWD_REDACTED = SensitiveDiagnostics.REDACTED;
+
     // =================================================================================================
-    // The field census. Publishing all three counts is what keeps the eleven-versus-ten discrepancy
-    // documented rather than merely described: an assertion can hold them apart, so the gap cannot be
-    // closed by someone "restoring" the password field without a test turning red.
+    // The field census. Publishing all three counts is what makes the projection machine-checkable: the
+    // mapset's named-field count, the symbolic map's item count and this payload's member count are one
+    // number, and an assertion holds them equal so a dropped field cannot pass unnoticed.
     // =================================================================================================
 
     /** Total {@code DFHMDF} definitions in {@code app/bms/COSGN00.bms}, named and unnamed. */
@@ -412,28 +525,27 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
     public static final int MAPSET_NAMED_FIELD_COUNT = 11;
 
     /**
-     * Map-derived members of this payload: {@value #MAPSET_NAMED_FIELD_COUNT} named screen fields less
-     * the one the program never sends. See {@link #OMITTED_FIELD}.
+     * Map-derived members of this payload - every named screen field, so this equals
+     * {@value #MAPSET_NAMED_FIELD_COUNT}.
+     *
+     * <p>The two counts were once deliberately different: {@code PASSWDO} was omitted on the evidence
+     * that no {@code MOVE} in {@code COSGN00C} writes it. {@code COSGN0AO REDEFINES COSGN0AI} at
+     * {@code app/cpy-bms/COSGN00.CPY:85} makes that evidence insufficient - the receive writes the span
+     * and the send transmits it - so the field is projected and the counts agree. Both are still
+     * published, because equal-by-assertion is worth more than equal-by-assumption.
      */
-    public static final int MAP_FIELD_COUNT = 10;
-
-    /** The name-labelled screen field this payload deliberately omits: {@code PASSWD}, bms line 175. */
-    public static final String OMITTED_FIELD = "PASSWD";
-
-    /** The symbolic-map item this payload deliberately omits: {@code PASSWDO}, CPY line 146. */
-    public static final String OMITTED_ITEM = "PASSWDO";
+    public static final int MAP_FIELD_COUNT = MAPSET_NAMED_FIELD_COUNT;
 
     /**
      * All {@value #MAPSET_NAMED_FIELD_COUNT} name-labelled {@code DFHMDF} fields of
      * {@code app/bms/COSGN00.bms}, in mapset declaration order. Immutable.
      *
      * <p>This is the output of
-     * {@code grep -E '^[A-Z0-9]+ +DFHMDF' app/bms/COSGN00.bms | awk '{print $1}'}, transcribed. It is
-     * the complete screen, including {@link #OMITTED_FIELD}, so the omission stays visible.
+     * {@code grep -E '^[A-Z0-9]+ +DFHMDF' app/bms/COSGN00.bms | awk '{print $1}'}, transcribed.
      */
     public static final List<String> MAPSET_NAMED_FIELDS = List.of(
             "TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME",
-            "APPLID", "SYSID", "USERID", OMITTED_FIELD, "ERRMSG");
+            "APPLID", "SYSID", "USERID", "PASSWD", "ERRMSG");
 
     /**
      * The {@value #MAP_FIELD_COUNT} symbolic-map items this payload projects, in the order the
@@ -441,7 +553,7 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
      */
     public static final List<String> MAP_FIELDS = List.of(
             TRNNAME_FIELD, TITLE01_FIELD, CURDATE_FIELD, PGMNAME_FIELD, TITLE02_FIELD,
-            CURTIME_FIELD, APPLID_FIELD, SYSID_FIELD, USERID_FIELD, ERRMSG_FIELD);
+            CURTIME_FIELD, APPLID_FIELD, SYSID_FIELD, USERID_FIELD, PASSWD_FIELD, ERRMSG_FIELD);
 
     // =================================================================================================
     // Literals the program itself declares. Transcribed once here so the controller and the service
@@ -506,7 +618,7 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
     /**
      * Validates every component against the width its {@code PICTURE} clause declares.
      *
-     * <p>Two rules, applied uniformly to all fourteen character components:
+     * <p>Two rules, applied uniformly to all sixteen character components:
      *
      * <ul>
      *   <li><strong>No character component may be {@code null}.</strong> There is no null in a COBOL
@@ -530,7 +642,7 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
      * has nothing to carry yet passes {@link NavigationContext#empty()}, which is a real, valid,
      * fully-formed communication area of spaces and zeros.
      *
-     * <p>The width check is delegated to one shared guard so the rule is stated once and all fourteen
+     * <p>The width check is delegated to one shared guard so the rule is stated once and all sixteen
      * character components are held to the identical standard.
      *
      * @throws NullPointerException     if any character component or the navigation context is
@@ -547,11 +659,13 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
         applId = requireWidth(applId, APPLID_LENGTH, APPLID_FIELD);
         sysId = requireWidth(sysId, SYSID_LENGTH, SYSID_FIELD);
         userId = requireWidth(userId, USERID_LENGTH, USERID_FIELD);
+        passwd = requireWidth(passwd, PASSWD_LENGTH, PASSWD_FIELD);
         errMsg = requireWidth(errMsg, ERRMSG_LENGTH, ERRMSG_FIELD);
         role = requireWidth(role, ROLE_LENGTH, NavigationContext.USER_TYPE_FIELD);
         nextProgram = requireWidth(nextProgram, NEXT_PROGRAM_LENGTH, NavigationContext.TO_PROGRAM_FIELD);
         nextMapset = requireWidth(nextMapset, NEXT_MAPSET_LENGTH, NavigationContext.LAST_MAPSET_FIELD);
         nextMap = requireWidth(nextMap, NEXT_MAP_LENGTH, NavigationContext.LAST_MAP_FIELD);
+        plainText = requireWidth(plainText, PLAIN_TEXT_LENGTH, PLAIN_TEXT_MEMBER);
         navigationContext = Objects.requireNonNull(navigationContext, "navigationContext");
     }
 
@@ -560,9 +674,9 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
     // =================================================================================================
 
     /**
-     * The sign-on screen before anything has been written to it: every one of the ten screen fields
-     * carrying the unpainted image at its own declared width, and {@link NavigationContext#empty()} as
-     * the communication area.
+     * The sign-on screen before anything has been written to it: every one of the
+     * {@value #MAP_FIELD_COUNT} screen fields carrying the unpainted image at its own declared width,
+     * and {@link NavigationContext#empty()} as the communication area.
      *
      * <p>This is the state {@code app/cbl/COSGN00C.cbl:80-83} produces when {@code EIBCALEN} is zero -
      * {@code MOVE LOW-VALUES TO COSGN0AO}, then {@code SEND-SIGNON-SCREEN}. The unpainted image is
@@ -580,6 +694,16 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
      * including this one the error line is painted - with a blank value, but painted. That paint
      * happens in the controller where the source performs it, which leaves this factory free to state
      * one rule for all ten fields.
+     *
+     * <p>{@link #userId()} and {@link #passwd()} are unpainted here too, and on this path that is what
+     * the program transmits: L81's {@code MOVE LOW-VALUES TO COSGN0AO} clears both spans and no
+     * {@code RECEIVE} follows, so the {@code SEND} at L151-157 sends {@code X'00'} in each. The same
+     * image is correct on the PF3 and invalid-key paths, where the spans were never written at all.
+     * {@link #withReceivedMapArea(String, String)} is the only way they become anything else.
+     *
+     * <p>{@link #plainText()} is {@value #PLAIN_TEXT_LENGTH} spaces rather than an unpainted image,
+     * because it is not a screen field: nothing was transmitted, and {@code WS-MESSAGE PIC X(80) VALUE
+     * SPACES} at {@code app/cbl/COSGN00C.cbl:38} is what an untransmitted message holds.
      *
      * <p>{@link #role()} is a single space and {@link #nextProgram()} is spaces: both are
      * {@code CARDDEMO-COMMAREA} carriers rather than map fields, so {@link ScreenFieldImage} does not
@@ -600,11 +724,13 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
                 ScreenFieldImage.unpainted(APPLID_LENGTH),
                 ScreenFieldImage.unpainted(SYSID_LENGTH),
                 ScreenFieldImage.unpainted(USERID_LENGTH),
+                ScreenFieldImage.unpainted(PASSWD_LENGTH),
                 ScreenFieldImage.unpainted(ERRMSG_LENGTH),
                 spaces(ROLE_LENGTH),
                 spaces(NEXT_PROGRAM_LENGTH),
                 spaces(NEXT_MAPSET_LENGTH),
                 spaces(NEXT_MAP_LENGTH),
+                spaces(PLAIN_TEXT_LENGTH),
                 NavigationContext.empty());
     }
 
@@ -687,9 +813,10 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
      * (199) and {@code SYSIDO} (203) - and nothing else. The parameters are ordered as the components
      * are declared, which is symbolic-map order, rather than as the paragraph happens to write them.
      *
-     * <p>{@link #userId()} and {@link #errMsg()} are untouched here on purpose: the paragraph does not
-     * write {@code USERIDO} at all, and {@code ERRMSGO} is written by its caller at line 149, after this
-     * paragraph has run. {@link #withErrMsg(String)} is that step.
+     * <p>{@link #userId()}, {@link #passwd()} and {@link #errMsg()} are untouched here on purpose. The
+     * paragraph writes neither overlay span - they carry whatever the {@code RECEIVE} left in them, which
+     * is {@link #withReceivedMapArea(String, String)}'s business - and {@code ERRMSGO} is written by this
+     * paragraph's caller at line 149, after it has run. {@link #withErrMsg(String)} is that step.
      *
      * @param newTrnName the transaction identifier, at most {@value #TRNNAME_LENGTH} characters
      * @param newTitle01 the first title line, at most {@value #TITLE01_LENGTH} characters
@@ -712,8 +839,8 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
                                      String newApplId,
                                      String newSysId) {
         return new SignOnResponse(newTrnName, newTitle01, newCurDate, newPgmName, newTitle02,
-                newCurTime, newApplId, newSysId, userId, errMsg,
-                role, nextProgram, nextMapset, nextMap, navigationContext);
+                newCurTime, newApplId, newSysId, userId, passwd, errMsg,
+                role, nextProgram, nextMapset, nextMap, plainText, navigationContext);
     }
 
     /**
@@ -740,7 +867,8 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
      */
     public SignOnResponse withErrMsg(String newErrMsg) {
         return new SignOnResponse(trnName, title01, curDate, pgmName, title02, curTime, applId, sysId,
-                userId, newErrMsg, role, nextProgram, nextMapset, nextMap, navigationContext);
+                userId, passwd, newErrMsg, role, nextProgram, nextMapset, nextMap, plainText,
+                navigationContext);
     }
 
     /**
@@ -772,30 +900,123 @@ public record SignOnResponse(@JsonProperty("trnname") String trnName,
                                          String newNextMap,
                                          NavigationContext newNavigationContext) {
         return new SignOnResponse(trnName, title01, curDate, pgmName, title02, curTime, applId, sysId,
-                userId, errMsg, newRole, newNextProgram, newNextMapset, newNextMap,
+                userId, passwd, errMsg, newRole, newNextProgram, newNextMapset, newNextMap, plainText,
                 newNavigationContext);
     }
 
-    // =================================================================================================
-    // There is deliberately no withUserId. The invariant above is that a mutator exists for each
-    // paragraph of app/cbl/COSGN00C.cbl that writes this screen, and no paragraph writes USERIDO: the
-    // program only reads USERIDI OF COSGN0AI, at lines 118 and 132, and repositions the cursor with
-    // MOVE -1 TO USERIDL at lines 82, 121, 250 and 255. A faithful controller therefore leaves
-    // userId() at the spaces empty() gives it. The canonical constructor remains available to any
-    // caller that genuinely has a value for the field, so nothing is prevented - but no convenience is
-    // offered for populating a field the source never populates, because that would read as an
-    // invitation to add behaviour the COBOL does not have.
-    // =================================================================================================
+    /**
+     * The two overlay spans, as {@code EXEC CICS RECEIVE MAP} at {@code app/cbl/COSGN00C.cbl:110-115}
+     * left them.
+     *
+     * <p>{@code 01 COSGN0AO REDEFINES COSGN0AI} at {@code app/cpy-bms/COSGN00.CPY:85} makes
+     * {@code USERIDI} and {@code USERIDO} one span, and {@code PASSWDI} and {@code PASSWDO} another, so
+     * a {@code SEND MAP ... FROM(COSGN0AO)} after a receive transmits the received images without the
+     * program moving anything into an output item. This method is that transmission, and it is the only
+     * mutator for either field.
+     *
+     * <p>Both are set together because the receive fills both together: CICS delivers the whole map
+     * area, not one field at a time. Both images are the <strong>raw</strong> received values - the
+     * {@code MOVE FUNCTION UPPER-CASE} at L132 and L135 writes {@code WS-USER-ID} and
+     * {@code WS-USER-PWD}, never back into the spans - so what comes back on a repaint is what was
+     * typed.
+     *
+     * <p>Call this on the paths that receive the map and not on the three that do not; on those,
+     * {@link #empty()} already carries the {@code LOW-VALUES} the spans hold.
+     *
+     * @param newUserId the {@code USERIDI}/{@code USERIDO} image, at most {@value #USERID_LENGTH}
+     *                  characters
+     * @param newPasswd the {@code PASSWDI}/{@code PASSWDO} image, at most {@value #PASSWD_LENGTH}
+     *                  characters
+     * @return a new response carrying both spans, never {@code null}
+     * @throws NullPointerException     if either argument is {@code null}; an untransmitted field is
+     *                                  {@code LOW-VALUES} at its declared width, not {@code null}
+     * @throws IllegalArgumentException if either argument exceeds its declared width
+     */
+    public SignOnResponse withReceivedMapArea(String newUserId, String newPasswd) {
+        return new SignOnResponse(trnName, title01, curDate, pgmName, title02, curTime, applId, sysId,
+                newUserId, newPasswd, errMsg, role, nextProgram, nextMapset, nextMap, plainText,
+                navigationContext);
+    }
+
+    /**
+     * The unformatted transmission of {@code SEND-PLAIN-TEXT} -
+     * {@code EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE) ERASE FREEKB} at
+     * {@code app/cbl/COSGN00C.cbl:164-169}.
+     *
+     * <p>Reached from one arm only, {@code WHEN DFHPF3} at L88-90, which first moves
+     * {@code CCDA-MSG-THANK-YOU} into {@code WS-MESSAGE}. The full {@value #PLAIN_TEXT_LENGTH} bytes are
+     * carried: this is not a map field, so the {@code MOVE WS-MESSAGE TO ERRMSGO} narrowing at L149 does
+     * not apply to it, and the two characters that {@code MOVE} would lose are part of the transmission.
+     *
+     * <p>No map field is written here, because the paragraph sends no map. A caller that has taken this
+     * path leaves every screen field at the image {@link #empty()} gives it.
+     *
+     * @param newPlainText the transmitted text, at most {@value #PLAIN_TEXT_LENGTH} characters
+     * @return a new response carrying the transmission, never {@code null}
+     * @throws NullPointerException     if {@code newPlainText} is {@code null}; a path that sends no text
+     *                                  carries {@value #PLAIN_TEXT_LENGTH} spaces
+     * @throws IllegalArgumentException if {@code newPlainText} exceeds {@value #PLAIN_TEXT_LENGTH}
+     *                                  characters
+     */
+    public SignOnResponse withPlainText(String newPlainText) {
+        return new SignOnResponse(trnName, title01, curDate, pgmName, title02, curTime, applId, sysId,
+                userId, passwd, errMsg, role, nextProgram, nextMapset, nextMap, newPlainText,
+                navigationContext);
+    }
 
     // =================================================================================================
-    // Shared guards. Stated once each, so all fourteen character components are held to one standard.
+    // Diagnostics. The record's generated toString would publish the PASSWDO span, so it is overridden
+    // for that one substitution and nothing else.
+    // =================================================================================================
+
+    /**
+     * A rendering that names every member except the password, which is replaced by a constant marker.
+     *
+     * <p>{@link #passwd()} carries the {@code PASSWDO} span, and that span reaches a 3270 as dark field
+     * data. A log line is not a 3270. The record's generated {@code toString} includes every component,
+     * so inheriting it would reproduce the plaintext credential in any log entry, exception message or
+     * debugger view that rendered this object - which is CWE-532, and is a disclosure
+     * {@code app/cbl/COSGN00C.cbl} never makes. Carrying the credential is required for parity;
+     * broadcasting it is not, and the two are separable. The marker is a constant rather than a mask
+     * derived from the value, so neither the password nor its length can be inferred from the rendering.
+     *
+     * <p>{@code equals} and {@code hashCode} stay exactly as the record generates them, password
+     * included: they are value semantics and disclose nothing. This is the same split
+     * {@code SignOnRequest} makes on the way in, through the same marker.
+     *
+     * @return a rendering safe to log, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "SignOnResponse[trnName=" + trnName
+                + ", title01=" + title01
+                + ", curDate=" + curDate
+                + ", pgmName=" + pgmName
+                + ", title02=" + title02
+                + ", curTime=" + curTime
+                + ", applId=" + applId
+                + ", sysId=" + sysId
+                + ", userId=" + userId
+                + ", passwd=" + PASSWD_REDACTED
+                + ", errMsg=" + errMsg
+                + ", role=" + role
+                + ", nextProgram=" + nextProgram
+                + ", nextMapset=" + nextMapset
+                + ", nextMap=" + nextMap
+                + ", plainText=" + plainText
+                + ", navigationContext=" + navigationContext
+                + ']';
+    }
+
+    // =================================================================================================
+    // Shared guards. Stated once each, so all sixteen character components are held to one standard.
     // =================================================================================================
 
     /**
      * Requires that {@code value} is present and fits {@code width} characters, and returns it
      * unchanged.
      *
-     * <p>The field name is included in both failure messages because a response with fourteen character
+     * <p>The field name is included in both failure messages because a response with sixteen character
      * members is otherwise hard to diagnose: the message names the symbolic-map or copybook item, the
      * declared width and the actual length, which is enough to locate the offending {@code MOVE}.
      *

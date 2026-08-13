@@ -637,7 +637,9 @@ public class MainMenuController {
                 // as the program leaves it - with CDEMO-PGM-CONTEXT already advanced to re-enter on the
                 // first-entry path, which is what makes the next keystroke take the other branch, and
                 // with CDEMO-USER-TYPE exactly as it arrived, because L150 is commented out.
-                .navigationContext(outcome.navigationContext())
+                //
+                // On ONE path there is no area to hand back at all - see commareaHandedOn.
+                .navigationContext(commareaHandedOn(outcome))
 
                 // ---- The two XCTL sites, as a response field rather than a server-side forward ----
                 // L152-L155 XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME(WS-OPTION)) COMMAREA(...) and
@@ -661,6 +663,46 @@ public class MainMenuController {
                 // client to clear every rendered output field before painting what follows.
                 .resetAllOutputFields(outcome.resetAllOutputFields())
                 .build();
+    }
+
+    /**
+     * The communication area this response hands the client, which on one path is <strong>nothing at
+     * all</strong>.
+     *
+     * <p>{@code COMEN01C} ends in three different ways, and they do not agree about the area:
+     *
+     * <ul>
+     *   <li><strong>{@code EXEC CICS RETURN} with {@code COMMAREA}</strong> - L107-L110, every path that
+     *       paints the screen. The area is passed, so it is echoed.</li>
+     *   <li><strong>{@code XCTL} <em>with</em> {@code COMMAREA}</strong> - L152-L155, the option transfer.
+     *       The area is passed to the target, so it is echoed.</li>
+     *   <li><strong>{@code XCTL} with <em>no</em> {@code COMMAREA}</strong> - L175-L177,
+     *       {@code RETURN-TO-SIGNON-SCREEN}. A bare {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)}: the target is
+     *       entered with {@code EIBCALEN = 0}.</li>
+     * </ul>
+     *
+     * <p>The third case is the one that has to be reproduced rather than smoothed over.
+     * {@code app/cbl/COSGN00C.cbl:80-83} tests {@code EIBCALEN = 0} and answers it with a cold start -
+     * every output field cleared, the cursor on the user id, no validation and no read of {@code USRSEC}.
+     * Handing the client a 160-byte area to send on would make sign-on see a non-zero {@code EIBCALEN}
+     * and run its <em>re-entry</em> path instead, which is a flow this transfer cannot reach on the
+     * mainframe. {@code null} is therefore the faithful answer, and with
+     * {@code spring.jackson.default-property-inclusion: always} it reaches the wire as
+     * {@code "navigationContext": null} - stated absence, not an omitted member.
+     *
+     * <p>The test is "a transfer was named <em>and</em> it carries no area", not
+     * {@code !nextProgramCarriesCommarea()} alone: that flag is also {@code false} on the {@code RETURN}
+     * path, where the {@code COMMAREA} option on L109 does pass the area. {@code hasNextProgram()}
+     * separates the two, being true only when an {@code XCTL} named a successor.
+     *
+     * @param outcome the terminal state of the program
+     * @return the area to echo, or {@code null} when the program transferred without one
+     */
+    private static NavigationContext commareaHandedOn(final MainMenuOutcome outcome) {
+        if (outcome.hasNextProgram() && !outcome.nextProgramCarriesCommarea()) {
+            return null;
+        }
+        return outcome.navigationContext();
     }
 
     /**

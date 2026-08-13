@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.user;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -9,8 +11,8 @@ import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
-import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -238,12 +240,48 @@ public class UserUpdateController {
     public static final String EIBCALEN_PARAM = "eibcalen";
 
     /**
+     * The query-parameter name carrying the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255}.
+     *
+     * <p>{@link AidRequestParameter#CANONICAL_NAME}, the one spelling every online route accepts, so a
+     * caller that named the key on the user list names it the same way here.
+     */
+    public static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /** The accepted alternate spelling of {@value #EIBAID_PARAM} - see {@link AidRequestParameter}. */
+    public static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
+
+    /** The lowest value an unsigned {@code EIBAID} byte can carry. */
+    static final int AID_MIN = 0;
+
+    /** The highest value an unsigned {@code EIBAID} byte can carry. */
+    static final int AID_MAX = 255;
+
+    /**
+     * The width of the raw {@code EIBAID} form of {@link UserUpdateRequest#aid()}: one character.
+     *
+     * <p>{@link UserUpdateRequest#AID_LENGTH} is five, the width of the {@code CCARD-AID} token this
+     * module's responses publish; this is the width of the byte line 108 evaluates.
+     */
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
+
+    /**
      * The payload member the URI's user identity binds, spelled as the client sends it.
      *
      * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
      * refusal names the member the caller can find in its own request body.
      */
     static final String USRIDIN_MEMBER = "usridin";
+
+    /**
+     * The payload member carrying the {@code CCARD-AID} token, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller with a twelve-field body knows which member contradicted the raw
+     * byte it also sent.
+     */
+    static final String AID_MEMBER = "aid";
 
 
     /** Declared width of {@code WS-MESSAGE PIC X(80)} - line 38. Two wider than {@code ERRMSGO}. */
@@ -623,17 +661,25 @@ public class UserUpdateController {
      * @param userId   the resource identity; the value that occupies {@code USRIDIN} and thence
      *                 {@code SEC-USR-ID}. At most {@value UserUpdateRequest#USRIDIN_LENGTH} characters
      * @param request  the twelve {@code xxxI} items, the communication area, its 34-byte extension and
-     *                 the resolved {@code EIBAID} token; validated against the symbolic map's declared
-     *                 widths
-     * @param eibcalen {@code EIBCALEN}, optional. Absent it is derived from the carrier; stated it must
-     *                 be {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH} and must agree
-     *                 with what the payload actually carried
+     *                 the one-character {@code EIBAID} image; validated against the symbolic map's
+     *                 declared widths
+     * @param eibcalen {@code EIBCALEN}, optional. Absent it is derived from the carrier; stated it is the
+     *                 length of the area that arrived - {@value NavigationContext#COMMAREA_LENGTH} from
+     *                 the admin menu, {@value #PASSED_COMMAREA_LENGTH} from the user list or from this
+     *                 program's own return - and it must agree with what the payload actually carried
+     * @param eibaid   {@code EIBAID} as an unsigned {@code 0}-{@code 255} byte under
+     *                 {@value #EIBAID_PARAM}, optional. Absent it is read from the payload's own
+     *                 {@code aid} member; stated it wins, because an integer names any of the 256 values
+     *                 where a folded token cannot: {@code COUSR02C} does not copy
+     *                 {@code app/cpy/CSSTRPFY.cpy} and tests the raw byte at lines 108-128, so on the
+     *                 terminal {@code PF15} reaches {@code WHEN OTHER}
+     * @param eibAid   the same value under {@value #EIBAID_PARAM_ALIAS}; at most one need be sent
      * @return the painted screen and its metadata: the twelve {@code xxxO} values, the navigation
      *         triple, the communication area and its extension, all in the body so that nothing is
      *         retained server-side
      * @throws NullPointerException     if {@code userId} or {@code request} is {@code null}
      * @throws IllegalArgumentException if {@code userId} is wider than {@code USRIDIN}, or if
-     *                                  {@code eibcalen} is neither length or disagrees with the carrier
+     *                                  {@code eibcalen} is negative or disagrees with the carrier
      */
     @PutMapping(path = "/api/users/{userId}",
             consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -642,7 +688,9 @@ public class UserUpdateController {
     public ScreenResponse<UserUpdateResponse> updateUser(
             @PathVariable("userId") String userId,
             @Valid @RequestBody UserUpdateRequest request,
-            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen) {
+            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
 
         Objects.requireNonNull(userId, "A user id is required: it is the RIDFLD of the READ at line 322 "
                 + "and of the REWRITE's held record at line 360");
@@ -652,23 +700,33 @@ public class UserUpdateController {
 
         int commareaLength = resolveEibcalen(eibcalen, request);
 
-        // The binding rule, applied in exactly one place: the path variable is the identity, so it is
-        // what occupies the USRIDIN slot of the terminal input area AND what the extension's selected id
-        // carries, because lines 99-102 read the extension rather than the screen field on first entry.
-        // The path has already been required to fit, so both MOVEs below only pad.
-        // The URI and USRIDIN state the same key, so the payload's member must not contradict it:
-        // overwriting it silently discarded the operator's own typed identity with no message. Absent,
-        // blank, LOW-VALUES or the URI's key agree; anything else is two keys in one request.
-        ScreenInputRejectedException.requireKeyAgreement(USRIDIN_MEMBER, userId, request.usrIdIn(),
-                UserUpdateRequest.USRIDIN_LENGTH, PICTURE_RULES);
-        String identity = PICTURE_RULES.movePicX(userId, UserUpdateRequest.USRIDIN_LENGTH);
+        // The binding rule, applied in exactly one place, and it is a FIRST-ENTRY rule.
+        //
+        // COUSR02C:95-105 is the first-entry arm: it blanks the output map, places the cursor and - only
+        // if CDEMO-CU02-USR-SELECTED is neither SPACES nor LOW-VALUES - moves that extension field into
+        // USRIDINI and performs PROCESS-ENTER-KEY. That is the arm the path variable projects: the URI
+        // names the user the operator selected on the list screen, so it seeds both the extension's
+        // selected id and the USRIDIN slot. The path has already been required to fit, so the MOVE pads.
+        //
+        // :106-107 is the other arm: PERFORM RECEIVE-USRUPD-SCREEN, then EVALUATE EIBAID. There the
+        // screen's own USRIDINI is what the program reads (:146, :180), and typing another user id over
+        // the painted screen is how an operator moves from one user to the next. So on a re-entry the
+        // received identity is carried through EXACTLY as it arrived - not overwritten from the URI, and
+        // not refused for differing from it - and the extension is left as the program itself wrote it.
+        boolean reentry = request.navigationContext() != null
+                && request.navigationContext().isReenter();
         Cu02Info arrived = request.cu02Info();
-        Cu02Info cu02Info = new Cu02Info(arrived.usridFirst(),
-                arrived.usridLast(),
-                arrived.pageNum(),
-                arrived.nextPageFlg(),
-                arrived.usrSelFlg(),
-                identity);
+        String identity = reentry
+                ? request.usrIdIn()
+                : PICTURE_RULES.movePicX(userId, UserUpdateRequest.USRIDIN_LENGTH);
+        Cu02Info cu02Info = reentry
+                ? arrived
+                : new Cu02Info(arrived.usridFirst(),
+                        arrived.usridLast(),
+                        arrived.pageNum(),
+                        arrived.nextPageFlg(),
+                        arrived.usrSelFlg(),
+                        identity);
 
         UserUpdateRequest received = new UserUpdateRequest(request.trnName(),
                 request.title01(),
@@ -686,8 +744,9 @@ public class UserUpdateController {
                 request.aid(),
                 cu02Info);
 
-        ProgramState state =
-                handle(received, commareaLength, resolveAttentionIdentifier(request.aid()), cu02Info);
+        ProgramState state = handle(received, commareaLength,
+                resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid),
+                        request == null ? null : request.aid()), cu02Info);
         return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
@@ -708,45 +767,48 @@ public class UserUpdateController {
     }
 
     /**
-     * Resolves {@code EIBCALEN} from the stated value and the carrier, and refuses any statement the
-     * carrier does not support.
+     * Resolves {@code EIBCALEN} - the length of the area that arrived, tested for zero and nothing else.
      *
-     * <h4>Why a caller may not simply declare it</h4>
-     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
-     * actually passed. Line 90 tests it against zero to decide whether the conversation had any state at
-     * all - and its zero arm transfers straight to the sign-on program - so a caller free to state it
-     * could discard state that was sent, or claim state that was not. A negative value could do neither
-     * faithfully.
+     * <h4>Zero versus non-zero is the whole of what the source asks</h4>
+     * Line 90 compares {@code EIBCALEN} against zero and against no other value: its zero arm transfers
+     * straight to the sign-on program, and its non-zero arm performs
+     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} at line 94. So the length that arrived is
+     * carried through unchanged and only the zero test is acted on.
      *
-     * <h4>Why the two accepted values are 0 and {@value #PASSED_COMMAREA_LENGTH}</h4>
-     * Line 90 compares against zero and nothing else, and the only other thing the program does with the
-     * area is {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} at line 94, which reads the 160
-     * bytes of the copybook plus the 34 of {@code 05 CDEMO-CU02-INFO}. The projected request carries
-     * exactly those two areas, so it is in one of exactly two states: absent, or complete at
-     * {@value #PASSED_COMMAREA_LENGTH} bytes.
+     * <h4>Why no set of accepted lengths is enumerated</h4>
+     * Because more than one real length reaches this program and all of them are legitimate.
+     * {@code COADM01C} declares no extension of its own, so its {@code XCTL} passes
+     * {@value NavigationContext#COMMAREA_LENGTH} bytes [{@code app/cbl/COADM01C.cbl:206-209}], while
+     * {@code COUSR00C} continues the same {@code 01} with {@code 05 CDEMO-CU00-INFO} and its {@code XCTL}
+     * passes {@value #PASSED_COMMAREA_LENGTH} [{@code app/cbl/COUSR00C.cbl:196-199}], which is also what
+     * this program's own {@code RETURN TRANSID} passes at line 137. An acceptance set of exactly
+     * {@value #NO_COMMAREA_LENGTH} and {@value #PASSED_COMMAREA_LENGTH} answered {@code 400} to the
+     * admin menu's own {@value NavigationContext#COMMAREA_LENGTH} - a length the legacy path really
+     * produces. Any non-negative length is therefore accepted.
      *
-     * @param eibcalen the stated value, or {@code null}
+     * <p>A stated value must still agree with what actually arrived: {@code EIBCALEN} describes the area
+     * CICS passed, so a payload carrying a communication area cannot report zero and a payload carrying
+     * none cannot report a length. That is the one relation the parameter has to the body, and line 90
+     * branches on it.
+     *
+     * @param eibcalen the stated value, or {@code null} to derive it from the carrier
      * @param request  the bound request, whose commarea presence is the carrier
-     * @return {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH}
-     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
+     * @return zero when no communication area arrived, otherwise the length that arrived
+     * @throws IllegalArgumentException if the stated value is negative, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, UserUpdateRequest request) {
-        int carried = request.hasNavigationContext()
-                ? PASSED_COMMAREA_LENGTH
-                : NO_COMMAREA_LENGTH;
+        boolean carried = request.hasNavigationContext();
         if (eibcalen == null) {
-            return carried;
+            return carried ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
         }
         int stated = eibcalen;
-        if (stated != NO_COMMAREA_LENGTH && stated != PASSED_COMMAREA_LENGTH) {
+        if (stated < NO_COMMAREA_LENGTH) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
-                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
-                    + "program is either " + NO_COMMAREA_LENGTH + " or " + PASSED_COMMAREA_LENGTH
-                    + ", CARDDEMO-COMMAREA plus CDEMO-CU02-INFO.");
+                    + ", and EIBCALEN is the length of the area CICS passed, which cannot be negative.");
         }
-        if (stated != carried) {
+        if ((stated == NO_COMMAREA_LENGTH) == carried) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
-                    + " but the payload carries " + (carried == NO_COMMAREA_LENGTH ? "no" : "a")
+                    + " but the payload carries " + (carried ? "a" : "no")
                     + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
                     + "because app/cbl/COUSR02C.cbl:90 uses it to decide whether the conversation had "
                     + "any state at all.");
@@ -755,50 +817,79 @@ public class UserUpdateController {
     }
 
     /**
-     * Turns the request's five-character AID token back into the raw {@code EIBAID} byte line 108
-     * evaluates.
+     * Resolves the raw {@code EIBAID} byte line 108 evaluates, from the query parameter or the payload.
      *
-     * <p>{@link PfKeyResolver.AidKey} is the token form {@code common.PfKeyResolver} produces, and this
-     * is its inverse for the five keys this program branches on. An absent token is {@link
-     * CicsAid#DFHENTER}, because {@code ENTER} is what a terminal transmits when no program-function key
-     * was pressed, and an <em>unrecognised</em> token is {@link CicsAid#DFHNULL} - a byte no
-     * {@code WHEN} clause names, so it lands on {@code WHEN OTHER} at line 127 exactly as an unmapped
-     * key does.
+     * <p>The parameter wins when present, because an unsigned {@code 0}-{@code 255} integer can name any
+     * of the 26 attention identifiers. When it is absent the payload's own one-character {@code aid}
+     * image is read; {@link #resolveAttentionIdentifier(String)} states what any other width means.
      *
-     * <p>The mapping is written out rather than computed, for the same reason {@code PfKeyResolver}
-     * writes its own out: {@code PFK03} is set by both {@code PF3} and {@code PF15}, and only
-     * {@code PF3} matches {@code WHEN DFHPF3} in a COBOL {@code EVALUATE EIBAID}. Returning
-     * {@link CicsAid#DFHPF3} for {@code PFK03} is the faithful choice here because that is the key this
-     * screen's legend offers; a caller that needs to distinguish {@code PF15} passes the byte to
-     * {@link #handle} directly.
+     * Reads the raw {@code EIBAID} byte line 108 evaluates out of the payload's {@code aid} member.
      *
-     * @param aidToken the token, or {@code null} when the payload named none
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention
+     * identifier, so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF3} as {@code U+00F3},
+     * and {@code EVALUATE EIBAID} compares exactly that. Three outcomes:
+     *
+     * <ul>
+     *   <li><strong>Absent yields {@link CicsAid#DFHENTER}</strong>, because {@code ENTER} is what a
+     *       terminal transmits when no program-function key was pressed, and it is the arm line 109
+     *       handles first.</li>
+     *   <li><strong>One character yields its code point</strong>, folding nothing: {@code DFHPF15}
+     *       arrives as {@code U+00C3} and stays distinct from {@code DFHPF3}, which is what
+     *       {@code EIBAID = DFHPF3} means on a terminal.</li>
+     *   <li><strong>Any other width yields {@link CicsAid#DFHNULL}</strong> - a byte no {@code WHEN}
+     *       clause names, so it lands on {@code WHEN OTHER} at line 127 exactly as an unmapped key
+     *       does.</li>
+     * </ul>
+     *
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK03'} stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}. Decoding it
+     * had to choose, and choosing {@code DFHPF3} sent a {@code PF15} press down line 111's
+     * {@code WHEN DFHPF3} arm - the transfer back to the user list - where the source takes
+     * {@code WHEN OTHER} at line 127 and repaints with the invalid-key message. {@code COUSR02C} does
+     * not copy {@code CSSTRPFY}: it compares {@code EIBAID} itself, so the fold is not its behaviour and
+     * there is nothing to invert. The token survives as derived metadata on the way out, where
+     * {@link PfKeyResolver#resolve(byte)} produces it and {@link ProgramState#aidKey()} reports it.
+     *
+     * <p>A character above {@link #MAX_AID_CODE_POINT} is reported as {@code DFHNULL} rather than
+     * narrowed: {@code EIBAID} is one byte, so a cast of {@code U+01F3} would keep its low eight bits
+     * and land on {@code 0xF3}, which <em>is</em> {@code DFHPF3}, the key line 111 acts on.
+     *
+     * @param aidImage the {@code aid} member as it arrived, or {@code null} when the payload named none
      * @return the raw attention-identifier byte
      */
-    static byte resolveAttentionIdentifier(String aidToken) {
-        if (aidToken == null) {
+    static byte resolveAttentionIdentifier(String aidImage) {
+        if (aidImage == null) {
             return CicsAid.DFHENTER;
         }
-        String token = PICTURE_RULES.movePicX(aidToken, PfKeyResolver.AID_TOKEN_LENGTH);
-        if (AidKey.ENTER.token().equals(token)) {
-            return CicsAid.DFHENTER;
+        if (aidImage.length() != RAW_AID_LENGTH) {
+            return CicsAid.DFHNULL;
         }
-        if (AidKey.PFK03.token().equals(token)) {
-            return CicsAid.DFHPF3;
+        char stated = aidImage.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return CicsAid.DFHNULL;
         }
-        if (AidKey.PFK04.token().equals(token)) {
-            return CicsAid.DFHPF4;
+        return (byte) stated;
+    }
+
+    /**
+     * Chooses which of the two statements of the key the request made is acted on: the raw byte when it is
+     * there, the token otherwise.
+     *
+     * <p>The byte wins because it is the lossless one - see {@link AidRequestParameter} - and because this
+     * program tests {@code EIBAID} inline, so a folded token would give {@code PF15} the {@code PF3} arm at
+     * line 111 rather than the invalid-key arm at line 127. A token stated beside a disagreeing byte is
+     * refused rather than dropped.
+     *
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when absent
+     * @param aidToken  the payload's {@code CCARD-AID} token, or {@code null} when absent
+     * @return the raw attention-identifier byte line 108 evaluates
+     */
+    static byte resolveEibAid(Integer statedAid, String aidToken) {
+        if (statedAid == null) {
+            return resolveAttentionIdentifier(aidToken);
         }
-        if (AidKey.PFK05.token().equals(token)) {
-            return CicsAid.DFHPF5;
-        }
-        if (AidKey.PFK12.token().equals(token)) {
-            return CicsAid.DFHPF12;
-        }
-        // Every other token - CLEAR, PA1, PA2 and the eleven other function keys - is a key this
-        // program has no WHEN clause for, and so is every string that is not a token at all. DFHNULL
-        // is the byte that reaches WHEN OTHER at line 127.
-        return CicsAid.DFHNULL;
+        return AidRequestParameter.requireStatedAid(AID_MEMBER, statedAid, aidToken, PICTURE_RULES);
     }
 
     // =================================================================================================

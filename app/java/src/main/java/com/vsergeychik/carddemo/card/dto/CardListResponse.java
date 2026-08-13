@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.card.dto.CardListRequest.PageCursor;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
@@ -213,6 +214,25 @@ import java.util.Set;
  * @see NavigationContext
  * @see FieldAttributeSetter
  */
+@JsonPropertyOrder({
+        // The same forty-five xxxI items in the same app/cpy-bms/COCRDLI.CPY order the request
+        // publishes, so the inbound and outbound projections of one screen read alike. Left
+        // implicit, reflection led with the three XCTL targets and put the map behind them.
+        "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno", "acctsid",
+        "cardsid",
+        // Row 1 has no CRDSTP field; see the note on CardListRequest.
+        "crdsel1", "acctno1", "crdnum1", "crdsts1",
+        "crdsel2", "crdstp2", "acctno2", "crdnum2", "crdsts2",
+        "crdsel3", "crdstp3", "acctno3", "crdnum3", "crdsts3",
+        "crdsel4", "crdstp4", "acctno4", "crdnum4", "crdsts4",
+        "crdsel5", "crdstp5", "acctno5", "crdnum5", "crdsts5",
+        "crdsel6", "crdstp6", "acctno6", "crdnum6", "crdsts6",
+        "crdsel7", "crdstp7", "acctno7", "crdnum7", "crdsts7",
+        "infomsg", "errmsg",
+        // Transport extensions after the map: the three targets COCRDLIC names at :403, :539 and
+        // :567, the browse cursor, CVCRD01Y's screen state and the CARDDEMO-COMMAREA.
+        "nextProgram", "nextMapset", "nextMap", "pageCursor", "cardScreenState",
+        "navigationContext"})
 public final class CardListResponse {
 
     // =================================================================================================
@@ -3141,11 +3161,36 @@ public final class CardListResponse {
      */
     @JsonIgnore
     public ScreenMetadata screenMetadata() {
+        return screenMetadata(null);
+    }
+
+    /**
+     * The same metadata with each field's basic attribute byte taken from the input area, which is where
+     * {@code 1000-SEND-MAP}'s attribute paragraph actually writes it.
+     *
+     * <p>{@code app/cbl/COCRDLIC.cbl:753-807} moves {@code DFHBMPRF}, {@code DFHBMPRO} or
+     * {@code DFHBMFSE} into {@code CRDSEL1A} through {@code CRDSEL7A} <em>of {@code CCRDLIAI}</em>, and
+     * {@code :848-866} does the same for {@code ACCTSIDA} and {@code CARDSIDA} - all input-group
+     * {@code xxxA} items, because {@code xxxA} redefines that group's flag byte. The output group's
+     * {@code xxxP}, which {@link #screenMetadata()} alone can see, is never written by this program, so
+     * projecting it reported {@code x'00'} for every field on every path: a client could not tell which
+     * of the seven rows accepted a selection character and which were protected.
+     *
+     * <p>Colour, highlighting and validation still come from the output group, because {@code xxxC},
+     * {@code xxxH} and {@code xxxV} hang off it. A field the input area has no entry for keeps the
+     * output group's byte, and so does every field when {@code inputArea} is {@code null} - the state a
+     * response is in on the paths that paint no screen.
+     *
+     * @param inputArea the input map area {@code CCRDLIAI} as the program left it, or {@code null}
+     * @return the metadata; never {@code null}
+     */
+    @JsonIgnore
+    public ScreenMetadata screenMetadata(CardListRequest inputArea) {
         Map<String, ScreenMetadata.FieldMetadata> quads = new LinkedHashMap<>();
         for (Map.Entry<String, FieldAttributes> entry : attributes.entrySet()) {
             FieldAttributes quad = entry.getValue();
             quads.put(entry.getKey(), ScreenMetadata.FieldMetadata.of(quad.colour(),
-                    quad.ps(),
+                    basicAttributeOf(inputArea, entry.getKey(), quad),
                     quad.highlight(),
                     quad.validn()));
         }
@@ -3153,6 +3198,25 @@ public final class CardListResponse {
         // error line cannot leave this reading an attribute quad that no longer exists.
         FieldAttributes errorLine = attributes.get(mapField(ERRMSGO_ITEM).screenFieldPrefix());
         return ScreenMetadata.of(cursorField, errorLine.colour(), false, quads);
+    }
+
+    /**
+     * The basic attribute byte to report for one field: the input area's {@code xxxA} where it has an
+     * entry for that label, the output group's {@code xxxP} otherwise.
+     *
+     * @param inputArea the input map area, or {@code null}
+     * @param label     the {@code DFHMDF} label
+     * @param quad      that field's output-group attributes
+     * @return the byte to report
+     */
+    private static byte basicAttributeOf(CardListRequest inputArea, String label,
+            FieldAttributes quad) {
+        if (inputArea == null) {
+            return quad.ps();
+        }
+        return inputArea.fieldMetadataOf(label)
+                .map(metadata -> (byte) (metadata.attributeByte() & 0xFF))
+                .orElseGet(quad::ps);
     }
 
     /**

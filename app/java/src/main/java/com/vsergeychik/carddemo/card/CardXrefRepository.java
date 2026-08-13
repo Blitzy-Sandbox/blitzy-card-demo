@@ -22,7 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -409,6 +409,14 @@ public class CardXrefRepository {
     private static final int DUPLICATE_DETECTION_ROW_LIMIT = 2;
 
     /**
+     * How many rows the unreadable-row probe transfers: {@value}.
+     *
+     * <p>The probe asks whether the relation holds a row that cannot be read, and one such row answers
+     * it. Counting them all would transfer rows to refine a number nothing branches on.
+     */
+    private static final int SINGLE_ROW_PROBE_LIMIT = 1;
+
+    /**
      * How many rows one browse read transfers: one.
      *
      * <p>A {@code READ} of a sequential file returns one record ({@code app/cbl/CBACT03C.cbl:93-96}), so
@@ -552,25 +560,43 @@ public class CardXrefRepository {
 
 
     /**
-     * The composed statements, resolved on first use.
+     * The base cluster's composed statements, resolved on first use of the base cluster.
      *
      * <p>Lazily, because the record-image column's name is discovered from the backend and a repository
      * must be constructible in a context that has not reached its backend. {@code null} means "not yet
      * resolved"; the value it holds is immutable.
      *
+     * <p><strong>One memo per access path.</strong> {@code CCXREF} and {@code CXACAIX} are one cluster
+     * reached by two keys (gate G45), but the deployment addresses them by two names and the source uses
+     * them independently: {@code app/cbl/CBACT03C.cbl:118} opens and browses the base cluster and never
+     * touches the path, while {@code app/cbl/COACTVWC.cbl} reads through the path and opens no browse.
+     * Resolving both together described a relation the operation was not using, so an {@code OPEN INPUT}
+     * of {@code XREFFILE} paid a metadata round trip against the path and reported
+     * {@code 'ERROR OPENING XREFFILE'} when the <em>path</em> alone was unavailable. Each path's
+     * availability is now established by the operation that needs it.
+     *
      * <p><strong>What is memoised is the statement TEXT, never the proof that the dataset is there.</strong>
-     * {@link #openBrowse()} composes afresh through {@link #composeStatements()} on every call, precisely
-     * because it stands for {@code OPEN INPUT}: a memoised existence proof made the open's outcome depend
-     * on whether some earlier operation had already populated this field, so a dataset that had gone away
-     * since the last successful read reported {@code 'ERROR READING XREFFILE'} one line later instead of
-     * {@code 'ERROR OPENING XREFFILE'} at {@code app/cbl/CBACT03C.cbl:129}. Two paragraphs, two messages -
-     * and the open's message is the true one when it is the open that cannot be satisfied.
+     * {@link #openBrowse()} composes afresh through {@link #composeBaseStatements()} on every call,
+     * precisely because it stands for {@code OPEN INPUT}: a memoised existence proof made the open's
+     * outcome depend on whether some earlier operation had already populated this field, so a dataset that
+     * had gone away since the last successful read reported {@code 'ERROR READING XREFFILE'} one line
+     * later instead of {@code 'ERROR OPENING XREFFILE'} at {@code app/cbl/CBACT03C.cbl:129}. Two
+     * paragraphs, two messages - and the open's message is the true one when it is the open that cannot be
+     * satisfied.
      *
      * <p>{@code volatile}, because a repository is a singleton reached from several threads and
-     * {@link Statements} is a deeply immutable record: a volatile write publishes it safely, and a
+     * {@link BaseStatements} is a deeply immutable record: a volatile write publishes it safely, and a
      * volatile read never sees a half-built one.
      */
-    private volatile Statements statements;
+    private volatile BaseStatements baseStatements;
+
+    /**
+     * The alternate-index path's composed statements, resolved on first use of the path.
+     *
+     * <p>Separate from {@link #baseStatements} for the reason given there: a read through
+     * {@code CXACAIX} is satisfied - or refused - by {@code CXACAIX}, and by nothing else.
+     */
+    private volatile AlternateStatements alternateStatements;
 
     /**
      * Assembles the repository from the module's shared {@link JdbcTemplate}, the DD-name-keyed
@@ -954,7 +980,7 @@ public class CardXrefRepository {
                 + CardXrefRecord.XREF_CARD_NUM_NAME + " key; an absent key is a defect in the caller, "
                 + "not a NOTFND outcome. Pass an empty string for a key of SPACES.");
         String keyImage = codec.movePicX(cardNumber, CARD_NUMBER_KEY_LENGTH);
-        return readByKey(BASE_DD_NAME, Statements::selectByCardNumber, CARD_NUMBER_KEY_SPAN, keyImage,
+        return readByKey(BASE_DD_NAME, this::baseKeyedAccess, CARD_NUMBER_KEY_SPAN, keyImage,
                 FileStatus.DUPREC);
     }
 
@@ -1016,7 +1042,7 @@ public class CardXrefRepository {
      */
     public ReadResult readByAccountIdViaAltIndex(long accountId) {
         String keyImage = codec.movePic9(accountId, ACCOUNT_ID_KEY_LENGTH);
-        return readByKey(ALTERNATE_INDEX_DD_NAME, Statements::selectByAccountId, ACCOUNT_ID_KEY_SPAN,
+        return readByKey(ALTERNATE_INDEX_DD_NAME, this::alternateKeyedAccess, ACCOUNT_ID_KEY_SPAN,
                 keyImage, FileStatus.DUPKEY);
     }
 
@@ -1064,7 +1090,7 @@ public class CardXrefRepository {
                 + ") REDEFINES view of app/cbl/COACTVWC.cbl:79-80 always holds digits, so an absent "
                 + "image is a defect in the caller rather than a NOTFND outcome");
         String keyImage = codec.movePic9(accountIdKeyImage, ACCOUNT_ID_KEY_LENGTH);
-        return readByKey(ALTERNATE_INDEX_DD_NAME, Statements::selectByAccountId, ACCOUNT_ID_KEY_SPAN,
+        return readByKey(ALTERNATE_INDEX_DD_NAME, this::alternateKeyedAccess, ACCOUNT_ID_KEY_SPAN,
                 keyImage, FileStatus.DUPKEY);
     }
 
@@ -1097,8 +1123,8 @@ public class CardXrefRepository {
      *
      * @param ddName            the configuration key of the access path being read, carried onto the
      *                          result so a caller can compose {@code ERROR-FILE}
-     * @param statementOf       selects, from the resolved statements, the keyed statement for this
-     *                          access path
+     * @param accessOf          resolves the access path being read - its keyed statement and its own
+     *                          unreadable-row probe - describing that path and no other
      * @param keySpan           where this path's key sits inside the record image
      * @param keyImage          the key image, already reshaped by the appropriate {@code MOVE} rule and
      *                          therefore exactly {@code keySpan.length()} characters
@@ -1110,14 +1136,15 @@ public class CardXrefRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private ReadResult readByKey(String ddName,
-                                 Function<Statements, String> statementOf,
+                                 Supplier<KeyedAccess> accessOf,
                                  KeySpan keySpan,
                                  String keyImage,
                                  int duplicateCicsResp) {
         List<String> rows;
+        KeyedAccess access;
         try {
-            Statements sql = resolveStatements();
-            rows = fetch(statementOf.apply(sql), keySpan.pattern(keyImage));
+            access = accessOf.get();
+            rows = fetch(access.keyedStatement(), keySpan.pattern(keyImage));
         } catch (DataAccessException translated) {
             // WHEN OTHER. Reported as a status, exactly as the COBOL keeps only the status, so the
             // caller's own guard chain decides what to do about it - and carrying the backend's own
@@ -1164,8 +1191,12 @@ public class CardXrefRepository {
         }
         if (matches.isEmpty()) {
             // WHEN DFHRESP(NOTFND) / INVALID KEY. A normal branch in every consumer, never an
-            // exception.
-            return ReadResult.notFound(ddName);
+            // exception - but only once the absence has been PROVED. Both keys of this dataset live
+            // inside the record image (XREF-CARD-NUM at offset 0, XREF-ACCT-ID at offset 25), so a row
+            // whose record-image column holds nothing has no knowable key of either kind: the keyed
+            // predicate cannot match it, and reporting NOTFND while it sits there would report as absent
+            // a record that may well be the one asked for. See provenAbsence.
+            return provenAbsence(ddName, access.probeUnreadableRows());
         }
         if (matches.size() > 1) {
             // DUPKEY on a path over a non-unique alternate index, or a base key that has lost its
@@ -1175,6 +1206,93 @@ public class CardXrefRepository {
         }
         // WHEN DFHRESP(NORMAL).
         return ReadResult.found(ddName, matches.get(0).record(), matches.get(0).storedImage());
+    }
+
+    /**
+     * Reports {@code NOTFND} only once no row of the access path just read is <strong>unreadable</strong>,
+     * and the invalid-request outcome when one is.
+     *
+     * <h2>Why an absence has to be proved</h2>
+     * <p>{@code XREF-CARD-NUM} and {@code XREF-ACCT-ID} both live <em>inside</em> the record image - at
+     * offsets 0 and 25 of {@code app/cpy/CVACT03Y.cpy}'s fifty bytes - so a row whose record-image column
+     * holds nothing has no knowable key. SQL evaluates every comparison against a null as
+     * {@code UNKNOWN}, so the keyed predicate cannot match such a row and the read comes back with no
+     * matching row: on the face of it {@code NOTFND}. But {@code NOTFND} is a positive claim, and every
+     * consumer acts on it - {@code app/cbl/COACTVWC.cbl} paints "Account not found", {@code CBTRN02C}
+     * rejects the transaction with reason 102, and {@code CBACT04C} abends. Making that claim while a
+     * present record sits unreadable in the relation reports a record that exists as absent, which is the
+     * one outcome the sibling arm of this method's own loop already refuses for a row it can see.
+     *
+     * <p>So the not-found answer is confirmed with one further row-limited read before it is returned. It
+     * costs one round trip, on the not-found path only, and it changes no other answer: a read that found
+     * its record is untouched, because a corrupt row elsewhere is none of that read's business - a VSAM
+     * {@code READ} of a key that resolves does not fail because another record is damaged.
+     *
+     * <p>The outcome reported for a present-but-unreadable row is {@link #PERMANENT_ERROR_STATUS} on the
+     * {@code WHEN OTHER} arm, exactly as the visible form of the same condition already reports it, so no
+     * caller's guard chain changes shape.
+     *
+     * @param ddName              the access path that answered "nothing matched", so the relation asked to
+     *                            prove it is the one that was read. In a deployment both names address one
+     *                            cluster (gate G45), which makes the two probes the same statement there
+     * @param unreadableRowsProbe that path's own unreadable-row probe
+     * @return {@link ReadResult#notFound(String)} when the absence is established, the {@code WHEN OTHER}
+     *         outcome when it is not; never {@code null}
+     */
+    private ReadResult provenAbsence(String ddName, String unreadableRowsProbe) {
+        List<String> unreadable;
+        try {
+            unreadable = fetchUnparameterised(unreadableRowsProbe);
+        } catch (DataAccessException translated) {
+            // The probe itself was refused, so nothing about the dataset has been established. Reported on
+            // the same arm a refused read is reported on rather than falling back to NOTFND, which would
+            // be the very claim this probe exists to avoid making unsupported.
+            return other(ddName, translated, "establish that the " + ddName + " access path holds no "
+                    + "unreadable row before reporting a key as absent");
+        }
+        if (unreadable == null || unreadable.isEmpty()) {
+            // A genuine WHEN DFHRESP(NOTFND) / INVALID KEY: no row matched the key and no row of the
+            // relation is unreadable, so the absence is established rather than assumed.
+            return ReadResult.notFound(ddName);
+        }
+        LOG.error("A keyed read of the " + ddName + " access path matched no row, but the relation holds "
+                + "a row with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
+                + " - and both of this dataset's keys are part of that image, so that row's key cannot be "
+                + "known; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                + " rather than reporting as absent a record that may be the one asked for");
+        return ReadResult.other(ddName, PERMANENT_ERROR_STATUS);
+    }
+
+    /**
+     * Sends a statement that takes no parameter and brings back at most one row's worth of answer.
+     *
+     * <p>The same extractor and the same row-limit discipline as {@link #fetch(String, String)}, so the
+     * unreadable-row probe cannot drift from the reads it qualifies. One row settles the question it asks.
+     *
+     * @param statement the statement to send
+     * @return what came back, or {@code null} if the template yielded no result at all
+     * @throws DataAccessException if the backend refused the request
+     */
+    private List<String> fetchUnparameterised(String statement) {
+        PreparedStatementCreator creator = connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            // Both limits, as everywhere else: one bounds what the backend hands over, the other what it
+            // carries across the round trip.
+            prepared.setMaxRows(SINGLE_ROW_PROBE_LIMIT);
+            prepared.setFetchSize(SINGLE_ROW_PROBE_LIMIT);
+            return prepared;
+        };
+        ResultSetExtractor<List<String>> extractor = resultSet -> {
+            List<String> images = new ArrayList<>(SINGLE_ROW_PROBE_LIMIT);
+            // The row is not decoded and its image is not read: the question is whether a row with no
+            // image exists, and the predicate has already answered that. Only the row count matters, so
+            // nothing of a record this class could not decode is transferred into memory.
+            while (images.size() < SINGLE_ROW_PROBE_LIMIT && resultSet.next()) {
+                images.add("");
+            }
+            return images;
+        };
+        return jdbcTemplate.query(creator, extractor);
     }
 
     /**
@@ -1303,13 +1421,14 @@ public class CardXrefRepository {
             // establishes that the relation exists and presents a record-image column without any of it
             // crossing the wire. That is what an OPEN INPUT establishes too.
             //
-            // composeStatements() rather than resolveStatements(), and the difference is the defect this
-            // guards: the memoising accessor skips the describe once any earlier operation has populated
-            // the statements, so an OPEN of a dataset that had gone away since reported '00' and the
-            // failure surfaced one line later under 'ERROR READING XREFFILE'. An OPEN proves the dataset
-            // is there on every call, exactly as OPEN INPUT does, and never on the strength of an earlier
-            // operation's success.
-            composeStatements();
+            // composeBaseStatements() rather than resolveBaseStatements(), and the difference is the
+            // defect this guards: the memoising accessor skips the describe once any earlier operation has
+            // populated the statements, so an OPEN of a dataset that had gone away since reported '00' and
+            // the failure surfaced one line later under 'ERROR READING XREFFILE'. An OPEN proves the
+            // dataset is there on every call, exactly as OPEN INPUT does, and never on the strength of an
+            // earlier operation's success - and proves it about the BASE CLUSTER, which is the file being
+            // opened.
+            composeBaseStatements();
         } catch (DataAccessException translated) {
             // ERROR OPENING XREFFILE. app/cbl/CBACT03C.cbl:121-127 moves 12 into APPL-RESULT for any
             // status but '00', then displays and abends - all of which is the caller's, not ours. What
@@ -1672,27 +1791,70 @@ public class CardXrefRepository {
     // =================================================================================================
 
     /**
-     * Resolves the statements on first use and returns them.
+     * The base cluster's keyed access: the statement that reads it by {@code XREF-CARD-NUM} and the probe
+     * that proves an absence against it.
      *
-     * <p>Two describes, one per relation, because the base cluster and the alternate-index path are
-     * addressed by two configured names and this class does not assume a deployment presents them with
-     * the same column name.
+     * <p>A method rather than a field so that resolution happens inside the caller's {@code try}, where a
+     * describe that the backend refuses is reported as the read's own {@code WHEN OTHER} outcome.
      *
-     * @return the composed statements
-     * @throws DataAccessException   if either relation cannot be described
-     * @throws IllegalStateException if either relation presents no usable record-image column
+     * @return the base cluster's keyed access; never {@code null}
+     * @throws DataAccessException   if the base cluster cannot be described
+     * @throws IllegalStateException if the base cluster presents no usable record-image column
      */
-    private Statements resolveStatements() {
-        Statements resolved = this.statements;
+    private KeyedAccess baseKeyedAccess() {
+        BaseStatements sql = resolveBaseStatements();
+        return new KeyedAccess(sql.selectByCardNumber(), sql.probeUnreadableRows());
+    }
+
+    /**
+     * The alternate-index path's keyed access: the statement that reads it by {@code XREF-ACCT-ID} and the
+     * probe that proves an absence against it.
+     *
+     * @return the path's keyed access; never {@code null}
+     * @throws DataAccessException   if the path cannot be described
+     * @throws IllegalStateException if the path presents no usable record-image column
+     */
+    private KeyedAccess alternateKeyedAccess() {
+        AlternateStatements sql = resolveAlternateStatements();
+        return new KeyedAccess(sql.selectByAccountId(), sql.probeUnreadableRows());
+    }
+
+    /**
+     * Resolves the base cluster's statements on first use and returns them.
+     *
+     * <p>One describe, against the base cluster only: what a deployment presents at the path's name is
+     * the path's business and is established by the read that goes through it.
+     *
+     * @return the composed base-cluster statements
+     * @throws DataAccessException   if the base cluster cannot be described
+     * @throws IllegalStateException if the base cluster presents no usable record-image column
+     */
+    private BaseStatements resolveBaseStatements() {
+        BaseStatements resolved = this.baseStatements;
         if (resolved == null) {
-            resolved = composeStatements();
+            resolved = composeBaseStatements();
         }
         return resolved;
     }
 
     /**
-     * Describes both relations and composes the statements <strong>unconditionally</strong>, republishing
-     * the memo {@link #resolveStatements()} reads.
+     * Resolves the alternate-index path's statements on first use and returns them.
+     *
+     * @return the composed alternate-index statements
+     * @throws DataAccessException   if the path cannot be described
+     * @throws IllegalStateException if the path presents no usable record-image column
+     */
+    private AlternateStatements resolveAlternateStatements() {
+        AlternateStatements resolved = this.alternateStatements;
+        if (resolved == null) {
+            resolved = composeAlternateStatements();
+        }
+        return resolved;
+    }
+
+    /**
+     * Describes the base cluster and composes its statements <strong>unconditionally</strong>,
+     * republishing the memo {@link #resolveBaseStatements()} reads.
      *
      * <p>This is the method {@link #openBrowse()} calls, and the distinction between the two is the whole
      * of {@code OPEN INPUT}. {@code app/cbl/CBACT03C.cbl:118-134} opens the file and tests the status
@@ -1703,29 +1865,54 @@ public class CardXrefRepository {
      * the same dataset-scoped describe every time, so an absent, dropped or unreachable dataset is
      * reported by the paragraph that could not be satisfied.
      *
-     * <p>The cost is one metadata round trip per {@code OPEN}, which is the correct place to pay it: the
-     * COBOL opens once per run and then reads, and every read after the open reuses the text this composed.
+     * <p><strong>Only the base cluster is described.</strong> {@code OPEN INPUT XREFFILE} establishes
+     * {@code XREFFILE}; the alternate-index path carries its own DD name, is opened by nobody, and
+     * describing it here reported {@code 'ERROR OPENING XREFFILE'} for a relation this operation never
+     * reads.
      *
-     * @return the freshly composed statements; never {@code null}
-     * @throws DataAccessException   if either relation cannot be described
-     * @throws IllegalStateException if either relation presents no usable record-image column
+     * <p>The cost is one metadata round trip per {@code OPEN}, which is the correct place to pay it: the
+     * COBOL opens once per run and then reads, and every read within the pass reuses the text this
+     * composed.
+     *
+     * @return the freshly composed base-cluster statements; never {@code null}
+     * @throws DataAccessException   if the base cluster cannot be described
+     * @throws IllegalStateException if the base cluster presents no usable record-image column
      */
-    private Statements composeStatements() {
+    private BaseStatements composeBaseStatements() {
         ResultSetExtractor<String> columnNameExtractor =
                 CardXrefRepository::extractRecordImageColumn;
         String baseColumn = baseRelation.rememberRecordImageColumn(
                 jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
-        String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
-                jdbcTemplate.query(alternateIndexRelation.describeStatement(),
-                        columnNameExtractor));
-        Statements composed = new Statements(
+        BaseStatements composed = new BaseStatements(
                 baseRelation.selectByKey(baseColumn),
-                alternateIndexRelation.selectByKey(alternateColumn),
                 baseRelation.selectAllAscending(baseColumn),
-                baseRelation.selectAfterAscending(baseColumn));
+                baseRelation.selectAfterAscending(baseColumn),
+                baseRelation.selectUnreadableRows(baseColumn));
         // Published after it is fully built, through a volatile write, so a concurrent reader sees either
         // the previous complete value or this one and never a partially initialised record.
-        this.statements = composed;
+        this.baseStatements = composed;
+        return composed;
+    }
+
+    /**
+     * Describes the alternate-index path and composes its statements, republishing the memo
+     * {@link #resolveAlternateStatements()} reads.
+     *
+     * <p>One describe, against the path only, for the reason {@link #composeBaseStatements()} describes
+     * only the base cluster.
+     *
+     * @return the freshly composed alternate-index statements; never {@code null}
+     * @throws DataAccessException   if the path cannot be described
+     * @throws IllegalStateException if the path presents no usable record-image column
+     */
+    private AlternateStatements composeAlternateStatements() {
+        String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(jdbcTemplate.query(
+                alternateIndexRelation.describeStatement(),
+                CardXrefRepository::extractRecordImageColumn));
+        AlternateStatements composed = new AlternateStatements(
+                alternateIndexRelation.selectByKey(alternateColumn),
+                alternateIndexRelation.selectUnreadableRows(alternateColumn));
+        this.alternateStatements = composed;
         return composed;
     }
 
@@ -1741,7 +1928,8 @@ public class CardXrefRepository {
     }
 
     /**
-     * The statements this repository sends, composed once against the discovered record-image columns.
+     * The statements this repository sends against the <strong>base cluster</strong>, composed once
+     * against that relation's discovered record-image column.
      *
      * <p>Each key predicate is an escaped {@code LIKE} over the record image, confining the match to the
      * key's own bytes at its own offset. That is what makes a keyed read a keyed read: before it was
@@ -1752,30 +1940,70 @@ public class CardXrefRepository {
      *
      * @param selectByCardNumber  {@code READ} on the base cluster, keyed on {@code XREF-CARD-NUM} at
      *                            offset 0
-     * @param selectByAccountId   {@code READ} through the alternate-index path, keyed on
-     *                            {@code XREF-ACCT-ID} at offset 25
      * @param browseInKeyOrder    the first read of a sequential browse of the base cluster, in ascending
      *                            key order
      * @param browseAfterInKeyOrder every read after the first: the lowest key strictly above the record
      *                            already returned. It takes that record's stored image as its parameter,
      *                            which is what makes a browse advance one record per read instead of
      *                            transferring the dataset once and walking a copy of it
+     * @param probeUnreadableRows the rows of the base cluster whose record image is absent. Not a COBOL
+     *                            operation: it is what lets a keyed read <em>prove</em> an absence before
+     *                            reporting {@code NOTFND}, since both of this dataset's keys live inside
+     *                            the record image. See {@link #provenAbsence(String, String)}
      */
-    record Statements(String selectByCardNumber,
-                      String selectByAccountId,
-                      String browseInKeyOrder,
-                      String browseAfterInKeyOrder) {
+    record BaseStatements(String selectByCardNumber,
+                          String browseInKeyOrder,
+                          String browseAfterInKeyOrder,
+                          String probeUnreadableRows) {
     }
 
     /**
-     * The resolved statements, or {@code null} while they have not been resolved.
+     * The statements this repository sends through the <strong>alternate-index path</strong>, composed
+     * once against that path's discovered record-image column.
+     *
+     * @param selectByAccountId   {@code READ} through the alternate-index path, keyed on
+     *                            {@code XREF-ACCT-ID} at offset 25
+     * @param probeUnreadableRows the same absence proof over the path, so a read through the path proves
+     *                            its absence against the path it read
+     */
+    record AlternateStatements(String selectByAccountId, String probeUnreadableRows) {
+    }
+
+    /**
+     * One access path's keyed read: the statement that performs it and the probe that proves an absence
+     * against the same path.
+     *
+     * <p>The pair travels together because they must address the same relation. A read through the
+     * alternate-index path that proved its absence against the base cluster would be answering a question
+     * about a relation it never read.
+     *
+     * @param keyedStatement      the keyed {@code SELECT} for this path
+     * @param probeUnreadableRows this path's unreadable-row probe
+     */
+    private record KeyedAccess(String keyedStatement, String probeUnreadableRows) {
+    }
+
+    /**
+     * The base cluster's resolved statements, or {@code null} while they have not been resolved.
      *
      * <p>Package-visible so this class's own tests can assert the composed text without a backend.
      *
-     * @return the resolved statements, or {@code null}
+     * @return the resolved base-cluster statements, or {@code null}
      */
-    Statements resolvedStatements() {
-        return statements;
+    BaseStatements resolvedBaseStatements() {
+        return baseStatements;
+    }
+
+    /**
+     * The alternate-index path's resolved statements, or {@code null} while they have not been resolved.
+     *
+     * <p>A separate accessor because the two paths resolve separately: after a browse or a read of the
+     * base cluster this answers {@code null}, which is the property the split exists to give.
+     *
+     * @return the resolved alternate-index statements, or {@code null}
+     */
+    AlternateStatements resolvedAlternateStatements() {
+        return alternateStatements;
     }
 
     /**
@@ -2409,10 +2637,10 @@ public class CardXrefRepository {
                 return ReadResult.endOfFile(BASE_DD_NAME);
             }
 
-            Statements sql;
+            BaseStatements sql;
             BrowseRow row;
             try {
-                sql = repository.resolveStatements();
+                sql = repository.resolveBaseStatements();
                 row = position == null
                         ? repository.browseRow(sql.browseInKeyOrder(), null)
                         : repository.browseRow(sql.browseAfterInKeyOrder(), position);

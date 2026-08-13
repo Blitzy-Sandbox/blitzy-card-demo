@@ -2945,11 +2945,20 @@ public class TransactionReportJob {
         // statements and no other outcome's.
         //
         // Branching on "did it find a record" instead of "was it the invalid-key condition" is
-        // therefore wrong twice over on a backend refusal or a malformed row: it emits an
-        // 'INVALID CARD NUMBER : <key>' line the program never wrote, and it renders
+        // therefore wrong three times over on a backend refusal or a malformed row: it emits an
+        // 'INVALID CARD NUMBER : <key>' line the program never wrote, it renders
         // FILE STATUS IS: NNNN0023 in place of the status that actually failed - the one line an
-        // operator needs. Each lookup now separates the two, and a non-invalid-key failure reports the
-        // repository's own status through readFailedOtherThanInvalidKey.
+        // operator needs - and it ENDS THE RUN where the program continues.
+        //
+        // That last one is the substantive difference. Each of these three files declares a FILE STATUS
+        // item in its SELECT (:6-22) and the program has no USE AFTER ERROR declarative, so a failure
+        // the INVALID KEY phrase does not cover sets that item and passes control to the statement after
+        // the END-READ - here the paragraph's own EXIT. The report then composes its detail line from a
+        // record area the read did not populate, which is to say from whatever the area already held.
+        // Each lookup accordingly separates the two conditions: the invalid-key arm abends, and every
+        // other failure is logged through noteReadFailedOtherThanInvalidKey and returns with the area
+        // untouched. The areas are constructed rather than left null precisely so that "untouched" is a
+        // real image and not a null reference.
         // -----------------------------------------------------------------------------------------
 
         /**
@@ -2977,8 +2986,10 @@ public class TransactionReportJob {
          * It applies to the invalid-key condition only; a read that failed for another reason never
          * reaches this arm and reports its own status instead.
          *
-         * @throws AbendException whenever the read does not deliver a record, whether because the key
-         *                        is invalid or because the read failed for another reason
+         * @throws AbendException on the {@code INVALID KEY} condition alone. A read that fails for any
+         *                        other reason does not abend: the {@code FILE STATUS} item is set,
+         *                        control passes the {@code END-READ}, and the record area is left
+         *                        unchanged for the report to compose its line from
          */
         private void lookupXref() {
             // :485  READ XREF-FILE INTO CARD-XREF-RECORD  - keyed by FD-XREF-CARD-NUM.
@@ -2991,8 +3002,11 @@ public class TransactionReportJob {
                 return;
             }
             if (!read.isNotFound()) {
-                // Not the INVALID KEY condition, so :487-489 do not run at all.
-                throw readFailedOtherThanInvalidKey(CARDXREF_DD_NAME, read.status());
+                // Not the INVALID KEY condition, so :487-489 do not run at all. The FILE STATUS item
+                // is set, control passes the END-READ, and the paragraph exits with the record area
+                // UNCHANGED - which the report then reads, exactly as the source does.
+                noteReadFailedOtherThanInvalidKey(CARDXREF_DD_NAME, read.status());
+                return;
             }
             // :487  DISPLAY 'INVALID CARD NUMBER : '  FD-XREF-CARD-NUM
             // :488-489  MOVE 23 TO IO-STATUS, then 9910-DISPLAY-IO-STATUS.
@@ -3017,8 +3031,10 @@ public class TransactionReportJob {
          * <p>Read once per detail line, not once per account: two records of the same card may carry
          * different type codes.
          *
-         * @throws AbendException whenever the read does not deliver a record, whether because the key
-         *                        is invalid or because the read failed for another reason
+         * @throws AbendException on the {@code INVALID KEY} condition alone. A read that fails for any
+         *                        other reason does not abend: the {@code FILE STATUS} item is set,
+         *                        control passes the {@code END-READ}, and the record area is left
+         *                        unchanged for the report to compose its line from
          */
         private void lookupTranType() {
             // :495  READ TRANTYPE-FILE INTO TRAN-TYPE-RECORD  - keyed by FD-TRAN-TYPE.
@@ -3032,7 +3048,11 @@ public class TransactionReportJob {
             }
             if (!read.isNotFound()) {
                 // Not the INVALID KEY condition, so :497-499 do not run at all.
-                throw readFailedOtherThanInvalidKey(TRANTYPE_DD_NAME, read.status());
+                // Not the INVALID KEY condition, so :497-499 do not run at all. The FILE STATUS item
+                // is set, control passes the END-READ, and the paragraph exits with the record area
+                // UNCHANGED - which the report then reads, exactly as the source does.
+                noteReadFailedOtherThanInvalidKey(TRANTYPE_DD_NAME, read.status());
+                return;
             }
             // :497-499  DISPLAY 'INVALID TRANSACTION TYPE : ' with the 2-byte key, MOVE 23 TO IO-STATUS,
             // then 9910-DISPLAY-IO-STATUS. The repository echoes the key image the read actually used.
@@ -3060,8 +3080,10 @@ public class TransactionReportJob {
          * It is rendered by {@link TranCategoryRepository#keyImage(String, int)} so the composition
          * happens in one place and cannot drift from the key the read used.
          *
-         * @throws AbendException whenever the read does not deliver a record, whether because the key
-         *                        is invalid or because the read failed for another reason
+         * @throws AbendException on the {@code INVALID KEY} condition alone. A read that fails for any
+         *                        other reason does not abend: the {@code FILE STATUS} item is set,
+         *                        control passes the {@code END-READ}, and the record area is left
+         *                        unchanged for the report to compose its line from
          */
         private void lookupTranCategory() {
             // :505  READ TRANCATG-FILE INTO TRAN-CAT-RECORD  - keyed by FD-TRAN-CAT-KEY.
@@ -3076,7 +3098,11 @@ public class TransactionReportJob {
             }
             if (!read.isNotFound()) {
                 // Not the INVALID KEY condition, so :507-509 do not run at all.
-                throw readFailedOtherThanInvalidKey(TRANCATG_DD_NAME, read.status());
+                // Not the INVALID KEY condition, so :507-509 do not run at all. The FILE STATUS item
+                // is set, control passes the END-READ, and the paragraph exits with the record area
+                // UNCHANGED - which the report then reads, exactly as the source does.
+                noteReadFailedOtherThanInvalidKey(TRANCATG_DD_NAME, read.status());
+                return;
             }
             // :507-509  DISPLAY 'INVALID TRAN CATG KEY : ' with the 6-byte key, MOVE 23 TO IO-STATUS,
             // then 9910-DISPLAY-IO-STATUS.
@@ -3117,14 +3143,17 @@ public class TransactionReportJob {
          * @param status the two-character file status the repository reported, carried through unchanged
          * @return the exception to throw
          */
-        private AbendException readFailedOtherThanInvalidKey(String ddName, String status) {
+        private void noteReadFailedOtherThanInvalidKey(String ddName, String status) {
             LOG.error("A keyed read of DD " + ddName + " reported file status "
                     + FileStatus.toStatusImage(status) + ", which is not the INVALID KEY condition, so "
                     + PROGRAM_NAME + "'s INVALID KEY arm does not run and no status is substituted for "
-                    + "this one. Abending rather than composing a report line from a record area the "
-                    + "read did not populate.");
-            return abendProgram(sysout, "A keyed read of DD " + ddName + " failed other than through the "
-                    + "INVALID KEY condition", status);
+                    + "this one. Every one of these files declares a FILE STATUS item in its SELECT and "
+                    + "the program has no USE AFTER ERROR declarative, so control passes the END-READ "
+                    + "and the paragraph reaches its EXIT: the record area is left exactly as it was and "
+                    + "the report goes on to compose a line from it. Reported here rather than on the "
+                    + "SYSOUT channel, because the DISPLAY belongs to the INVALID KEY arm and this is "
+                    + "not that arm - emitting it would put a line in the report's output that the "
+                    + "program never wrote.");
         }
 
         // -----------------------------------------------------------------------------------------

@@ -26,11 +26,11 @@ import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
-import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -613,15 +613,32 @@ class CardSelectControllerTest {
                     .isEqualTo(CardSelectController.PASSED_COMMAREA_LENGTH);
         }
 
-        @ParameterizedTest(name = "eibcalen = {0} is refused")
+        @ParameterizedTest(name = "eibcalen = {0} against a payload carrying no commarea is refused")
         @ValueSource(ints = {-1, 1, 159, 160, 171, 173, 2000})
-        @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
+        @DisplayName("A length stated over a payload that carried no communication area is refused - "
+                + "not because the number is unusual, but because EIBCALEN describes what arrived")
         void anImpossibleEibcalenIsRefused(int stated) {
             CardSelectRequest cold = new CardSelectRequest();
             cold.initializeMapArea();
 
             assertThatThrownBy(() -> CardSelectController.resolveEibcalen(stated, cold))
                     .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @ParameterizedTest(name = "eibcalen = {0} is preserved when a commarea did arrive")
+        @ValueSource(ints = {1, 159, 160, 171, 172, 173, 2000})
+        @DisplayName("Every non-zero length a caller can state is preserved as it arrived, because "
+                + ":268 tests EIBCALEN against zero and against nothing else")
+        void everyRealLengthIsPreserved(int stated) {
+            // The two the legacy path really produces are 160 - COCRDLIC's XCTL passes
+            // CARDDEMO-COMMAREA alone [app/cbl/COCRDLIC.cbl:538-540] - and 2000, this program's own
+            // COMMON-RETURN passing WS-COMMAREA PIC X(2000). An acceptance set of {0, 172} answered 400
+            // to both.
+            CardSelectRequest continuing = new CardSelectRequest();
+            continuing.initializeMapArea();
+            continuing.setNavigationContext(NavigationContext.empty());
+
+            assertThat(CardSelectController.resolveEibcalen(stated, continuing)).isEqualTo(stated);
         }
 
         @Test
@@ -1787,6 +1804,20 @@ class CardSelectControllerTest {
             assertThat(response.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
                     .isEqualTo(BmsAttributes.DFHDFCOL);
             assertThat(BmsAttributes.isProtected(BmsAttributes.DFHBMPRF)).isTrue();
+
+            // And the byte reaches the client. It is written into xxxA of the INPUT group, so the
+            // projection has to be given that area: reading the output group's never-written xxxP
+            // reported x'00' for every field and lost the protection entirely.
+            ScreenMetadata metadata = response.screenMetadata(request);
+            assertThat(metadata.fields().get("ACCTSID").protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRF));
+            assertThat(metadata.fields().get("CARDSID").protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRF));
+            assertThat(metadata.fields().get("ACCTSID").colour())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHDFCOL));
+
+            // Without an input area there is nothing to merge, and the output group's own byte stands.
+            assertThat(response.screenMetadata().fields().get("ACCTSID").protection()).isZero();
         }
 
         @Test
@@ -1806,6 +1837,11 @@ class CardSelectControllerTest {
             // No ELSE on the colour block, so it stays as MOVE LOW-VALUES left it.
             assertThat(response.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
                     .isEqualTo((byte) 0x00);
+
+            // The unprotected byte reaches the client too, which is what makes the two arms
+            // distinguishable from outside the program.
+            assertThat(response.screenMetadata(request).fields().get("ACCTSID").protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMFSE));
         }
 
         @Test
@@ -2308,28 +2344,46 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("a body naming a DIFFERENT card is refused, naming the member and echoing no value")
+        @DisplayName("a body naming a DIFFERENT card is superseded by the URI on a first entry, and "
+                + "kept exactly as it arrived on a re-entry")
         void aContradictingCardNumberIsRefused() {
-            // CARDSID is the typed criterion the re-entry arm edits, and the URI states the same key. Two
-            // different keys in one request is a screen that cannot exist, so it is refused at the
-            // boundary rather than having one of the two values dropped with no message.
-            assertThatThrownBy(() ->
-                    controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null)))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .hasMessageContaining("cardsid")
-                    .hasMessageNotContaining("4000000000000002");
+            // A first entry: :268-303 either paints the prompt (EIBCALEN zero) or reads CDEMO-CARD-NUM
+            // from the commarea. Either way the typed field is not what the source consults, so the URI
+            // is what the projection writes into it.
+            CardSelectRequest firstEntry =
+                    controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null));
+            assertThat(firstEntry.getCardsid()).isEqualTo(CARD_NUMBER);
+
+            // A re-entry: :597-627 edits CARDSIDI and :685-719 reads on it, so typing another card
+            // number over the painted screen is the source-valid action. Nothing is substituted and
+            // nothing is refused.
+            CardSelectRequest reentry = controller.bind(CARD_NUMBER,
+                    request("4000000000000002", ACCOUNT_ID, NavigationContext.empty()
+                            .withFromProgram(CardSelectControllerAccess.THIS_PGM)
+                            .withFromTranid(CardSelectControllerAccess.THIS_TRANID)
+                            .withPgmReenter()));
+            assertThat(reentry.getCardsid()).isEqualTo("4000000000000002");
+
             verifyNoInteractions(repository);
         }
 
         @Test
-        @DisplayName("the asterisk COCRDSLC paints for 'no criterion' agrees with the URI")
+        @DisplayName("the asterisk COCRDSLC paints for 'no criterion' survives a re-entry and is "
+                + "seeded over only on a first entry")
         void theAsteriskNoCriterionImageAgrees() {
             // app/cbl/COCRDSLC.cbl:543,549 MOVE '*' TO the output fields when nothing was supplied and
-            // :615,622 read = '*' back as exactly that, so an asterisk names no card. A client echoing
-            // that painted screen must bind, not be refused.
+            // :615,622 read = '*' back as exactly that, so an asterisk names no card. On a re-entry the
+            // source's own edit at :615 is what answers it; on a first entry the field is not consulted
+            // at all, so the URI supplies it.
             CardSelectRequest bound = controller.bind(CARD_NUMBER, request("*", ACCOUNT_ID, null));
-
             assertThat(bound.getCardsid()).isEqualTo(CARD_NUMBER);
+
+            CardSelectRequest reentry = controller.bind(CARD_NUMBER,
+                    request("*", ACCOUNT_ID, NavigationContext.empty()
+                            .withFromProgram(CardSelectControllerAccess.THIS_PGM)
+                            .withFromTranid(CardSelectControllerAccess.THIS_TRANID)
+                            .withPgmReenter()));
+            assertThat(reentry.getCardsid()).isEqualTo("*");
         }
 
         @Test

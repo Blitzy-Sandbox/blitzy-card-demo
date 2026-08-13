@@ -317,6 +317,18 @@ public class AccountInterestCalcJob {
     static final String TRANSACT_ABNORMAL_DISPOSITION =
             "app/jcl/INTCALC.jcl:37 TRANSACT DISP=(NEW,CATLG,DELETE) abnormal disposition";
 
+    /**
+     * Names the {@code TRANSACT} DD's <em>normal</em> disposition - the {@code NEW} allocation - for
+     * attribution in a diagnostic.
+     *
+     * <p>The first positional of the same {@code DISP=(NEW,CATLG,DELETE)} at
+     * {@code app/jcl/INTCALC.jcl:37}: the step allocates a new generation, so the run writes into an empty
+     * one rather than appending to the previous run's. Applied in a boundary of its own for the same
+     * reason the abnormal disposition is - see {@link InterestCalculationRun#tranfileOpen()}.
+     */
+    static final String TRANSACT_OPEN_DISPOSITION =
+            "app/jcl/INTCALC.jcl:37 TRANSACT DISP=(NEW,CATLG,DELETE) new-generation allocation";
+
     /** {@code TCATBALF} - the driving browse ({@code app/jcl/INTCALC.jcl:27-28}). */
     public static final String TCATBALF_DD_NAME = TranCatBalRepository.DD_NAME;
 
@@ -1694,8 +1706,16 @@ public class AccountInterestCalcJob {
          */
         void tranfileOpen() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L308
-            tranFile = job.transactionRepository.openOutput(                                  //     L309
-                    job.batchConfig.datasetBinding(JOB_KEY, TRANSACT_DD_NAME), TRANSACT_DD_NAME);
+            // The open clears the destination, which is what the NEW of DISP=(NEW,CATLG,DELETE) means -
+            // and it runs in the ItemStream open callback, which Spring Batch invokes OUTSIDE the chunk
+            // transaction. With the pool handing out connections with auto-commit disabled, the clear
+            // would execute, report the rows it removed, and then be rolled back when the connection
+            // returned: the open would report '00' over a generation still holding the previous run's
+            // transactions, and this run's records would be appended to them. So the allocation gets a
+            // boundary of its own, exactly as its abnormal counterpart does in releaseAbnormally().
+            DatasetBinding binding = job.batchConfig.datasetBinding(JOB_KEY, TRANSACT_DD_NAME);
+            tranFile = job.unitOfWork.persistDisposition(TRANSACT_OPEN_DISPOSITION,               //  L309
+                    () -> job.transactionRepository.openOutput(binding, TRANSACT_DD_NAME));
             String status = tranFile.openStatus();
             applResultFromOkStatus(status);                                                   // L310-314
             if (!workingStorage.applAok()) {                                                  //     L315
@@ -3385,7 +3405,7 @@ public class AccountInterestCalcJob {
             // An OPEN resolves the dataset's shape afresh; the resolved statement belongs to the handle.
             relation.forgetRecordImageColumn();
             try {
-                return new JdbcDisclosureGroupFile(this, FileStatus.OK, resolveSelectByKey());
+                return new JdbcDisclosureGroupFile(this, FileStatus.OK, resolveStatements());
             } catch (DataAccessException unreachable) {
                 // The SANITIZED summary only. A throwable handed to a logger emits its message and its
                 // whole cause chain verbatim, and a driver composes that message around the values it
@@ -3403,25 +3423,42 @@ public class AccountInterestCalcJob {
         }
 
         /**
-         * Composes the keyed-read statement, discovering the record-image column's name from the backend.
+         * Composes the statements this access path sends, discovering the record-image column's name from
+         * the backend.
          *
-         * <p>The probe is read-only and returns no rows by construction, so the relation is described
-         * without any of it being transferred - which is what an {@code OPEN INPUT} establishes too.
+         * <p>The describe is read-only and returns no rows by construction, so the relation is described
+         * without any of it being transferred - which is what an {@code OPEN INPUT} establishes too. Both
+         * statements come out of that one describe: the column name is remembered on the relation, so
+         * composing the unreadable-row probe costs no second round trip.
          *
          * <p>Package-visible so a unit test can assert the composed text without a round trip.
          *
-         * @return the keyed-read statement, taking the {@code LIKE} pattern as its only parameter
+         * @return the keyed-read statement and the unreadable-row probe
          * @throws DataAccessException   if the dataset cannot be described, which the caller turns into a
          *                               status
          * @throws IllegalStateException if the dataset is described but presents no usable record-image
          *                               column
          */
-        String resolveSelectByKey() {
+        Statements resolveStatements() {
             ResultSetExtractor<String> columnNameExtractor =
                     JdbcDisclosureGroupAccess::extractRecordImageColumnName;
             String columnName = jdbcTemplate.query(relation.describeStatement(), columnNameExtractor);
-            return relation.selectByKey(
-                    relation.rememberRecordImageColumn(requireUsableColumnName(columnName)));
+            String recordImageColumn =
+                    relation.rememberRecordImageColumn(requireUsableColumnName(columnName));
+            return new Statements(relation.selectByKey(recordImageColumn),
+                    relation.selectUnreadableRows(recordImageColumn));
+        }
+
+        /**
+         * The two statements one open resolves.
+         *
+         * @param selectByKey         the keyed read, taking the {@code LIKE} pattern as its only parameter
+         * @param probeUnreadableRows the rows whose record-image column holds nothing, which is what lets a
+         *                            keyed read <em>prove</em> an absence before it reports one. The
+         *                            three components of {@code DIS-GROUP-KEY} live inside the record
+         *                            image, so a row with no image has no knowable key
+         */
+        record Statements(String selectByKey, String probeUnreadableRows) {
         }
 
         /**
@@ -3503,14 +3540,14 @@ public class AccountInterestCalcJob {
         /**
          * Performs the keyed read for a handle that opened successfully.
          *
-         * @param selectByKey the statement the handle's open resolved
-         * @param keyImage    the 16-character key
+         * @param sql      the statements the handle's open resolved
+         * @param keyImage the 16-character key
          * @return the outcome; never {@code null}
          */
-        private DisclosureGroupRead readByKey(String selectByKey, String keyImage) {
+        private DisclosureGroupRead readByKey(Statements sql, String keyImage) {
             List<byte[]> rows;
             try {
-                rows = jdbcTemplate.query(firstRowMatching(selectByKey, KEY_SPAN.pattern(keyImage)),
+                rows = jdbcTemplate.query(firstRowMatching(sql.selectByKey(), KEY_SPAN.pattern(keyImage)),
                         recordImageMapper());
             } catch (DataAccessException translated) {
                 // The sanitized summary only; see the note in open() for why the throwable is not passed.
@@ -3525,8 +3562,14 @@ public class AccountInterestCalcJob {
 
             if (rows.isEmpty()) {
                 // The INVALID KEY condition of app/cbl/CBACT04C.cbl:417-419. An EXPECTED outcome and the
-                // signal to retry with the DEFAULT group, so it is reported and never thrown.
-                return DisclosureGroupRead.notFound();
+                // signal to retry with the DEFAULT group, so it is reported and never thrown - but only
+                // once the absence has been PROVED. All three components of DIS-GROUP-KEY live inside the
+                // record image (app/cpy/CVTRA02Y.cpy:5-8), so a row whose record-image column holds
+                // nothing has no knowable key and the keyed predicate cannot match it. Reporting '23'
+                // while such a row sits in the dataset sends 1200-GET-INTEREST-RATE to the DEFAULT group
+                // and charges a rate the account's own group may well define - which is a money
+                // difference, not a diagnostic one.
+                return provenAbsence(sql.probeUnreadableRows(), keyImage);
             }
 
             byte[] image = rows.get(0);
@@ -3558,6 +3601,79 @@ public class AccountInterestCalcJob {
                         + "discrepancy would be wrong");
                 return DisclosureGroupRead.failed(PERMANENT_ERROR_STATUS);
             }
+        }
+
+        /**
+         * Reports the {@code INVALID KEY} condition only once no row of the rate table is
+         * <strong>unreadable</strong>, and the permanent-error status when one is.
+         *
+         * <h2>Why this one matters in money rather than in diagnostics</h2>
+         * <p>{@code app/cbl/CBACT04C.cbl:417-419} takes {@code '23'} from this dataset as "this account
+         * group has no rate for this category" and retries the read under the {@code DEFAULT} group
+         * ({@code :421-430}). So a keyed-empty result that is really an unreadable row does not merely
+         * mislabel an error: it charges the default rate against an account whose own group may define a
+         * different one, and the run completes and reports success.
+         *
+         * <p>The three components of {@code DIS-GROUP-KEY} all live inside the record image, so a row
+         * whose record-image column holds nothing has no knowable key and the keyed predicate - a
+         * comparison, and therefore {@code UNKNOWN} against a null - cannot match it. The absence is
+         * therefore confirmed with one further row-limited read before it is reported, on the empty path
+         * only; a read that found its rate is untouched.
+         *
+         * @param unreadableRowsProbe the statement selecting the rows with no record image
+         * @param keyImage            the key that matched nothing, for the diagnostic - masked as ever
+         * @return {@link DisclosureGroupRead#notFound()} when the absence is established, the
+         *         permanent-error outcome when it is not; never {@code null}
+         */
+        private DisclosureGroupRead provenAbsence(String unreadableRowsProbe, String keyImage) {
+            List<byte[]> unreadable;
+            try {
+                unreadable = jdbcTemplate.query(firstRow(unreadableRowsProbe), recordImageMapper());
+            } catch (DataAccessException translated) {
+                // The probe established nothing, so the absence stays unproved - and must not become the
+                // DEFAULT-group retry. Reported on the arm a refused read is reported on.
+                LOG.error("Could not establish that the disclosure group dataset '" + datasetName
+                        + "' holds no unreadable row before reporting key '"
+                        + keyForDiagnostics(keyImage) + "' as absent - "
+                        + DatasetRelation.BackendDiagnostic.of(translated).describe()
+                        + "; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " rather than the INVALID KEY that would charge the DEFAULT rate");
+                return DisclosureGroupRead.failed(PERMANENT_ERROR_STATUS);
+            }
+            // As on the keyed read above, the list itself is never null, so emptiness is the whole test.
+            if (unreadable.isEmpty()) {
+                // A genuine INVALID KEY: nothing matched the key and no row of the table is unreadable, so
+                // the DEFAULT-group retry at :421-430 is the right next step.
+                return DisclosureGroupRead.notFound();
+            }
+            LOG.error("A keyed read of the disclosure group dataset '" + datasetName + "' matched no row "
+                    + "for key '" + keyForDiagnostics(keyImage) + "', but the dataset holds a row with no "
+                    + "record image at column position " + DatasetRelation.RECORD_IMAGE_COLUMN_INDEX
+                    + " - and DIS-GROUP-KEY is part of that image, so that row's key cannot be known; "
+                    + "reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + " rather than the INVALID KEY that would send this account to the DEFAULT group");
+            return DisclosureGroupRead.failed(PERMANENT_ERROR_STATUS);
+        }
+
+        /**
+         * Builds a statement that returns at most one row and binds no parameter: the shape the
+         * unreadable-row probe needs.
+         *
+         * <p>The row limit is set on the {@link PreparedStatement} rather than expressed as a row-limiting
+         * clause, exactly as {@link #firstRowMatching(String, String)} does it, so no dialect syntax
+         * appears in any statement this class sends. One row settles the question the probe asks.
+         *
+         * @param sql the statement text
+         * @return a creator for the prepared and limited statement
+         */
+        private PreparedStatementCreator firstRow(String sql) {
+            return connection -> {
+                PreparedStatement statement = connection.prepareStatement(sql);
+                statement.setMaxRows(1);
+                statement.setFetchSize(1);
+                return statement;
+            };
         }
 
         /**
@@ -3677,22 +3793,22 @@ public class AccountInterestCalcJob {
         /** What the open reported. */
         private final String openStatus;
 
-        /** The keyed-read statement the open resolved, or {@code null} when the open failed. */
-        private final String selectByKey;
+        /** The statements the open resolved, or {@code null} when the open failed. */
+        private final JdbcDisclosureGroupAccess.Statements statements;
 
         /** Whether this handle has been closed; a close is idempotent. */
         private boolean closed;
 
         /**
-         * @param access      the access path
-         * @param openStatus  the status the open reported
-         * @param selectByKey the resolved statement, or {@code null} when the open failed
+         * @param access     the access path
+         * @param openStatus the status the open reported
+         * @param statements the resolved statements, or {@code null} when the open failed
          */
         JdbcDisclosureGroupFile(JdbcDisclosureGroupAccess access, String openStatus,
-                String selectByKey) {
+                JdbcDisclosureGroupAccess.Statements statements) {
             this.access = access;
             this.openStatus = openStatus;
-            this.selectByKey = selectByKey;
+            this.statements = statements;
         }
 
         @Override
@@ -3716,17 +3832,17 @@ public class AccountInterestCalcJob {
                         + "nothing more. app/cbl/CBACT04C.cbl closes it once, at :561, after the loop - "
                         + "reading afterwards is a defect in the caller and not a file status.");
             }
-            if (selectByKey == null) {
+            if (statements == null) {
                 // The open never reached the dataset. Report the same failure rather than a fresh one.
                 return DisclosureGroupRead.failed(JdbcDisclosureGroupAccess.PERMANENT_ERROR_STATUS);
             }
-            return access.readByKey(selectByKey, keyImage);
+            return access.readByKey(statements, keyImage);
         }
 
         @Override
         public String closeFile() {
             closed = true;
-            if (selectByKey != null) {
+            if (statements != null) {
                 return FileStatus.OK;
             }
             // A CLOSE of a file that is not open is not a success, which is what COBOL reports too.

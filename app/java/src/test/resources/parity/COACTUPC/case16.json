@@ -47,7 +47,8 @@
       "CDEMO-ACCT-STATUS": "Y",
       "CDEMO-CARD-NUM": "9680294154603697",
       "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
+      "CDEMO-LAST-MAPSET": "       ",
+      "WS-THIS-PROGCOMMAREA": "N00000000001Y00000001940{00000020200{00000010200{20141120202505202025052000000000000{00000000000{          000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  02097388800000000000049368437196106080053581756Y27400000000001Y00000000999R00012345678I00000012345F20141120202505202025052099999999999I00000043212C\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA27601     (908)119-8310  (919)693-8684  02097388800000000000049368437196106080053581756Y742"
     },
     "mapFields": {
       "ACCTSIDI": "00000000001",
@@ -125,6 +126,11 @@
   ],
   "expectedFinalState": [
     {
+      "dataset": "CXACAIX",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
       "fields": {
@@ -147,6 +153,11 @@
         "CUST-FICO-CREDIT-SCORE": "742"
       },
       "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA27601     (908)119-8310  (919)693-8684  020973888000000000000493684371961-06-080053581756Y742                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
     }
   ],
   "expectedReturnCode": 0,
@@ -164,8 +175,26 @@
   ],
   "expectedDatasets": [
     {
+      "dataset": "CXACAIX",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CXACAIX",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
       "dataset": "ACCTDAT",
       "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 300
     },
@@ -176,16 +205,22 @@
       "recordLength": 500
     },
     {
-      "dataset": "ACCTDAT",
-      "channel": "FINAL_STATE",
-      "rowCount": 1,
-      "recordLength": 300
-    },
-    {
       "dataset": "CUSTDAT",
       "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 500
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 150
     }
   ]
 }

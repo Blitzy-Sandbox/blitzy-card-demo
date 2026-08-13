@@ -2423,9 +2423,17 @@ public final class CardSelectRequest {
      * what a parity failure has to be read from.
      *
      * @param field the screen field
-     * @return its classification, never {@code null}
+     * @return its classification, never {@code null};
+     *         {@link SensitiveDiagnostics.Disclosure#REDACTED_VALUE} for {@code null}
      */
-    private static SensitiveDiagnostics.Disclosure disclosureOf(ScreenField field) {
+    static SensitiveDiagnostics.Disclosure disclosureOf(ScreenField field) {
+        // Fails closed. A null field is unreachable from this class's own iteration over
+        // ScreenField.values(), but a disclosure decision that throws instead of withholding is a
+        // decision that can be reached by accident and answered wrongly, so the safe answer is stated
+        // rather than left to the switch. Asserted directly by NoSensitiveDisclosureTest.
+        if (field == null) {
+            return SensitiveDiagnostics.Disclosure.REDACTED_VALUE;
+        }
         return switch (field) {
             case ACCTSID -> SensitiveDiagnostics.Disclosure.IDENTIFIER;
             case CARDSID -> SensitiveDiagnostics.Disclosure.PAN;

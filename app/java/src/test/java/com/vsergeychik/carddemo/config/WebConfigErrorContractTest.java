@@ -27,13 +27,19 @@ import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
 import jakarta.validation.metadata.ConstraintDescriptor;
 
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.MethodParameter;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -45,6 +51,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * The error contract of {@link WebConfig.CobolErrorHandler}: what a failure tells a caller, and -
@@ -75,6 +82,18 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
  */
 @DisplayName("WebConfig.CobolErrorHandler - the failure bodies, and what they withhold")
 class WebConfigErrorContractTest {
+
+
+    /**
+     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
+     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
+     *
+     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
+     * judges every value against the page in force rather than against a page of its own choosing: a
+     * mapper built for a test has to name the same one the profile does or it is not the production
+     * mapper.
+     */
+    private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
     /** The advice under test. It is stateless, so one instance serves every case here. */
     private final CobolErrorHandler handler = new CobolErrorHandler();
@@ -562,6 +581,139 @@ class WebConfigErrorContractTest {
         }
     }
 
+    /**
+     * The other side of the same trust boundary: what the <em>server's own</em> log is told.
+     *
+     * <h2>Why an emitted diagnostic is a requirement rather than a nicety</h2>
+     * A handler that returns a response has <strong>handled</strong> the exception, so Spring's own
+     * resolver never logs it. Before these two diagnostics existed, a dataset outage and any unclaimed
+     * failure left no trace at all: the caller received a five-word sentence, and the operator received
+     * nothing to correlate it with - no exhausted pool, no revoked credential, no repository fault. The
+     * response is deliberately value-free, which makes the log the only place the event is recorded, and
+     * therefore makes its absence a hole rather than a style question.
+     *
+     * <h2>And why the log is still not a dumping ground</h2>
+     * Two properties are asserted together. The event must be emitted, at a level that matches what
+     * happened - {@code ERROR} for a unit of work that did not complete, {@code DEBUG} for a status the
+     * failure already carried, because an estate that logged every mistyped URL at {@code ERROR} would
+     * page an operator for a caller's typo and bury the failures that matter. And the event must carry
+     * nothing the failure did: a {@code DataAccessException}'s message quotes the statement it was
+     * executing, and this module's statements name the dataset and bind the record image (CWE-532).
+     */
+    @Nested
+    @DisplayName("the server's own diagnostics are emitted, and are still value-free")
+    class ServerDiagnostics {
+
+        /** Text no log line may contain, standing for a quoted statement and its bound record image. */
+        private static final String SENSITIVE_SQL =
+                "SELECT RECORD_IMAGE FROM \"AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS\" WHERE ? = 4111111111111111";
+
+        /** The logger the advice writes through; the name is the nested class's own. */
+        private ch.qos.logback.classic.Logger adviceLogger() {
+            return (ch.qos.logback.classic.Logger)
+                    org.slf4j.LoggerFactory.getLogger(CobolErrorHandler.class);
+        }
+
+        /**
+         * Runs the fixture with the advice's logger at {@code DEBUG} and a capturing appender attached,
+         * then restores both - so no other suite in the run sees a changed level.
+         *
+         * @param emit the call whose diagnostics are being captured
+         * @return the captured events, in order
+         */
+        private List<ch.qos.logback.classic.spi.ILoggingEvent> captured(Runnable emit) {
+            ch.qos.logback.classic.Logger logger = adviceLogger();
+            ch.qos.logback.classic.Level previous = logger.getLevel();
+            ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                    new ch.qos.logback.core.read.ListAppender<>();
+            appender.start();
+            logger.addAppender(appender);
+            logger.setLevel(ch.qos.logback.classic.Level.DEBUG);
+            try {
+                assertThat(logger.isDebugEnabled())
+                        .as("the capture is worthless unless DEBUG really is enabled")
+                        .isTrue();
+                emit.run();
+            } finally {
+                logger.setLevel(previous);
+                logger.detachAppender(appender);
+                appender.stop();
+            }
+            return List.copyOf(appender.list);
+        }
+
+        @Test
+        @DisplayName("a dataset access that did not complete is recorded at ERROR, naming no statement")
+        void aDataAccessFailureIsRecordedAtError() {
+            DataAccessResourceFailureException failure =
+                    new DataAccessResourceFailureException(SENSITIVE_SQL);
+
+            List<ch.qos.logback.classic.spi.ILoggingEvent> events =
+                    captured(() -> handler.handleDataAccessFailure(failure));
+
+            assertThat(events).singleElement().satisfies(event -> {
+                assertThat(event.getLevel()).isEqualTo(ch.qos.logback.classic.Level.ERROR);
+                assertThat(event.getFormattedMessage())
+                        .contains("did not complete")
+                        .contains("500")
+                        .contains(DataAccessResourceFailureException.class.getName())
+                        .doesNotContain(SENSITIVE_SQL)
+                        .doesNotContain("4111111111111111")
+                        .doesNotContain("AWS.M2");
+                assertThat(event.getThrowableProxy())
+                        .as("the exception itself is never handed to the logger: that emits its message "
+                                + "and its whole cause chain, including the driver's own text")
+                        .isNull();
+            });
+        }
+
+        @Test
+        @DisplayName("an unclaimed failure that resolves to a server status is recorded at ERROR")
+        void anUnclaimedServerFailureIsRecordedAtError() {
+            List<ch.qos.logback.classic.spi.ILoggingEvent> events = captured(() ->
+                    handler.handleUnexpectedFailure(new IllegalArgumentException(SENSITIVE_SQL)));
+
+            assertThat(events).singleElement().satisfies(event -> {
+                assertThat(event.getLevel()).isEqualTo(ch.qos.logback.classic.Level.ERROR);
+                assertThat(event.getFormattedMessage())
+                        .contains("was not completed")
+                        .contains("500")
+                        .contains(IllegalArgumentException.class.getName())
+                        .doesNotContain(SENSITIVE_SQL);
+            });
+        }
+
+        @Test
+        @DisplayName("a status the failure already carried is recorded at DEBUG, so a mistyped URL "
+                + "cannot page an operator")
+        void aCarriedClientStatusIsRecordedAtDebug() {
+            List<ch.qos.logback.classic.spi.ILoggingEvent> events = captured(() ->
+                    handler.handleUnexpectedFailure(
+                            new ResponseStatusException(HttpStatus.NOT_FOUND, SENSITIVE_SQL)));
+
+            assertThat(events).singleElement().satisfies(event -> {
+                assertThat(event.getLevel()).isEqualTo(ch.qos.logback.classic.Level.DEBUG);
+                assertThat(event.getFormattedMessage())
+                        .contains("404")
+                        .doesNotContain(SENSITIVE_SQL);
+            });
+            assertThat(events)
+                    .as("nothing about an ordinary client mistake is recorded at ERROR")
+                    .noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        }
+
+        @Test
+        @DisplayName("both diagnostics refuse an absent argument rather than logging a null")
+        void theDiagnosticsRefuseAnAbsentArgument() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CobolErrorHandler.logDataAccessFailure(null));
+            assertThatNullPointerException().isThrownBy(() ->
+                    CobolErrorHandler.logUnexpectedFailure(null, HttpStatus.INTERNAL_SERVER_ERROR));
+            assertThatNullPointerException().isThrownBy(() ->
+                    CobolErrorHandler.logUnexpectedFailure(new IllegalStateException("x"), null));
+        }
+    }
+
     @Nested
     @DisplayName("over HTTP - the advice actually intercepts a real binding failure")
     class OverHttp {
@@ -595,12 +747,12 @@ class WebConfigErrorContractTest {
 
         /**
          * An {@code ObjectMapper} carrying the two settings {@code application.yml} and
-         * {@link WebConfig#carddemoJacksonCustomizer()} apply in production, so the failures provoked
-         * here are the same failures a deployed request would provoke.
+         * {@link WebConfig#carddemoJacksonCustomizer(java.nio.charset.Charset)} apply in production,
+         * so the failures provoked here are the same failures a deployed request would provoke.
          */
         private ObjectMapper productionLikeMapper() {
             Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
-            new WebConfig().carddemoJacksonCustomizer().customize(builder);
+            new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET).customize(builder);
             return builder.featuresToEnable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                     .build();
         }

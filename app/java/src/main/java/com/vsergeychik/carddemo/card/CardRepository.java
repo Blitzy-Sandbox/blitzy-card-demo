@@ -275,7 +275,8 @@ import org.springframework.stereotype.Repository;
  * once for every repository rather than once per repository. What this class will send is visible before
  * it starts through {@link #describeBaseStatement()} and {@link #describeAlternateIndexStatement()},
  * and the composed statements are exposed to this class's own tests through
- * {@link #resolvedStatements()}.
+ * {@link #resolvedBaseStatements()} and {@link #resolvedAlternateStatements()} - one per access path,
+ * because each path is described by the operation that uses it and by no other.
  *
  * <h2>Keys are moved, never assigned</h2>
  * <p>A key is built with {@link FixedWidthCodec}, never by Java assignment or by
@@ -614,7 +615,7 @@ public class CardRepository {
     // =================================================================================================
 
     /**
-     * The composed statements, resolved on first use.
+     * The base cluster's composed statements, resolved on first use of the base cluster.
      *
      * <p>Lazily rather than at construction because the record-image column's name is discovered from
      * the backend, and a repository must be constructible in a context that has not reached its backend
@@ -622,20 +623,39 @@ public class CardRepository {
      * rather than mid-transaction. {@code null} means "not yet resolved"; the value is deeply immutable,
      * so publishing it hands out nothing alterable.
      *
+     * <p><strong>One memo per access path, and that is a correctness property rather than a
+     * micro-optimisation.</strong> {@code CARDDAT} and {@code CARDAIX} are two names the deployment
+     * addresses separately ({@code app/csd/CARDDEMO.CSD:13-14} and {@code :25-26}), and the COBOL opens
+     * and reads them separately: {@code app/cbl/CBACT02C.cbl:120} opens the base cluster and nothing
+     * else, while {@code app/cbl/COCRDSLC.cbl:785} reads through the path. A single memo covering both
+     * meant one describe of each relation before either could be used, so an {@code OPEN} of the base
+     * cluster paid a metadata round trip against the path it was not opening and - decisively - reported
+     * {@code 'ERROR OPENING CARDFILE'} when the <em>path</em> alone was unavailable. Splitting the memo
+     * makes each path's availability its own fact, discovered by the operation that needs it.
+     *
      * <p><strong>What is memoised is the statement TEXT, never the proof that the dataset is there.</strong>
-     * {@link #openBrowse(String, BrowseDirection)} composes afresh through {@link #composeStatements()} on
-     * every call, because it stands for the {@code STARTBR} that {@code app/cbl/CBACT02C.cbl:120} performs
-     * as {@code OPEN INPUT} and tests at {@code :121}. Reaching the open through this memo made its outcome
-     * depend on whether an earlier operation had populated the field: a dataset dropped since the last
-     * successful pass was reported as opened, and the failure appeared one line later under the read
-     * paragraph's message, {@code 'ERROR READING CARDFILE'} instead of {@code 'ERROR OPENING CARDFILE'}
-     * ({@code :129}).
+     * {@link #openBrowse(String, BrowseDirection)} composes afresh through {@link #composeBaseStatements()}
+     * on every call, because it stands for the {@code STARTBR} that {@code app/cbl/CBACT02C.cbl:120}
+     * performs as {@code OPEN INPUT} and tests at {@code :121}. Reaching the open through this memo made
+     * its outcome depend on whether an earlier operation had populated the field: a dataset dropped since
+     * the last successful pass was reported as opened, and the failure appeared one line later under the
+     * read paragraph's message, {@code 'ERROR READING CARDFILE'} instead of
+     * {@code 'ERROR OPENING CARDFILE'} ({@code :129}).
      *
      * <p>{@code volatile}, because a repository is a singleton reached from several threads and
-     * {@link Statements} is a deeply immutable record: a volatile write publishes it safely and a volatile
-     * read never sees a partially initialised one.
+     * {@link BaseStatements} is a deeply immutable record: a volatile write publishes it safely and a
+     * volatile read never sees a partially initialised one.
      */
-    private volatile Statements statements;
+    private volatile BaseStatements baseStatements;
+
+    /**
+     * The alternate-index path's composed statements, resolved on first use of the path.
+     *
+     * <p>Separate from {@link #baseStatements} for the reason given there: the path is addressed by its
+     * own name, so whether it can be described is its own fact and is discovered by the read that goes
+     * through it. Same laziness, same immutability, same {@code volatile} publication.
+     */
+    private volatile AlternateStatements alternateStatements;
 
 
     /**
@@ -845,15 +865,27 @@ public class CardRepository {
     }
 
     /**
-     * The resolved statements, or {@code null} while they have not been resolved.
+     * The base cluster's resolved statements, or {@code null} while they have not been resolved.
      *
      * <p>Package-visible so this class's own tests can assert the composed text and the caching
-     * behaviour without a backend. Safe to hand out because {@link Statements} is immutable.
+     * behaviour without a backend. Safe to hand out because {@link BaseStatements} is immutable.
      *
-     * @return the resolved statements, or {@code null}
+     * @return the resolved base-cluster statements, or {@code null}
      */
-    Statements resolvedStatements() {
-        return statements;
+    BaseStatements resolvedBaseStatements() {
+        return baseStatements;
+    }
+
+    /**
+     * The alternate-index path's resolved statements, or {@code null} while they have not been resolved.
+     *
+     * <p>A separate accessor because the two paths resolve separately: after a read of the base cluster
+     * this answers {@code null}, which is the whole point of the split.
+     *
+     * @return the resolved alternate-index statements, or {@code null}
+     */
+    AlternateStatements resolvedAlternateStatements() {
+        return alternateStatements;
     }
 
 
@@ -1107,9 +1139,9 @@ public class CardRepository {
         // the UPDATE will use so the two see the same rows. Reading the affected-row count afterwards
         // would discover a fan-out only after the rows were overwritten.
         int selected;
-        Statements sql;
+        BaseStatements sql;
         try {
-            sql = resolveStatements();
+            sql = resolveBaseStatements();
             selected = fetch(sql.selectForUpdateByCardNumber(), keyPattern, FAN_OUT_PROBE_LIMIT)
                     .rowCount();
         } catch (DataAccessException rejected) {
@@ -1248,12 +1280,13 @@ public class CardRepository {
                 + "browse is never direction-less");
         String key = baseKeyOf(cardNumber);
         try {
-            // composeStatements() rather than resolveStatements(), and the difference is what makes the
-            // open able to fail. The memoising accessor skips the describe once any earlier operation has
-            // resolved the statements, so a dataset dropped since the last successful pass was reported as
-            // opened and the failure surfaced on the first read under 'ERROR READING CARDFILE'. An open
-            // proves the dataset is there every time it is asked to.
-            composeStatements();
+            // composeBaseStatements() rather than resolveBaseStatements(), and the difference is what
+            // makes the open able to fail. The memoising accessor skips the describe once any earlier
+            // operation has resolved the statements, so a dataset dropped since the last successful pass
+            // was reported as opened and the failure surfaced on the first read under
+            // 'ERROR READING CARDFILE'. An open proves the dataset is there every time it is asked to -
+            // and proves it about the BASE CLUSTER only, which is the file OPEN INPUT establishes.
+            composeBaseStatements();
         } catch (DataAccessException translated) {
             LOG.error("Could not open a sequential pass over the " + BASE_DD_NAME + " base cluster - "
                     + BackendDiagnostic.of(translated).describe() + "; reporting CICS response "
@@ -1289,13 +1322,13 @@ public class CardRepository {
     private CardReadResult readOnBaseCluster(String cardNumber, boolean locking) {
         String pattern = BASE_KEY_SPAN.pattern(baseKeyOf(cardNumber));
         try {
-            Statements sql = resolveStatements();
+            BaseStatements sql = resolveBaseStatements();
             String statement = locking ? sql.selectForUpdateByCardNumber() : sql.selectByCardNumber();
             // One row more than a unique primary key can produce, so a violation of that uniqueness in
             // the backing relation is detected here rather than silently resolved by taking whichever row
             // the backend ordered first. See classifyRead's fan-out arm.
             FetchedRows rows = fetch(statement, pattern, DUPLICATE_DETECTION_ROW_LIMIT);
-            return provenAbsence(classifyRead(rows, false), sql.probeUnreadableBaseRows(),
+            return provenAbsence(classifyRead(rows, false), sql.probeUnreadableRows(),
                     BASE_CICS_FILE_NAME);
         } catch (DataAccessException rejected) {
             return failedRead(READ_OPERATION_NAME, BASE_CICS_FILE_NAME,
@@ -1313,9 +1346,9 @@ public class CardRepository {
     private CardReadResult readOnAlternateIndex(String alternateKey) {
         String pattern = ALTERNATE_KEY_SPAN.pattern(alternateKey);
         try {
-            Statements sql = resolveStatements();
+            AlternateStatements sql = resolveAlternateStatements();
             FetchedRows rows = fetch(sql.selectByAccountId(), pattern, DUPLICATE_DETECTION_ROW_LIMIT);
-            return provenAbsence(classifyRead(rows, true), sql.probeUnreadableAlternateRows(),
+            return provenAbsence(classifyRead(rows, true), sql.probeUnreadableRows(),
                     ALTERNATE_INDEX_CICS_FILE_NAME);
         } catch (DataAccessException rejected) {
             return failedRead(READ_OPERATION_NAME, ALTERNATE_INDEX_CICS_FILE_NAME,
@@ -1907,34 +1940,39 @@ public class CardRepository {
 
     // =================================================================================================
     // Statement resolution. One place decides the text of every statement this repository sends, and one
-    // round trip - a describe that transfers no row - learns the two column names it needs to compose
-    // them.
+    // round trip per access path - a describe that transfers no row - learns the column name needed to
+    // compose that path's statements.
+    //
+    // TWO PATHS, TWO RESOLUTIONS. CARDDAT and CARDAIX are one cluster reached by two keys (gate G45), but
+    // the deployment addresses them by two names and the COBOL uses them independently: CBACT02C opens
+    // and browses the base cluster without ever touching the path, and COCRDSLC reads through the path
+    // without opening a browse. Resolving both together made each operation depend on the availability of
+    // a relation it was not using, which is neither what the source does nor what a deployment can be
+    // asked to guarantee.
     // =================================================================================================
 
     /**
-     * Resolves the statements on first use and returns them.
+     * Resolves the base cluster's statements on first use and returns them.
      *
-     * <p>Two describes, one per relation, because the base cluster and the alternate-index path are
-     * addressed by two names and this class does not assume the deployment presents them with the same
-     * column name. Everything else is composed from {@link DatasetRelation}, which is what keeps the
-     * text of a browse, a keyed read, a locking read and a rewrite identical in form across the module's
-     * repositories.
+     * <p>One describe, against the base cluster only. Everything else is composed from
+     * {@link DatasetRelation}, which is what keeps the text of a browse, a keyed read, a locking read and
+     * a rewrite identical in form across the module's repositories.
      *
-     * @return the composed statements
-     * @throws DataAccessException   if either relation cannot be described
-     * @throws IllegalStateException if either relation presents no usable record-image column
+     * @return the composed base-cluster statements
+     * @throws DataAccessException   if the base cluster cannot be described
+     * @throws IllegalStateException if the base cluster presents no usable record-image column
      */
-    private Statements resolveStatements() {
-        Statements resolved = this.statements;
+    private BaseStatements resolveBaseStatements() {
+        BaseStatements resolved = this.baseStatements;
         if (resolved == null) {
-            resolved = composeStatements();
+            resolved = composeBaseStatements();
         }
         return resolved;
     }
 
     /**
-     * Describes both relations and composes the statements <strong>unconditionally</strong>, republishing
-     * the memo {@link #resolveStatements()} reads.
+     * Describes the base cluster and composes its statements <strong>unconditionally</strong>,
+     * republishing the memo {@link #resolveBaseStatements()} reads.
      *
      * <p>This is what {@link #openBrowse(String, BrowseDirection)} calls, and the difference between the two
      * methods is the whole of an {@code OPEN}. A sequential pass is established before anything is read, and
@@ -1943,33 +1981,69 @@ public class CardRepository {
      * earlier operation had resolved the statements, so the open could not fail after the first success and
      * a dropped dataset was reported by the read that followed instead.
      *
+     * <p><strong>Only the base cluster is described.</strong> An {@code OPEN INPUT} of {@code CARDFILE}
+     * establishes {@code CARDFILE}; the alternate-index path is a different DD name, opened by nobody here,
+     * and describing it as part of this would report {@code 'ERROR OPENING CARDFILE'} for a path this
+     * operation never reads.
+     *
      * <p>The cost is one metadata round trip per open, paid where the COBOL pays it - once per pass - while
      * every read within the pass reuses the text this composed.
      *
-     * @return the freshly composed statements; never {@code null}
-     * @throws DataAccessException   if either relation cannot be described
-     * @throws IllegalStateException if either relation presents no usable record-image column
+     * @return the freshly composed base-cluster statements; never {@code null}
+     * @throws DataAccessException   if the base cluster cannot be described
+     * @throws IllegalStateException if the base cluster presents no usable record-image column
      */
-    private Statements composeStatements() {
-        ResultSetExtractor<String> columnNameExtractor = CardRepository::extractRecordImageColumn;
-        String baseColumn = baseRelation.rememberRecordImageColumn(
-                jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
-        String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
-                jdbcTemplate.query(alternateIndexRelation.describeStatement(),
-                        columnNameExtractor));
-        Statements composed = new Statements(
+    private BaseStatements composeBaseStatements() {
+        String baseColumn = baseRelation.rememberRecordImageColumn(jdbcTemplate.query(
+                baseRelation.describeStatement(), CardRepository::extractRecordImageColumn));
+        BaseStatements composed = new BaseStatements(
                 baseRelation.selectByKey(baseColumn),
                 baseRelation.selectByKeyForUpdate(baseColumn),
-                alternateIndexRelation.selectByKey(alternateColumn),
                 baseRelation.selectFromKeyAscending(baseColumn),
                 baseRelation.selectAfterAscending(baseColumn),
                 baseRelation.selectBeforeDescending(baseColumn),
                 baseRelation.rewriteByKey(baseColumn),
-                baseRelation.selectUnreadableRows(baseColumn),
-                alternateIndexRelation.selectUnreadableRows(alternateColumn));
+                baseRelation.selectUnreadableRows(baseColumn));
         // Published after it is fully built, through a volatile write, so a concurrent reader sees either
         // the previous complete value or this one and never a partially initialised record.
-        this.statements = composed;
+        this.baseStatements = composed;
+        return composed;
+    }
+
+    /**
+     * Resolves the alternate-index path's statements on first use and returns them.
+     *
+     * <p>One describe, against the path only, for the same reason {@link #composeBaseStatements()}
+     * describes only the base cluster: a read through {@code CARDAIX} is satisfied - or refused - by
+     * {@code CARDAIX}.
+     *
+     * @return the composed alternate-index statements
+     * @throws DataAccessException   if the path cannot be described
+     * @throws IllegalStateException if the path presents no usable record-image column
+     */
+    private AlternateStatements resolveAlternateStatements() {
+        AlternateStatements resolved = this.alternateStatements;
+        if (resolved == null) {
+            resolved = composeAlternateStatements();
+        }
+        return resolved;
+    }
+
+    /**
+     * Describes the alternate-index path and composes its statements, republishing the memo
+     * {@link #resolveAlternateStatements()} reads.
+     *
+     * @return the freshly composed alternate-index statements; never {@code null}
+     * @throws DataAccessException   if the path cannot be described
+     * @throws IllegalStateException if the path presents no usable record-image column
+     */
+    private AlternateStatements composeAlternateStatements() {
+        String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(jdbcTemplate.query(
+                alternateIndexRelation.describeStatement(), CardRepository::extractRecordImageColumn));
+        AlternateStatements composed = new AlternateStatements(
+                alternateIndexRelation.selectByKey(alternateColumn),
+                alternateIndexRelation.selectUnreadableRows(alternateColumn));
+        this.alternateStatements = composed;
         return composed;
     }
 
@@ -1989,18 +2063,19 @@ public class CardRepository {
     // =================================================================================================
 
     /**
-     * Every statement this repository sends, composed once against the discovered record-image columns.
+     * Every statement this repository sends against the <strong>base cluster</strong>, composed once
+     * against that relation's discovered record-image column.
      *
-     * <p>Each is expressed over the record image, never over a copybook field name: the key predicates
-     * are escaped {@code LIKE} patterns produced by {@link #BASE_KEY_SPAN} and
-     * {@link #ALTERNATE_KEY_SPAN}, which confine the match to the key's own bytes at its own offset.
+     * <p>Each is expressed over the record image, never over a copybook field name: the key predicate is
+     * an escaped {@code LIKE} pattern produced by {@link #BASE_KEY_SPAN}, which confines the match to the
+     * key's own bytes at its own offset.
+     *
+     * <p>Base-cluster statements only, because the base cluster is described on its own - see
+     * {@link #composeBaseStatements()}. The path's statements live in {@link AlternateStatements}.
      *
      * @param selectByCardNumber          {@code READ} on the base cluster, keyed on the card number
      * @param selectForUpdateByCardNumber {@code READ ... UPDATE}: the same read, holding the record
      *                                    locked for the unit of work
-     * @param selectByAccountId           {@code READ} through the alternate-index path, keyed on the
-     *                                    account id at its own offset, ordered so that "the first
-     *                                    record with this alternate key" is deterministic
      * @param browseAnchor                {@code STARTBR ... GTEQ} and the first read: at or after the
      *                                    supplied key, ascending in both directions, because the anchor
      *                                    is the lowest qualifying key either way
@@ -2013,26 +2088,39 @@ public class CardRepository {
      *                                    descending, on the previous whole image for the same reason
      * @param rewrite                     {@code REWRITE}: the whole record image, keyed on the record's
      *                                    own card number
-     * @param probeUnreadableBaseRows     the rows of the base cluster whose record image is absent. Not a
+     * @param probeUnreadableRows         the rows of the base cluster whose record image is absent. Not a
      *                                    COBOL operation: it is what lets a keyed read <em>prove</em> an
      *                                    absence before reporting {@code NOTFND}, since {@code CARD-NUM}
      *                                    lives inside the record image and a row with no image therefore
      *                                    has no knowable key. See
      *                                    {@link #provenAbsence(CardReadResult, String, String)}
-     * @param probeUnreadableAlternateRows the same probe over the alternate-index path, so a read through
-     *                                    the path proves its absence against the path it read.
-     *                                    {@code CARD-ACCT-ID} lives inside the image too, so an unreadable
-     *                                    row has no knowable alternate key either
      */
-    record Statements(String selectByCardNumber,
-                      String selectForUpdateByCardNumber,
-                      String selectByAccountId,
-                      String browseAnchor,
-                      String browseForward,
-                      String browseBackward,
-                      String rewrite,
-                      String probeUnreadableBaseRows,
-                      String probeUnreadableAlternateRows) {
+    record BaseStatements(String selectByCardNumber,
+                          String selectForUpdateByCardNumber,
+                          String browseAnchor,
+                          String browseForward,
+                          String browseBackward,
+                          String rewrite,
+                          String probeUnreadableRows) {
+    }
+
+    /**
+     * Every statement this repository sends through the <strong>alternate-index path</strong>, composed
+     * once against that path's discovered record-image column.
+     *
+     * <p>Two statements, because that is all the path is used for: {@code app/cbl/COCRDSLC.cbl:785} and
+     * {@code app/cbl/COCRDUPC.cbl} read through it by {@code CARD-ACCT-ID} and nothing writes or browses
+     * through it.
+     *
+     * @param selectByAccountId   {@code READ} through the alternate-index path, keyed on the account id
+     *                            at its own offset, ordered so that "the first record with this alternate
+     *                            key" is deterministic
+     * @param probeUnreadableRows the same absence proof {@link BaseStatements#probeUnreadableRows()}
+     *                            provides, over the path, so a read through the path proves its absence
+     *                            against the path it read. {@code CARD-ACCT-ID} lives inside the image
+     *                            too, so an unreadable row has no knowable alternate key either
+     */
+    record AlternateStatements(String selectByAccountId, String probeUnreadableRows) {
     }
 
     /**
@@ -2787,7 +2875,7 @@ public class CardRepository {
          * @return the read outcome; never {@code null}
          */
         public CardReadResult readNext() {
-            return read(BrowseDirection.FORWARD, Statements::browseForward);
+            return read(BrowseDirection.FORWARD, BaseStatements::browseForward);
         }
 
         /**
@@ -2803,7 +2891,7 @@ public class CardRepository {
          * @return the read outcome; never {@code null}
          */
         public CardReadResult readPrev() {
-            return read(BrowseDirection.BACKWARD, Statements::browseBackward);
+            return read(BrowseDirection.BACKWARD, BaseStatements::browseBackward);
         }
 
         /**
@@ -2815,7 +2903,7 @@ public class CardRepository {
          * @return the read outcome; never {@code null}
          */
         private CardReadResult read(BrowseDirection required,
-                                    Function<Statements, String> advanceStatement) {
+                                    Function<BaseStatements, String> advanceStatement) {
             if (ended) {
                 // No browse is in progress, so there is nothing to read from. CICS reports an invalid
                 // request for a browse operation without a browse, and so does this.
@@ -2833,9 +2921,9 @@ public class CardRepository {
                         + "legacy code never reverses");
                 return CardReadResult.failed(FileStatus.INVREQ);
             }
-            Statements sql;
+            BaseStatements sql;
             try {
-                sql = repository.resolveStatements();
+                sql = repository.resolveBaseStatements();
             } catch (DataAccessException rejected) {
                 return CardRepository.failedRead(CardRepository.READ_OPERATION_NAME,
                         BASE_CICS_FILE_NAME, "while positioning a browse", rejected);

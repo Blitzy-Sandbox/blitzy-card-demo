@@ -17,6 +17,7 @@ import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.jdbc.DatabaseDriver;
 import org.springframework.context.annotation.Bean;
@@ -244,6 +245,26 @@ public class DataSourceConfig {
             target/test-classes:target/classes rather than from the packaged jar.""";
 
     /**
+     * How a driver that is deliberately not packaged actually reaches the classpath, stated in the
+     * diagnostic because an operator reading it has to be able to act on it.
+     *
+     * <p>The distributable is a Spring Boot archive launched by {@code PropertiesLauncher}
+     * ({@code <layout>ZIP</layout>} in {@code app/java/pom.xml}), and that launcher is what makes the
+     * deployment-supplied driver possible at all: it prepends the directories and jars named by
+     * {@code loader.path} - or the environment variable {@code LOADER_PATH} - to the application class
+     * loader. <strong>{@code -cp} does not work and cannot be made to work</strong> for an executable
+     * Boot archive: {@code java -cp driver.jar -jar carddemo.jar} discards the {@code -cp} value
+     * outright, which is precisely how a deployment ends up reading this message with the driver jar
+     * sitting on the very machine.
+     */
+    private static final String DRIVER_LOADING_MECHANISM =
+            "Place the driver jar in a directory named by the LOADER_PATH environment variable (or "
+                    + "-Dloader.path=...) and launch with 'LOADER_PATH=/opt/carddemo/drivers java -jar "
+                    + "carddemo.jar': the artifact is a Spring Boot archive launched by "
+                    + "PropertiesLauncher, so LOADER_PATH is what extends its classpath. A -cp entry "
+                    + "beside -jar is ignored by the JVM and never reaches the application.";
+
+    /**
      * The sentence every driver diagnostic ends with, stating the policy that makes the driver a
      * deployment concern in the first place.
      *
@@ -254,7 +275,8 @@ public class DataSourceConfig {
             "This module pins no JDBC driver coordinate by design - the CardDemo datasets are VSAM "
                     + "and sequential files, there is no EXEC SQL anywhere in the COBOL estate, and "
                     + "indexed VSAM has no standard published JDBC driver - so the site's "
-                    + "mainframe data-access driver is supplied at deployment time.";
+                    + "mainframe data-access driver is supplied at deployment time. "
+                    + DRIVER_LOADING_MECHANISM;
 
     /**
      * Diagnostic raised when a URL is configured but no driver class can be determined for it.
@@ -263,6 +285,11 @@ public class DataSourceConfig {
      * is not a substitute, because that is precisely the guess a reader would expect the framework
      * to make - Spring Boot's own driver determination does make it - and being handed H2 instead of
      * the site driver is the failure mode this refusal exists to prevent.
+     *
+     * <p>It ends with {@link #DRIVER_IS_A_DEPLOYMENT_INPUT}, and therefore with
+     * {@link #DRIVER_LOADING_MECHANISM}, because this is the branch a site-specific URL scheme reaches
+     * <em>first</em>: a deployment reading it is about to name its driver class and needs to know in
+     * the same breath where the jar it names has to sit.
      */
     private static final String UNDETERMINED_DRIVER_MESSAGE = """
             No JDBC driver class could be determined, so no DataSource can be built. \
@@ -273,7 +300,7 @@ public class DataSourceConfig {
             classpath is never substituted, because it is present only at test scope to back the \
             Spring Batch JobRepository and the parity harness, and a deployment that silently came \
             up against an empty in-memory database would report byte-level parity results that mean \
-            nothing.""";
+            nothing.""" + " " + DRIVER_IS_A_DEPLOYMENT_INPUT;
 
     /**
      * The one {@link DataSource} in the module: pooled by HikariCP and assembled entirely from
@@ -386,8 +413,8 @@ public class DataSourceConfig {
                     + "' is not on the classpath, so no DataSource can be built. "
                     + (StringUtils.hasText(configured)
                             ? "It was named by spring.datasource.driver-class-name; check the "
-                                    + "spelling and confirm the driver jar is deployed with the "
-                                    + "application."
+                                    + "spelling and confirm the driver jar is on the launcher's "
+                                    + "path."
                             : "It was derived from the scheme of spring.datasource.url; either "
                                     + "deploy that driver or name the correct one explicitly in "
                                     + "spring.datasource.driver-class-name.")
@@ -1108,6 +1135,18 @@ public class DataSourceConfig {
      *                     repository rather than a dataset in its own right.
      * @param alternateKey for an alternate-index path, the copybook field forming the alternate key;
      *                     {@code null} otherwise.
+     * @param reusable     the VSAM {@code REUSE} / {@code NOREUSE} attribute of the cluster, as
+     *                     {@code app/catlg/LISTCAT.txt} records it. It decides one thing and one thing
+     *                     only: whether an {@code OPEN OUTPUT} of an indexed file - VSAM load mode - can
+     *                     begin against a cluster that already holds records. A {@code REUSE} cluster is
+     *                     reset by that open and load mode proceeds; a {@code NOREUSE} one is not, and
+     *                     the open reports
+     *                     {@link com.vsergeychik.carddemo.common.FileStatus#OPEN_MODE_CONFLICT}.
+     *                     A primitive rather than a boxed {@code Boolean}, exactly like {@code gdg} and for
+     *                     the same reason: {@code NOREUSE} is the {@code IDCAMS DEFINE} default and is what
+     *                     {@code LISTCAT} records for eight of the estate's nine clusters, so absent and
+     *                     declared-{@code false} are the same fact and must compare equal. Only
+     *                     {@code USRSEC} declares {@code REUSE} ({@code LISTCAT.txt:3885}).
      */
     public record DatasetBinding(
             String dsname,
@@ -1120,13 +1159,72 @@ public class DataSourceConfig {
             Integer keyLength,
             Integer keyOffset,
             String base,
-            String alternateKey) {
+            String alternateKey,
+            boolean reusable) {
+
+        /**
+         * The constructor {@code carddemo.datasets} binds through.
+         *
+         * <p>Annotated because this record declares <strong>two</strong> constructors, and Spring's
+         * value-object
+         * binder requires exactly one candidate: given an ambiguous choice it binds nothing at all, silently,
+         * and every one of the twenty-seven entries arrives unbound. The annotation names this one - the
+         * canonical constructor, with every configurable component - as the binding target, leaving the
+         * eleven-component form below purely a convenience for Java callers.
+         */
+        @ConstructorBinding
+        public DatasetBinding {
+        }
+
+        /**
+         * An entry that declares no {@code REUSE} attribute, which is {@code NOREUSE}.
+         *
+         * <p>Retained so the eleven-component form stays constructible - every existing caller, and every
+         * hand-built binding in a test, describes a dataset whose reuse attribute is the {@code IDCAMS}
+         * default. Only a caller that must model a {@code REUSE} cluster needs the canonical constructor.
+         *
+         * <p><strong>Never use this to copy an existing binding.</strong> It substitutes
+         * {@code NOREUSE} rather than carrying the attribute over, so copying through it would silently
+         * erase the one {@code REUSE} cluster in the estate. Copy through the canonical constructor and
+         * pass {@link #reusable()} explicitly.
+         *
+         * @param dsname       the dataset name or resolvable resource location
+         * @param organization the access organization as configured
+         * @param gdg          whether the JCL names a relative generation
+         * @param recordFormat the JCL {@code DCB} record format, or {@code null}
+         * @param blockSize    the JCL {@code DCB} block size, or {@code null}
+         * @param recordLength the fixed record width in bytes
+         * @param copybook     the {@code app/cpy} member defining the layout, or {@code null}
+         * @param keyLength    the key width in bytes, or {@code null} for a sequential dataset
+         * @param keyOffset    the key's zero-based offset, or {@code null} for offset zero
+         * @param base         the base dataset entry an alternate-index path indexes, or {@code null}
+         * @param alternateKey the copybook field forming the alternate key, or {@code null}
+         */
+        public DatasetBinding(String dsname, String organization, boolean gdg, String recordFormat,
+                Integer blockSize, int recordLength, String copybook, Integer keyLength,
+                Integer keyOffset, String base, String alternateKey) {
+            this(dsname, organization, gdg, recordFormat, blockSize, recordLength, copybook, keyLength,
+                    keyOffset, base, alternateKey, false);
+        }
 
         /** The organization value marking an indexed base cluster. */
         public static final String KSDS = "ksds";
 
         /** The organization value marking an alternate-index path over a base cluster. */
         public static final String AIX_PATH = "aix-path";
+
+        /**
+         * Whether the cluster carries the VSAM {@code REUSE} attribute.
+         *
+         * <p>Named alongside the accessor the record generates so a caller reads the question rather than
+         * the field. Absent means {@code NOREUSE}, which is the {@code IDCAMS DEFINE} default and what
+         * {@code app/catlg/LISTCAT.txt} records for every cluster in this estate except {@code USRSEC}.
+         *
+         * @return {@code true} only when the configuration declares {@code reusable: true}
+         */
+        public boolean reusableCluster() {
+            return reusable;
+        }
 
         /**
          * Whether this entry is addressed by key - a base KSDS or an alternate-index path over one.

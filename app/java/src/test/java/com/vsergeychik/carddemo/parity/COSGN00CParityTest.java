@@ -175,10 +175,12 @@ final class COSGN00CParityTest {
      * The {@code APPLID} standing in for {@code EXEC CICS ASSIGN APPLID} at
      * {@code app/cbl/COSGN00C.cbl:198-200}.
      *
-     * <p>A documented substitution rather than a derivation. There is no CICS region here to ask,
-     * and neither {@code application.yml} nor {@code application-test.yml} binds an applid, so this
-     * is a pinned constant that every one of the twenty cases uses. It is stated at the map's
-     * declared width so the projection can be compared byte for byte.
+     * <p>A documented substitution rather than a derivation: there is no CICS region here to ask. The
+     * same pair is now pinned in {@code application-test.yml} under {@code carddemo.cics.applid} and
+     * {@code carddemo.cics.sysid}, so a controller Spring wires under the {@code test} profile paints
+     * exactly what these twenty cases compare - which is the point of stating it in both places rather
+     * than only here. {@code application.yml} carries the deployment placeholders instead, and requires
+     * them. Stated at the map's declared width so the projection can be compared byte for byte.
      */
     private static final String APPLID = "CICSAWS1";
 
@@ -292,13 +294,12 @@ final class COSGN00CParityTest {
     /**
      * {@code PASSWDO}, the eleventh named item of mapset {@code COSGN00}.
      *
-     * <p>{@link SignOnResponse} deliberately carries no component for it -
-     * {@link SignOnResponse#OMITTED_ITEM} names it as the omission - so the payload never echoes a
-     * password back over JSON. The screen storage still holds one, because
-     * {@code app/cpy-bms/COSGN00.CPY:85} declares {@code COSGN0AO REDEFINES COSGN0AI}; see
-     * {@link #credentialItemImage(Invocation, String, boolean)}.
+     * <p>{@link SignOnResponse} projects it, and has to: {@code app/cpy-bms/COSGN00.CPY:85} declares
+     * {@code 01 COSGN0AO REDEFINES COSGN0AI}, so {@code PASSWDI} and {@code PASSWDO} are one span and
+     * whatever {@code RECEIVE MAP} put there is what {@code SEND MAP ... FROM(COSGN0AO)} transmits. The
+     * differ therefore reads the item off the payload like any other, rather than reconstructing it.
      */
-    private static final String PASSWD_OUTPUT_ITEM = SignOnResponse.OMITTED_ITEM;
+    private static final String PASSWD_OUTPUT_ITEM = SignOnResponse.PASSWD_FIELD;
 
     /**
      * The eleven named output items of mapset {@code COSGN00}, in symbolic-map order.
@@ -522,7 +523,7 @@ final class COSGN00CParityTest {
         SignOnController controller = new SignOnController(service, invocation.clock(), APPLID,
                 SYSID, invocation.charset());
 
-        ScreenResponse<SignOnResponse> screen = controller.signOn(request);
+        ScreenResponse<SignOnResponse> screen = controller.signOn(request, null, null);
 
         return new Run(service.requireOutcome(), screen, reads[0]);
     }
@@ -756,7 +757,7 @@ final class COSGN00CParityTest {
                 fields.get(PASSWD_INPUT_ITEM),
                 fields.get("ERRMSGI"),
                 commareaOf(invocation),
-                aidTokenOf(invocation.aid()));
+                aidImageOf(invocation.aid()));
     }
 
     /**
@@ -782,34 +783,30 @@ final class COSGN00CParityTest {
     }
 
     /**
-     * Resolves a declared {@code DFHAID} mnemonic to the {@code CVCRD01Y} token the payload carries.
+     * Resolves a declared {@code DFHAID} mnemonic to the one-character {@code EIBAID} image the payload
+     * carries.
      *
      * <p>The case names the key the way {@code app/cbl/COSGN00C.cbl:85-91} names it, as a
-     * {@code DFHAID} mnemonic; the JSON payload carries the {@code CCARD-AID} token, because a byte
-     * is not a JSON value. The mnemonic is therefore turned into its byte and the byte into its
-     * token, and {@link #assertRunInvariants(Invocation, SignOnRequest, Run)} then requires the byte
-     * the controller resolved back out of that token to agree with the one the case declared - so the
-     * round trip is proved rather than assumed.
+     * {@code DFHAID} mnemonic; the JSON payload carries the byte as the one character whose code point
+     * <em>is</em> that byte, because a raw byte is not a JSON value. {@link #assertRunInvariants(
+     * Invocation, SignOnRequest, Run)} then requires the byte the controller read back out of that
+     * character to be the one the case declared - so the round trip is proved rather than assumed.
+     *
+     * <p>Not the five-character {@code CCARD-AID} token: {@code CSSTRPFY} folds
+     * {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so a token cannot say which
+     * key of a folded pair was pressed, and {@code COSGN00C} does not copy {@code CSSTRPFY} - it compares
+     * {@code EIBAID} itself. Carrying the byte also lets a case name a key {@code CSSTRPFY} maps to
+     * nothing at all, such as {@code DFHPA3}, which the token form could not carry.
      *
      * @param mnemonic the mnemonic the case declared, or {@code null} for the path that never reads
      *                 {@code EIBAID}
-     * @return the token, or {@code null} for that path
-     * @throws IllegalArgumentException if the mnemonic names a byte {@link PfKeyResolver} maps to no
-     *                                  token, which cannot travel in a payload at all
+     * @return the one-character image, or {@code null} for that path
      */
-    private static String aidTokenOf(String mnemonic) {
+    private static String aidImageOf(String mnemonic) {
         if (mnemonic == null) {
             return null;
         }
-        byte aid = aidByteOf(mnemonic);
-        return PfKeyResolver.resolve(aid)
-                .orElseThrow(() -> new IllegalArgumentException(mnemonic + " resolves to a byte that "
-                        + "app/cpy/CSSTRPFY.cpy maps to no CCARD-AID token, so it cannot be carried "
-                        + "in a JSON payload and cannot be driven through the controller. The "
-                        + "WHEN OTHER arm at app/cbl/COSGN00C.cbl:91 is reachable with any key that "
-                        + "is neither ENTER nor PF3 - DFHCLEAR and DFHPF4 both do it - so no case "
-                        + "needs an unmapped byte."))
-                .token();
+        return String.valueOf((char) (aidByteOf(mnemonic) & 0xFF));
     }
 
     /**
@@ -956,18 +953,18 @@ final class COSGN00CParityTest {
      * {@code RECEIVE MAP} left there, which is the transmitted image, or {@code LOW-VALUES} again for
      * a field the terminal did not transmit.
      *
-     * <p>{@link SignOnResponse} carries neither item - {@link SignOnResponse#OMITTED_ITEM} names
-     * {@code PASSWDO} as the deliberate omission, and there is no {@code withUserId} for the other -
-     * so the payload never echoes a credential back over JSON. That is a property of the projection,
-     * not of the screen, and this method is where the difference is stated.
+     * <p>{@link SignOnResponse} projects both items, so both are read off the payload here like every
+     * other field. An earlier revision of the projection omitted {@code PASSWDO} and left
+     * {@code USERIDO} unpainted, and this differ compensated by reconstructing the two images from the
+     * received map - which meant the harness, not the projection, was being asserted. Reading them off
+     * the payload is what puts the overlay under the diff.
      *
-     * @param invocation the invocation, for the received map
+     * @param invocation the invocation, retained for the interface every field extractor here shares
      * @param run        the run
      * @return item name to image, in symbolic-map order
      */
     private static Map<String, String> screenFieldsOf(Invocation invocation, Run run) {
         SignOnResponse screen = run.screen().screen();
-        boolean reset = run.screen().screenMetadata().resetAllOutputFields();
 
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put(SignOnResponse.TRNNAME_FIELD, screen.trnName());
@@ -978,18 +975,22 @@ final class COSGN00CParityTest {
         fields.put(SignOnResponse.CURTIME_FIELD, screen.curTime());
         fields.put(SignOnResponse.APPLID_FIELD, screen.applId());
         fields.put(SignOnResponse.SYSID_FIELD, screen.sysId());
-        fields.put(SignOnResponse.USERID_FIELD,
-                credentialItemImage(invocation, USERID_INPUT_ITEM, reset,
-                        SignOnResponse.USERID_LENGTH));
-        fields.put(PASSWD_OUTPUT_ITEM,
-                credentialItemImage(invocation, PASSWD_INPUT_ITEM, reset,
-                        SignOnRequest.PASSWD_LENGTH));
+        fields.put(SignOnResponse.USERID_FIELD, screen.userId());
+        fields.put(PASSWD_OUTPUT_ITEM, screen.passwd());
         fields.put(SignOnResponse.ERRMSG_FIELD, screen.errMsg());
         return fields;
     }
 
     /**
-     * The image one credential-entry output item holds when the map is sent.
+     * The image one overlay item is expected to hold when the map is sent - the oracle side of the
+     * {@code REDEFINES}, independent of what the projection produced.
+     *
+     * <p>{@code app/cpy-bms/COSGN00.CPY:85} makes {@code xxxI} and {@code xxxO} one span, so the
+     * expectation is derived from the case's own received map: the transmitted image where the terminal
+     * sent one, {@code LOW-VALUES} where it sent none, and {@code LOW-VALUES} throughout on the path
+     * where {@code MOVE LOW-VALUES TO COSGN0AO} at {@code :81} cleared the area first. It is what
+     * {@link #assertOverlayItemsCarryTheReceivedImages(Invocation, Run)} compares the payload against,
+     * and it is deliberately computed here rather than read from the payload, so the two are independent.
      *
      * @param invocation the invocation, for the received map
      * @param inputItem  the paired {@code xxxI} item, which shares the storage
@@ -1006,6 +1007,46 @@ final class COSGN00CParityTest {
         return received == null
                 ? lowValues(width)
                 : invocation.codec().movePicX(received, width);
+    }
+
+    /**
+     * Asserts that the two overlay items the payload carries are the images the {@code REDEFINES}
+     * requires - and that neither is carried on a path that sends no map.
+     *
+     * <p>This is the assertion the earlier projection made impossible. {@code USERIDO} and
+     * {@code PASSWDO} have no {@code MOVE} anywhere in {@code app/cbl/COSGN00C.cbl}, so nothing but the
+     * group {@code REDEFINES} at {@code app/cpy-bms/COSGN00.CPY:85} can put a value in them: the
+     * {@code RECEIVE MAP} at {@code :110-115} writes the spans and the {@code SEND MAP ...
+     * FROM(COSGN0AO)} at {@code :151-157} transmits them. So a repaint that followed a receive must echo
+     * what was typed, verbatim - {@code MOVE FUNCTION UPPER-CASE} at {@code :132-137} writes
+     * {@code WS-USER-ID} and {@code WS-USER-PWD}, never the spans - and the two exits that send no map
+     * at all must carry neither image.
+     *
+     * @param invocation the invocation, for the received map
+     * @param run        the run
+     */
+    private static void assertOverlayItemsCarryTheReceivedImages(Invocation invocation, Run run) {
+        SignOnResponse screen = run.screen().screen();
+        boolean mapSent = !screen.nextMap().isBlank();
+        if (!mapSent) {
+            // :162-172 SEND TEXT and :231-239 XCTL both transmit no map, so no item is painted.
+            assertThat(screen.userId())
+                    .as("no map was sent, so USERIDO carries nothing")
+                    .isEqualTo(lowValues(SignOnResponse.USERID_LENGTH));
+            assertThat(screen.passwd())
+                    .as("no map was sent, so PASSWDO carries nothing")
+                    .isEqualTo(lowValues(SignOnResponse.PASSWD_LENGTH));
+            return;
+        }
+        boolean reset = run.screen().screenMetadata().resetAllOutputFields();
+        assertThat(screen.userId())
+                .as("USERIDO is the USERIDI span: COSGN0AO REDEFINES COSGN0AI at COSGN00.CPY:85")
+                .isEqualTo(credentialItemImage(invocation, USERID_INPUT_ITEM, reset,
+                        SignOnResponse.USERID_LENGTH));
+        assertThat(screen.passwd())
+                .as("PASSWDO is the PASSWDI span, transmitted dark by ATTRB=(DRK,FSET,UNPROT)")
+                .isEqualTo(credentialItemImage(invocation, PASSWD_INPUT_ITEM, reset,
+                        SignOnRequest.PASSWD_LENGTH));
     }
 
     /**
@@ -1083,6 +1124,8 @@ final class COSGN00CParityTest {
         assertExactlyOneExit(caseId, outcome);
         assertRoleAndTargetAgree(caseId, outcome, screen);
         assertMessageNarrowedFromEightyToSeventyEight(caseId, outcome, screen);
+        assertThePlainTextSendIsEightyBytes(caseId, outcome, screen);
+        assertOverlayItemsCarryTheReceivedImages(invocation, run);
         assertTheFileWasReadOnlyWhereTheSourceReadsIt(caseId, outcome, run.reads());
         assertTheCommareaIsOneHundredAndSixtyBytes(caseId, invocation, screen);
         assertTheErrorFlagFollowsTheSourceExactly(caseId, outcome);
@@ -1162,11 +1205,11 @@ final class COSGN00CParityTest {
                                                                      SignOnRequest request,
                                                                      SignOnOutcome outcome) {
         assertThat(outcome.resolvedAid())
-                .as("%s: the case declares %s and the payload carries %s, and the byte the "
-                        + "controller resolved back out of that token has to be the one the case "
-                        + "named - CSSTRPFY folds PF13..PF24 onto PF1..PF12, so a round trip that "
-                        + "was not checked could drive the wrong arm of EVALUATE EIBAID",
-                        invocation.caseId(), invocation.aid(), request.aid())
+                .as("%s: the case declares %s and the payload carries its one-character image, and the "
+                        + "byte the controller read back out of that character has to be the one the "
+                        + "case named - CSSTRPFY folds PF13..PF24 onto PF1..PF12, so a round trip "
+                        + "through the folded token could drive the wrong arm of EVALUATE EIBAID",
+                        invocation.caseId(), invocation.aid())
                 .isEqualTo(PfKeyResolver.resolve(aidByteOf(invocation.aid())));
     }
 
@@ -1255,10 +1298,54 @@ final class COSGN00CParityTest {
         assertThat(screen.errMsg())
                 .as("%s: ERRMSGO is PIC X(78) - app/cpy-bms/COSGN00.CPY:152", caseId)
                 .hasSize(ERRMSG_LENGTH);
+        if (!outcome.screenPainted()) {
+            // :149 MOVE WS-MESSAGE TO ERRMSGO is inside SEND-SIGNON-SCREEN, so it does not run on the
+            // PF3 exit at :162-172 or the XCTL at :231-239. What those two paths leave in the item is
+            // the MOVE SPACES of :78, which precedes the EVALUATE and therefore runs on every path.
+            // The PF3 message itself is not lost: it travels at its full eighty bytes in plainText,
+            // which is what EXEC CICS SEND TEXT FROM(WS-MESSAGE) transmits.
+            assertThat(screen.errMsg())
+                    .as("%s: no SEND MAP ran, so ERRMSGO holds the :78 spaces", caseId)
+                    .isEqualTo(spaces(ERRMSG_LENGTH));
+            return;
+        }
         assertThat(screen.errMsg())
                 .as("%s: COBOL truncates an alphanumeric MOVE on the right, so the narrower receiver "
                         + "keeps the leading bytes and drops the trailing two", caseId)
                 .isEqualTo(outcome.message().substring(0, ERRMSG_LENGTH));
+    }
+
+    /**
+     * The eighty-byte unformatted transmission of {@code SEND-PLAIN-TEXT}, and its absence everywhere
+     * else.
+     *
+     * <p>{@code EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE) ERASE FREEKB} at
+     * {@code :164-169} transmits the whole of {@code WS-MESSAGE PIC X(80)}, which is two characters wider
+     * than {@code ERRMSGO}. Projecting it into the error line would lose the trailing two and would
+     * report a map field for a send that has no map, so it travels at its own width instead. Every other
+     * path transmits no text at all and therefore carries eighty spaces.
+     *
+     * @param caseId  the case identifier
+     * @param outcome the outcome, carrying {@code plainTextSent} and the message
+     * @param screen  the projection
+     */
+    private static void assertThePlainTextSendIsEightyBytes(String caseId,
+                                                            SignOnOutcome outcome,
+                                                            SignOnResponse screen) {
+        assertThat(screen.plainText())
+                .as("%s: WS-MESSAGE is PIC X(80) - app/cbl/COSGN00C.cbl:38", caseId)
+                .hasSize(WS_MESSAGE_LENGTH);
+        if (outcome.plainTextSent()) {
+            assertThat(screen.plainText())
+                    .as("%s: the PF3 arm at :88-90 moves CCDA-MSG-THANK-YOU into WS-MESSAGE and "
+                            + ":164-169 sends all eighty bytes of it", caseId)
+                    .isEqualTo(outcome.message());
+            return;
+        }
+        assertThat(screen.plainText())
+                .as("%s: SEND-PLAIN-TEXT is performed from :90 and nowhere else, so no other path "
+                        + "transmits text", caseId)
+                .isEqualTo(spaces(WS_MESSAGE_LENGTH));
     }
 
     /**
@@ -1314,6 +1401,14 @@ final class COSGN00CParityTest {
      */
     private static String lowValues(int width) {
         return String.valueOf(LOW_VALUE).repeat(width);
+    }
+
+    /**
+     * @param width the field width
+     * @return {@code SPACES} at that width - the blank {@code MOVE SPACES} writes, never {@code X'00'}
+     */
+    private static String spaces(int width) {
+        return String.valueOf(SPACE).repeat(width);
     }
 
     /**
@@ -1390,22 +1485,16 @@ final class COSGN00CParityTest {
     }
 
     /**
-     * Composes the eleven named output items from the ten the projection carries plus the one it
-     * deliberately omits.
+     * The eleven named output items, taken from the projection's own census.
+     *
+     * <p>Composed from {@link SignOnResponse#MAP_FIELDS} rather than typed out, so a field the
+     * projection stopped carrying would fail the ordered assertion in
+     * {@link #everyPaintedScreenCarriesElevenItems()} instead of quietly dropping out of every diff.
      *
      * @return the item names in symbolic-map order, unmodifiable
      */
     private static List<String> screenItems() {
-        List<String> projected = SignOnResponse.MAP_FIELDS;
-        List<String> items = new ArrayList<>(projected.size() + 1);
-        for (String item : projected) {
-            if (SignOnResponse.ERRMSG_FIELD.equals(item)) {
-                // app/cpy-bms/COSGN00.CPY:141-146 puts PASSWDO between USERIDO and ERRMSGO.
-                items.add(PASSWD_OUTPUT_ITEM);
-            }
-            items.add(item);
-        }
-        return Collections.unmodifiableList(items);
+        return Collections.unmodifiableList(new ArrayList<>(SignOnResponse.MAP_FIELDS));
     }
 
     /**
@@ -2257,8 +2346,8 @@ final class COSGN00CParityTest {
     @DisplayName("every painted screen carries all eleven named items and no attribute item")
     void everyPaintedScreenCarriesElevenItems() {
         assertThat(SCREEN_ITEMS)
-                .as("ten projected items plus the one deliberately omitted, in the order "
-                        + "app/cpy-bms/COSGN00.CPY:86-152 declares them")
+                .as("all eleven projected items, in the order app/cpy-bms/COSGN00.CPY:86-152 "
+                        + "declares them")
                 .hasSize(SCREEN_ITEM_COUNT)
                 .containsExactly(SignOnResponse.TRNNAME_FIELD,
                         SignOnResponse.TITLE01_FIELD,
@@ -2272,9 +2361,10 @@ final class COSGN00CParityTest {
                         PASSWD_OUTPUT_ITEM,
                         SignOnResponse.ERRMSG_FIELD);
         assertThat(SignOnResponse.MAP_FIELDS)
-                .as("the projection carries ten of the eleven, and PASSWDO is the omission")
+                .as("the projection carries all eleven, PASSWDO among them, because "
+                        + "COSGN0AO REDEFINES COSGN0AI makes the receive paint it")
                 .hasSize(SignOnResponse.MAP_FIELD_COUNT)
-                .doesNotContain(PASSWD_OUTPUT_ITEM);
+                .contains(PASSWD_OUTPUT_ITEM);
 
         int sends = 0;
         for (ParityCase parityCase : cases()) {

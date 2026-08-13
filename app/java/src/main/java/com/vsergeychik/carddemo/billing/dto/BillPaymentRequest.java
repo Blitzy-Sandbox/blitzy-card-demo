@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.billing.dto;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
@@ -284,6 +285,19 @@ import jakarta.validation.constraints.Size;
  * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
  * which explains each one.
  */
+@JsonPropertyOrder({
+        // The ten xxxI items in the order app/cpy-bms/COBIL00.CPY declares them, which is the order
+        // app/bms/COBIL00.bms writes them to the 24x80 screen. Left implicit, Jackson would derive
+        // the order from reflection and move every @JsonProperty-renamed member to the end, so the
+        // wire would read title01 first and trnname twelfth. Naming the order here is the only way
+        // the published projection stays the map's own order.
+        "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "actidin", "curbal",
+        "confirm", "errmsg",
+        // The transport extensions follow the map, never interleave with it: they are not DFHMDF
+        // fields but the CARDDEMO-COMMAREA, the EIBAID and the COBIL00C paging state that CICS
+        // would have carried outside the map area.
+        "navigationContext", "aid", "trnIdFirst", "trnIdLast", "pageNum", "nextPageFlg",
+        "trnSelFlg", "trnSelected"})
 @JsonIgnoreProperties({
         ResponseOnlyMembers.NEXT_PROGRAM,
         ResponseOnlyMembers.NEXT_MAPSET,
@@ -787,9 +801,17 @@ public final class BillPaymentRequest {
     private NavigationContext navigationContext;
 
     /**
-     * The resolved attention identifier: which key the user pressed, as the token that stands in for
-     * the CICS {@code EIBAID} byte. Five characters, matching {@code CCARD-AID PIC X(5)} of
-     * {@code app/cpy/CVCRD01Y.cpy}.
+     * The attention identifier: which key the user pressed, as the one character whose code point
+     * <em>is</em> the CICS {@code EIBAID} byte - {@code DFHENTER} as {@code U+007D}, {@code DFHPF3} as
+     * {@code U+00F3}.
+     *
+     * <p>One character and not the five-character {@code CCARD-AID} token of
+     * {@code app/cpy/CVCRD01Y.cpy}, because {@code COBIL00C} does not copy {@code CSSTRPFY} and compares
+     * {@code EIBAID} itself. The token folds {@code DFHPF13}-{@code DFHPF24} onto
+     * {@code 'PFK01'}-{@code 'PFK12'}, so it cannot say whether {@code PF3} or {@code PF15} was pressed,
+     * and this program answers those two differently. A value of any other width therefore names a key
+     * this program cannot identify and is answered by {@code WHEN OTHER} at {@code :138}; the token itself
+     * is published on the way out, as derived metadata, and is not an input.
      *
      * <p>{@code app/cbl/COBIL00C.cbl:125-142} evaluates {@code EIBAID} in a strict four-arm order
      * that this member makes reproducible without any server-side terminal state:
@@ -799,11 +821,10 @@ public final class BillPaymentRequest {
      * invalid-key message. The mapset advertises exactly that subset at {@code (24,1)} with
      * {@code INITIAL='ENTER=Continue  F3=Back  F4=Clear'}.
      *
-     * <p>Carried as a plain {@code String} on purpose. The controller reads the raw {@code EIBAID}
-     * equivalent, resolves it through the shared key resolver and places the resulting token here; the
-     * resolution therefore happens once, in one place, and this carrier stays free of any dependency
-     * on the AID constant set. Its only repository-internal reference is {@link NavigationContext},
-     * as with every other screen payload in this module.
+     * <p>Carried as a plain {@code String} on purpose: it holds one character, and a {@code String} is how
+     * a single EBCDIC code point travels in JSON without this carrier taking a dependency on the AID
+     * constant set. Its only repository-internal reference is {@link NavigationContext}, as with every
+     * other screen payload in this module.
      */
     private String aid;
 
@@ -1192,7 +1213,7 @@ public final class BillPaymentRequest {
      * <p>Dispatched on by {@code app/cbl/COBIL00C.cbl:125-142} in the order enter, F3, F4, then
      * everything else.
      *
-     * @return the five-character attention-identifier token, possibly {@code null} where no key
+     * @return the one-character attention-identifier image, possibly {@code null} where no key
      *         indication accompanied the request
      */
     public String getAid() {
@@ -1202,8 +1223,8 @@ public final class BillPaymentRequest {
     /**
      * Sets the resolved attention identifier.
      *
-     * @param aid the five-character token the controller obtained by resolving the raw key
-     *            indication; {@code null} is accepted and preserved
+     * @param aid the one character whose code point is the raw {@code EIBAID} byte; {@code null} is
+     *            accepted and preserved, and any other width is answered by {@code WHEN OTHER}
      */
     public void setAid(String aid) {
         this.aid = aid;

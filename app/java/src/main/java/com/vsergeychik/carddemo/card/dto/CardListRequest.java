@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -246,6 +247,27 @@ import java.util.Optional;
  * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
  * which explains each one.
  */
+@JsonPropertyOrder({
+        // The forty-five xxxI items in the order app/cpy-bms/COCRDLI.CPY declares them: the nine
+        // header and key fields first, then the seven detail rows top to bottom, then the two
+        // message lines. Left implicit, reflection put infomsg and errmsg tenth and eleventh --
+        // ahead of the rows they annotate -- and interleaved the transport members into the middle
+        // of the screen.
+        "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno", "acctsid",
+        "cardsid",
+        // Row 1 has no CRDSTP field: app/bms/COCRDLI.bms gives only rows 2 through 7 a select-stop
+        // attribute field, so the four-item shape here is the map's shape and not an omission.
+        "crdsel1", "acctno1", "crdnum1", "crdsts1",
+        "crdsel2", "crdstp2", "acctno2", "crdnum2", "crdsts2",
+        "crdsel3", "crdstp3", "acctno3", "crdnum3", "crdsts3",
+        "crdsel4", "crdstp4", "acctno4", "crdnum4", "crdsts4",
+        "crdsel5", "crdstp5", "acctno5", "crdnum5", "crdsts5",
+        "crdsel6", "crdstp6", "acctno6", "crdnum6", "crdsts6",
+        "crdsel7", "crdstp7", "acctno7", "crdnum7", "crdsts7",
+        "infomsg", "errmsg",
+        // Transport extensions after the map: the page-7 browse cursor, the per-row selection
+        // flags, CVCRD01Y's screen state and the CARDDEMO-COMMAREA.
+        "pageCursor", "selectionFlags", "cardScreenState", "navigationContext"})
 @JsonIgnoreProperties({
         ResponseOnlyMembers.NEXT_PROGRAM,
         ResponseOnlyMembers.NEXT_MAPSET,

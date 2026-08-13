@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -767,13 +768,17 @@ class CardListRequestTest {
         void noConfigurationPath() {
             assertThat(Stream.of(CardListRequest.class.getAnnotations())
                     .map(annotation -> annotation.annotationType().getName()))
-                    .as("the one class annotation this type carries is the Jackson binding contract "
-                            + "that lets a client send a response body back as the next request (rule "
-                            + "R6, gate G37): it names response-only members and injects nothing. Page "
-                            + "size 7 is behaviour and not configuration (AAP 0.3.9), so it stays a "
-                            + "compile-time constant, and this pins the exact annotation list rather "
-                            + "than merely requiring it to be short")
-                    .containsExactly(JsonIgnoreProperties.class.getName())
+                    .as("both class annotations this type carries are Jackson binding contracts, and "
+                            + "neither injects a value. @JsonPropertyOrder fixes the published member "
+                            + "order as app/cpy-bms/COCRDLI.CPY declares it, so the seven rows read "
+                            + "top to bottom; @JsonIgnoreProperties names the response-only members, "
+                            + "which is what lets a client send a response body back as the next "
+                            + "request (rule R6, gate G37). Page size 7 is behaviour and not "
+                            + "configuration (AAP 0.3.9), so it stays a compile-time constant, and "
+                            + "this pins the exact annotation list rather than merely requiring it to "
+                            + "be short")
+                    .containsExactly(JsonPropertyOrder.class.getName(),
+                            JsonIgnoreProperties.class.getName())
                     .allSatisfy(name -> assertThat(name).doesNotContain("Value")
                             .doesNotContain("ConfigurationProperties"));
             assertThat(Stream.of(CardListRequest.class.getDeclaredFields())
@@ -3104,4 +3109,79 @@ class CardListRequestTest {
         return NUMBERED_ROW_MEMBERS.stream().map(Arguments::of);
     }
 
+    /**
+     * The order in which this type publishes its members.
+     *
+     * <p>Every member here traces to a {@code DFHMDF} field of {@code app/bms/COCRDLI.bms} or to a
+     * transport extension, and the projection is only faithful if it is published in the order the
+     * screen declares - a client reading the object top to bottom must read the screen top to bottom.
+     * Jackson does not give that for free: with no explicit order it derives one from reflection over
+     * the accessors and moves every member renamed with {@code @JsonProperty} behind the ones that
+     * were not renamed, which put this type's map fields out of screen order.
+     */
+    @Nested
+    @DisplayName("the published member order is the order app/cpy-bms/COCRDLI.CPY declares")
+    class BmsSerialisationOrder {
+
+        /**
+         * The 45 {@code xxxI} items of {@code app/cpy-bms/COCRDLI.CPY}, in that file's own
+         * declaration order.
+         */
+        private static final List<String> MAP_PROJECTION = List.of(
+                "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno",
+                "acctsid", "cardsid", "crdsel1", "acctno1", "crdnum1", "crdsts1", "crdsel2",
+                "crdstp2", "acctno2", "crdnum2", "crdsts2", "crdsel3", "crdstp3", "acctno3",
+                "crdnum3", "crdsts3", "crdsel4", "crdstp4", "acctno4", "crdnum4", "crdsts4",
+                "crdsel5", "crdstp5", "acctno5", "crdnum5", "crdsts5", "crdsel6", "crdstp6",
+                "acctno6", "crdnum6", "crdsts6", "crdsel7", "crdstp7", "acctno7", "crdnum7",
+                "crdsts7", "infomsg", "errmsg");
+
+        /**
+         * The 4 members that are not {@code DFHMDF} fields: the page-of-seven browse cursor, the per-row selection flags, the CVCRD01Y screen state and the CARDDEMO-COMMAREA. They follow
+         * the map and never interleave with it, so the screen reads as one contiguous run.
+         */
+        private static final List<String> TRANSPORT_EXTENSIONS = List.of(
+                "pageCursor", "selectionFlags", "cardScreenState", "navigationContext");
+
+        /** The map projection followed by the transport extensions - the whole published object. */
+        private static final List<String> PUBLISHED_ORDER =
+                joined(MAP_PROJECTION, TRANSPORT_EXTENSIONS);
+
+        private static List<String> joined(List<String> first, List<String> second) {
+            List<String> all = new ArrayList<>(first);
+            all.addAll(second);
+            return List.copyOf(all);
+        }
+
+        private static List<String> publishedMembers() {
+            JsonNode body = new ObjectMapper().valueToTree(new CardListRequest());
+            List<String> published = new ArrayList<>();
+            body.fieldNames().forEachRemaining(published::add);
+            return published;
+        }
+
+        @Test
+        @DisplayName("every member is published exactly once, in exactly that order")
+        void theOrderIsTheMapsOwnOrder() {
+            assertThat(publishedMembers()).containsExactlyElementsOf(PUBLISHED_ORDER);
+        }
+
+        @Test
+        @DisplayName("the map projection leads and the transport extensions follow it")
+        void theMapProjectionLeadsAndTransportFollows() {
+            List<String> published = publishedMembers();
+            assertThat(published.subList(0, MAP_PROJECTION.size()))
+                    .containsExactlyElementsOf(MAP_PROJECTION);
+            assertThat(published.subList(MAP_PROJECTION.size(), published.size()))
+                    .containsExactlyElementsOf(TRANSPORT_EXTENSIONS);
+        }
+
+        @Test
+        @DisplayName("the order is declared on the type, so it cannot be derived from reflection")
+        void theOrderIsDeclaredAndNotDerived() {
+            JsonPropertyOrder declared = CardListRequest.class.getAnnotation(JsonPropertyOrder.class);
+            assertThat(declared).as("the published order must be fixed by annotation").isNotNull();
+            assertThat(declared.value()).containsExactlyElementsOf(PUBLISHED_ORDER);
+        }
+    }
 }

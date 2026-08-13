@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -3484,10 +3485,7 @@ class TransactionReportJobTest {
                             BACKEND_REFUSAL_STATUS))
                     .when(harness.xrefs).readByCardNumber(anyString());
 
-            AbendException abend = catchAbend(harness);
-
-            assertNonInvalidKeyFailure(harness, abend, TransactionReportJob.INVALID_CARD_NUMBER,
-                    TransactionReportJob.CARDXREF_DD_NAME, BACKEND_REFUSAL_STATUS);
+            assertNonInvalidKeyContinues(harness, TransactionReportJob.INVALID_CARD_NUMBER);
         }
 
         @Test
@@ -3498,10 +3496,7 @@ class TransactionReportJobTest {
             doReturn(TranTypeRepository.ReadResult.other(TYPE_CODE, BACKEND_REFUSAL_STATUS))
                     .when(harness.types).readByTranType(anyString());
 
-            AbendException abend = catchAbend(harness);
-
-            assertNonInvalidKeyFailure(harness, abend, TransactionReportJob.INVALID_TRANSACTION_TYPE,
-                    TransactionReportJob.TRANTYPE_DD_NAME, BACKEND_REFUSAL_STATUS);
+            assertNonInvalidKeyContinues(harness, TransactionReportJob.INVALID_TRANSACTION_TYPE);
         }
 
         @Test
@@ -3512,10 +3507,7 @@ class TransactionReportJobTest {
             doReturn(TranCategoryRepository.ReadResult.other(BACKEND_REFUSAL_STATUS))
                     .when(harness.categories).readByKey(anyString(), anyInt());
 
-            AbendException abend = catchAbend(harness);
-
-            assertNonInvalidKeyFailure(harness, abend, TransactionReportJob.INVALID_TRAN_CATG_KEY,
-                    TransactionReportJob.TRANCATG_DD_NAME, BACKEND_REFUSAL_STATUS);
+            assertNonInvalidKeyContinues(harness, TransactionReportJob.INVALID_TRAN_CATG_KEY);
         }
 
         @Test
@@ -3530,11 +3522,7 @@ class TransactionReportJobTest {
                             CardXrefRepository.PERMANENT_ERROR_STATUS))
                     .when(harness.xrefs).readByCardNumber(anyString());
 
-            AbendException abend = catchAbend(harness);
-
-            assertNonInvalidKeyFailure(harness, abend, TransactionReportJob.INVALID_CARD_NUMBER,
-                    TransactionReportJob.CARDXREF_DD_NAME,
-                    CardXrefRepository.PERMANENT_ERROR_STATUS);
+            assertNonInvalidKeyContinues(harness, TransactionReportJob.INVALID_CARD_NUMBER);
         }
 
         @Test
@@ -3553,7 +3541,7 @@ class TransactionReportJobTest {
             doReturn(CardXrefRepository.ReadResult.other(CardXrefRepository.BASE_DD_NAME,
                             BACKEND_REFUSAL_STATUS))
                     .when(refused.xrefs).readByCardNumber(anyString());
-            assertThatExceptionOfType(AbendException.class).isThrownBy(refused::run);
+            assertThatNoException().isThrownBy(refused::run);
 
             assertThat(notFound.sysout.lines)
                     .as("the INVALID KEY arm: the DISPLAY, then IO-STATUS 23, then the abend line")
@@ -3561,23 +3549,16 @@ class TransactionReportJobTest {
                             FileStatus.toDisplayLine(FileStatus.NOT_FOUND),
                             AbendException.ABEND_DISPLAY_TEXT);
             assertThat(refused.sysout.lines)
-                    .as("no INVALID KEY statement runs: 9999-ABEND-PROGRAM displays that line and no other")
-                    .endsWith(AbendException.ABEND_DISPLAY_TEXT)
+                    .as("and the other outcome runs none of those three statements: the FILE STATUS item "
+                            + "is set, control passes the END-READ and the paragraph exits")
                     .doesNotContain(TransactionReportJob.INVALID_CARD_NUMBER + CARD_ONE,
-                            FileStatus.toDisplayLine(FileStatus.NOT_FOUND));
+                            FileStatus.toDisplayLine(FileStatus.NOT_FOUND),
+                            AbendException.ABEND_DISPLAY_TEXT);
+            assertThat(refused.sink.lines())
+                    .as("so that run produced a report where the invalid-key one produced none")
+                    .isNotEmpty();
         }
 
-        /**
-         * Runs a harness that must abend and returns the exception.
-         *
-         * @param harness the run
-         * @return the abend it raised
-         */
-        private AbendException catchAbend(Harness harness) {
-            return assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(harness::run)
-                    .actual();
-        }
 
         /**
          * Asserts the shape every non-invalid-key lookup failure must have.
@@ -3588,8 +3569,16 @@ class TransactionReportJobTest {
          * @param ddName            the DD the failing read addressed, which the reason must name
          * @param actualStatus      the status the repository reported, which the reason must carry
          */
-        private void assertNonInvalidKeyFailure(Harness harness, AbendException abend,
-                String invalidKeyLiteral, String ddName, String actualStatus) {
+        private void assertNonInvalidKeyContinues(Harness harness, String invalidKeyLiteral) {
+            // Every one of the three lookup files declares a FILE STATUS item in its SELECT (:6-22) and
+            // the program has no USE AFTER ERROR declarative, so a failure the INVALID KEY phrase does
+            // not cover sets that item and passes control to the statement after the END-READ - the
+            // paragraph's own EXIT. Nothing is displayed and nothing abends; the report goes on to
+            // compose its line from a record area the read left exactly as it was.
+            assertThatNoException()
+                    .as("a non-invalid-key failure does not end the run: control passes the END-READ")
+                    .isThrownBy(harness::run);
+
             assertThat(harness.sysout.lines)
                     .as("the INVALID KEY imperative does not run, so its DISPLAY never happens")
                     .noneSatisfy(line -> assertThat(line).startsWith(invalidKeyLiteral));
@@ -3597,18 +3586,11 @@ class TransactionReportJobTest {
                     .as("nor is IO-STATUS overwritten with 23, which would discard the real status")
                     .doesNotContain(FileStatus.toDisplayLine(FileStatus.NOT_FOUND));
             assertThat(harness.sysout.lines)
-                    .as("9999-ABEND-PROGRAM still runs, and displays only its own line")
-                    .endsWith(AbendException.ABEND_DISPLAY_TEXT);
-
-            // The status is not discarded, it is relocated: abendProgram carries it into the reason, so
-            // the fact survives where a reader can act on it. The DD is named there too, because a
-            // status alone does not say which of the three lookups produced it.
-            assertThat(abend.getReason()).isPresent();
-            assertThat(abend.getReason().orElseThrow())
-                    .contains(ddName)
-                    .contains(FileStatus.toDisplayLine(actualStatus))
-                    .doesNotContain(FileStatus.toDisplayLine(FileStatus.NOT_FOUND));
-            assertThat(abend.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+                    .as("and 9999-ABEND-PROGRAM does not run at all")
+                    .doesNotContain(AbendException.ABEND_DISPLAY_TEXT);
+            assertThat(harness.sink.lines())
+                    .as("the report was still produced, from the unchanged lookup area")
+                    .isNotEmpty();
         }
     }
 

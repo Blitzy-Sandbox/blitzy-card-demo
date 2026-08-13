@@ -573,14 +573,32 @@ public class CardUpdateController {
     static final int VALID_YEAR_MAXIMUM = 2099;
 
     /**
-     * A codec over US-ASCII, used only to pad the literals below to their declared widths at class
-     * initialisation.
+     * A codec over US-ASCII for this class's {@code static} members, and for nothing else.
      *
-     * <p>Deliberately <em>not</em> the injected dataset codec: these are program literals from the
-     * COBOL source, not dataset bytes, and their padding is pure right-fill with spaces, which is
-     * identical under US-ASCII and IBM037. Using the injected one would make a {@code static}
-     * initialiser depend on an instance, which is impossible, and would tie a compile-time constant to
-     * a deployment-time code page. Immutable and stateless (practice B9).
+     * <p>Two roles, and both are code-page-neutral by construction:
+     * <ul>
+     *   <li>padding the literals below to their declared widths at class initialisation, which is pure
+     *       right-fill with spaces;</li>
+     *   <li>the three {@code static} figurative-constant tests -
+     *       {@link #isLowValuesOrSpaces(String, int)}, {@link #isAllZeroCharacters(String, int)} and
+     *       {@link #isAsteriskOrSpaces(String, int)} - each of which applies the {@code PIC X} rule to
+     *       count and place characters and then compares strings.</li>
+     * </ul>
+     * {@link FixedWidthCodec#movePicX(String, int)} produces the same characters under {@code US-ASCII}
+     * and under {@code IBM037}, so which page this codec carries cannot change any of those answers.
+     *
+     * <p>Deliberately <em>not</em> the injected dataset codec, and equally deliberately never used for
+     * anything that becomes bytes. <strong>Every code-page-sensitive operation in this class uses
+     * {@link #codec}</strong>, the injected one: the {@code DFHCOMMAREA} images at {@code :2517-2532},
+     * the zoned span read in {@link #zonedDigitsValue(String, int, FixedWidthCodec)}, and the codec
+     * handed to {@code CardUpdateService.writeProcessing}. An earlier revision also swept every received
+     * field for representability against <em>this</em> codec before the flow began, which measured a
+     * terminal's input against a page the terminal does not use - {@code application.yml} binds
+     * {@code IBM037} in production - and could refuse a value {@code COCRDUPC} would have accepted. That
+     * judgement now happens once, at the JSON boundary, against the active page.
+     *
+     * <p>It is {@code static} because a {@code static} initialiser cannot reach an instance field and a
+     * {@code static} method has no instance to reach. Immutable and stateless (practice B9).
      */
     private static final FixedWidthCodec PIC_X_CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
@@ -1912,11 +1930,12 @@ public class CardUpdateController {
      *                 {@link PfKeyResolver}, so an unrecognised byte reaches the same no-match outcome
      *                 the copybook's {@code EVALUATE} leaves unhandled and is then coerced to
      *                 {@code ENTER} at {@code :422-424}, never refused
-     * @param eibcalen {@code EIBCALEN} - the length of the passed commarea, and therefore either
-     *                 {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH} and nothing else.
+     * @param eibcalen {@code EIBCALEN} - the length of the area that arrived, which is
+     *                 {@value NavigationContext#COMMAREA_LENGTH} from the card list and
+     *                 {@value #WS_COMMAREA_LENGTH} from this program's own {@code COMMON-RETURN}.
      *                 Absent is derived from the carrier, and a stated value that contradicts the
-     *                 carrier is refused rather than believed. The distinction is load-bearing at
-     *                 {@code :388}
+     *                 carrier is refused rather than believed. Only the zero test is acted on, and it is
+     *                 load-bearing at {@code :388}
      * @param eibaid   the same attention identifier under {@link AidRequestParameter#CANONICAL_NAME}. At
      *                 most one of the two spellings need be sent; sending both with different values is
      *                 refused, because a terminal presents one attention identifier
@@ -1948,7 +1967,7 @@ public class CardUpdateController {
 
         PaintedScreen painted = handle(received, commareaLength, attentionIdentifier);
         return ResponseEntity.ok(ScreenResponse.of(painted.response(),
-                screenMetadataOf(painted.response(), painted.cursorField())));
+                screenMetadataOf(painted.response(), painted.inputArea(), painted.cursorField())));
     }
 
     /**
@@ -1987,15 +2006,18 @@ public class CardUpdateController {
      * @throws IllegalArgumentException if the path value, or the bound {@code ACCTSID}, is wider than
      *                                 its declared width
      *
-     * <h4>The payload's own key field must not contradict the URI</h4>
-     * This route states the record's key twice - in the URI and in {@code CARDSIDI}, the field the URI
-     * binds - and a terminal has only one. The payload's member is therefore required to agree before it
-     * is overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
-     * refused at the boundary by
-     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
-     * Overwriting it silently, which is what happened before, discarded the operator's own typed card
-     * number with no message. A client that echoes a painted screen agrees with the URI and never reaches
-     * the refusal.
+     * <h4>The URI seeds a first entry and is ignored on a re-entry</h4>
+     * A 3270 screen has one key field and no URI. {@code COCRDUPC} reads {@code CARDSIDI} only on the turn it
+     * receives the map - :429-543 reaches 1000-PROCESS-INPUTS - and so 1100-RECEIVE-MAP - only on its WHEN
+     * OTHER arm; :598-605 then reads CARDSIDI - so the path value is
+     * written into that field on a first entry, meaning a payload carrying no communication area or one
+     * whose context is not re-entry, and on a re-entry the received field is left <strong>exactly as it
+     * arrived</strong>.
+     *
+     * <p>That is what keeps three source behaviours reachable on a re-entry: a card number the operator
+     * typed over the painted screen, a field the operator blanked, and the {@code '*'} image the screen
+     * itself paints when no criterion was supplied. Overwriting any of them from the URI would discard
+     * the operator's own input, and refusing them would answer a state the legacy screen produces.
      */
     CardUpdateRequest bind(String cardNum, CardUpdateRequest request) {
         if (cardNum.length() > CardUpdateRequest.CARDSID_LENGTH) {
@@ -2006,9 +2028,9 @@ public class CardUpdateController {
 
         CardUpdateRequest received = request == null ? new CardUpdateRequest()
                 : new CardUpdateRequest(request);
-        ScreenInputRejectedException.requireKeyAgreement(CARDSID_MEMBER, cardNum,
-                received.getCardsid(), CardUpdateRequest.CARDSID_LENGTH, codec, NO_CRITERION_IMAGE);
-        received.setCardsid(codec.movePicX(cardNum, CardUpdateRequest.CARDSID_LENGTH));
+        if (!isReentry(received)) {
+            received.setCardsid(codec.movePicX(cardNum, CardUpdateRequest.CARDSID_LENGTH));
+        }
 
         // The communication area's own card number, the one :491 reads. Projected only when an area was
         // actually passed: a null context is EIBCALEN = 0, which :388 branches on, and fabricating one
@@ -2032,6 +2054,22 @@ public class CardUpdateController {
         received.setAcctsid(codec.movePicX(acctsid, CardUpdateRequest.ACCTSID_LENGTH));
         return received;
     }
+
+    /**
+     * Whether this turn is one on which {@code COCRDUPC} performs an {@code EXEC CICS RECEIVE MAP} and reads
+     * the operator's own typed key.
+     *
+     * <p>An absent communication area is {@code EIBCALEN = 0}, which the program treats as no
+     * conversation at all, and a context that is not {@value NavigationContext#PGM_CONTEXT_REENTER} is a
+     * turn the program answers by painting rather than by receiving.
+     *
+     * @param received the payload as it arrived
+     * @return {@code true} when the source would read the map's own key on this turn
+     */
+    private static boolean isReentry(CardUpdateRequest received) {
+        return received.hasNavigationContext() && received.getNavigationContext().isReenter();
+    }
+
 
     /**
      * The URI's card number as {@code CDEMO-CARD-NUM PIC 9(16)} holds it.
@@ -2068,48 +2106,49 @@ public class CardUpdateController {
     }
 
     /**
-     * Resolves {@code EIBCALEN} from the stated value and the carrier, and refuses any statement the
-     * carrier does not support.
+     * Resolves {@code EIBCALEN} - the length of the area that arrived, tested for zero and nothing else.
      *
-     * <h4>Why a caller may not simply declare it</h4>
-     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
-     * actually passed. It selects the first disjunct at {@code app/cbl/COCRDUPC.cbl:388}, which decides
-     * whether the operator's typed criteria, the calling program's identity <em>and</em> the whole
-     * {@value CommArea#RECORD_LENGTH}-byte screen state survive the turn. A caller that could state it
-     * freely could discard state that was sent, or claim state that was not.
+     * <h4>Zero versus non-zero is the whole of what the source asks</h4>
+     * {@code app/cbl/COCRDUPC.cbl:388} tests {@code EIBCALEN} against zero and never against any other
+     * value: zero means the transaction was typed at a clear screen and there is no conversation, and
+     * anything else means an area arrived and its first 160 bytes are {@code CARDDEMO-COMMAREA}.
+     * So this method preserves the length that arrived and branches on zero versus non-zero, exactly as
+     * the source does.
      *
-     * <h4>Why the two accepted values are 0 and {@value #PASSED_COMMAREA_LENGTH}</h4>
-     * {@code :388} tests the value against zero and nothing else, and the only other thing the program
-     * does with the passed area is read exactly {@value #PASSED_COMMAREA_LENGTH} bytes out of it -
-     * {@code DFHCOMMAREA(1:160)} at {@code :396-397} and {@code DFHCOMMAREA(161:329)} at
-     * {@code :398-400}. The projected request carries precisely those two areas, so it is in one of
-     * exactly two states: absent, or complete at {@value #PASSED_COMMAREA_LENGTH} bytes. The byte count
-     * a real terminal would report is not one number - {@code COCRDLIC} transfers control passing
-     * {@code CARDDEMO-COMMAREA} alone while this program's own {@code COMMON-RETURN} passes
-     * {@code WS-COMMAREA}, declared {@code PIC X(2000)} at {@code :324} - and since none of those
-     * numbers is tested for anything but zero, reproducing the terminal-dependent count would add a
-     * distinction the program does not make.
+     * <h4>Why no set of accepted lengths is enumerated</h4>
+     * Because the real lengths are several and all of them are legitimate. {@code COCRDLIC} transfers control
+     * passing {@code CARDDEMO-COMMAREA} alone [{@code app/cbl/COCRDLIC.cbl:566-569}], and
+     * this program's own {@code COMMON-RETURN} passes {@code WS-COMMAREA}, declared {@code PIC X(2000)} - so a
+     * client continuing the pseudo-conversation faithfully reports 2000 while one
+     * arriving from the menu reports 160. An earlier revision accepted only zero and one
+     * synthetic length and answered {@code 400} to both of those real values, which refused the very
+     * payload this API's own response tells a client to send back. Any non-negative length is therefore
+     * accepted and carried through unchanged; only the zero test is acted on, because only the zero test
+     * exists in the source.
      *
-     * @param eibcalen the stated value, or {@code null}
+     * <p>A stated value must still agree with what actually arrived: {@code EIBCALEN} describes the area
+     * CICS passed, so a payload carrying a communication area cannot report zero and a payload carrying
+     * none cannot report a length. That is not an invented rule but the one relation the parameter has to
+     * the body, and {@code :388} branches on it.
+     *
+     * @param eibcalen the stated value, or {@code null} to derive it from the carrier
      * @param request  the bound request, whose commarea presence is the carrier
-     * @return {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH}
-     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
+     * @return zero when no communication area arrived, otherwise the length that arrived
+     * @throws IllegalArgumentException if the stated value is negative, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, CardUpdateRequest request) {
-        int carried = request.hasNavigationContext() ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
+        boolean carried = request.hasNavigationContext();
         if (eibcalen == null) {
-            return carried;
+            return carried ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
         }
         int stated = eibcalen;
-        if (stated != NO_COMMAREA_LENGTH && stated != PASSED_COMMAREA_LENGTH) {
+        if (stated < NO_COMMAREA_LENGTH) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
-                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
-                    + "program is either " + NO_COMMAREA_LENGTH + " or " + PASSED_COMMAREA_LENGTH
-                    + ", CARDDEMO-COMMAREA plus WS-THIS-PROGCOMMAREA.");
+                    + ", and EIBCALEN is the length of the area CICS passed, which cannot be negative.");
         }
-        if (stated != carried) {
+        if ((stated == NO_COMMAREA_LENGTH) == carried) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
-                    + " but the payload carries " + (carried == NO_COMMAREA_LENGTH ? "no" : "a")
+                    + " but the payload carries " + (carried ? "a" : "no")
                     + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
                     + "because app/cbl/COCRDUPC.cbl:388 uses it to decide whether the conversation's "
                     + "state survives the turn.");
@@ -2163,13 +2202,19 @@ public class CardUpdateController {
      *                 {@code null}
      * @param eibcalen {@code EIBCALEN}, the length of the passed commarea
      * @param eibAid   {@code EIBAID}, the raw attention identifier byte
-     * <p>Two things sit deliberately outside that declarative. Ahead of it,
-     * {@link ScreenInputRejectedException#requireRepresentable} judges the seventeen received values
-     * against the screen code page: a character that code page cannot represent is a value no
-     * {@code RECEIVE MAP} could have delivered, so it is the caller's mistake rather than a transaction
-     * that failed, and sweeping before the flow begins puts the refusal ahead of every read and every
-     * write. Inside it, a {@link ScreenInputRejectedException} raised deeper - by the commarea
-     * consistency guard in {@link #editMapInputs1200} - is rethrown for the same reason.
+     * <p>One thing sits deliberately outside that declarative: a {@link ScreenInputRejectedException}
+     * raised deeper in the flow is rethrown rather than handled, because {@code ABEND-ROUTINE} is for a
+     * unit of work that genuinely did not complete, not for a payload describing a conversation this
+     * program cannot be in.
+     *
+     * <p><strong>No code-page sweep stands ahead of the flow.</strong> Whether a value could have been
+     * delivered by a terminal at the configured code page is a transport judgement, and it is made once
+     * for every string of every request body by {@code config.WebConfig.ScreenTextDeserializer} at the JSON
+     * boundary. Making it here as well ran it ahead of the outer {@code EVALUATE} at {@code :429-543},
+     * whose cold-start, fresh-entry, list-entry, completed-update and {@code XCTL} arms all reach
+     * {@code SEND} without a {@code RECEIVE MAP} at all - so a field this program was about to ignore
+     * could be refused, and it was refused against a hard-coded {@code US-ASCII} rather than the page
+     * actually in force.
      *
      * @return the painted screen; never {@code null}
      * @throws NullPointerException         if {@code request} is {@code null}
@@ -2180,7 +2225,6 @@ public class CardUpdateController {
     PaintedScreen handle(CardUpdateRequest request, int eibcalen, byte eibAid) {
         Objects.requireNonNull(request, "A request is required: COCRDUPC is entered with a terminal "
                 + "input area, and an absent one is spaces rather than nothing");
-        ScreenInputRejectedException.requireRepresentable(request.fieldValues(), PIC_X_CODEC);
 
         CardUpdateResponse response = new CardUpdateResponse();
         Conversation task = new Conversation();
@@ -2202,7 +2246,13 @@ public class CardUpdateController {
         }
         // The cursor request leaves with the map because MOVE -1 TO <field>L is a property of the SEND,
         // not of the map's content, and the length items themselves are metadata rather than payload.
-        return new PaintedScreen(response, task.cursorField);
+        //
+        // The input area leaves with it for the same reason: 3300 writes the basic attribute byte into
+        // the xxxA items of CCRDUPAI, not of CCRDUPAO, because xxxA redefines the input group's flag
+        // byte. Returning only the output area dropped every one of those bytes, so a client could not
+        // tell a protected field from a typeable one, a dark information line from a bright one, or a
+        // confirmation prompt from an ordinary repaint.
+        return new PaintedScreen(response, request, task.cursorField);
     }
 
     /**
@@ -2214,19 +2264,37 @@ public class CardUpdateController {
      * {@link CardUpdateResponse}, because in the copybook it is a {@code -1} in an {@code xxxL} length
      * item and those items are metadata, never payload (gate G9).
      *
-     * @param response    the painted map, never {@code null}
+     * <p>The <strong>input</strong> area travels with them, because the attribute layer is split across
+     * the two groups of the symbolic map and only half of it is on the output side.
+     * {@code 3300-SETUP-SCREEN-ATTRS} writes {@code DFHBMFSE} or {@code DFHBMPRF} into
+     * {@code ACCTSIDA}, {@code CARDSIDA}, {@code CRDNAMEA}, {@code CRDSTCDA}, {@code EXPMONA} and
+     * {@code EXPYEARA} <em>of {@code CCRDUPAI}</em> ({@code :1171-1208}), {@code DFHBMDAR} or
+     * {@code DFHBMBRY} into {@code INFOMSGA} ({@code :1309-1313}) and {@code DFHBMBRY} into
+     * {@code FKEYSCA} ({@code :1315-1317}) - all of them {@code xxxA} items, which
+     * {@code REDEFINES} the input group's {@code xxxF} flag byte. Colour, highlight and validation
+     * ({@code xxxC}, {@code xxxH}, {@code xxxV}) hang off the output group instead. Carrying one area
+     * and not the other therefore publishes half a description of every field, and
+     * {@link #screenMetadataOf} is where the two halves are merged back into one.
+     *
+     * @param response    the painted output map area {@code CCRDUPAO}, never {@code null}
+     * @param inputArea   the input map area {@code CCRDUPAI} as {@code 3300} left it, carrying the
+     *                    {@code xxxA} attribute byte and the {@code xxxL} length item of every field;
+     *                    never {@code null}
      * @param cursorField the {@code DFHMDF} label {@code 3300}'s cursor {@code EVALUATE} chose, or
      *                    {@code null} when the paragraph did not run - which happens on the
      *                    {@code XCTL} arm at {@code :435-476}, where no map is sent at all
      */
-    record PaintedScreen(CardUpdateResponse response, String cursorField) {
+    record PaintedScreen(CardUpdateResponse response, CardUpdateRequest inputArea, String cursorField) {
 
         /**
-         * @throws NullPointerException if {@code response} is {@code null}
+         * @throws NullPointerException if {@code response} or {@code inputArea} is {@code null}
          */
         PaintedScreen {
             Objects.requireNonNull(response, "A painted map is always produced: even the XCTL arm at "
                     + "app/cbl/COCRDUPC.cbl:435-476 returns the commarea it built");
+            Objects.requireNonNull(inputArea, "The input map area is always produced: COCRDUPC is "
+                    + "entered with CCRDUPAI, and 3300 writes the xxxA attribute of every field into it "
+                    + "even on the arms that receive no map");
         }
     }
 
@@ -3178,32 +3246,6 @@ public class CardUpdateController {
                 || CardScreenState.spaces(length).equals(image);
     }
 
-    /**
-     * Asserts that a commarea key the program itself wrote still holds what the program writes there,
-     * before it is moved into a {@code PIC 9} receiver.
-     *
-     * <p>{@code CCUP-OLD-ACCTID PIC X(11)} and {@code CCUP-OLD-CARDID PIC X(16)} are alphanumeric, and
-     * {@code app/cbl/COCRDUPC.cbl:671-672} moves them into {@code CDEMO-ACCT-ID PIC 9(11)} and
-     * {@code CDEMO-CARD-NUM PIC 9(16)}. Their only writer is {@code :1006-1007}, which writes the digits
-     * the {@code READ} returned, so on a real conversation the receiving numeric items always get digits
-     * and the {@code MOVE} cannot fail. A hand-built payload can ask for the processing action while
-     * leaving them blank; a numeric item cannot hold blanks, so that payload is refused here as the
-     * caller's error rather than allowed to fail inside the {@code HANDLE ABEND} declarative.
-     *
-     * @param value    the commarea value as supplied
-     * @param length   the item's declared {@code PIC X} width
-     * @param member   the payload member to name in the answer
-     * @param expected what the program writes there, as a shape rather than a value
-     * @throws ScreenInputRejectedException if the value is not the declared count of digits
-     */
-    static void requireFetchedKey(String value, int length, String member, String expected) {
-        String image = PIC_X_CODEC.movePicX(value == null ? "" : value, length);
-        for (int index = 0; index < image.length(); index++) {
-            if (image.charAt(index) < '0' || image.charAt(index) > '9') {
-                throw ScreenInputRejectedException.inconsistentCommarea(member, expected);
-            }
-        }
-    }
 
     /**
      * {@code 1200-EDIT-MAP-INPUTS} - {@code app/cbl/COCRDUPC.cbl:641-715}: two completely different
@@ -3270,18 +3312,19 @@ public class CardUpdateController {
 
         CardDetails fetched = task.oldDetails();
 
-        // Reached only when the change action says a card was already fetched, and the two MOVEs below
-        // feed PIC 9 receivers. The only writer of CCUP-OLD-ACCTID and CCUP-OLD-CARDID is this program,
-        // at :1006-1007, and it writes the eleven and sixteen digits it read - so on any conversation
-        // that actually fetched a card these hold digits. A payload asking for the processing action
-        // while leaving them blank describes a screen that was never fetched, and a numeric item cannot
-        // hold blanks at all. Refused as the caller's error, ahead of the MOVEs, rather than letting the
-        // numeric conversion fail inside the HANDLE ABEND declarative and answer an abend.
-        requireFetchedKey(fetched.acctid(), CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid",
-                "the eleven digits of the fetched account identifier");
-        requireFetchedKey(fetched.cardid(), CardDetails.CARDID_LENGTH, "commArea.oldDetails.cardid",
-                "the sixteen digits of the fetched card number");
-
+        // :671-672 is unconditional in the source, and it is unconditional here.
+        //
+        // CCUP-OLD-ACCTID PIC X(11) and CCUP-OLD-CARDID PIC X(16) are alphanumeric and the receivers are
+        // CDEMO-ACCT-ID PIC 9(11) and CDEMO-CARD-NUM PIC 9(16). Their only writer is :1006-1007, which
+        // writes the digits the READ returned, so on a real conversation these hold digits and the MOVE
+        // cannot fail. A hand-built payload can ask for the processing action while leaving them blank,
+        // and the source's answer to that is not a refusal: it performs the MOVE, the numeric item ends
+        // up holding data that is not a number, and the resulting data exception is caught by the
+        // EXEC CICS HANDLE ABEND declarative installed at :370-372, which runs ABEND-ROUTINE. That is
+        // what happens here: the codec's PIC 9 helper refuses a non-digit image, the failure is raised
+        // inside handle()'s try, and ABEND-ROUTINE answers it. No new class of HTTP error is invented for
+        // a state the source already has an answer for.
+        //
         // :671-672 - the fetched keys go back into the commarea. CDEMO-ACCT-ID is PIC 9(11) and
         // CDEMO-CARD-NUM PIC 9(16), while CCUP-OLD-ACCTID and CCUP-OLD-CARDID are alphanumeric, so each
         // MOVE crosses from X to 9 and the receiver is zero-filled on the left.
@@ -4991,8 +5034,8 @@ public class CardUpdateController {
     // =================================================================================================
 
     /**
-     * The {@code xxxL}, {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} metadata of the
-     * outbound map, projected for the client.
+     * The {@code xxxL}, {@code xxxA}, {@code xxxC}, {@code xxxH} and {@code xxxV} metadata of both map
+     * areas, merged and projected for the client.
      *
      * <p>These items are <strong>not</strong> payload fields (AAP §0.6.3, gate G9): the seventeen
      * {@code xxxO} items are the payload, and the attribute quads plus the cursor request are metadata
@@ -5000,26 +5043,69 @@ public class CardUpdateController {
      * it holds the quads and lets the program that painted them decide how to publish them, which is
      * the same division {@code UserMenuController} and {@code TransactionMenuController} use.
      *
+     * <p><strong>The basic attribute byte comes from the input area, not the output area.</strong>
+     * {@code 3300-SETUP-SCREEN-ATTRS} writes it into {@code xxxA OF CCRDUPAI} at {@code :1173-1207},
+     * {@code :1310-1312} and {@code :1316}, because {@code xxxA} redefines the input group's flag byte;
+     * {@code xxxC}, {@code xxxH} and {@code xxxV} hang off the output group and come from there. That
+     * asymmetry is the symbolic map's, and the merge is what lets a client describe one field once. This
+     * is the same projection {@code AccountUpdateController} performs for {@code COACTUPC}.
+     *
+     * <p>Reading the output group's {@code xxxP} into that slot instead - which an earlier revision did -
+     * reported {@code x'00'} for all seventeen fields on every path, because {@code COCRDUPC} never
+     * writes {@code xxxP}: {@code 3100:1053} does {@code MOVE LOW-VALUES TO CCRDUPAO} and nothing puts
+     * anything back. So protected and unprotected fields were indistinguishable, a suppressed
+     * information line looked the same as a highlighted one, and the confirmation prompt's brightened
+     * function-key line was invisible. The {@code xxxP} item itself is still observable where it belongs,
+     * on {@link CardUpdateResponse}'s own attribute-image map.
+     *
      * <p>The message colour reported is {@code ERRMSG}'s, because that is the field the operator's eye
      * goes to and the one {@code 3250:1163} always writes. {@code resetAllOutputFields} is always
      * {@code true}, because {@code 3100:1053} always does {@code MOVE LOW-VALUES TO CCRDUPAO} and
      * {@code 3400:1333} always sends {@code ERASE} - this screen has no partial-repaint path.
      *
-     * @param response    the outbound map whose quads are read
+     * @param response    the outbound map area {@code CCRDUPAO}, whose colour, highlight and validation
+     *                    items are read
+     * @param inputArea   the input map area {@code CCRDUPAI} as {@code 3300} left it, whose {@code xxxA}
+     *                    attribute byte is read
      * @param cursorField the {@code DFHMDF} label the cursor was requested on, or {@code null}
      * @return the metadata; never {@code null}
+     * @throws NullPointerException if {@code response} or {@code inputArea} is {@code null}
      */
-    ScreenMetadata screenMetadataOf(CardUpdateResponse response, String cursorField) {
+    ScreenMetadata screenMetadataOf(CardUpdateResponse response, CardUpdateRequest inputArea,
+            String cursorField) {
+        Objects.requireNonNull(response, "The painted output area is required to project its metadata");
+        Objects.requireNonNull(inputArea, "The input area is required: it is where 3300 wrote the xxxA "
+                + "attribute byte of every field, and without it the protection half of every quad "
+                + "would be reported as the LOW-VALUES the output area was initialised with");
         Map<String, ScreenMetadata.FieldMetadata> quads = new LinkedHashMap<>();
         for (CardUpdateResponse.ScreenField field : CardUpdateResponse.namedFields()) {
             CardUpdateResponse.FieldAttributes attributes = response.attributesOf(field.name());
+            byte attribute = attributeByteOf(inputArea, field.name());
             quads.put(field.name(), ScreenMetadata.FieldMetadata.of(attributes.getColour(),
-                    attributes.getPs(), attributes.getHilight(), attributes.getValidn()));
+                    attribute, attributes.getHilight(), attributes.getValidn()));
         }
         return ScreenMetadata.of(cursorField,
                 response.colourOf(CardUpdateResponse.ERRMSG),
                 true,
                 quads);
+    }
+
+    /**
+     * The {@code xxxA} byte one field of the input area holds.
+     *
+     * <p>{@link CardUpdateRequest.FieldMetadata#attributeItem()} returns the byte as a one-character
+     * {@code String}, because that is how the copybook declares it - {@code xxxA PICTURE X} redefining
+     * {@code xxxF PICTURE X}. The character is masked to eight bits before the cast, so an attribute
+     * above {@code 0x7F} - and {@code DFHBMPRF}, {@code DFHBMFSE} and {@code DFHBMDAR} all are - is not
+     * sign-extended into a different value on the way out. This is the exact inverse of
+     * {@link #putFieldAttribute}.
+     *
+     * @param inputArea the input map area
+     * @param label     the {@code DFHMDF} label
+     * @return the attribute byte, {@code x'00'} for a field {@code 3300} did not assign
+     */
+    static byte attributeByteOf(CardUpdateRequest inputArea, String label) {
+        return (byte) (inputArea.metadataFor(label).attributeItem().charAt(0) & 0xFF);
     }
 
     /**

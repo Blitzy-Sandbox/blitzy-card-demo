@@ -1793,7 +1793,8 @@ class UserMenuControllerTest {
             assertThat(UserMenuController.resolveEibAid(0, null)).isZero();
             assertThat(UserMenuController.resolveEibAid(255, null)).isEqualTo((byte) 0xFF);
             // The more precise statement wins over a token that says something else.
-            assertThat(UserMenuController.resolveEibAid(0xF7, entering().withAid("PFK08")))
+            assertThat(UserMenuController.resolveEibAid(0xF7,
+                    entering().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF8))))
                     .isEqualTo(CicsAid.DFHPF7);
 
             assertThatIllegalArgumentException()
@@ -1834,24 +1835,26 @@ class UserMenuControllerTest {
         }
 
         @Test
-        @DisplayName("with no parameter, the payload's CCARD-AID token names the key")
+        @DisplayName("with no parameter, the payload's one-character EIBAID image names the key")
         void theTokenIsTheSecondCarrier() {
             // The defect this pins: reading only the query parameter made COUSR00C:122-131 - WHEN DFHPF7
             // and WHEN DFHPF8 - unreachable to a client that echoes the DTO it was given, because the
-            // token was ignored and the absent parameter defaulted to ENTER.
-            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK07")))
+            // member was ignored and the absent parameter defaulted to ENTER.
+            assertThat(UserMenuController.resolveEibAid(null,
+                    entering().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF7))))
                     .isEqualTo(CicsAid.DFHPF7);
-            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK08")))
+            assertThat(UserMenuController.resolveEibAid(null,
+                    entering().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF8))))
                     .isEqualTo(CicsAid.DFHPF8);
-            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK03")))
-                    .isEqualTo(CicsAid.DFHPF3);
-            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("CLEAR")))
+            assertThat(UserMenuController.resolveEibAid(null,
+                    entering().withAid(PfKeyResolver.aidImage(CicsAid.DFHCLEAR))))
                     .isEqualTo(CicsAid.DFHCLEAR);
-            // The copybook literal carries two trailing spaces, and either spelling resolves.
-            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PA1")))
-                    .isEqualTo(CicsAid.DFHPA1);
-            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PA1  ")))
-                    .isEqualTo(CicsAid.DFHPA1);
+            // And the twelve folded pairs stay distinct, which a CCARD-AID token could not have said:
+            // PF20 pages nowhere and reaches WHEN OTHER, where PF8 pages forward.
+            assertThat(UserMenuController.resolveEibAid(null,
+                    entering().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF20))))
+                    .isEqualTo(CicsAid.DFHPF20);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF20)).contains(AidKey.PFK08);
         }
 
         @Test
@@ -1874,17 +1877,43 @@ class UserMenuControllerTest {
             assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PF8  ")))
                     .as("a plausible misspelling of this screen's own paging key is not ENTER")
                     .isEqualTo(CicsAid.DFHNULL);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK08")))
+                    .as("nor is the folded token itself a byte: it names no key this program can identify")
+                    .isEqualTo(CicsAid.DFHNULL);
         }
 
-        @ParameterizedTest(name = "the token {0} maps back to the byte PfKeyResolver maps onto it")
+        @ParameterizedTest(name = "a byte producing {0} is read back as itself")
         @EnumSource(AidKey.class)
-        @DisplayName("every one of the sixteen tokens round-trips through the resolver")
+        @DisplayName("every key a response can name is readable back as its own byte, unfolded")
         void everyTokenRoundTripsThroughTheResolver(AidKey key) {
-            // The inverse must agree with PfKeyResolver for all sixteen, or a client echoing a token it
-            // was given would be understood as a different key than the one that produced it.
-            int mapped = UserMenuController.aidByteOfToken(key.token()).orElseThrow();
+            // For each of the sixteen condition names, take a byte that produces it and prove the payload
+            // image of that byte reads back as that byte - so a client echoing a key it was given is
+            // understood as the key that produced it, and never as its folded twin.
+            byte source = someByteResolvingTo(key);
 
+            int mapped = UserMenuController.aidByteOfToken(PfKeyResolver.aidImage(source))
+                    .orElseThrow();
+
+            assertThat((byte) mapped).isEqualTo(source);
             assertThat(PfKeyResolver.resolve((byte) mapped)).contains(key);
+        }
+
+        /**
+         * A raw byte the shared resolver maps onto the given condition name.
+         *
+         * <p>Found by search over the whole one-byte space rather than from a second table, so this helper
+         * cannot disagree with {@link PfKeyResolver#resolve(byte)} about which bytes produce which name.
+         *
+         * @param key the condition name
+         * @return a byte that resolves to it
+         */
+        private byte someByteResolvingTo(AidKey key) {
+            for (int unsigned = 0; unsigned <= 0xFF; unsigned++) {
+                if (PfKeyResolver.resolve((byte) unsigned).filter(key::equals).isPresent()) {
+                    return (byte) unsigned;
+                }
+            }
+            throw new AssertionError("PfKeyResolver maps no byte at all onto " + key);
         }
 
         @Test
@@ -1906,7 +1935,7 @@ class UserMenuControllerTest {
             assertThat(UserMenuController.aidByteOfToken("ZZZZZ")).hasValue(CicsAid.DFHNULL & 0xFF);
 
             // And the positive case, so the emptiness above is not vacuous.
-            assertThat(UserMenuController.aidByteOfToken(AidKey.PFK07.token()))
+            assertThat(UserMenuController.aidByteOfToken(PfKeyResolver.aidImage(CicsAid.DFHPF7)))
                     .hasValue(CicsAid.DFHPF7 & 0xFF);
         }
 
@@ -1918,9 +1947,11 @@ class UserMenuControllerTest {
             UserMenuController controller = controllerOver(PAGE_SIZE);
 
             UserListResponse forward = controller
-                    .getUsers(reentering().withAid("PFK08"), null, null).screen();
+                    .getUsers(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF8)),
+                            null, null).screen();
             UserListResponse backward = controller
-                    .getUsers(reentering().withAid("PFK07"), null, null).screen();
+                    .getUsers(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHPF7)),
+                            null, null).screen();
 
             assertThat(forward.errMsg().strip())
                     .as("PF8 from page one either pages or says it cannot; either way it is not ENTER")
@@ -2638,7 +2669,7 @@ class UserMenuControllerTest {
         void theRouteAnswersTheListedPage() throws Exception {
             MvcResult result = mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.usrid01").value("ADMIN001"))
                     .andExpect(jsonPath("$.usrid10").value("USER0005"))
@@ -2661,7 +2692,7 @@ class UserMenuControllerTest {
 
             mockMvc.perform(request
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isMethodNotAllowed());
 
             Mockito.verify(repository, Mockito.never()).startBrowse(Mockito.any());
@@ -2684,7 +2715,7 @@ class UserMenuControllerTest {
         void theBodyCarriesExactlyTheProjectedNames() throws Exception {
             String body = mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
 
@@ -2738,7 +2769,7 @@ class UserMenuControllerTest {
         void noSymbolicMapMetadataReachesTheWire() throws Exception {
             String body = mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
 
@@ -2778,7 +2809,7 @@ class UserMenuControllerTest {
 
             String body = mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     // The pinned clock is 2022-07-19T23:12:34Z, and POPULATE-HEADER-INFO renders
                     // WS-CURTIME-HH-MM-SS at :581 and WS-CURDATE-MM-DD-YY at :575.
@@ -2799,7 +2830,7 @@ class UserMenuControllerTest {
         void theHeaderIdentifiesTheTransactionAndProgram() throws Exception {
             mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     // MOVE WS-TRANID TO TRNNAMEO at :568 and MOVE WS-PGMNAME TO PGMNAMEO at :569.
                     .andExpect(jsonPath("$.trnname").value(UserListResponse.TRANSACTION_ID))
@@ -2834,7 +2865,7 @@ class UserMenuControllerTest {
                             .param("limit", "3")
                             .param("rows", "3")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json(reentering().withAid("ENTER"))))
+                            .content(json(reentering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.usrid01").value("ADMIN001"))
                     // Row ten is populated, which a page of three could not manage.
@@ -3771,7 +3802,8 @@ class UserMenuControllerTest {
             rows.set(0, row);
             UserListRequest request = new UserListRequest(null, null, null, null, null, null, null, null,
                     rows, null, null, null, 0, null, null, null,
-                    NavigationContext.empty().withPgmReenter(), "ENTER");
+                    NavigationContext.empty().withPgmReenter(),
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER));
             return mapper.writeValueAsString(request);
         }
 
@@ -3922,7 +3954,8 @@ class UserMenuControllerTest {
         void noSessionAndNoCookie() throws Exception {
             MvcResult result = mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(reentering().withAid("ENTER"))))
+                            .content(mapper.writeValueAsString(reentering().withAid(
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andReturn();
 
@@ -3974,14 +4007,16 @@ class UserMenuControllerTest {
             // payload and must be answered from THAT, not from whatever the first left behind.
             mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(reentering().withAid("ENTER"))))
+                            .content(mapper.writeValueAsString(reentering().withAid(
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cdemoCu00PageNum").value(1));
 
             mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(reentering()
-                                    .withCdemoCu00PageNum(7).withAid("PFK08")
+                                    .withCdemoCu00PageNum(7)
+                                    .withAid(PfKeyResolver.aidImage(CicsAid.DFHPF8))
                                     .withCdemoCu00UsrIdLast("ADMIN001").withNextPageYes())))
                     .andExpect(status().isOk())
                     // PF8 pages forward from the anchor the SECOND payload carried, and counts from 7.
@@ -3991,7 +4026,8 @@ class UserMenuControllerTest {
             // anything had been retained.
             mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(reentering().withAid("ENTER"))))
+                            .content(mapper.writeValueAsString(reentering().withAid(
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cdemoCu00PageNum").value(1))
                     .andExpect(jsonPath("$.usrid01").value("ADMIN001"));
@@ -4014,7 +4050,8 @@ class UserMenuControllerTest {
             // a re-entry by construction.
             mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(entering().withAid("ENTER"))))
+                            .content(mapper.writeValueAsString(entering().withAid(
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.navigationContext.pgmContext")
                             .value(NavigationContext.PGM_CONTEXT_REENTER));
@@ -4038,8 +4075,9 @@ class UserMenuControllerTest {
             // anywhere. So the honest projection is that the message colour is the map's own declared
             // default and the field map is empty, in BOTH context states. Inventing a highlight here
             // would be a new feature.
-            for (UserListRequest state : List.of(entering().withAid("ENTER"),
-                    reentering().withAid("ENTER"), reentering().withAid("PFK12"))) {
+            for (UserListRequest state : List.of(entering().withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER)),
+                    reentering().withAid(
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER)), reentering().withAid("PFK12"))) {
                 String body = mockMvc.perform(get("/api/users")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(mapper.writeValueAsString(state)))
@@ -4066,7 +4104,8 @@ class UserMenuControllerTest {
         void theCursorRequestIsTheOnlyPresentationFact() throws Exception {
             String body = mockMvc.perform(get("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(reentering().withAid("ENTER"))))
+                            .content(mapper.writeValueAsString(reentering().withAid(
+                                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
 

@@ -1,7 +1,7 @@
 {
   "program": "CBTRN01C",
   "caseId": "case01",
-  "description": "The canonical happy path of CBTRN01C and the vocabulary anchor the other nineteen cases vary: one daily transaction that resolves end to end, which is also the smallest run that exposes the post-end-of-file lookup. Seeded from app/data/ASCII: dailytran.txt row 1 (zero-based row 0) carries DALYTRAN-ID 0000000000683580, type 01, category 0001 and DALYTRAN-AMT 0000005047G - eleven zoned bytes whose G overpunch is digit 7 positive, so +504.77 and never 'corrupt data' to normalise; its DALYTRAN-CARD-NUM at bytes 263-278 is 4859452612877065. cardxref.txt row 21 (zero-based 20) resolves that card to customer 000000007 and account 00000000007, and acctdata.txt row 7 (zero-based 6) is that account. So MAIN-PARA at app/cbl/CBTRN01C.cbl:155-197 opens the six files at :157-162, 1000-DALYTRAN-GET-NEXT at :203-225 reads '00', :168 displays the 350-byte record, 2000-LOOKUP-XREF at :227-239 takes NOT INVALID KEY and displays its four lines in source order - :235 the banner, :236 the card, :237 the account, :238 the customer - and 3000-READ-ACCOUNT at :241-250 takes NOT INVALID KEY and displays its one at :249. THE POST-END-OF-FILE LOOKUP, which this case exists to pin: the loop at :164-186 iterates again, the READ reports '10' so :217 sets END-OF-DAILY-TRANS-FILE to 'Y', and the inner guard at :167 - which closes at :169 and covers ONLY the DISPLAY at :168 - suppresses the record echo, while the three statements at :170-172 and the account read at :173-179 sit OUTSIDE that guard and run anyway, on the DALYTRAN-CARD-NUM the previous record left in WORKING-STORAGE because a READ INTO does not disturb its receiving area AT END. All five lookup lines therefore repeat verbatim with no record echo between them, and a run performs recordsRead + 1 lookups always. Entries 8-12 of expectedMessages are that repeat; hoisting those statements inside the guard makes this case fail, which is the point (practice B5). Thirteen lines, twelve file verbs, RETURN-CODE 0: CBTRN01C contains no MOVE statement targeting RETURN-CODE anywhere, and APPL-RESULT transits 8 at each open seed, 0 on '00' and 16 on the '10' at :208 without ever reaching RETURN-CODE, so normal completion is 0 and the CALL 'CEE3ABD' at :473 is unreached. expectedWrites is EMPTY as a positive assertion, not an absence of interest: a scan of the source finds zero WRITE and zero REWRITE statements, all six files are OPEN INPUT, and the six WRITES-channel dataset expectations below say the same thing per dataset at its exact copybook width - including TRANFILE, CUSTFILE and CARDFILE, which :158-160 open and :189-191 close but which no READ in the program ever touches, the only reads being DALYTRAN at :203, XREF-FILE at :229 and ACCOUNT-FILE at :243. R1 and practice B4 caveat, documented and not 'fixed' on either side: the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing at all; CBTRN01C is also the migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13). The three seeded datasets are pinned unchanged on the final-state channel at their copybook widths - DALYTRAN 350 from CVTRA06Y, XREFFILE 50 from CVACT03Y and ACCTFILE 300 from CVACT01Y, whose FILLER X(178) is space-filled across bytes 123-300 and whose ACCT-EXPIRAION-DATE keeps the copybook's own misspelling (I1) - which is what proves every FILLER span was emitted (gates G19 and G21). The cross-reference row is seeded at the 36 bytes the fixture actually holds and NOT pre-padded; the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER X(14) once, at seed time, and the final state pins all four spans by name - 16 + 9 + 11 + 14 = the whole 50 bytes, so no byte goes unasserted (gate G16, risk R-F). Baseline provenance, practice B12: these expected values are STATICALLY DERIVED from app/cbl/CBTRN01C.cbl read paragraph by paragraph, cross-checked against the copybook byte layouts in app/cpy (CVTRA06Y 350, CVACT03Y 50, CVACT01Y 300, every offset mechanically diffable by eye - practice B11) and against the real ASCII fixtures. They were NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment - no z/OS or CICS runtime, an indexed-file handler the available compiler reports as disabled, and no Language Environment CEE* services, so CALL 'CEE3ABD' cannot be reached at all. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated for explicit user confirmation as risk R-A rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and nothing here reads a clock, draws an unpredictable value or consults the environment - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set, and its absence is not licence to assert less. Gates carried: G13, G15, G16, G18, G19, G21, G47 (the '00' opens, the '00' read, the '10' end-of-file that is a normal boundary rather than an error, and both NOT INVALID KEY arms) and G51 (the tasklet body is driven directly, with no JobLauncher and no HTTP layer in the path). G32 does not apply: CBTRN01C contains zero GO TO statements.",
+  "description": "The canonical happy path of CBTRN01C and the vocabulary anchor the other nineteen cases vary: one daily transaction that resolves end to end, which is also the smallest run that exposes the post-end-of-file lookup. Seeded from app/data/ASCII: dailytran.txt row 1 (zero-based row 0) carries DALYTRAN-ID 0000000000683580, type 01, category 0001 and DALYTRAN-AMT 0000005047G - eleven zoned bytes whose G overpunch is digit 7 positive, so +504.77 and never 'corrupt data' to normalise; its DALYTRAN-CARD-NUM at bytes 263-278 is 4859452612877065. cardxref.txt row 21 (zero-based 20) resolves that card to customer 000000007 and account 00000000007, and acctdata.txt row 7 (zero-based 6) is that account. So MAIN-PARA at app/cbl/CBTRN01C.cbl:155-197 opens the six files at :157-162, 1000-DALYTRAN-GET-NEXT at :203-225 reads '00', :168 displays the 350-byte record, 2000-LOOKUP-XREF at :227-239 takes NOT INVALID KEY and displays its four lines in source order - :235 the banner, :236 the card, :237 the account, :238 the customer - and 3000-READ-ACCOUNT at :241-250 takes NOT INVALID KEY and displays its one at :249. THE POST-END-OF-FILE LOOKUP, which this case exists to pin: the loop at :164-186 iterates again, the READ reports '10' so :217 sets END-OF-DAILY-TRANS-FILE to 'Y', and the inner guard at :167 - which closes at :169 and covers ONLY the DISPLAY at :168 - suppresses the record echo, while the three statements at :170-172 and the account read at :173-179 sit OUTSIDE that guard and run anyway, on the DALYTRAN-CARD-NUM the previous record left in WORKING-STORAGE because a READ INTO does not disturb its receiving area AT END. All five lookup lines therefore repeat verbatim with no record echo between them, and a run performs recordsRead + 1 lookups always. Entries 8-12 of expectedMessages are that repeat; hoisting those statements inside the guard makes this case fail, which is the point (practice B5). Thirteen lines, twelve file verbs, RETURN-CODE 0: CBTRN01C contains no MOVE statement targeting RETURN-CODE anywhere, and APPL-RESULT transits 8 at each open seed, 0 on '00' and 16 on the '10' at :208 without ever reaching RETURN-CODE, so normal completion is 0 and the CALL 'CEE3ABD' at :473 is unreached. expectedWrites is EMPTY as a positive assertion, not an absence of interest: a scan of the source finds zero WRITE and zero REWRITE statements, all six files are OPEN INPUT, and the six WRITES-channel dataset expectations below say the same thing per dataset at its exact copybook width - including TRANFILE, CUSTFILE and CARDFILE, which :158-160 open and :189-191 close but which no READ in the program ever touches, the only reads being DALYTRAN at :203, XREF-FILE at :229 and ACCOUNT-FILE at :243. R1 and practice B4 caveat, documented and not 'fixed' on either side: the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing at all; CBTRN01C is also the migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13). The three seeded datasets are pinned unchanged on the final-state channel at their copybook widths - DALYTRAN 350 from CVTRA06Y, XREFFILE 50 from CVACT03Y and ACCTFILE 300 from CVACT01Y, whose FILLER X(178) is space-filled across bytes 123-300 and whose ACCT-EXPIRAION-DATE keeps the copybook's own misspelling (I1) - which is what proves every FILLER span was emitted (gates G19 and G21). The cross-reference row is seeded at the 36 bytes the fixture actually holds and NOT pre-padded; the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER X(14) once, at seed time, and the final state pins all four spans by name - 16 + 9 + 11 + 14 = the whole 50 bytes, so no byte goes unasserted (gate G16, risk R-F). Baseline provenance, practice B12: these expected values are STATICALLY DERIVED from app/cbl/CBTRN01C.cbl read paragraph by paragraph, cross-checked against the copybook byte layouts in app/cpy (CVTRA06Y 350, CVACT03Y 50, CVACT01Y 300, every offset mechanically diffable by eye - practice B11) and against the real ASCII fixtures. They were NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment - no z/OS or CICS runtime, an indexed-file handler the available compiler reports as disabled, and no Language Environment CEE* services, so CALL 'CEE3ABD' cannot be reached at all. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated for explicit user confirmation as risk R-A rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and nothing here reads a clock, draws an unpredictable value or consults the environment - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set, and its absence is not licence to assert less. Gates carried: G13, G15, G16, G18, G19, G21, G47 (the '00' opens, the '00' read, the '10' end-of-file that is a normal boundary rather than an error, and both NOT INVALID KEY arms) and G51 (the tasklet body is driven directly, with no JobLauncher and no HTTP layer in the path). G32 does not apply: CBTRN01C contains zero GO TO statements.\n\nTHE READ SEQUENCE, DECLARED RATHER THAN INFERRED. expectedOperations names every read this run must issue, in order and with the key it is given, and it says three things no byte fingerprint can. First, WHICH VERB: the daily file's read is readNext because :203 reads sequentially and takes whatever record is next, while the cross reference and the account are read at :229 and :243 by a key the program built - a translation that turned either keyed read into a browse would produce identical SYSOUT. Second, HOW MANY: there is always one readNext more than there are records, because the loop at :164-186 reads again to learn it is at end of file, and the lookup that follows sits at :170-172 OUTSIDE the guard that closed at :169 - so the last lookup runs on the card number the previous record left in WORKING-STORAGE. Third, WITH WHAT: the key is recorded as declared, so on the trailing lookup it is the PREVIOUS record's card number, and on a run whose daily file was empty it is absent entirely because the record area never held anything. Every entry here was derived from this case's own expected DISPLAY lines - one echo per record at :168, one lookup block per iteration - and never from a run.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
@@ -149,16 +149,64 @@
       "recordLength": 350
     },
     {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 50
     },
     {
+      "dataset": "CARDFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
       "dataset": "ACCTFILE",
       "channel": "FINAL_STATE",
       "rowCount": 1,
       "recordLength": 300
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ],
+  "expectedOperations": [
+    {
+      "dataset": "DALYTRAN",
+      "operation": "readNext"
+    },
+    {
+      "dataset": "XREFFILE",
+      "operation": "read",
+      "key": "4859452612877065"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "operation": "read",
+      "key": "00000000007"
+    },
+    {
+      "dataset": "DALYTRAN",
+      "operation": "readNext"
+    },
+    {
+      "dataset": "XREFFILE",
+      "operation": "read",
+      "key": "4859452612877065"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "operation": "read",
+      "key": "00000000007"
     }
   ]
 }

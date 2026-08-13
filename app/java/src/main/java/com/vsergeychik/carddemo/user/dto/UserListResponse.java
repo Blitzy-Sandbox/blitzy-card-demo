@@ -719,14 +719,16 @@ public record UserListResponse(@JsonProperty("trnname") String trnName,
      *       to reject a value that is otherwise correct.</li>
      * </ul>
      *
-     * <p>{@link #cdemoCu00PageNum()} is checked differently because it is a numeric picture:
-     * {@code PIC 9(08)} is unsigned and has no scale, so a negative value has nowhere to record its
-     * sign and a value of more than eight digits would lose its high-order digits on store.
+     * <p>{@link #cdemoCu00PageNum()} is treated differently because it is a numeric picture rather than
+     * a character one. {@code PIC 9(08)} is unsigned and has no scale, so a negative value has nowhere to
+     * record its sign and is refused. A value of more than eight digits is <strong>stored, not
+     * refused</strong>: a numeric receiver discards the high-order digits that do not fit, and
+     * {@code ADD 1 TO CDEMO-CU00-PAGE-NUM} at {@code app/cbl/COUSR00C.cbl:320} is such a store - so a
+     * ninth digit is dropped exactly as the receiver drops it, and 100000000 becomes 0.
      *
      * @throws NullPointerException     if any component is {@code null}
-     * @throws IllegalArgumentException if a character component is wider than its {@code PICTURE},
-     *                                  or if the page number is negative or needs more than
-     *                                  {@value #CU00_PAGE_NUM_DIGITS} digits
+     * @throws IllegalArgumentException if a character component is wider than its {@code PICTURE}, or if
+     *                                  the page number is negative
      */
     public UserListResponse {
         trnName = requireWidth(trnName, TRNNAME_LENGTH, TRNNAME_FIELD);
@@ -804,7 +806,7 @@ public record UserListResponse(@JsonProperty("trnname") String trnName,
                 CU00_USRID_FIRST_FIELD);
         cdemoCu00UsrIdLast = requireWidth(cdemoCu00UsrIdLast, CU00_USRID_LAST_LENGTH,
                 CU00_USRID_LAST_FIELD);
-        cdemoCu00PageNum = requireUnsignedDigits(cdemoCu00PageNum, CU00_PAGE_NUM_DIGITS,
+        cdemoCu00PageNum = storeUnsignedDigits(cdemoCu00PageNum, CU00_PAGE_NUM_DIGITS,
                 CU00_PAGE_NUM_FIELD);
         cdemoCu00NextPageFlg = requireWidth(cdemoCu00NextPageFlg, CU00_NEXT_PAGE_FLG_LENGTH,
                 CU00_NEXT_PAGE_FLG_FIELD);
@@ -865,19 +867,23 @@ public record UserListResponse(@JsonProperty("trnname") String trnName,
      * @param cobolName      the COBOL field name, so a failure says which field is wrong
      * @return {@code value}, unchanged
      */
-    private static int requireUnsignedDigits(int value, int declaredDigits, String cobolName) {
+    private static int storeUnsignedDigits(int value, int declaredDigits, String cobolName) {
         if (value < 0) {
             throw new IllegalArgumentException("Field " + cobolName + " is declared PIC 9("
                     + declaredDigits + "), an unsigned picture with no sign position, so it cannot "
                     + "hold " + value);
         }
-        if (Integer.toString(value).length() > declaredDigits) {
-            throw new IllegalArgumentException("Field " + cobolName + " is declared PIC 9("
-                    + declaredDigits + ") but " + value + " needs "
-                    + Integer.toString(value).length() + " digit(s); storing it would silently drop "
-                    + "the high-order digit(s)");
+        // COBOL stores into a numeric receiver by aligning on the implied decimal point and discarding
+        // what does not fit - and for a PIC 9 item that discard is on the LEFT, the high-order digits
+        // (AAP 0.3.7). ADD 1 TO CDEMO-CU00-PAGE-NUM at COUSR00C:320 is exactly such a store, so a
+        // ninth digit is dropped by the receiver rather than refused: 100000000 stores as 00000000.
+        // The modulus is built by repeated multiplication rather than Math.pow, because no monetary or
+        // picture-derived value in this codebase is ever routed through a double (rule R4).
+        int modulus = 1;
+        for (int digit = 0; digit < declaredDigits; digit++) {
+            modulus = modulus * 10;
         }
-        return value;
+        return value % modulus;
     }
 
     /**

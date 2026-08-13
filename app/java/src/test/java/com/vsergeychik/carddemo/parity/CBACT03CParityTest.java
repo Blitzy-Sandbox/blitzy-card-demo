@@ -132,13 +132,15 @@ import org.springframework.beans.factory.ObjectProvider;
  * why the recorder is used rather than a return value.
  *
  * <p>The three I/O outcomes the seeded data cannot produce - a failed {@code OPEN}, a failed
- * {@code READ}, a failed {@code CLOSE} - are arranged by the {@linkplain #SCENARIOS scenario table},
- * keyed by case identifier. A batch case cannot carry a {@code ForcedOutcome}: that member lives on
- * {@code ParityCase.ScreenRequest}, which {@link ParityCase} refuses for a {@link UnitKind#BATCH_JOB}
- * case because a batch job has no screen. The arrangement is an <em>input</em> - what the backend does
- * - and it is declared here, beside the doubles it configures; the resulting output is declared
- * independently in the case file. Neither side can see the other, so the two agreeing is evidence
- * rather than tautology.
+ * {@code READ}, a failed {@code CLOSE} - are arranged by the case itself, through
+ * {@code unitStimulus.callSiteOutcomes}: a call-site name, the {@code FILE STATUS} that site reports,
+ * and on a read the number of records delivered first. A batch case cannot carry a
+ * {@code ForcedOutcome} - that member lives on {@code ParityCase.ScreenRequest}, which
+ * {@link ParityCase} refuses for a {@link UnitKind#BATCH_JOB} case because a batch job has no screen -
+ * so the call-site member is what a batch case uses instead. {@link #scenarioFrom(ParityCase)} decodes
+ * it and nothing here reads {@link ParityCase#caseId()} to decide anything. The arrangement is an
+ * <em>input</em> and the resulting output is declared independently in the same file; neither is derived
+ * from the other, so the two agreeing is evidence rather than tautology.
  *
  * <h2>Rules</h2>
  * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so <strong>no user
@@ -169,6 +171,19 @@ class CBACT03CParityTest {
 
     /** The one {@code DD} {@code app/jcl/READXREF.jcl:25-26} declares for this step. */
     private static final String DD = AccountBalanceUpdateJob.XREFFILE_DD_NAME;
+
+    /**
+     * The call site a case names to arrange a failed {@code OPEN INPUT} - {@code 0000-XREFFILE-OPEN} at
+     * {@code app/cbl/CBACT03C.cbl:118-135}. Spelt {@code <VERB>-<DD>} so a case file reads as the
+     * paragraph does, and validated by {@link ParityCase.UnitStimulus} rather than by convention.
+     */
+    private static final String OPEN_SITE = "OPEN-" + AccountBalanceUpdateJob.XREFFILE_DD_NAME;
+
+    /** The call site for the sequential read - {@code 1000-XREFFILE-GET-NEXT} at {@code :91-116}. */
+    private static final String READ_SITE = "READ-" + AccountBalanceUpdateJob.XREFFILE_DD_NAME;
+
+    /** The call site for the close - {@code 9000-XREFFILE-CLOSE} at {@code :136-153}. */
+    private static final String CLOSE_SITE = "CLOSE-" + AccountBalanceUpdateJob.XREFFILE_DD_NAME;
 
     /** {@code app/cpy/CVACT03Y.cpy}'s declared record width: 16 + 9 + 11 + 14. */
     private static final int RECORD_LENGTH = CardXrefRecord.RECORD_LENGTH;
@@ -395,57 +410,99 @@ class CBACT03CParityTest {
      * {@link #declaredScenarios()}. Declaration order is preserved so a diagnostic lists the entries
      * as a reader expects, and no test can perturb what another test reads (practice B9, gate G53).
      */
-    private static final Map<String, Scenario> SCENARIOS = declaredScenarios();
-
     /**
-     * Builds the scenario table.
+     * The scenario a case runs under, decoded from the stimulus that case declares.
      *
-     * @return the twenty entries in case order
+     * <p>This used to be a table in Java keyed by case identifier, and the table was the problem: a
+     * reader of {@code parity/CBACT03C/case18.json} could see three abend lines expected and no
+     * indication anywhere in the file that the open had been arranged to fail, so the case read as
+     * though it described an ordinary fifty-row pass. Worse, the identifier configured the run - renumber
+     * a case and it silently becomes a different scenario, and a case file added without a table entry
+     * either throws or falls into a default and asserts the wrong thing.
+     *
+     * <p>Now the case states it: {@code unitStimulus.callSiteOutcomes} names one of this program's three
+     * call sites - {@code OPEN-XREFFILE}, {@code READ-XREFFILE}, {@code CLOSE-XREFFILE} - and gives it the
+     * {@code FILE STATUS} it reports, with {@code afterRecords} on the read for the number of records
+     * delivered first. A case that declares nothing runs clean, which is the majority. The arrangement is
+     * still an <em>input</em> and the expected output is still declared independently, so the two
+     * agreeing remains evidence rather than tautology; what has changed is that both are now in the same
+     * reviewable file.
+     *
+     * @param parityCase the case
+     * @return the arranged backend behaviour, never {@code null}
+     * @throws IllegalArgumentException if the case names a call site this program does not have, gives a
+     *     shape that site cannot report, or declares stimulus of a kind this program has no use for
      */
-    private static Map<String, Scenario> declaredScenarios() {
-        Map<String, Scenario> declared = new LinkedHashMap<>();
-        declared.put("case01", Scenario.clean());
-        declared.put("case02", Scenario.clean());
-        declared.put("case03", Scenario.clean());
-        declared.put("case04", Scenario.clean());
-        declared.put("case05", Scenario.clean());
-        declared.put("case06", Scenario.openFails("35"));
-        declared.put("case07", Scenario.openFails("92"));
-        declared.put("case08", Scenario.readFailsAfter(0, "30"));
-        declared.put("case09", Scenario.readFailsAfter(3, FileStatus.RECORD_LENGTH_CONFLICT));
-        declared.put("case10", Scenario.readFailsAfter(2, FileStatus.NOT_FOUND));
-        declared.put("case11", Scenario.readFailsAfter(4, FileStatus.DUPLICATE));
-        declared.put("case12", Scenario.closeFails("42"));
-        declared.put("case13", Scenario.closeFails("96"));
-        declared.put("case14", Scenario.clean());
-        declared.put("case15", Scenario.readFailsAfter(1, "30"));
-        declared.put("case16", Scenario.readFailsAfter(2, "90"));
-        declared.put("case17", Scenario.clean());
-        declared.put("case18", Scenario.openFails("37"));
-        declared.put("case19", Scenario.closeFails("30"));
-        declared.put("case20", Scenario.clean());
-        return Collections.unmodifiableMap(declared);
+    private static Scenario scenarioFrom(ParityCase parityCase) {
+        return scenarioFrom(parityCase.unitStimulus());
     }
 
     /**
-     * The scenario a case runs under.
-     *
-     * @param caseId the case identifier the harness handed the adapter
-     * @return the arranged backend behaviour, never {@code null}
-     * @throws IllegalStateException if the table has no entry, which means a case file exists that
-     *     nothing arranged - it would then run cleanly while its expectations described a failure, and
-     *     the failure message would be about lines rather than about the omission
+     * @param stimulus the declared stimulus
+     * @return the arranged backend behaviour
+     * @throws IllegalArgumentException as {@link #scenarioFrom(ParityCase)} documents
      */
-    private static Scenario scenarioFor(String caseId) {
-        Scenario scenario = SCENARIOS.get(caseId);
-        if (scenario == null) {
-            throw new IllegalStateException("No scenario is declared for " + PROGRAM + '/' + caseId
-                + ". Every one of the " + ParityHarness.CASES_PER_PROGRAM + " cases states the backend "
-                + "behaviour it runs under, because a batch case cannot carry a ForcedOutcome - that "
-                + "member belongs to ParityCase.ScreenRequest, which a BATCH_JOB case may not declare. "
-                + "Declared: " + SCENARIOS.keySet() + '.');
+    private static Scenario scenarioFrom(ParityCase.UnitStimulus stimulus) {
+        if (!stimulus.operationScript().isEmpty() || !stimulus.linkage().isEmpty()
+            || !stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
+            throw new IllegalArgumentException(PROGRAM + " calls no subprogram, takes no linkage, "
+                + "follows no conditional job step and runs under no environmental variant: its only "
+                + "stimulus is its seeded rows and the outcome of one of its three call sites.");
         }
-        return scenario;
+        String openStatus = FileStatus.OK;
+        String closeStatus = FileStatus.OK;
+        int failingRead = Scenario.NO_FAILING_READ;
+        String failingReadStatus = null;
+        for (Map.Entry<String, ParityCase.CallSiteOutcome> declared
+            : stimulus.callSiteOutcomes().entrySet()) {
+            String site = declared.getKey();
+            ParityCase.CallSiteOutcome outcome = declared.getValue();
+            String status = requireStatusOutcome(site, outcome);
+            switch (site) {
+                case OPEN_SITE -> openStatus = status;
+                case CLOSE_SITE -> closeStatus = status;
+                case READ_SITE -> {
+                    failingRead = outcome.recordsBefore();
+                    failingReadStatus = status;
+                }
+                default -> throw new IllegalArgumentException("Call site " + site + " is not one of "
+                    + PROGRAM + "'s three: " + OPEN_SITE + ", " + READ_SITE + " and " + CLOSE_SITE
+                    + ". A site nothing answers to would arrange nothing, and the case would assert "
+                    + "the opposite of what it says.");
+            }
+        }
+        return new Scenario(openStatus, closeStatus, failingRead, failingReadStatus);
+    }
+
+    /**
+     * @param site the call site, for the failure message
+     * @param outcome the declared outcome
+     * @return the {@code FILE STATUS} it reports
+     * @throws IllegalArgumentException if the outcome is a CICS response or a bare refusal, neither of
+     *     which a batch sequential file reports: every one of this program's three verbs sets
+     *     {@code XREFFILE-STATUS} and the program tests that and nothing else
+     */
+    private static String requireStatusOutcome(String site, ParityCase.CallSiteOutcome outcome) {
+        if (outcome.status() == null) {
+            throw new IllegalArgumentException("Call site " + site + " declares no FILE STATUS. "
+                + PROGRAM + " is a batch program whose every I/O verb reports a two-character status "
+                + "into XREFFILE-STATUS, so a RESP or a bare refusal has nothing to be read as.");
+        }
+        return outcome.status();
+    }
+
+    /**
+     * Every shipped case's scenario, in case order, for the assertions that take a census of the set
+     * rather than run one case.
+     *
+     * @return case identifier to scenario, unmodifiable
+     */
+    private static Map<String, Scenario> shippedScenarios() {
+        Map<String, Scenario> declared = new LinkedHashMap<>();
+        for (ParityCase parityCase : ParityHarness.casesOf(PROGRAM)) {
+            declared.put(parityCase.caseId(), scenarioFrom(parityCase));
+        }
+        return Collections.unmodifiableMap(declared);
     }
 
     // =============================================================================================
@@ -719,7 +776,7 @@ class CBACT03CParityTest {
         UnitOutcome.Builder recorder = invocation.recorder();
         recorder.finalStateUnchanged(seeded, CardXrefRecord.LAYOUT);
 
-        Scenario scenario = scenarioFor(invocation.caseId());
+        Scenario scenario = scenarioFrom(invocation.stimulus());
         BrowseCursor cursor = cursorFor(scenario, readsFor(scenario, seeded, invocation.codec()));
         ExecutionSummary summary = jobOver(repositoryOver(cursor), invocation.charset())
             .execute(recorder::display);
@@ -766,11 +823,6 @@ class CBACT03CParityTest {
                 + ". A short set is not a smaller gate, it is a gate that passes without asking the "
                 + "questions.");
         }
-        if (SCENARIOS.size() != ParityHarness.CASES_PER_PROGRAM) {
-            throw new IllegalStateException("The scenario table declares " + SCENARIOS.size()
-                + " entr(ies) where the gate requires exactly " + ParityHarness.CASES_PER_PROGRAM
-                + ": " + SCENARIOS.keySet());
-        }
         for (int ordinal = 1; ordinal <= ParityHarness.CASES_PER_PROGRAM; ordinal++) {
             String expectedId = ParityHarness.caseId(ordinal);
             ParityCase parityCase = loaded.get(ordinal - 1);
@@ -786,7 +838,7 @@ class CBACT03CParityTest {
                     + "CICS statements and is invoked by EXEC PGM= in app/jcl/READXREF.jcl, so every "
                     + "case is a " + UnitKind.BATCH_JOB + " case.");
             }
-            scenarioFor(parityCase.caseId());
+            scenarioFrom(parityCase);
         }
         return loaded;
     }
@@ -995,14 +1047,16 @@ class CBACT03CParityTest {
         @Test
         @DisplayName("the scenario table reaches all three abend sites and both arms of 9910")
         void theScenarioTableReachesAllThreeAbendSitesAndBothStatusArms() {
-            assertThat(SCENARIOS).hasSize(ParityHarness.CASES_PER_PROGRAM);
+            Map<String, Scenario> scenarios = shippedScenarios();
+
+            assertThat(scenarios).hasSize(ParityHarness.CASES_PER_PROGRAM);
 
             List<String> openFailures = new ArrayList<>();
             List<String> readFailures = new ArrayList<>();
             List<String> closeFailures = new ArrayList<>();
             List<String> extendedArm = new ArrayList<>();
             int clean = 0;
-            for (Map.Entry<String, Scenario> entry : SCENARIOS.entrySet()) {
+            for (Map.Entry<String, Scenario> entry : scenarios.entrySet()) {
                 Scenario scenario = entry.getValue();
                 String failing = scenario.failingStatus();
                 if (failing == null) {
@@ -1382,7 +1436,7 @@ class CBACT03CParityTest {
         void theTwelveArrangedFailuresExpectTwelveAndEndWithTheAbendLine() {
             int failures = 0;
             for (ParityCase parityCase : cases()) {
-                Scenario scenario = scenarioFor(parityCase.caseId());
+                Scenario scenario = scenarioFrom(parityCase);
                 if (scenario.failingStatus() == null) {
                     continue;
                 }
@@ -1416,7 +1470,7 @@ class CBACT03CParityTest {
         void theEightCleanCasesExpectZeroAndEndWithTheClosingBanner() {
             int cleanCases = 0;
             for (ParityCase parityCase : cases()) {
-                if (scenarioFor(parityCase.caseId()).failingStatus() != null) {
+                if (scenarioFrom(parityCase).failingStatus() != null) {
                     continue;
                 }
                 cleanCases++;
@@ -1533,7 +1587,7 @@ class CBACT03CParityTest {
         @DisplayName("every arranged status renders through the one owner of the line's shape")
         void everyArrangedStatusRendersThroughTheOneOwner() {
             for (ParityCase parityCase : cases()) {
-                String failing = scenarioFor(parityCase.caseId()).failingStatus();
+                String failing = scenarioFrom(parityCase).failingStatus();
                 List<String> statusLines = new ArrayList<>();
                 for (String line : expectedLines(parityCase)) {
                     if (line.startsWith(FileStatus.DISPLAY_PREFIX)) {
@@ -1579,7 +1633,7 @@ class CBACT03CParityTest {
             + "ordinary branches online")
         void everyStatusTheProgramDoesNotNameIsFatal() {
             for (ParityCase parityCase : cases()) {
-                String failing = scenarioFor(parityCase.caseId()).failingStatus();
+                String failing = scenarioFrom(parityCase).failingStatus();
                 if (failing == null) {
                     continue;
                 }
@@ -1589,13 +1643,13 @@ class CBACT03CParityTest {
                     .isNotEqualTo(FileStatus.OK)
                     .isNotEqualTo(FileStatus.END_OF_FILE);
             }
-            assertThat(scenarioFor("case10").failingReadStatus())
+            assertThat(shippedScenarios().get("case10").failingReadStatus())
                 .as("'23' is DFHRESP(NOTFND) online and a normal branch there; here it abends")
                 .isEqualTo(FileStatus.NOT_FOUND);
-            assertThat(scenarioFor("case11").failingReadStatus())
+            assertThat(shippedScenarios().get("case11").failingReadStatus())
                 .as("'22' is DUPKEY online and a normal branch there; here it abends")
                 .isEqualTo(FileStatus.DUPLICATE);
-            assertThat(scenarioFor("case09").failingReadStatus())
+            assertThat(shippedScenarios().get("case09").failingReadStatus())
                 .as("'04' is a record whose length disagrees with the copybook")
                 .isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
         }
@@ -1621,7 +1675,7 @@ class CBACT03CParityTest {
         @DisplayName("a clean run emits two banners and two lines per record")
         void aCleanRunEmitsTwoBannersAndTwoLinesPerRecord() {
             for (ParityCase parityCase : cases()) {
-                if (scenarioFor(parityCase.caseId()).failingStatus() != null) {
+                if (scenarioFrom(parityCase).failingStatus() != null) {
                     continue;
                 }
                 int rows = parityCase.expectedFinalState().size();
@@ -1639,7 +1693,7 @@ class CBACT03CParityTest {
         void theTwoLinesOfEachPairAreByteIdenticalAndAreTheRowsOwnBytes() {
             ParityHarness harness = harness();
             for (ParityCase parityCase : cases()) {
-                if (scenarioFor(parityCase.caseId()).failingStatus() != null) {
+                if (scenarioFrom(parityCase).failingStatus() != null) {
                     continue;
                 }
                 SeededDataset seeded = harness.seed(parityCase).get(DD);
@@ -1662,7 +1716,7 @@ class CBACT03CParityTest {
         @DisplayName("a failing read contributes no line, because :96 is on the '00' arm only")
         void aFailingReadContributesNoLine() {
             for (ParityCase parityCase : cases()) {
-                Scenario scenario = scenarioFor(parityCase.caseId());
+                Scenario scenario = scenarioFrom(parityCase);
                 if (!scenario.readFails()) {
                     continue;
                 }

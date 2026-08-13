@@ -495,24 +495,41 @@ final class COTRN00CParityTest {
         private final ParityCase.ForcedOutcome forcedPositioning;
 
         /**
-         * The outcome forced onto every read <em>after</em> the probe, or {@code null}. Kept separate
-         * from the probe's force on purpose: in CICS terms the probe is what carries the
-         * {@code STARTBR} status, so a case that forced both through one declaration could not say
-         * which of the two arms it was exercising.
+         * The outcome forced onto this browse's reads, or {@code null}. Kept separate from the
+         * positioning force on purpose: in CICS terms the {@code STARTBR} carries its own status, so a
+         * case that forced both through one declaration could not say which of the two arms it was
+         * exercising - {@code :602-619} is the positioning {@code EVALUATE} and {@code :636-653} is the
+         * read's, and they set different flags.
+         *
+         * <p>It takes effect from the <em>second</em> read, leaving the first to the data. That is what
+         * makes {@code WHEN OTHER} at {@code :646-652} reachable with the page already part-painted:
+         * the browse delivers the record its position found, {@code :299} paints it, and the refusal
+         * then strikes with {@code WS-IDX} at two. A refusal on the very first read is a different
+         * state, which no case declares and which would need a seam of its own to express.
          */
         private final ParityCase.ForcedOutcome forcedRead;
 
         /** Index of the record the next read returns; {@code -1} or {@code size} means past the end. */
         private int next;
 
-        /** Whether {@link #position()} has run, which happens on the first read rather than eagerly. */
+        /**
+         * Whether {@link #position()} has run, which happens on the first enquiry - the probe or a read,
+         * whichever comes first - rather than eagerly.
+         */
         private boolean positioned;
 
         /** Once the end has been reported it stays reported; a browse does not wrap. */
         private boolean exhausted;
 
-        /** How many reads this browse has served, the first of which is the positioning probe. */
+        /**
+         * How many reads this browse has served. The positioning probe is <em>not</em> one of them: a
+         * {@code STARTBR} transfers no record, so it is reported through {@link #positioningResult()}
+         * and consumes nothing. A browse whose paging body never runs has served zero reads.
+         */
         private int reads;
+
+        /** The probe's outcome, computed once on first enquiry and cached, since it cannot change. */
+        private ReadResult positioningResult;
 
         TransactBrowseCursor(List<TranRecord> ascending,
                              BrowseDirection direction,
@@ -543,9 +560,10 @@ final class COTRN00CParityTest {
                         + "not an outcome to report.");
             }
             reads = reads + 1;
-            ParityCase.ForcedOutcome forced = reads == 1 ? forcedPositioning : forcedRead;
-            if (forced != null) {
-                return forcedResult(forced);
+            // From the second read, per the field's contract: the first read delivers what the position
+            // found, so the forced refusal strikes after a row has been painted rather than before.
+            if (forcedRead != null && reads >= 2) {
+                return forcedResult(forcedRead);
             }
             if (!positioned) {
                 position();
@@ -569,6 +587,37 @@ final class COTRN00CParityTest {
         /** How many reads were served, the probe included. */
         int reads() {
             return reads;
+        }
+
+        /**
+         * Reports what the {@code STARTBR} found, consuming nothing.
+         *
+         * <p>{@code STARTBR ... GTEQ} establishes a position without transferring a record, so this
+         * peeks at the record the position lands on and leaves it for the first read. A position that
+         * lands past either end is {@code DFHRESP(NOTFND)} - the condition {@code :605} branches on.
+         * {@code DFHRESP(ENDFILE)} is a read condition and {@code :602-619} has no arm for it, so a case
+         * that forces end of file onto the {@code STARTBR} is restated as the not-found it really is,
+         * exactly as {@code TransactionRepository.Browse} restates it.
+         *
+         * @return the positioning outcome, computed once and cached
+         */
+        ReadResult positioningResult() {
+            if (positioningResult != null) {
+                return positioningResult;
+            }
+            if (forcedPositioning != null) {
+                ReadResult forced = forcedResult(forcedPositioning);
+                positioningResult = forced.isEndOfFile() ? ReadResult.notFound(TRANSACT) : forced;
+                return positioningResult;
+            }
+            if (!positioned) {
+                position();
+                positioned = true;
+            }
+            positioningResult = next >= 0 && next < ascending.size()
+                    ? ReadResult.found(TRANSACT, ascending.get(next))
+                    : ReadResult.notFound(TRANSACT);
+            return positioningResult;
         }
 
         /**
@@ -671,6 +720,14 @@ final class COTRN00CParityTest {
                 declaredOutcome(invocation, ParityCase.RepositoryOperation.READ_NEXT));
         cursors.add(cursor);
         Browse handle = Mockito.mock(Browse.class);
+        // The STARTBR status comes from the position itself, computed over the seeded rows, so a case
+        // that seeds nothing reaches :605 and a case that seeds a row reaches :603 - without either
+        // being declared. The probe consumes nothing, so the first read still returns record one.
+        Mockito.when(handle.positioningResult()).thenAnswer(call -> cursor.positioningResult());
+        Mockito.when(handle.positioningOutcome())
+                .thenAnswer(call -> cursor.positioningResult().outcome());
+        Mockito.when(handle.isStarted())
+                .thenAnswer(call -> cursor.positioningResult().isRecordReturned());
         Mockito.when(handle.direction()).thenReturn(direction);
         Mockito.when(handle.readNext()).thenAnswer(call -> cursor.read(BrowseDirection.FORWARD));
         Mockito.when(handle.readPrev()).thenAnswer(call -> cursor.read(BrowseDirection.BACKWARD));
@@ -2203,9 +2260,9 @@ final class COTRN00CParityTest {
                             + "WHEN DFHRESP(NORMAL) at :603")
                     .isEqualTo(FileStatus.Outcome.OK);
             assertThat(observed.cursors().get(0).reads())
-                    .as("the positioning probe and nothing else: :286, :298 and :308 are all inside "
-                            + "the block :283 skips")
-                    .isEqualTo(1);
+                    .as("no read at all: the STARTBR positioned but transferred nothing, and :286, "
+                            + ":298 and :308 are all inside the block :283 skips")
+                    .isZero();
             assertThat(observed.work().readCount())
                     .as("no READNEXT-TRANSACT-FILE call is made at all, so no read arm is entered")
                     .isZero();
@@ -2762,11 +2819,13 @@ final class COTRN00CParityTest {
                     .as("WHEN DFHRESP(NORMAL) at :603")
                     .isEqualTo(FileStatus.Outcome.OK);
             assertThat(clean(emptyFileVariant()).work().startbrOutcome())
-                    .as("an empty file: the positioning probe finds nothing, which reaches the same "
-                            + "arm as NOTFND at :605")
-                    .isEqualTo(FileStatus.Outcome.END_OF_FILE);
+                    .as("an empty file: nothing satisfies the position, and a STARTBR reports that as "
+                            + "NOTFND - :602-619 has no DFHRESP(ENDFILE) arm to report it as anything "
+                            + "else. Derived from the data, not declared")
+                    .isEqualTo(FileStatus.Outcome.NOT_FOUND);
             assertThat(clean(6).work().startbrOutcome())
-                    .as("WHEN DFHRESP(NOTFND) at :605, reached as NOTFND specifically")
+                    .as("WHEN DFHRESP(NOTFND) at :605 again, this time declared rather than derived: "
+                            + "the arm is reachable over a file that does have rows to offer")
                     .isEqualTo(FileStatus.Outcome.NOT_FOUND);
             assertThat(clean(7).work().startbrOutcome())
                     .as("WHEN OTHER at :612")
@@ -2833,8 +2892,8 @@ final class COTRN00CParityTest {
                     .isEqualTo(2);
             assertThat(observed.cursors()).hasSize(1);
             assertThat(observed.cursors().get(0).reads())
-                    .as("only the positioning probe was served; no read of the browse followed it")
-                    .isEqualTo(1);
+                    .as("the STARTBR failed, so no read of the browse ever followed it")
+                    .isZero();
         }
 
         @Test
@@ -3144,4 +3203,5 @@ final class COTRN00CParityTest {
             }
         }
     }
+
 }

@@ -12,7 +12,10 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.PrintStream;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -47,7 +50,7 @@ import java.util.Objects;
  *
  * <h2>Three entry points, one implementation</h2>
  * {@link #readAndPrintCustomerFileTo(SysoutSink)} is the <strong>production</strong> shape: it streams
- * every {@code DISPLAY} to a destination - {@link #standardOutputSysoutSink()} is the
+ * every {@code DISPLAY} to a destination - {@link #standardOutput(Charset)} is the
  * {@code //SYSOUT DD SYSOUT=*} equivalent - and keeps none of it. {@link #readAndPrintCustomerFile()}
  * and {@link #readAndPrintCustomerFile(Sysout)} accumulate the whole sequence into an {@link Execution}
  * instead, which is what a parity case and a unit test are made of and what a batch run must not do:
@@ -500,8 +503,8 @@ public class CustomerService {
             throw new IllegalArgumentException("This overload returns an " + Execution.class
                     .getSimpleName() + ", which carries the emitted line sequence, but the supplied sink "
                     + "streams to a destination and keeps nothing. Run a streaming sink through "
-                    + "readAndPrintCustomerFileTo(SysoutSink) - which returns nothing, because there is "
-                    + "nothing left to return - or supply a capturing sink here.");
+                    + "readAndPrintCustomerFileTo(SysoutSink) - which returns the record count and no "
+                    + "line sequence, because none is kept - or supply a capturing sink here.");
         }
 
         int recordsRead = runProgram(sysout);
@@ -527,26 +530,35 @@ public class CustomerService {
      * shapes call one private {@link #runProgram(Sysout)} - and the preserved duplicate display of
      * {@code L96} then {@code L78} is intact here too. The only difference is that nothing keeps a copy.
      *
-     * <p>Nothing is returned, and that is deliberate rather than a shortcut. A normal end sets
-     * {@link #RETURN_CODE_NORMAL_END}, because {@code CBCUS01C} never moves into {@code RETURN-CODE}
-     * ({@code L87}), so a return value could only ever be that one constant; and a fatal open, read or
-     * close leaves by {@link AbendException}, which carries the code the run ended with. A caller that
-     * needs the line count for a diagnostic can read it from its own sink.
+     * <p><strong>The record count is returned, and the line sequence is not.</strong> The count is a
+     * single {@code int} that {@link #runProgram(Sysout)} already has in hand, and the wiring layer needs
+     * it: {@code READCUST.jcl}'s step reports how many records it read, so
+     * {@code CustomerFileReaderJob} calls {@code StepContribution.incrementReadCount()} once per record.
+     * Deriving it instead from the number of lines a sink saw would put the
+     * {@code 2 + 2 x records} arithmetic in a second place, and two places that both claim to know a
+     * program's line shape are two places that can disagree. Returning it here is also the shape the
+     * sibling read-and-print jobs already use - {@code AccountBalanceJob.readAndPrintAccountFile(SysoutSink)}
+     * returns the same count from the same position - so no two of the four differ in what a streaming
+     * pass hands back. Nothing else is returned: a normal end sets {@link #RETURN_CODE_NORMAL_END},
+     * because {@code CBCUS01C} never moves into {@code RETURN-CODE} ({@code L87}), so a returned code
+     * could only ever be that one constant; and a fatal open, read or close leaves by
+     * {@link AbendException}, which carries the code the run ended with.
      *
      * @param sysout where every emitted line goes, one call per {@code DISPLAY}; must not be
-     *               {@code null}. {@link #standardOutputSysoutSink()} is the {@code SYSOUT=*} equivalent
+     *               {@code null}. {@link #standardOutput(Charset)} is the {@code SYSOUT=*} equivalent
+     * @return how many customer records the browse returned and the program displayed; never negative
      * @throws NullPointerException if {@code sysout} is {@code null}
      * @throws AbendException       if the open, any read, or the close reports a status the program
      *                              treats as fatal - the Java form of {@code CALL 'CEE3ABD'} at
      *                              {@code L158}. Its three lines reach {@code sysout} before the throw
      * @see #readAndPrintCustomerFile() for the capturing form a parity case uses
      */
-    public void readAndPrintCustomerFileTo(SysoutSink sysout) {
+    public int readAndPrintCustomerFileTo(SysoutSink sysout) {
         Objects.requireNonNull(sysout, "A SYSOUT destination is required: the displayed line sequence is "
                 + "this program's entire observable output, so there is nothing to run without somewhere "
                 + "to put it");
 
-        runProgram(new Sysout(sysout));
+        return runProgram(new Sysout(sysout));
     }
 
     /**
@@ -1482,17 +1494,68 @@ public class CustomerService {
     }
 
     /**
-     * The {@code //SYSOUT DD SYSOUT=*} equivalent: a sink over the standard output stream.
-     *
-     * <p>The stream is handed to the adapter as a value rather than reached statically at each emission
-     * point, so every {@code DISPLAY} in a run goes through one seam and a test can replace all of them
-     * at once. This is also why the module's logger is not the destination: it is for diagnostics about
-     * the run, not for the run's own output.
+     * The {@code //SYSOUT DD SYSOUT=*} equivalent for <em>this</em> service: a sink over the standard
+     * output stream, encoding each line in the code page the customer master is read in.
      *
      * @return a sink over the standard output stream; never {@code null}
      */
-    public static SysoutSink standardOutputSysoutSink() {
-        return new PrintStreamSysoutSink(System.out);
+    public SysoutSink standardOutputSysoutSink() {
+        return standardOutput(datasetCharset());
+    }
+
+    /**
+     * The code page this service renders records in - the one its repository reads them in.
+     *
+     * <p>Surfaced so the job that wires this service's {@code SYSOUT} destination uses the same code page
+     * rather than choosing one, and so a test can assert which charset is actually in use.
+     *
+     * @return the active dataset code page; never {@code null}
+     */
+    public Charset datasetCharset() {
+        return codec.charset();
+    }
+
+    /**
+     * The {@code //SYSOUT DD SYSOUT=*} equivalent: a sink over the standard output stream, encoding each
+     * line in the code page given.
+     *
+     * <p><strong>The code page is a parameter and the platform default is never consulted</strong>
+     * (practice <strong>B8</strong>). {@code CBCUS01C} displays the whole
+     * {@value #RECORD_LENGTH}-byte customer record twice per record - {@code DISPLAY CUSTOMER-RECORD} at
+     * {@code L96} and again at {@code L78} - so these lines <em>are</em> the dataset's own stored
+     * characters, and the only honest code page for them is the one the dataset was read in. On the
+     * mainframe the record's bytes pass from the KSDS to the spool unchanged; encoding them in whatever
+     * {@code file.encoding} happens to be would corrupt every byte outside the invariant ASCII range and
+     * would make the emitted line depend on the JVM rather than on the program. An earlier revision
+     * wrapped {@code System.out} as it stood and inherited exactly that dependency.
+     *
+     * <p>The stream is auto-flushing, so a line is visible as soon as it is written rather than at
+     * process exit, and it is opened on the standard output file descriptor rather than taken from a
+     * mutable global, so a caller cannot silently redirect one job's {@code SYSOUT} by reassigning
+     * something else. It is deliberately never closed: the standard output stream outlives every job
+     * that writes to it, and closing it would silence the rest of the process. This is the same shape
+     * the sibling read-and-print jobs use, so no two of them differ in how a displayed record reaches
+     * the spool.
+     *
+     * <p><strong>The charset is a parameter and the platform default is never consulted</strong>
+     * (practice B8). The lines this program emits are the customer master's own stored characters - two
+     * copies of each 500-byte {@code CUSTOMER-RECORD} image per record - so the honest code page for them
+     * is the one the dataset was read in, which on the mainframe is exactly what happens: the record's
+     * bytes pass from the dataset to the spool unchanged. Writing them through a stream in whatever code
+     * page the JVM happened to pick would re-encode every one, and under a container default of
+     * {@code POSIX}/{@code US-ASCII} would silently replace any byte the record legitimately carries above
+     * {@code 0x7F}.
+     *
+     * @param charset the code page to encode each line in - the active dataset code page; must not be
+     *                {@code null}
+     * @return a sink over the standard output stream; never {@code null}
+     * @throws NullPointerException if {@code charset} is {@code null}
+     */
+    public static SysoutSink standardOutput(Charset charset) {
+        Objects.requireNonNull(charset, "A code page is required for SYSOUT: a displayed record is the "
+                + "dataset's own bytes, and the platform default is never assumed");
+        return new PrintStreamSysoutSink(
+                new PrintStream(new FileOutputStream(FileDescriptor.out), true, charset));
     }
 
     // =================================================================================================

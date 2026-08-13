@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
@@ -16,6 +17,7 @@ import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
 import com.vsergeychik.carddemo.testsupport.ScreenFixtureController;
 
@@ -25,6 +27,7 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -144,6 +147,17 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 class WebConfigTest {
 
     /**
+     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
+     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
+     *
+     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
+     * judges every value against the page in force rather than against a page of its own choosing: a
+     * mapper built for a test has to name the same one the profile does or it is not the production
+     * mapper.
+     */
+    private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
+
+    /**
      * The instant every time-dependent assertion is pinned to.
      *
      * <p>Not an arbitrary date: {@code 2022-07-19} is this repository's own source version footer,
@@ -196,7 +210,7 @@ class WebConfigTest {
 
     /**
      * Builds an {@link ObjectMapper} the way Spring Boot would: a fresh builder, then
-     * {@link WebConfig#carddemoJacksonCustomizer()} applied to it.
+     * {@link WebConfig#carddemoJacksonCustomizer(java.nio.charset.Charset)} applied to it.
      *
      * <p>Applying the real customizer rather than hand-assembling a mapper is the whole point. A
      * hand-assembled mapper would assert that a particular set of features produces a particular
@@ -217,7 +231,7 @@ class WebConfigTest {
      * @return the customizer under test
      */
     private static Jackson2ObjectMapperBuilderCustomizer customizer() {
-        return new WebConfig().carddemoJacksonCustomizer();
+        return new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET);
     }
 
     /**
@@ -244,6 +258,13 @@ class WebConfigTest {
     private static ApplicationContextRunner sliceRunner() {
         return new ApplicationContextRunner()
                 .withUserConfiguration(WebConfig.class)
+                // The one collaborator WebConfig has outside itself: the active dataset code page, which
+                // CobolCharsetConfig publishes under this name and which the inbound screen-text boundary
+                // judges every value against. Supplied as a bean rather than by importing that
+                // configuration so this slice stays "WebConfig and nothing else", and named rather than
+                // typed because three Charset beans exist in the application and none is primary.
+                .withBean(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class,
+                        () -> TEST_PROFILE_CHARSET)
                 .withPropertyValues(
                         "spring.profiles.active=",
                         "carddemo.job-submission.queue-name=JOBS",
@@ -525,6 +546,110 @@ class WebConfigTest {
             assertThat(received).isEqualTo(new BigDecimal("-0.01"));
             assertThat(received.scale()).isEqualTo(2);
             assertThat(mapper.writeValueAsString(received)).isEqualTo("-0.01");
+        }
+    }
+
+    /**
+     * A request cannot state one member twice, and a screen field cannot arrive as anything but
+     * character data.
+     *
+     * <p>Both are properties of the mapper this bean configures, and both were previously left to
+     * Jackson's defaults - which accept a repeated member and keep the last occurrence, and coerce a
+     * number or a boolean into text. A BMS map declares exactly one storage item per named field and
+     * every one of them is {@code PIC X(n)}, so each default contradicts the wire contract and each
+     * loses part of the caller's own request without saying so.
+     */
+    @Nested
+    @DisplayName("One member states one value, and a screen field is character data")
+    class StrictInboundShape {
+
+        @Test
+        @DisplayName("STRICT_DUPLICATE_DETECTION is enabled on the parser factory")
+        void strictDuplicateDetectionIsEnabled() {
+            // Queried on the factory, because it is a JsonParser.Feature and is carried by the
+            // JsonFactory the mapper reads through - the same place WRITE_BIGDECIMAL_AS_PLAIN lives.
+            assertThat(customizedMapper().getFactory()
+                    .isEnabled(JsonParser.Feature.STRICT_DUPLICATE_DETECTION))
+                    .as("the resolved Jackson default is DISABLED, so without this a repeated key, "
+                            + "password, attention identifier or navigation member silently discards "
+                            + "one of the two values the caller stated")
+                    .isTrue();
+        }
+
+        @ParameterizedTest(name = "duplicate member in {0}")
+        @ValueSource(strings = {
+            "{\"TRNNAME\":\"CT02\",\"TRNNAME\":\"CT01\"}",
+            "{\"TRNNAME\":\"CT02\",\"CURDATE\":\"07/19/22\",\"CURDATE\":\"07/20/22\"}"
+        })
+        @DisplayName("a repeated member is refused rather than resolved last-wins")
+        void aRepeatedMemberIsRefused(final String body) {
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> customizedMapper().readValue(body, ScreenPayload.class))
+                    .withMessageContaining("Duplicate");
+        }
+
+        @Test
+        @DisplayName("the same document with each member stated once binds, so the refusal above is "
+                + "attributable to the repetition alone")
+        void oneOccurrenceEachStillBinds() throws IOException {
+            final ScreenPayload bound = customizedMapper()
+                    .readValue("{\"TRNNAME\":\"CT02\",\"CURDATE\":\"07/19/22\"}",
+                            ScreenPayload.class);
+
+            assertThat(bound.TRNNAME()).isEqualTo("CT02");
+            assertThat(bound.CURDATE()).isEqualTo("07/19/22");
+        }
+
+        @ParameterizedTest(name = "a screen field sent as {0}")
+        @ValueSource(strings = {"11", "1.5", "true"})
+        @DisplayName("a member that is not JSON character data is refused, not coerced into a field image")
+        void aNonStringScreenFieldIsRefused(final String token) {
+            // Bound into a typed payload rather than an untyped Map, because an untyped Map binds its
+            // values through Jackson's Object deserializer and never consults the String one - so an
+            // untyped read would assert nothing about a screen field.
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> customizedMapper()
+                            .readValue("{\"TRNNAME\":" + token + "}", ScreenPayload.class))
+                    .withRootCauseInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @ParameterizedTest(name = "a screen field sent as {0}")
+        @ValueSource(strings = {"{}", "[]"})
+        @DisplayName("a structured member is refused through Jackson's own unexpected-token handling, "
+                + "which names the member and the token rather than binding null")
+        void aStructuredScreenFieldIsRefused(final String token) {
+            assertThatExceptionOfType(MismatchedInputException.class)
+                    .isThrownBy(() -> customizedMapper()
+                            .readValue("{\"TRNNAME\":" + token + "}", ScreenPayload.class))
+                    .satisfies(failure -> assertThat(failure.getMessage()).contains("java.lang.String"));
+        }
+
+        @Test
+        @DisplayName("the screen judgement is applied with the code page the deployment states, so an "
+                + "EBCDIC deployment and an ASCII one judge the same value differently and correctly")
+        void theCodePageIsTheDeploymentsOwn() throws IOException {
+            final Jackson2ObjectMapperBuilder ebcdicBuilder = new Jackson2ObjectMapperBuilder();
+            new WebConfig().carddemoJacksonCustomizer(Charset.forName("IBM037"))
+                    .customize(ebcdicBuilder);
+
+            // IBM037 has a representation for this letter and US-ASCII does not, and neither answer is a
+            // preference: a PIC X(n) field is n bytes in the code page the datasets are actually in.
+            assertThat(ebcdicBuilder.build().readValue("\"SM\u00d1TH\"", String.class))
+                    .isEqualTo("SM\u00d1TH");
+            // Raised on the root value, so it reaches the caller as the unchecked refusal it is rather
+            // than wrapped in a mapping failure; both shapes are unwrapped to the same 400 by the advice.
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> customizedMapper().readValue("\"SM\u00d1TH\"", String.class));
+        }
+
+        @Test
+        @DisplayName("a code page is required rather than defaulted, so no deployment can silently "
+                + "judge screen text against the platform default")
+        void aCodePageIsRequired() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new WebConfig().carddemoJacksonCustomizer(null)
+                            .customize(new Jackson2ObjectMapperBuilder()))
+                    .withMessageContaining("code page");
         }
     }
 
@@ -1514,7 +1639,10 @@ class WebConfigTest {
                 // Named explicitly rather than counted, so an added bean has to be acknowledged here
                 // rather than absorbed by a threshold. The three nested records carry no stereotype
                 // annotation and are correctly not bean candidates; JobSubmissionProperties appears
-                // only because @EnableConfigurationProperties binds it.
+                // only because @EnableConfigurationProperties binds it. carddemoDatasetCharset is the
+                // one entry this slice SUPPLIES rather than contributes: the Jackson customizer takes
+                // the screen code page by bean name, CobolCharsetConfig owns that bean in a deployed
+                // context, and this slice starts WebConfig alone - so it stands in for it here.
                 assertThat(Arrays.stream(context.getBeanDefinitionNames())
                         .filter(name -> name.startsWith("com.vsergeychik")
                                 || name.startsWith("carddemo")
@@ -1527,6 +1655,10 @@ class WebConfigTest {
                         .containsExactly(
                                 "carddemo.job-submission-com.vsergeychik.carddemo.config.WebConfig"
                                         + "$JobSubmissionProperties",
+                                // Supplied BY the runner, not contributed by WebConfig: the active
+                                // dataset code page the JSON boundary judges against. It appears in this
+                                // list because the filter above matches every name beginning "carddemo".
+                                CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME,
                                 "carddemoJacksonCustomizer",
                                 "clock",
                                 "com.vsergeychik.carddemo.config.WebConfig$CobolErrorEndpoint",

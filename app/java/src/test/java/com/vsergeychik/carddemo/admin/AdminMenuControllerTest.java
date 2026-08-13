@@ -15,6 +15,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.admin.AdminMenuService.AdminMenuInput;
 import com.vsergeychik.carddemo.admin.AdminMenuService.AdminMenuOutcome;
 import com.vsergeychik.carddemo.admin.AdminMenuService.ReceiveOutcome;
@@ -33,6 +35,7 @@ import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -345,6 +348,86 @@ class AdminMenuControllerTest {
                 SPACE,
                 false,
                 NavigationContext.empty().withPgmReenter());
+    }
+
+    /**
+     * The {@code RETURN-TO-SIGNON-SCREEN} transfer: {@code app/cbl/COADM01C.cbl:165-167}, a bare
+     * {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} that names <strong>no {@code COMMAREA} option</strong>.
+     *
+     * <p>Distinct from the option transfer at {@code :142-145}, which does name one. The difference is the
+     * single boolean {@code nextProgramCarriesCommarea}, and it is the whole of what this path observably
+     * differs by - so the outcome is built positionally here rather than through
+     * {@link #outcome(List, String, byte, String, boolean, NavigationContext)}, which derives that flag
+     * from "a transfer was named" and therefore cannot express this case.
+     *
+     * @param context the communication area the program holds at the moment of the transfer; it still
+     *                holds all sixteen values, and the transfer simply does not pass them on
+     * @return the outcome to stub {@code handle} with
+     */
+    private static AdminMenuOutcome signOnTransferOutcome(final NavigationContext context) {
+        return new AdminMenuOutcome(paintedOptionLines(),
+                CODEC.movePicX(SPACE, AdminMenuService.MESSAGE_LENGTH),
+                AdminMenuService.MAP_MESSAGE_COLOUR,
+                false,
+                CODEC.movePicX(SPACE, AdminMenuService.OPTION_LENGTH),
+                CODEC.movePicX(SIGNON_PROGRAM, NavigationContext.TO_PROGRAM_LENGTH),
+                false,
+                false,
+                false,
+                context,
+                AdminMenuService.TRANSACTION_ID,
+                CODEC.movePicX(SPACE, AdminMenuResponse.NEXT_MAPSET_LENGTH),
+                CODEC.movePicX(SPACE, AdminMenuResponse.NEXT_MAP_LENGTH),
+                ReceiveOutcome.NORMAL);
+    }
+
+    /**
+     * The option transfer: {@code app/cbl/COADM01C.cbl:142-145}, which <em>does</em> name
+     * {@code COMMAREA(CARDDEMO-COMMAREA)}.
+     *
+     * @param nextProgram the option target
+     * @param context     the communication area, passed to the target
+     * @return the outcome to stub {@code handle} with
+     */
+    private static AdminMenuOutcome optionTransferOutcome(final String nextProgram,
+            final NavigationContext context) {
+        return outcome(paintedOptionLines(),
+                CODEC.movePicX(SPACE, AdminMenuService.MESSAGE_LENGTH),
+                AdminMenuService.MAP_MESSAGE_COLOUR,
+                nextProgram,
+                false,
+                context);
+    }
+
+    /**
+     * Drives a specific request through a controller whose service is stubbed to return {@code outcome}.
+     *
+     * @param outcome the outcome the decision core is stubbed to return
+     * @param request the inbound payload
+     * @return the response envelope, never {@code null}
+     */
+    private static ScreenResponse<AdminMenuResponse> answerFor(final AdminMenuOutcome outcome,
+            final AdminMenuRequest request) {
+        AdminMenuService service = stubbedService();
+        doReturn(outcome).when(service).handle(any(AdminMenuInput.class));
+        return controllerOver(service).getAdminMenu(request);
+    }
+
+    /**
+     * The module's <strong>production</strong> mapper, built through {@code WebConfig}'s own customizer.
+     *
+     * <p>Used where the assertion is about what actually reaches the wire - property inclusion above all.
+     * A bare {@code new ObjectMapper()} would answer a different question, because
+     * {@code spring.jackson.default-property-inclusion: always} is the setting that turns a {@code null}
+     * communication area into a stated {@code "navigationContext": null} rather than an omitted member.
+     *
+     * @return a mapper configured exactly as the running application's is, never {@code null}
+     */
+    private static ObjectMapper productionMapper() {
+        Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
+        new com.vsergeychik.carddemo.config.WebConfig()
+                .carddemoJacksonCustomizer(MESSAGE_CHARSET).customize(builder);
+        return builder.build();
     }
 
     /** A payload whose twenty items are each space-filled to the width the map declares. */
@@ -1140,12 +1223,12 @@ class AdminMenuControllerTest {
             // CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION)) - option 1 is COUSR00C per app/cpy/COADM02Y.cpy:27 -
             // and :166 XCTL PROGRAM(CDEMO-TO-PROGRAM) inside RETURN-TO-SIGNON-SCREEN, which :163
             // defaults to COSGN00C.
-            AdminMenuOutcome transferring = outcome(paintedOptionLines(),
-                    CODEC.movePicX(SPACE, AdminMenuService.MESSAGE_LENGTH),
-                    AdminMenuService.MAP_MESSAGE_COLOUR,
-                    target,
-                    false,
-                    NavigationContext.empty().withPgmEnter().withToProgram(target));
+            NavigationContext held = NavigationContext.empty().withPgmEnter().withToProgram(target);
+            // The two shapes differ in one boolean - :143 names COMMAREA and :166 does not - so each is
+            // built through the helper that states its own shape rather than through one that guesses.
+            AdminMenuOutcome transferring = SIGNON_PROGRAM.equals(target)
+                    ? signOnTransferOutcome(held)
+                    : optionTransferOutcome(target, held);
 
             AdminMenuResponse transferred = answerFor(transferring).screen();
 
@@ -1157,6 +1240,99 @@ class AdminMenuControllerTest {
                     .as("an XCTL sends no map, so neither name is claimed")
                     .isBlank();
             assertThat(transferred.nextMap()).isBlank();
+        }
+
+        @Test
+        @DisplayName("the no-COMMAREA transfer hands back NO communication area, so sign-on cold-starts")
+        void theSignOnTransferCarriesNoCommunicationArea() {
+            // app/cbl/COADM01C.cbl:165-167 RETURN-TO-SIGNON-SCREEN is a bare
+            // XCTL PROGRAM(CDEMO-TO-PROGRAM) with no COMMAREA option, so COSGN00C is entered with
+            // EIBCALEN = 0 and answers at app/cbl/COSGN00C.cbl:80-83 with its cold start. A response
+            // echoing an area would make the client send one on, and sign-on would run its re-entry path
+            // instead - a flow this transfer cannot reach on the mainframe.
+            NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
+
+            AdminMenuResponse painted = answerFor(signOnTransferOutcome(held),
+                    blankScreen(held, CicsAid.DFHPF3)).screen();
+
+            assertThat(painted.navigationContext())
+                    .as("stated absence: there is no area to carry forward")
+                    .isNull();
+            assertThat(painted.nextProgram())
+                    .as("and the successor is still named, so the client knows where to go")
+                    .startsWith(SIGNON_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("the option transfer DOES hand back the area, because :142-145 names COMMAREA")
+        void theOptionTransferStillCarriesTheArea() {
+            // The contrast that makes the case above meaningful: both paths are XCTLs, and only one names
+            // COMMAREA. Collapsing the two would lose the distinction the source draws.
+            NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
+
+            AdminMenuResponse painted = answerFor(optionTransferOutcome(USER_LIST_PROGRAM, held),
+                    blankScreen(held, CicsAid.DFHENTER)).screen();
+
+            assertThat(painted.navigationContext()).isEqualTo(held);
+        }
+
+        @Test
+        @DisplayName("the painted RETURN still hands back the area, because :107-110 names COMMAREA")
+        void thePaintedReturnStillCarriesTheArea() {
+            // Why the condition is not "nextProgramCarriesCommarea is false": that flag is also false
+            // here, yet EXEC CICS RETURN ... COMMAREA(CARDDEMO-COMMAREA) at :107-110 does pass the area.
+            // Only "a transfer was named AND it carries none" isolates the bare XCTL.
+            NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
+
+            AdminMenuOutcome painted = paintedOutcome(held);
+            assertThat(painted.nextProgramCarriesCommarea())
+                    .as("false on the RETURN path too, which is why it cannot be the test on its own")
+                    .isFalse();
+            assertThat(painted.hasNextProgram())
+                    .as("but no successor is named, which is what separates the two")
+                    .isFalse();
+
+            assertThat(answerFor(painted, blankScreen(held, CicsAid.DFHENTER)).screen()
+                    .navigationContext())
+                    .isEqualTo(held);
+        }
+
+        @Test
+        @DisplayName("the wire says \"navigationContext\": null - a stated member, not an omitted one")
+        void theWireStatesTheAbsenceRatherThanOmittingIt() throws Exception {
+            // spring.jackson.default-property-inclusion: always, so a null member is serialised rather
+            // than dropped. "There is no communication area" is a positive statement about this transfer,
+            // and an omitted member would leave a strict client unable to tell it was made.
+            NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
+            ObjectMapper mapper = productionMapper();
+
+            var body = mapper.readTree(mapper.writeValueAsString(answerFor(
+                    signOnTransferOutcome(held), blankScreen(held, CicsAid.DFHPF3))));
+
+            assertThat(body.has("navigationContext")).isTrue();
+            assertThat(body.get("navigationContext").isNull()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a client following the transfer reaches sign-on's EIBCALEN = 0 cold start")
+        void theClientFollowingTheTransferReachesTheColdStart() throws Exception {
+            // The end-to-end contract: what this response hands the client is exactly what makes the next
+            // call take COSGN00C's cold-start arm. The client re-supplies whatever navigationContext it
+            // was given, and null re-supplied is an absent communication area - which is how SignOnInput
+            // expresses EIBCALEN = 0.
+            NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
+            ObjectMapper mapper = productionMapper();
+
+            var body = mapper.readTree(mapper.writeValueAsString(answerFor(
+                    signOnTransferOutcome(held), blankScreen(held, CicsAid.DFHPF3))));
+            NavigationContext carriedForward =
+                    mapper.treeToValue(body.get("navigationContext"), NavigationContext.class);
+
+            assertThat(carriedForward).isNull();
+            assertThat(new com.vsergeychik.carddemo.user.SignOnService.SignOnInput(carriedForward,
+                    CicsAid.DFHENTER, null, null).isCommareaPresent())
+                    .as("EIBCALEN = 0, which app/cbl/COSGN00C.cbl:80-83 answers with the cold start")
+                    .isFalse();
         }
 
         @Test
@@ -1410,9 +1586,15 @@ class AdminMenuControllerTest {
     }
 
     @Nested
+    // CobolCharsetConfig joins the slice because the web layer now depends on it: WebConfig's Jackson
+    // customizer takes the screen code page by bean name, so that an inbound screen value is judged
+    // against the code page this deployment states rather than against the platform default.
+    // @WebMvcTest loads web configuration only, so without this import the slice has no such bean - and
+    // the dependency is deliberately mandatory: a missing code page must fail the context, never quietly
+    // become a default. The profile's carddemo.charset.* properties are what it resolves.
     @WebMvcTest(AdminMenuController.class)
     @ActiveProfiles("test")
-    @Import(SliceCollaborators.class)
+    @Import({SliceCollaborators.class, CobolCharsetConfig.class})
     @DisplayName("The Spring MVC slice - real dispatcher, real WebConfig, stubbed decision core")
     class TheSpringSlice {
 

@@ -1,6 +1,9 @@
 package com.vsergeychik.carddemo.account;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -35,29 +38,35 @@ import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
+import com.vsergeychik.carddemo.testsupport.ConcurrentTasks;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.Locale;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
@@ -217,8 +226,11 @@ class AccountUpdateControllerTest {
         dates = new AccountDateValidator(new FixedWidthCodec(StandardCharsets.US_ASCII),
                 new DateUtilityJob(), CLOCK);
         lookups = new AreaCodeLookup(new FixedWidthCodec(StandardCharsets.US_ASCII));
+        // The dataset code page is injected, never defaulted: 9600-WRITE-PROCESSING rewrites a
+        // 300-byte ACCOUNT-RECORD, and those bytes are only right in the page the dataset is stored in.
+        // US-ASCII here because that is what the test profile binds.
         controller = new AccountUpdateController(accounts, xrefs, customers, service, dates, lookups,
-                CLOCK);
+                CLOCK, StandardCharsets.US_ASCII);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -253,7 +265,7 @@ class AccountUpdateControllerTest {
     private AccountUpdateController.Conversation task(AccountUpdateRequest received, int eibcalen,
             byte aid) {
         AccountUpdateController.Conversation conversation =
-                new AccountUpdateController.Conversation();
+                new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
         controller.initializeStorage(received, conversation, eibcalen, aid);
         return conversation;
     }
@@ -327,16 +339,27 @@ class AccountUpdateControllerTest {
     class ParameterResolution {
 
         @Test
-        @DisplayName("bind: the path variable becomes ACCTSIDI, and an absent body is the initial map")
+        @DisplayName("bind: the path variable seeds ACCTSIDI on a first entry, and is ignored on a "
+                + "re-entry, where the operator's own typed field is what 1100-RECEIVE-MAP reads")
         void bindPathVariable() {
             AccountUpdateRequest bound = controller.bind("11", null);
             assertThat(bound.value(AccountUpdateRequest.ScreenField.ACCTSID))
                     .isEqualTo("11         ");
             assertThat(bound.hasNavigationContext()).isFalse();
 
-            AccountUpdateRequest supplied = controller.bind(ACCT, request(" ", reenter()));
-            assertThat(supplied.value(AccountUpdateRequest.ScreenField.ACCTSID)).isEqualTo(ACCT);
-            assertThat(supplied.hasNavigationContext()).isTrue();
+            // A re-entry: :1039-1058 receives ACCTSIDI and edits it. A blanked field is the operator
+            // blanking it, and the source answers that with its own "not supplied" message rather than
+            // by substituting a key from elsewhere - there is no URI on a 3270.
+            AccountUpdateRequest blanked = controller.bind(ACCT, request(" ", reenter()));
+            assertThat(blanked.value(AccountUpdateRequest.ScreenField.ACCTSID))
+                    .isEqualTo("           ");
+            assertThat(blanked.hasNavigationContext()).isTrue();
+
+            // And a re-entry naming a different account is the source-valid action of typing another
+            // account number over the painted screen. It is kept exactly as it arrived.
+            AccountUpdateRequest retyped = controller.bind(ACCT, request("00000000002", reenter()));
+            assertThat(retyped.value(AccountUpdateRequest.ScreenField.ACCTSID))
+                    .isEqualTo("00000000002");
         }
 
         @Test
@@ -348,7 +371,7 @@ class AccountUpdateControllerTest {
         }
 
         @Test
-        @DisplayName("EIBCALEN: derived when absent, and the three accepted statements")
+        @DisplayName("EIBCALEN: derived when absent, and every real length preserved as it arrived")
         void eibcalenResolution() {
             AccountUpdateRequest cold = request(ACCT, null);
             AccountUpdateRequest warm = request(ACCT, reenter());
@@ -358,18 +381,32 @@ class AccountUpdateControllerTest {
             assertThat(AccountUpdateController.resolveEibcalen(null, cold)).isZero();
             assertThat(AccountUpdateController.resolveEibcalen(null, warm)).isEqualTo(passed);
             assertThat(AccountUpdateController.resolveEibcalen(0, cold)).isZero();
+
+            // The two lengths the legacy path really produces: 160 when COMEN01C hands off
+            // CARDDEMO-COMMAREA alone, and 2000 when this program's own COMMON-RETURN passes
+            // WS-COMMAREA PIC X(2000). Both are carried through unchanged.
             assertThat(AccountUpdateController.resolveEibcalen(NavigationContext.COMMAREA_LENGTH,
                     warm)).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+            assertThat(AccountUpdateController.resolveEibcalen(
+                    AccountUpdateController.WS_COMMAREA_LENGTH, warm))
+                    .isEqualTo(AccountUpdateController.WS_COMMAREA_LENGTH);
             assertThat(AccountUpdateController.resolveEibcalen(passed, warm)).isEqualTo(passed);
         }
 
         @Test
-        @DisplayName("EIBCALEN: a length CICS never sets, and a length contradicting the payload")
+        @DisplayName("EIBCALEN: only two statements are impossible - a negative length, and one that "
+                + "contradicts what the payload actually carried")
         void eibcalenRejections() {
             AccountUpdateRequest cold = request(ACCT, null);
             AccountUpdateRequest warm = request(ACCT, reenter());
-            assertThatThrownBy(() -> AccountUpdateController.resolveEibcalen(99, warm))
-                    .isInstanceOf(IllegalArgumentException.class);
+
+            // :880 tests EIBCALEN against zero and against nothing else, so an unusual-looking but
+            // non-negative length is not an error: it is a length, and its non-zero arm is taken.
+            assertThat(AccountUpdateController.resolveEibcalen(99, warm)).isEqualTo(99);
+
+            assertThatThrownBy(() -> AccountUpdateController.resolveEibcalen(-1, cold))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("cannot be negative");
             assertThatThrownBy(() -> AccountUpdateController.resolveEibcalen(0, warm))
                     .isInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> AccountUpdateController.resolveEibcalen(
@@ -2027,7 +2064,8 @@ class AccountUpdateControllerTest {
         @DisplayName("ENTER and PF3 are always valid here")
         void alwaysValidKeys() {
             for (byte aid : new byte[] {CicsAid.DFHENTER, CicsAid.DFHPF3}) {
-                AccountUpdateController.Conversation task = new AccountUpdateController.Conversation();
+                AccountUpdateController.Conversation task =
+                        new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
                 controller.initializeStorage(request(ACCT, enter()), task,
                         AccountUpdateController.PASSED_COMMAREA_LENGTH, aid);
                 controller.storePfKeyYYYY(task);
@@ -2040,7 +2078,7 @@ class AccountUpdateControllerTest {
         @DisplayName("PF5 is valid only while a change is awaiting confirmation")
         void pf5NeedsPendingConfirmation() {
             AccountUpdateController.Conversation pending =
-                    new AccountUpdateController.Conversation();
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), pending,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF5);
             pending.acupChangeAction = AccountUpdateRequest.ChangeAction.changesOkNotConfirmed();
@@ -2049,7 +2087,8 @@ class AccountUpdateControllerTest {
             assertThat(pending.pfkValid()).isTrue();
             assertThat(pending.ccWorkArea.isCcardAidPfk05()).isTrue();
 
-            AccountUpdateController.Conversation idle = new AccountUpdateController.Conversation();
+            AccountUpdateController.Conversation idle =
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), idle,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF5);
             idle.acupChangeAction = AccountUpdateRequest.ChangeAction.showDetails();
@@ -2064,7 +2103,7 @@ class AccountUpdateControllerTest {
         @DisplayName("PF12 is valid only once the details have been fetched")
         void pf12NeedsFetchedDetails() {
             AccountUpdateController.Conversation fetched =
-                    new AccountUpdateController.Conversation();
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), fetched,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF12);
             fetched.acupChangeAction = AccountUpdateRequest.ChangeAction.showDetails();
@@ -2073,7 +2112,7 @@ class AccountUpdateControllerTest {
             assertThat(fetched.pfkValid()).isTrue();
 
             AccountUpdateController.Conversation notFetched =
-                    new AccountUpdateController.Conversation();
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), notFetched,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF12);
             notFetched.acupChangeAction = AccountUpdateRequest.ChangeAction.initial();
@@ -2087,7 +2126,8 @@ class AccountUpdateControllerTest {
         @ValueSource(ints = {0x00, 0x6D, 0xF1, 0xF4})
         @DisplayName("Any other key, including CLEAR and PA1, is coerced to ENTER")
         void otherKeysAreCoerced(int aid) {
-            AccountUpdateController.Conversation task = new AccountUpdateController.Conversation();
+            AccountUpdateController.Conversation task =
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), task,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, (byte) aid);
             controller.storePfKeyYYYY(task);
@@ -2103,7 +2143,8 @@ class AccountUpdateControllerTest {
             // The copybook's EVALUATE has no WHEN OTHER and does not pre-clear the flags, so an AID it
             // does not recognise leaves whatever the work area carried. The coercion then makes it ENTER,
             // which is the only reason the omission is harmless. Handled rather than assumed.
-            AccountUpdateController.Conversation task = new AccountUpdateController.Conversation();
+            AccountUpdateController.Conversation task =
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), task,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, (byte) 0x7F);
             controller.storePfKeyYYYY(task);
@@ -2230,6 +2271,41 @@ class AccountUpdateControllerTest {
             // must delegate rather than duplicate them.
             verify(service).writeProcessing(anyString(), any(), any(), any(), anyString(), any());
             assertThat(task.acupChangeAction.isChangesOkayedAndDone()).isTrue();
+        }
+
+        @Test
+        @DisplayName("Arm 5 hands the service the ACTIVE dataset code page, on either page")
+        void pf5WritesThroughTheActiveCodePage() {
+            // The codec this controller passes is the one 9600-WRITE-PROCESSING decodes the staged
+            // 300-byte and 500-byte images with, and AccountRepository.rewrite writes those bytes
+            // verbatim. So the page has to be the dataset's. An earlier revision passed a hard-coded
+            // US-ASCII codec while application.yml binds IBM037 in production, and because the test
+            // profile is US-ASCII the two agreed here and nowhere else.
+            ArgumentCaptor<FixedWidthCodec> passed = ArgumentCaptor.forClass(FixedWidthCodec.class);
+
+            AccountUpdateController.Conversation task = warmTask();
+            task.acupChangeAction = AccountUpdateRequest.ChangeAction.changesOkNotConfirmed();
+            task.ccWorkArea.setCcardAidCondition(
+                    com.vsergeychik.carddemo.common.PfKeyResolver.AidKey.PFK05);
+            stubWrite(AccountUpdateService.WriteOutcome.CHANGES_OKAYED_AND_DONE);
+            controller.decideAction2000(task);
+
+            verify(service).writeProcessing(anyString(), any(), any(), any(), anyString(),
+                    passed.capture());
+            assertThat(passed.getValue().charset()).isEqualTo(StandardCharsets.US_ASCII);
+            assertThat(passed.getValue()).isSameAs(controller.codec());
+
+            // Since the codec passed IS the controller's own, wiring the production page produces a
+            // controller that passes the production page. Nothing here is hard-coded, so the two
+            // deployments differ only in what was injected.
+            Charset ebcdic = Charset.forName("IBM037");
+            AccountUpdateController onEbcdic = new AccountUpdateController(accounts, xrefs, customers,
+                    service, dates, lookups, CLOCK, ebcdic);
+
+            assertThat(onEbcdic.codec().charset()).isEqualTo(ebcdic);
+            assertThat(new AccountUpdateController(accounts, xrefs, customers, service, dates, lookups,
+                    CLOCK, StandardCharsets.US_ASCII).codec().charset())
+                    .isEqualTo(StandardCharsets.US_ASCII);
         }
 
         @Test
@@ -2605,6 +2681,117 @@ class AccountUpdateControllerTest {
 
             assertThat(task.errorResp).hasSize(AccountUpdateController.ERROR_RESP_LENGTH);
             assertThat(task.errorResp).endsWith(" ");
+        }
+
+        @Test
+        @DisplayName("Both record areas exist from construction, at their COBOL starting image")
+        void recordAreasStartAtTheirCobolImage() {
+            AccountUpdateController.Conversation fresh =
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
+
+            // COPY CVACT01Y at :640 and COPY CVCUS01Y at :646 declare 01-level items, so the storage
+            // exists before any read and holds zero in every numeric field and spaces in every PIC X one.
+            assertThat(fresh.accountRecord)
+                    .describedAs("an 01-level WORKING-STORAGE area is never absent")
+                    .isNotNull();
+            assertThat(fresh.customerRecord).isNotNull();
+            assertThat(fresh.accountRecord.getAcctId()).isZero();
+            assertThat(fresh.accountRecord.getAcctActiveStatus()).isBlank();
+            assertThat(fresh.accountRecord.toByteArray()).hasSize(AccountRepository.RECORD_LENGTH);
+            assertThat(fresh.customerRecord.getCustId()).isZero();
+        }
+
+        @Test
+        @DisplayName("The area carries the active dataset code page, because it is byte-backed")
+        void theAreaCarriesTheActiveCodePage() {
+            Charset ebcdic = Charset.forName("IBM037");
+            AccountUpdateController.Conversation onEbcdic =
+                    new AccountUpdateController.Conversation(ebcdic);
+            onEbcdic.accountRecord.setAcctActiveStatus("Y");
+
+            // 300 bytes are only right in a stated page: 'Y' is x'E8' in IBM037 and x'59' in US-ASCII.
+            assertThat(onEbcdic.accountRecord.toByteArray()[AccountRecord.ACCT_ACTIVE_STATUS_OFFSET])
+                    .isEqualTo("Y".getBytes(ebcdic)[0]);
+            assertThatNullPointerException()
+                    .describedAs("a record area cannot be established without a code page")
+                    .isThrownBy(() -> new AccountUpdateController.Conversation(null));
+        }
+
+        @Test
+        @DisplayName("Neither INITIALIZE reaches the record areas - they are separate 01-level items")
+        void initializeLeavesTheRecordAreasAlone() {
+            // The INITIALIZE at :867 names CC-WORK-AREA, WS-MISC-STORAGE and WS-COMMAREA; the one at :983
+            // names WS-MISC-STORAGE. WS-MISC-STORAGE is 01-level at :35, and the two copybooks are
+            // 01-level at :640 and :646, so no INITIALIZE in this program touches either area.
+            AccountUpdateController.Conversation task =
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
+            task.accountRecord = account();
+            task.customerRecord = customer();
+
+            controller.initializeStorage(request(ACCT, enter()), task,
+                    AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
+
+            assertThat(task.accountRecord.getAcctId())
+                    .describedAs("INITIALIZE WS-MISC-STORAGE at :867 does not name ACCOUNT-RECORD")
+                    .isEqualTo(11L);
+            assertThat(task.customerRecord.getCustId()).isEqualTo(CUST_ID);
+
+            controller.initializeMiscStorage(task);
+
+            assertThat(task.accountRecord.getAcctId())
+                    .describedAs("nor does the one at :983")
+                    .isEqualTo(11L);
+            assertThat(task.customerRecord.getCustId()).isEqualTo(CUST_ID);
+        }
+
+        @Test
+        @DisplayName("A not-found read leaves the area unchanged rather than emptying it")
+        void anUnsuccessfulReadLeavesTheAreaUnchanged() {
+            when(accounts.readByKey(anyLong()))
+                    .thenReturn(AccountRepository.ReadResult.notFound());
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+            task.accountRecord = account();
+
+            controller.getAcctDataByAcct9300(task);
+
+            // EXEC CICS READ INTO(ACCOUNT-RECORD) with RESP(NOTFND) moves nothing, so the 300 bytes are
+            // whatever they already held. Only FOUND-ACCT-IN-MASTER records that the read failed.
+            assertThat(task.accountRecord.getAcctId()).isEqualTo(11L);
+            assertThat(task.foundAcctInMaster()).isFalse();
+            assertThat(task.inputError()).isTrue();
+        }
+
+        @Test
+        @DisplayName("9500 stores the unchanged area after a failed read: the source's stale-area defect")
+        void storeFetchedDataStoresAStaleAreaRatherThanAbending() {
+            // The whole of F16 in one flow. The cross-reference succeeds, both master reads report
+            // NOTFND, and both DID-NOT-FIND guards are dead (:3720, :3769) - so 9000 runs on into 9500
+            // with two areas no read ever filled. COBOL stores that image; it does not abend.
+            when(xrefs.readByAccountIdViaAltIndex(anyString())).thenReturn(
+                    CardXrefRepository.ReadResult.found(
+                            CardXrefRepository.ALTERNATE_INDEX_DD_NAME,
+                            new CardXrefRecord(XREF_CARD, CUST_ID, 11L), XREF_IMAGE));
+            when(accounts.readByKey(anyLong()))
+                    .thenReturn(AccountRepository.ReadResult.notFound());
+            when(customers.readByKey(anyString()))
+                    .thenReturn(CustomerRepository.ReadResult.notFound());
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            assertThatNoException()
+                    .describedAs("the guards are ineffective, so 9500 runs - and must not abend")
+                    .isThrownBy(() -> controller.readAcct9000(task));
+
+            assertThat(task.foundAcctInMaster()).isFalse();
+            assertThat(task.foundCustInMaster()).isFalse();
+            // :3806-3807 - the commarea takes the starting image's identifiers, which is the defect.
+            assertThat(task.carddemoCommarea.acctId()).isZero();
+            assertThat(task.carddemoCommarea.custId()).isZero();
+            assertThat(task.carddemoCommarea.custLname()).isBlank();
+            // :3818 - and so does ACUP-OLD-DETAILS, which 9700 later compares the file against.
+            assertThat(task.acupOldAcct.acctIdN()).isZero();
+            assertThat(task.acupOldCust.custIdN()).isZero();
         }
     }
 
@@ -3652,31 +3839,34 @@ class AccountUpdateControllerTest {
 
         @Test
         @DisplayName("G37: two concurrent turns cannot see one another's work area")
-        void concurrentTurnsAreIndependent() throws Exception {
+        @Timeout(value = 60, unit = TimeUnit.SECONDS)
+        void concurrentTurnsAreIndependent() {
             stubAllFound();
-            List<AccountUpdateResponse> responses = new ArrayList<>();
-            Runnable first = () -> responses.add(controller.handle(
-                    fullyValidScreen().withValue(AccountUpdateRequest.ScreenField.ACSTTUS, "N"),
-                    AccountUpdateController.PASSED_COMMAREA_LENGTH,
-                    CicsAid.DFHENTER).response());
-            Runnable second = () -> responses.add(controller.handle(
-                    request(" ", null), AccountUpdateController.NO_COMMAREA_LENGTH,
-                    CicsAid.DFHENTER).response());
 
-            Thread one = new Thread(first);
-            Thread two = new Thread(second);
-            one.start();
-            two.start();
-            one.join();
-            two.join();
+            // Each turn returns its response rather than adding it to a list both threads write. The old
+            // shape shared one ArrayList across two threads, which is a data race: it would usually pass,
+            // and when it did not it would drop a response and fail as a wrong size with nothing pointing
+            // at the cause. It also swallowed any exception either turn raised - the thread died, the list
+            // came back short, and the real failure was only in the log above the assertion.
+            List<AccountUpdateResponse> responses = ConcurrentTasks.runBoth(
+                    () -> controller.handle(
+                            fullyValidScreen().withValue(AccountUpdateRequest.ScreenField.ACSTTUS, "N"),
+                            AccountUpdateController.PASSED_COMMAREA_LENGTH,
+                            CicsAid.DFHENTER).response(),
+                    () -> controller.handle(
+                            request(" ", null), AccountUpdateController.NO_COMMAREA_LENGTH,
+                            CicsAid.DFHENTER).response());
 
             assertThat(responses).hasSize(2);
             // One turn awaits confirmation, the other is a cold start. If any WORKING-STORAGE had become
-            // a field on the controller, these two would have contaminated each other.
-            assertThat(responses).anySatisfy(r ->
-                    assertThat(r.changeAction().isChangesOkNotConfirmed()).isTrue());
-            assertThat(responses).anySatisfy(r ->
-                    assertThat(r.changeAction().isDetailsNotFetched()).isTrue());
+            // a field on the controller, these two would have contaminated each other. Asserted by
+            // position now that the results come back in submission order, which is stronger than
+            // anySatisfy: it would catch both turns returning the same verdict.
+            assertThat(responses.get(0).changeAction().isChangesOkNotConfirmed())
+                    .as("the first turn typed a whole valid screen, so it awaits confirmation").isTrue();
+            assertThat(responses.get(1).changeAction().isDetailsNotFetched())
+                    .as("the second is a cold start with no commarea, so it has fetched nothing")
+                    .isTrue();
         }
 
         @Test
@@ -4021,7 +4211,8 @@ class AccountUpdateControllerTest {
         @Test
         @DisplayName("The carried area is discarded on a cold start and on arrival from the menu")
         void restoreCommareaArms() {
-            AccountUpdateController.Conversation cold = new AccountUpdateController.Conversation();
+            AccountUpdateController.Conversation cold =
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), cold,
                     AccountUpdateController.NO_COMMAREA_LENGTH, CicsAid.DFHENTER);
             cold.acupOldAcct.activeStatus = "Y";
@@ -4032,7 +4223,7 @@ class AccountUpdateControllerTest {
             assertThat(cold.carddemoCommarea.isEnter()).isTrue();
 
             AccountUpdateController.Conversation fromMenu =
-                    new AccountUpdateController.Conversation();
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, NavigationContext.empty()
                             .withFromProgram(AccountUpdateController.LIT_MENUPGM).withPgmEnter()),
                     fromMenu, AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
@@ -4042,7 +4233,7 @@ class AccountUpdateControllerTest {
             assertThat(fromMenu.acupChangeAction.isDetailsNotFetched()).isTrue();
 
             AccountUpdateController.Conversation carried =
-                    new AccountUpdateController.Conversation();
+                    new AccountUpdateController.Conversation(StandardCharsets.US_ASCII);
             controller.initializeStorage(request(ACCT, reenter()), carried,
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
             carried.acupChangeAction = AccountUpdateRequest.ChangeAction.showDetails();
@@ -4181,57 +4372,59 @@ class AccountUpdateControllerTest {
     }
 
     @Nested
-    @DisplayName("A value a RECEIVE MAP could not have delivered is the caller's error, not an abend")
+    @DisplayName("The code-page judgement is the JSON boundary's, not this program's")
     class ScreenInputRefusal {
 
         @Test
-        @DisplayName("An unrepresentable character is refused as ScreenInputRejectedException and never "
-                + "routed to ABEND-ROUTINE, which is what the HANDLE ABEND declarative would otherwise do")
-        void anUnrepresentableCharacterIsNotAnAbend() {
+        @DisplayName("A character the code page cannot represent is NOT refused here: COACTUPC has no "
+                + "such test, and a sweep placed in the flow ran ahead of the program's own decision "
+                + "about whether it receives a map at all")
+        void anUnrepresentableCharacterIsNotRefusedByTheProgram() {
             AccountUpdateRequest received = AccountUpdateRequest.initial()
                     .withValue(AccountUpdateRequest.ScreenField.ACSFNAM, "JOS\u00C9");
 
-            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .isNotInstanceOf(AbendException.class)
-                    .isInstanceOf(IllegalArgumentException.class);
-        }
-
-        @Test
-        @DisplayName("It names the offending field and never echoes the value")
-        void itNamesTheFieldAndNotTheValue() {
-            AccountUpdateRequest received = AccountUpdateRequest.initial()
-                    .withValue(AccountUpdateRequest.ScreenField.ACSLNAM, "MU\u00D1OZ");
-
-            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .satisfies(thrown -> {
-                        ScreenInputRejectedException rejected = (ScreenInputRejectedException) thrown;
-                        assertThat(rejected.member()).contains("acslnam");
-                        assertThat(rejected.getMessage()).contains("ACSLNAMI").doesNotContain("MU");
-                    });
-        }
-
-        @Test
-        @DisplayName("The refusal precedes every dataset access, so a rejected payload cannot have left "
-                + "a partial change behind")
-        void theRefusalPrecedesEveryDatasetAccess() {
-            AccountUpdateRequest received = request(ACCT, null)
-                    .withValue(AccountUpdateRequest.ScreenField.ACSFNAM, "JOS\u00C9");
-
-            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
-                    .isInstanceOf(ScreenInputRejectedException.class);
-
+            // EIBCALEN 0 is the cold-start arm at :880-886, which initialises both areas and paints the
+            // screen without ever reading the input area - so a field the program never looks at cannot
+            // be the reason a caller is refused. The refusal for such a value exists, once, at the JSON
+            // boundary: see config.ScreenTextDeserializerTest, which judges every string of every body
+            // of all seventeen routes against the ACTIVE dataset code page.
+            assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
             verifyNoInteractions(accounts, xrefs, customers, service);
         }
 
         @Test
-        @DisplayName("A payload whose every character the code page represents is untouched by the sweep")
-        void arepresentablePayloadIsUntouched() {
+        @DisplayName("A payload whose every character the code page represents behaves identically, so "
+                + "nothing about an accepted value changed with the sweep's removal")
+        void aRepresentablePayloadIsUntouched() {
+            // Deliberately the exact twin of anUnrepresentableCharacterIsNotRefusedByTheProgram
+            // above, differing in one character: "JOSE" where that one keys "JOS\u00C9". That makes
+            // the pair an A/B on the code page itself rather than two unrelated scenarios.
             AccountUpdateRequest received = AccountUpdateRequest.initial()
                     .withValue(AccountUpdateRequest.ScreenField.ACSFNAM, "JOSE");
+            Map<String, String> before = received.fieldValues();
 
-            assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
+            // Mirror image of the sibling: neither payload is refused by the program, because the
+            // program never reads the input area on the EIBCALEN 0 arm. What this one adds is that an
+            // accepted value is not rewritten either.
+            assertThatCode(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .doesNotThrowAnyException();
+
+            // "Untouched" asserted rather than assumed. The test used to check only that the call returned
+            // something non-null, which a sweep that rewrote every character would also satisfy - the one
+            // claim the display name makes was the one claim not checked. The request holds the raw screen
+            // bytes: RECEIVE MAP hands over what was keyed, and the sweep only inspects it, so untouched
+            // here means byte-identical, field for field, across all of them.
+            assertThat(received.value(AccountUpdateRequest.ScreenField.ACSFNAM))
+                    .as("the sweep must not have rewritten the field it examined")
+                    .isEqualTo("JOSE");
+            assertThat(received.fieldValues())
+                    .as("and no other field moved either")
+                    .isEqualTo(before);
+
+            // Where the refusal happens is the sibling's subject, not this one's: with no navigation
+            // context this turn is the ENTER paint, which reads no dataset either way, so an invocation
+            // count here would discriminate nothing. The pair's discrimination is carried by throw versus
+            // no-throw on one changed character.
         }
     }
 

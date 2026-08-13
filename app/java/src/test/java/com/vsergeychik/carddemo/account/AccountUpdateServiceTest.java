@@ -29,6 +29,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -65,6 +66,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -131,6 +133,11 @@ class AccountUpdateServiceTest {
     void setUp() {
         accountRepository = mock(AccountRepository.class);
         customerRepository = mock(CustomerRepository.class);
+        // Both repositories report the code page they store records in, because that is what the real
+        // ones do and because writeProcessing refuses a codec that is not it: the 300-byte and 500-byte
+        // images it stages are decoded with the caller's codec and then written verbatim.
+        when(accountRepository.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
+        when(customerRepository.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
         transactionManager = new RecordingTransactionManager();
         service = new AccountUpdateService(accountRepository, customerRepository,
                 new DatasetUnitOfWork(transactionManager));
@@ -357,6 +364,63 @@ class AccountUpdateServiceTest {
                     .isThrownBy(() -> new AccountUpdateService(accountRepository, null,
                             new DatasetUnitOfWork(transactionManager)))
                     .withMessageContaining("CUSTDAT");
+        }
+
+        @Test
+        @DisplayName("a codec over any page but the datasets' own is refused before anything is read")
+        void aForeignCodePageIsRefused() {
+            // The images staged at :3956-4061 are decoded with the caller's codec and handed to the
+            // repositories, which write record.toByteArray() verbatim - nothing downstream transcodes.
+            // So a codec over the wrong page does not fail, it succeeds and stores wrong bytes. An
+            // earlier revision passed a hard-coded US-ASCII codec from COACTUPC's controller while
+            // application.yml binds IBM037 in production, and the US-ASCII test profile hid it.
+            FixedWidthCodec ebcdic = new FixedWidthCodec(Charset.forName("IBM037"));
+
+            Assertions.assertThatIllegalArgumentException()
+                    .isThrownBy(() -> service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                            matchedOldDetails(), newDetails(), null, ebcdic))
+                    .withMessageContaining("IBM037")
+                    .withMessageContaining("US-ASCII");
+
+            // Refused before the boundary opened, so nothing committed, nothing rolled back, no lock was
+            // taken and the customer master was never touched.
+            Assertions.assertThat(transactionManager.commits).isZero();
+            Assertions.assertThat(transactionManager.rollbacks).isZero();
+            verify(accountRepository).datasetCharset();
+            verify(customerRepository).datasetCharset();
+            verify(accountRepository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("the datasets' own page is accepted, whichever page that is")
+        void theDatasetsOwnCodePageIsAccepted() {
+            // The guard compares against the repositories rather than against a constant, so a
+            // deployment on IBM037 works exactly as the US-ASCII test profile does.
+            Charset ebcdic = Charset.forName("IBM037");
+            when(accountRepository.datasetCharset()).thenReturn(ebcdic);
+            when(customerRepository.datasetCharset()).thenReturn(ebcdic);
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.notFound());
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null,
+                    new FixedWidthCodec(ebcdic));
+
+            Assertions.assertThat(result.outcome())
+                    .isEqualTo(WriteOutcome.COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+        }
+
+        @Test
+        @DisplayName("a page that only one of the two datasets agrees with is still refused")
+        void aPartiallyAgreeingCodePageIsRefused() {
+            // One right and one wrong would write the account correctly and the customer wrongly, which
+            // is worse than refusing: the two images are decoded with the same codec.
+            when(customerRepository.datasetCharset()).thenReturn(Charset.forName("IBM037"));
+
+            Assertions.assertThatIllegalArgumentException()
+                    .isThrownBy(() -> service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                            matchedOldDetails(), newDetails(), null, CODEC))
+                    .withMessageContaining("customer master in IBM037");
         }
 
         @Test
@@ -1550,7 +1614,11 @@ class AccountUpdateServiceTest {
             Assertions.assertThat(result.custUpdateRecordImage()).isEmpty();
             Assertions.assertThat(result.isRewritten()).isFalse();
             Assertions.assertThat(result.changeActionCode()).isEqualTo("L");
-            verifyNoInteractions(customerRepository);
+            // The code-page guard asks both repositories which page they store records in before any
+            // verb is issued, so "CUSTDAT is never read" is asserted about the file verbs rather than as
+            // "no interaction at all".
+            verify(customerRepository).datasetCharset();
+            verifyNoMoreInteractions(customerRepository);
             verify(accountRepository, never()).rewrite(any(AccountRecord.class));
         }
 
@@ -1956,9 +2024,11 @@ class AccountUpdateServiceTest {
                     CODEC);
 
             InOrder order = inOrder(accountRepository, customerRepository);
+            // Both code pages are read first, because the guard runs before the paragraph does.
+            order.verify(accountRepository).datasetCharset();
+            order.verify(customerRepository).datasetCharset();
             order.verify(accountRepository).readForUpdate(anyString());
             order.verifyNoMoreInteractions();
-            verifyNoInteractions(customerRepository);
         }
 
         @Test
@@ -2888,7 +2958,11 @@ class AccountUpdateServiceTest {
                     .contains(AccountUpdateService.ACCT_CICS_FILE_NAME);
             Assertions.assertThat(result.isRewritten()).isFalse();
             Assertions.assertThat(result.changeCheck()).isEmpty();
-            verifyNoInteractions(customerRepository);
+            // The code-page guard asks both repositories which page they store records in before any
+            // verb is issued, so "CUSTDAT is never read" is asserted about the file verbs rather than as
+            // "no interaction at all".
+            verify(customerRepository).datasetCharset();
+            verifyNoMoreInteractions(customerRepository);
         }
 
         @ParameterizedTest(name = "ACCTDAT read-for-update reports FILE STATUS {0}")
@@ -2910,7 +2984,11 @@ class AccountUpdateServiceTest {
             // invented. Asserted against the ladder itself so the two cannot drift apart.
             Assertions.assertThat(result.cicsResp())
                     .isEqualTo(FileStatus.cicsRespOfBatchStatus(status));
-            verifyNoInteractions(customerRepository);
+            // The code-page guard asks both repositories which page they store records in before any
+            // verb is issued, so "CUSTDAT is never read" is asserted about the file verbs rather than as
+            // "no interaction at all".
+            verify(customerRepository).datasetCharset();
+            verifyNoMoreInteractions(customerRepository);
         }
 
         @ParameterizedTest(name = "CUSTDAT read-for-update reports RESP {0} -> status {1}")

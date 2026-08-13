@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.account;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.hamcrest.Matchers.startsWith;
@@ -32,7 +33,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
-import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -44,6 +45,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -192,7 +194,10 @@ class AccountViewControllerTest {
         accounts = mock(AccountRepository.class);
         xrefs = mock(CardXrefRepository.class);
         customers = mock(CustomerRepository.class);
-        controller = new AccountViewController(accounts, xrefs, customers, CLOCK);
+        // The commarea images and the ACCOUNT-RECORD work area are bytes, so the page is injected
+        // rather than assumed; US-ASCII is what the test profile binds.
+        controller = new AccountViewController(accounts, xrefs, customers, CLOCK,
+                StandardCharsets.US_ASCII);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -266,17 +271,27 @@ class AccountViewControllerTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("EIBCALEN: derived, and the four accepted statements")
+    @DisplayName("EIBCALEN: derived when absent, every real length preserved, and only a negative or "
+            + "self-contradicting statement refused")
     void eibcalenResolution() {
         AccountViewRequest cold = request(ACCT, null);
         AccountViewRequest warm = request(ACCT, reenter());
         assertThat(AccountViewController.resolveEibcalen(null, cold)).isZero();
         assertThat(AccountViewController.resolveEibcalen(null, warm)).isEqualTo(172);
         assertThat(AccountViewController.resolveEibcalen(0, cold)).isZero();
+
+        // The lengths the legacy path really produces: 160 when COMEN01C hands off CARDDEMO-COMMAREA
+        // alone, and 2000 when COACTVWC's own COMMON-RETURN passes WS-COMMAREA PIC X(2000). :282 tests
+        // EIBCALEN against zero and against nothing else, so each is carried through as it arrived.
         assertThat(AccountViewController.resolveEibcalen(160, warm)).isEqualTo(160);
         assertThat(AccountViewController.resolveEibcalen(172, warm)).isEqualTo(172);
-        assertThatThrownBy(() -> AccountViewController.resolveEibcalen(99, warm))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(AccountViewController.resolveEibcalen(AccountViewController.WS_COMMAREA_LENGTH,
+                warm)).isEqualTo(AccountViewController.WS_COMMAREA_LENGTH);
+        assertThat(AccountViewController.resolveEibcalen(99, warm)).isEqualTo(99);
+
+        assertThatThrownBy(() -> AccountViewController.resolveEibcalen(-1, cold))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be negative");
         assertThatThrownBy(() -> AccountViewController.resolveEibcalen(0, warm))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> AccountViewController.resolveEibcalen(172, cold))
@@ -307,10 +322,9 @@ class AccountViewControllerTest {
         assertThat(controller.bind("11", null).getAcctsid()).isEqualTo("11         ");
         assertThatThrownBy(() -> controller.bind("123456789012", null))
                 .isInstanceOf(IllegalArgumentException.class);
-        // The copy-not-mutate property, probed with a body value that AGREES with the URI: a body naming
-        // a different account is refused outright (see aDisagreeingAccountFilterIsRefused), so it cannot
-        // be used to observe the copy.
-        AccountViewRequest caller = request("11", reenter());
+        // The copy-not-mutate property, probed on a first entry, which is the turn the URI is projected
+        // on. A re-entry is left alone entirely, so it cannot be used to observe the projection.
+        AccountViewRequest caller = request("11", null);
         String asTheCallerLeftIt = caller.getAcctsid();
         AccountViewRequest bound = controller.bind("11         ", caller);
         assertThat(caller.getAcctsid()).as("the caller's object is never altered")
@@ -320,27 +334,31 @@ class AccountViewControllerTest {
     }
 
     @Test
-    @DisplayName("bind: a body whose ACCTSID names a different account is refused, naming the member")
+    @DisplayName("bind: a re-entry whose ACCTSID names a different account keeps it, because typing "
+            + "another account over the painted screen is what COACTVWC is for")
     void aDisagreeingAccountFilterIsRefused() {
-        // The URI and ACCTSIDI state the same key, and a terminal has one key field. Two different keys
-        // in one request used to have the typed one silently discarded; it is now refused at the
-        // boundary, before any read, with neither value echoed.
-        assertThatThrownBy(() -> controller.bind("11", request("99999999999", reenter())))
-                .isInstanceOf(ScreenInputRejectedException.class)
-                .hasMessageContaining("acctsid")
-                .hasMessageNotContaining("99999999999");
+        // :610-680 - 1000-SEND-MAP is followed on the next turn by RECEIVE MAP and 2000-PROCESS-INPUTS,
+        // which edit and read whatever ACCTSIDI now holds. There is no URI on a 3270 and no comparison
+        // in the source, so the typed key travels on untouched and the read that follows uses it.
+        AccountViewRequest retyped = controller.bind("11", request("99999999999", reenter()));
+
+        assertThat(retyped.getAcctsid()).isEqualTo("99999999999");
     }
 
-    @ParameterizedTest(name = "a body stating ACCTSID as \"{0}\" lets the URI supply it")
+    @ParameterizedTest(name = "a re-entry stating ACCTSID as \"{0}\" keeps exactly that")
     @ValueSource(strings = {"", "           ", "*", "11", "11         ",
         "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
-    @DisplayName("bind: blank, LOW-VALUES, the asterisk COACTVWC paints, and the URI's own key all agree")
+    @DisplayName("bind: a re-entry's own field is authoritative - blank, LOW-VALUES and the asterisk "
+            + "COACTVWC paints all survive, because 2000-PROCESS-INPUTS is what judges them")
     void theStatesThatAgreeWithTheUriAreAccepted(String stated) {
         // app/cbl/COACTVWC.cbl:563 MOVEs '*' TO ACCTSIDO when nothing was supplied and :628 reads = '*'
-        // back as exactly that, so an asterisk names no account and a client echoing that painted screen
-        // must bind rather than be refused.
+        // back as exactly that. Each of these images is a state the screen itself produces, and the
+        // source's answer to each is its own edit at :628-651 - not a substituted key. What arrives is
+        // the ACCTSIDI PIC X(11) image, so the comparison is against that same padded receiver.
+        String asItArrived = controller.codec().movePicX(stated, AccountViewRequest.ACCTSID_LENGTH);
+
         assertThat(controller.bind("11", request(stated, reenter())).getAcctsid())
-                .isEqualTo("11         ");
+                .isEqualTo(asItArrived);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -411,6 +429,69 @@ class AccountViewControllerTest {
         verify(xrefs).readByAccountIdViaAltIndex(ACCT);
         verify(accounts).readByKey(11L);
         verify(customers).readByKey("123456789");
+    }
+
+    @Test
+    @DisplayName("The cursor is ACCTSID on every painting path and absent on the transfer, per :546-552")
+    void theCursorIsWhereTheProgramPutIt() {
+        // The cursor is an xxxL item of the INPUT group, so 1300-SETUP-SCREEN-ATTRS records it on the
+        // request. All three arms of the EVALUATE at :546-552 move -1 to ACCTSIDL and no other xxxL item
+        // is ever written, so ACCTSID is this program's entire cursor vocabulary.
+        stubAllFound();
+        AccountViewRequest painting = request(ACCT, reenter());
+        AccountViewResponse painted = controller.handle(painting, 172, CicsAid.DFHENTER);
+
+        assertThat(controller.screenMetadata(painting, painted).cursorField())
+                .isEqualTo(AccountViewResponse.ScreenField.ACCTSID.label())
+                .isEqualTo("ACCTSID");
+
+        // The PF3 arm at :342-349 transfers with EXEC CICS XCTL and never reaches 1300, so no xxxL item
+        // holds -1 and there is no cursor to report. Naming one here would tell the client to place a
+        // cursor on a screen this interaction did not paint.
+        AccountViewRequest transferring = request(ACCT, reenter());
+        AccountViewResponse transferred = controller.handle(transferring, 172, CicsAid.DFHPF3);
+
+        assertThat(controller.screenMetadata(transferring, transferred).cursorField())
+                .as("no map was sent, so no cursor was placed")
+                .isNull();
+        assertThat(transferred.getNextProgram()).isEqualTo("COMEN01C");
+    }
+
+    @Test
+    @DisplayName("The metadata projection reads the request's xxxL half and the response's xxxC half")
+    void theMetadataProjectionReadsBothHalvesOfTheMap() {
+        // One map, two groups: the cursor and the field attribute are CACTVWAI items and the colour is a
+        // CACTVWAO item, so the projection has to read both objects. It also requires both - passing
+        // either as null is a programming error rather than a state the program can be in.
+        stubAllFound();
+        AccountViewRequest received = request(ACCT, reenter());
+        AccountViewResponse painted = controller.handle(received, 172, CicsAid.DFHENTER);
+
+        ScreenMetadata metadata = controller.screenMetadata(received, painted);
+
+        assertThat(metadata.fields()).hasSize(AccountViewResponse.FIELD_COUNT);
+        for (AccountViewResponse.ScreenField field : AccountViewResponse.ScreenField.values()) {
+            AccountViewResponse.FieldAttributes quad = painted.attributes(field);
+            ScreenMetadata.FieldMetadata published = metadata.fields().get(field.label());
+            assertThat(published.colour())
+                    .describedAs("%sC is X'%02X' and must publish unsigned", field.label(),
+                            quad.getColour())
+                    .isEqualTo(Byte.toUnsignedInt(quad.getColour()));
+            assertThat(published.protection()).isEqualTo(Byte.toUnsignedInt(quad.getPs()));
+            assertThat(published.highlight()).isEqualTo(Byte.toUnsignedInt(quad.getHilight()));
+            assertThat(published.validation()).isEqualTo(Byte.toUnsignedInt(quad.getValidn()));
+        }
+        assertThat(metadata.messageColour())
+                .isEqualTo(Byte.toUnsignedInt(
+                        painted.attributes(AccountViewResponse.ScreenField.ERRMSG).getColour()));
+        assertThat(metadata.resetAllOutputFields())
+                .as("COACTVWC has no MOVE LOW-VALUES TO CACTVWAO")
+                .isFalse();
+
+        assertThatNullPointerException()
+                .isThrownBy(() -> controller.screenMetadata(null, painted));
+        assertThatNullPointerException()
+                .isThrownBy(() -> controller.screenMetadata(received, null));
     }
 
     @Test
@@ -1279,7 +1360,10 @@ class AccountViewControllerTest {
         @DisplayName("The mapping routes, binds the path variable and the body, and answers 200 JSON")
         void theMappingRoutesAndBindsTheWholeRequest() throws Exception {
             stubAllFound();
-            AccountViewRequest sent = request("", NavigationContext.empty()
+            // A re-entry carries the operator's own ACCTSIDI, which is the field 2000-PROCESS-INPUTS
+            // edits and reads; the URI seeds only a first entry. So a client echoing a painted screen
+            // sends the key in the body, exactly as this does.
+            AccountViewRequest sent = request(ACCT, NavigationContext.empty()
                     .withFromProgram("COMEN01C")
                     .withFromTranid("CM00")
                     .withPgmReenter());
@@ -1291,7 +1375,7 @@ class AccountViewControllerTest {
                             .content(body(sent)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    // The path variable reached ACCTSIDI and came back on ACCTSIDO at PIC X(11).
+                    // ACCTSIDI as received came back on ACCTSIDO at PIC X(11).
                     .andExpect(jsonPath("$.acctsid").value(ACCT))
                     .andExpect(jsonPath("$.acsttus").value("Y"))
                     // The five edited items carry their PIC +ZZZ,ZZZ,ZZZ.99 mask over the wire.
@@ -1325,6 +1409,92 @@ class AccountViewControllerTest {
         }
 
         @Test
+        @DisplayName("The presentation metadata reaches the wire beside the screen, all 37 quads of it")
+        void theScreenMetadataIsAnswered() throws Exception {
+            // The finding this closes: 1300-SETUP-SCREEN-ATTRS at :541-572 computed a cursor request and
+            // 37 attribute quads, and the endpoint then discarded every one of them - so a client could
+            // not tell a red, cursor-bearing account-number field from an ordinary one, and could not
+            // reproduce what the terminal showed. They are metadata by declaration (xxxL, xxxA, xxxC), so
+            // they travel BESIDE the screen and never inside it, exactly as the other sixteen screens do.
+            stubAllFound();
+
+            ResultActions result = mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
+                            .param("eibaid", String.valueOf((int) CicsAid.DFHENTER))
+                            .param("eibcalen", "172")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request(ACCT, reenter()))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.screenMetadata").exists())
+                    .andExpect(jsonPath("$.screenMetadata.fields").exists())
+                    // :555 MOVE DFHDFCOL TO ACCTSIDC on a filter that is neither blank nor bad, and
+                    // published unsigned: DFHRED is X'F2', which a signed byte would render as -14.
+                    .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.colour")
+                            .value(Byte.toUnsignedInt(BmsAttributes.DFHDFCOL)))
+                    // :567-571 the informational line is neutral when there is something to say.
+                    .andExpect(jsonPath("$.screenMetadata.fields.INFOMSG.colour")
+                            .value(Byte.toUnsignedInt(BmsAttributes.DFHNEUTR)))
+                    // :548/:550/:552 MOVE -1 TO ACCTSIDL - all three arms name the same field.
+                    .andExpect(jsonPath("$.screenMetadata.cursorField").value("ACCTSID"))
+                    // COACTVWC has no MOVE LOW-VALUES TO CACTVWAO, so no group-clear is claimed.
+                    .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(false));
+
+            for (String field : FIELDS) {
+                result.andExpect(jsonPath("$.screenMetadata.fields." + field.toUpperCase(
+                        java.util.Locale.ROOT) + ".colour").exists());
+            }
+        }
+
+        @Test
+        @DisplayName("A blank filter on re-entry publishes the red ACCTSID the terminal would have shown")
+        void theBlankFilterHighlightReachesTheClient() throws Exception {
+            // :561-565 IF FLG-ACCTFILTER-BLANK AND CDEMO-PGM-REENTER: MOVE '*' to the output item and
+            // DFHRED to the colour item. The asterisk is a payload value and always reached the client;
+            // the colour is an xxxC item and did not, which made the two halves of one highlight
+            // disagree. This is the case where the metadata is load-bearing rather than decorative.
+            mockMvc().perform(get("/api/accounts/{acctId}", " ".repeat(11))
+                            .param("eibaid", String.valueOf((int) CicsAid.DFHENTER))
+                            .param("eibcalen", "172")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("", reenter()))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.colour")
+                            .value(Byte.toUnsignedInt(BmsAttributes.DFHRED)))
+                    .andExpect(jsonPath("$.screenMetadata.cursorField").value("ACCTSID"));
+        }
+
+        @Test
+        @DisplayName("The metadata stays a sibling: no xxxC, xxxL or xxxA member joins the 37 payload ones")
+        void theMetadataIsASiblingAndNotAPayloadMember() throws Exception {
+            // AAP 0.6.3: payload members derive from the xxxI items ONLY. Publishing the quads must not
+            // widen the flat projection, so the top level still carries exactly the 37 fields plus the
+            // carriers - and the attribute names the copybook declares appear nowhere in it.
+            stubAllFound();
+
+            String body = mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
+                            .param("eibaid", String.valueOf((int) CicsAid.DFHENTER))
+                            .param("eibcalen", "172")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request(ACCT, reenter()))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.ACCTSIDC").doesNotExist())
+                    .andExpect(jsonPath("$.acctsidc").doesNotExist())
+                    .andExpect(jsonPath("$.acctsidl").doesNotExist())
+                    .andExpect(jsonPath("$.acctsida").doesNotExist())
+                    .andExpect(jsonPath("$.attributeQuads").doesNotExist())
+                    .andExpect(jsonPath("$.attributeItems").doesNotExist())
+                    .andExpect(jsonPath("$.cursorField").doesNotExist())
+                    .andReturn().getResponse().getContentAsString();
+
+            // The 37 screen members are still unwrapped at the top level, which is what keeps every
+            // existing $.<field> assertion in this class - and every client - reading the same shape.
+            for (String field : FIELDS) {
+                assertThat(new ObjectMapper().readTree(body).has(field))
+                        .describedAs("%s must stay a top-level member", field)
+                        .isTrue();
+            }
+        }
+
+        @Test
         @DisplayName("A cold start needs no body at all, and paints the prompt")
         void theBodyIsOptional() throws Exception {
             mockMvc().perform(get("/api/accounts/{acctId}", ACCT))
@@ -1351,7 +1521,7 @@ class AccountViewControllerTest {
             mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
                             .param("eibcalen", "172")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(body(request("", reenter()))))
+                            .content(body(request(ACCT, reenter()))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.errmsg").value(startsWith(
                             "Account:" + ACCT + " not found in Cross ref file.  Resp:")))
@@ -1374,7 +1544,7 @@ class AccountViewControllerTest {
             mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
                             .param("eibcalen", "172")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(body(request("", reenter()))))
+                            .content(body(request(ACCT, reenter()))))
                     .andExpect(status().is5xxServerError());
         }
     }
@@ -1879,10 +2049,14 @@ class AccountViewControllerTest {
         }
 
         @Test
-        @DisplayName("The only instance fields are the three repositories and the clock")
+        @DisplayName("The only instance fields are the three repositories, the clock and the codec")
         void theOnlyInstanceFieldsAreCollaborators() {
+            // FixedWidthCodec belongs here for the same reason the Clock does: it is an immutable value
+            // injected once, not per-request state. It carries the active dataset code page, which the
+            // ACCOUNT-RECORD work area and the two DFHCOMMAREA images are measured in, and holding it
+            // is what keeps that page a stated deployment input rather than a constant in this file.
             Set<Class<?>> collaborators = Set.of(AccountRepository.class, CardXrefRepository.class,
-                    CustomerRepository.class, Clock.class);
+                    CustomerRepository.class, Clock.class, FixedWidthCodec.class);
             List<Field> instanceFields = new ArrayList<>();
             for (Field field : AccountViewController.class.getDeclaredFields()) {
                 if (!field.isSynthetic() && !Modifier.isStatic(field.getModifiers())) {
@@ -1895,6 +2069,22 @@ class AccountViewControllerTest {
                         .as("field " + field.getName() + " is not an injected collaborator")
                         .contains(field.getType());
             }
+        }
+
+        @Test
+        @DisplayName("The codec carries the injected page, so neither image is measured in a constant")
+        void theCodecCarriesTheInjectedCodePage() {
+            // COACTVWC writes to no dataset, but the ACCOUNT-RECORD work area and the two DFHCOMMAREA
+            // images are bytes, and a value the terminal could legitimately have sent has to survive the
+            // round trip. Judging it against a page the deployment does not use is what an earlier
+            // revision did: US-ASCII named here, IBM037 bound by application.yml in production.
+            assertThat(controller.codec().charset()).isEqualTo(StandardCharsets.US_ASCII);
+
+            Charset ebcdic = Charset.forName("IBM037");
+            assertThat(new AccountViewController(accounts, xrefs, customers, CLOCK, ebcdic)
+                    .codec().charset()).isEqualTo(ebcdic);
+            assertThatThrownBy(() -> new AccountViewController(accounts, xrefs, customers, CLOCK, null))
+                    .isInstanceOf(NullPointerException.class);
         }
 
         @Test

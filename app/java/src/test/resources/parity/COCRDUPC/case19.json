@@ -119,5 +119,10 @@
       "rowCount": 3,
       "recordLength": 150
     }
-  ]
+  ],
+  "unitStimulus": {
+    "linkage": {
+      "WS-RETURN-MSG": "                                                                           "
+    }
+  }
 }

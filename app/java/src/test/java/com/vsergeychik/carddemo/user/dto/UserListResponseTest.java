@@ -1989,12 +1989,25 @@ class UserListResponseTest {
         }
 
         @Test
-        @DisplayName("a nine-digit page number is rejected rather than silently shortened")
-        void aNineDigitPageNumberIsRejected() {
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> UserListResponse.blank().toBuilder()
-                            .cdemoCu00PageNum(100_000_000).build())
-                    .withMessageContaining(UserListResponse.CU00_PAGE_NUM_FIELD);
+        @DisplayName("a nine-digit page number is stored with its high-order digit dropped, as a PIC "
+                + "9(08) receiver drops it")
+        void aNineDigitPageNumberIsTruncatedOnTheLeft() {
+            // COBOL stores into a numeric receiver by aligning on the implied decimal point and
+            // discarding what will not fit, and for a PIC 9 item the discard is on the LEFT (AAP 0.3.7).
+            // ADD 1 TO CDEMO-CU00-PAGE-NUM at COUSR00C:320 is such a store, so the ninth digit is lost
+            // by the receiver rather than refused by it.
+            assertThat(UserListResponse.blank().toBuilder()
+                    .cdemoCu00PageNum(100_000_000).build().cdemoCu00PageNum())
+                    .as("100000000 keeps its low-order eight digits, which are all zero")
+                    .isZero();
+            assertThat(UserListResponse.blank().toBuilder()
+                    .cdemoCu00PageNum(123_456_789).build().cdemoCu00PageNum())
+                    .as("the leading 1 is the digit that does not fit")
+                    .isEqualTo(23_456_789);
+            assertThat(UserListResponse.blank().toBuilder()
+                    .cdemoCu00PageNum(99_999_999).build().cdemoCu00PageNum())
+                    .as("the widest value that fits is stored unchanged")
+                    .isEqualTo(99_999_999);
         }
 
         @ParameterizedTest(name = "page {0} renders as {1}")

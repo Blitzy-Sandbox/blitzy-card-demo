@@ -18,6 +18,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -1418,15 +1419,84 @@ class TransactionListResponseTest {
         }
 
         @Test
-        @DisplayName("toString names every field by its verbatim item name and hides nothing")
-        void toStringIsComplete() {
-            String text = fullyPopulated().toString();
+        @DisplayName("toString names every field by its verbatim item name and classifies every value")
+        void toStringIsCompleteAndClassified() {
+            TransactionListResponse response = fullyPopulated();
+            String text = response.toString();
             assertThat(text).startsWith("COTRN0AO[");
+
+            // Every item is still NAMED - the name is what a difference is reported against and it
+            // carries no data, so nothing about diagnosability is given up.
             for (String itemName : EXPECTED_ITEM_NAMES) {
                 assertThat(text).as(itemName).contains(itemName + "='");
             }
             assertThat(text).contains("nextProgram=", "nextMapset=", "nextMap=",
                     "CDEMO-CT00-INFO[");
+
+            // Ten transaction identifiers beside ten dates, descriptions and amounts is one
+            // cardholder's financial history. The identifiers are masked and the descriptions reduced
+            // to their length, which detaches the rest from any subject (CWE-532).
+            // Every one of the eleven transaction identifiers is masked - the ten rows, the filter, and
+            // the two bounding the page in the appended cursor. Each is a TRANSACT key and the record it
+            // opens carries TRAN-CARD-NUM, so masking them is what detaches the rest of the page.
+            for (int row = 1; row <= TransactionListResponse.ROW_COUNT; row++) {
+                String itemName = String.format("TRNID%02dO", row);
+                String stored = response.payloadFieldValues().get(itemName);
+                assertThat(text).as("%s is masked to its last four characters at stored width",
+                                itemName)
+                        .contains(itemName + "='" + SensitiveDiagnostics.maskIdentifier(stored) + "'")
+                        .doesNotContain(stored);
+            }
+            assertThat(text)
+                    .as("and so are the two identifiers bounding the page in the appended cursor, "
+                            + "which is the same disclosure as the identifiers inside it")
+                    .doesNotContain(response.getCursor().getTrnidFirst().strip())
+                    .doesNotContain(response.getCursor().getTrnidLast().strip());
+
+            // The amounts, dates and descriptions stay legible: proving an amount matches the COBOL byte
+            // for byte is this migration's purpose, and with every identifier masked the page is
+            // attributable to nobody. TRAN-DESC describes a purchase rather than a person, and the
+            // single-transaction screen renders exactly this data plainly.
+            assertThat(text)
+                    .as("amounts, dates, descriptions and the selection flags stay legible")
+                    .contains("TAMT001O='" + response.getTamt001O() + "'",
+                            "TDATE01O='" + response.getTdate01O() + "'",
+                            "TDESC01O='" + response.getTdesc01O() + "'",
+                            "SEL0001O='" + response.getSel0001O() + "'");
+
+            // The classification, asserted directly rather than inferred from a rendering.
+            assertThat(TransactionListResponse.disclosureOf(null))
+                    .as("an item nobody classified is withheld, not published")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
+            assertThat(TransactionListResponse.disclosureOf("TRNID10O"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.IDENTIFIER);
+            assertThat(TransactionListResponse.disclosureOf("TRNIDINO"))
+                    .as("the filter field holds the same kind of value as the rows it filters")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.IDENTIFIER);
+            assertThat(TransactionListResponse.disclosureOf("TDESC10O"))
+                    .as("a transaction description describes a purchase, not a person, and the "
+                            + "single-transaction screen classifies its own TDESC the same way")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+            assertThat(TransactionListResponse.disclosureOf("TAMT010O"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+            assertThat(TransactionListResponse.disclosureOf("TRNNAMEO"))
+                    .as("TRNNAME shares three letters with the row stem and is not one of them")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+        }
+
+        @Test
+        @DisplayName("masking the rendering leaves the payload and the accessors untouched")
+        void maskingIsRenderingOnly() {
+            TransactionListResponse response = fullyPopulated();
+
+            // payloadFieldValues is the parity projection and is untouched: it is what the harness
+            // compares, so redaction cannot hide a difference from it.
+            assertThat(response.payloadFieldValues().get("TRNID01O"))
+                    .isEqualTo(response.getTrnid01O());
+            assertThat(response.payloadFieldValues().get("TRNID01O"))
+                    .as("and it is the stored value, not the masked one")
+                    .isNotEqualTo(SensitiveDiagnostics
+                            .maskIdentifier(response.getTrnid01O()));
         }
 
         @Test

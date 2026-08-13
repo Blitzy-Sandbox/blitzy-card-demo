@@ -584,7 +584,8 @@ public final class ParityHarness {
                 + "here rather than binding quietly: an unknown key, a duplicate key, a trailing "
                 + "token, and an absent or null mandatory member such as expectedReturnCode or a "
                 + "record's rowIndex. Sanitised detail: "
-                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()), failure);
+                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()),
+                ParityCase.Redaction.sanitisedCause(failure));
         }
         return requireSelfConsistent(parityCase, program.strip(), caseId.strip(), resource);
     }
@@ -618,9 +619,12 @@ public final class ParityHarness {
             // into a ValueInstantiationException, but a rejection raised while binding a nested member
             // can reach here unwrapped - and an unwrapped one would escape a caller that catches only
             // IOException, which is the contract this method publishes.
+            // A rejection raised while binding a record quotes the bytes it refused, which for a
+            // customer or USRSEC row is exactly what must not reach a log. The surrogate keeps the
+            // type and the throw site and drops the raw text.
             throw new IOException("The case body from " + origin + " was refused by ParityCase's own "
                 + "validation: " + ParityCase.Redaction.sanitiseDiagnostic(rejected.getMessage()),
-                rejected);
+                ParityCase.Redaction.sanitisedCause(rejected));
         }
     }
 
@@ -780,7 +784,8 @@ public final class ParityHarness {
         } catch (IOException | URISyntaxException failure) {
             throw new IllegalStateException("The case directory " + CASE_RESOURCE_ROOT + program
                 + "/ could not be enumerated, so the set of case files cannot be proved exact: "
-                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()), failure);
+                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()),
+                ParityCase.Redaction.sanitisedCause(failure));
         }
     }
 
@@ -943,7 +948,9 @@ public final class ParityHarness {
             return stream.readAllBytes();
         } catch (IOException failure) {
             throw new IllegalArgumentException("Classpath resource " + resource + " could not be "
-                + "read as " + subject + ": " + failure.getMessage(), failure);
+                + "read as " + subject + ": "
+                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()),
+                ParityCase.Redaction.sanitisedCause(failure));
         }
     }
 
@@ -1283,19 +1290,24 @@ public final class ParityHarness {
             outcome = recorder.build();
             abended = OptionalInt.of(abend.getReturnCode());
         } catch (Exception failure) {
-            // The message goes through Redaction rather than into the text raw. A failure raised
-            // inside a repository routinely quotes the record it was handed, and for a customer row
-            // that is 500 bytes of names, address and social-security number, while a USRSEC row
-            // carries the legacy plaintext password - all of which an assertion message puts straight
-            // into a build log and a CI artefact (CWE-532). The throwable is still chained as the
-            // cause, so a developer running the suite locally loses nothing.
+            // BOTH renderings are sanitised, and it takes both. A failure raised inside a
+            // repository routinely quotes the record it was handed, and for a customer row that is
+            // 500 bytes of names, address and social-security number, while a USRSEC row carries the
+            // legacy plaintext password (CWE-532). This message goes through Redaction - but a
+            // chained cause is rendered by the runner independently, and trimStackTrace is false in
+            // app/java/pom.xml so surefire prints the whole "Caused by:" chain INCLUDING the original
+            // message, raw. Sanitising one rendering and leaving the other raw sanitises nothing.
+            //
+            // So a SanitisedCause is chained instead of the throwable itself. It carries the original
+            // type, the original stack frames and the scrubbed message, which is everything a reader
+            // acts on; what it does not carry is any path back to the raw text.
             throw new IllegalStateException("Parity case " + parityCase.program() + '/'
                 + parityCase.caseId() + " raised " + failure.getClass().getName()
                 + ", which is not an abend and is therefore a defect rather than an observation. "
                 + "The COBOL either abends - which arrives here as AbendException carrying a "
                 + "RETURN-CODE and is compared like any other expectation - or it does not throw at "
                 + "all. Sanitised message: " + Redaction.sanitiseDiagnostic(failure.getMessage()),
-                failure);
+                Redaction.sanitisedCause(failure));
         }
         requireForcedOutcomesConsumed(parityCase, invocation);
         return capture(parityCase, outcome, resolveReturnCode(outcome, abended));
@@ -1686,6 +1698,17 @@ public final class ParityHarness {
         /** The online request inputs, or {@code null} for a case that declares none. */
         private final ParityCase.ScreenRequest screenRequest;
 
+        /**
+         * The stimulus the case applies beyond its seeded rows - scripted call-site outcomes, the
+         * operation script of a called subprogram, linkage values, preceding-step condition codes and
+         * environmental variants.
+         *
+         * <p>Projected here for the same reason the seed and the screen request are: it is an
+         * <strong>input</strong>. What is deliberately not projected is any expectation, so an adapter
+         * can be driven by the case without being able to consult what it will be judged against.
+         */
+        private final ParityCase.UnitStimulus stimulus;
+
         /** The pinned clock - always fixed, never a system clock. */
         private final Clock clock;
 
@@ -1719,6 +1742,7 @@ public final class ParityHarness {
             this.unitKind = parityCase.unitKind();
             this.jobParameters = parityCase.jobParameters();
             this.screenRequest = parityCase.screenRequest();
+            this.stimulus = parityCase.unitStimulus();
             this.datasets = datasets;
             this.clock = clock;
             this.codec = codec;
@@ -1753,6 +1777,23 @@ public final class ParityHarness {
          */
         public ParityCase.UnitKind unitKind() {
             return unitKind;
+        }
+
+        /**
+         * The stimulus the case declares beyond its seeded rows.
+         *
+         * <p>This is where an adapter reads a scripted call-site outcome, a called subprogram's
+         * operation script, a linkage value, a preceding step's condition code or an environmental
+         * variant. Reading it here rather than deciding from {@link #caseId()} is the difference
+         * between a case file that states what it does and one whose behaviour is hidden in a
+         * {@code switch}: the identifier names a case, it never configures one.
+         *
+         * @return the declared stimulus, never {@code null} and
+         *     {@link ParityCase.UnitStimulus#isEmpty() empty} for a case whose whole stimulus is its
+         *     seed
+         */
+        public ParityCase.UnitStimulus stimulus() {
+            return stimulus;
         }
 
         /**

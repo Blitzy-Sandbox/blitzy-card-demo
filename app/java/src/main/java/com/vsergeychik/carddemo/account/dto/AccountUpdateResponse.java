@@ -23,6 +23,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import jakarta.validation.constraints.Size;
 import java.math.RoundingMode;
@@ -195,15 +196,26 @@ import java.util.Objects;
  * <strong>B9</strong>). Every instance is constructible in a plain JUnit 5 test and by
  * {@code parity/ParityHarness} with no Spring context at all (practice <strong>B10</strong>).
  *
- * <h2>Nothing is masked</h2>
+ * <h2>Nothing is masked in the payload; the diagnostic rendering is classified</h2>
  * This payload carries {@code ACTSSN1}/{@code ACTSSN2}/{@code ACTSSN3},
- * {@code DOBYEAR}/{@code DOBMON}/{@code DOBDAY} and {@code ACSGOVT}, and the before- and after-images
- * carry the same data again. {@code COACTUPC} puts all of it on a 3270 in the clear. There is therefore
- * no {@code @JsonIgnore} on any payload field, no masking, no redaction, no serialisation filter and no
- * hiding {@code toString()}: withholding any of it would be an unrequested behaviour change and a parity
- * violation (practice <strong>B6</strong>). Equally, nothing is weakened. The {@code @JsonIgnore}
- * annotations that do appear are on the attribute quad and on derived views, which are metadata rather
- * than payload.
+ * {@code DOBYEAR}/{@code DOBMON}/{@code DOBDAY}, {@code ACSGOVT} and {@code ACSEFTC}, and the before-
+ * and after-images carry the same data again. {@code COACTUPC} puts all of it on a 3270 in the clear, so
+ * there is no {@code @JsonIgnore} on any payload field, no masking, no serialisation filter and no
+ * omitted accessor: withholding any of it <em>from the payload</em> would be an unrequested behaviour
+ * change and a parity violation (practice <strong>B6</strong>). The {@code @JsonIgnore} annotations that
+ * do appear are on the attribute quad and on derived views, which are metadata rather than payload.
+ *
+ * <p>{@link #toString()} is a different thing and is treated differently. It is not on the 3270, not in
+ * the JSON and not in the parity contract - the harness compares values through the named accessors, and
+ * {@code app/cpy-bms/COACTUP.CPY} says nothing about a Java rendering. What it <em>is</em> is the text
+ * that reaches a build log, an assertion failure and a CI artefact, and disclosure there is an artefact
+ * of the target language rather than a behaviour of the COBOL. So every field of this type is classified
+ * through {@link SensitiveDiagnostics} - the module's single disclosure authority - by
+ * {@link #disclosureOf(ScreenField)}. Nothing about comparison changes: the stored values are untouched,
+ * every accessor still returns them in full, and a wrong social-security digit is still a difference and
+ * is still reported, as a difference in a withheld field. The two embedded snapshots and
+ * {@code CardScreenState} already made the same decision for their own renderings; this type was the
+ * outlier (CWE-532).
  *
  * @see AccountUpdateRequest
  * @see ScreenField
@@ -3096,17 +3108,24 @@ public final class AccountUpdateResponse {
     /**
      * A single-line rendering of every field, every quad, the navigation trio and the carriers.
      *
-     * <p>Values are rendered <strong>as stored</strong> and quoted, so that the trailing spaces of a
-     * fixed-width field - which are part of its value - stay visible in a failure message, and so that a
-     * field holding nothing but {@link #BLANK_FIELD_MARKER} is distinguishable from one holding a real
-     * value.
+     * <p>Every field is <strong>named</strong>, and every field's attribute quad is rendered in full, so
+     * a screen-state or highlight parity failure reads exactly as it did. What each field's <em>value</em>
+     * discloses is decided by {@link #disclosureOf(ScreenField)} and applied by
+     * {@link SensitiveDiagnostics#render}: plain for the dates, statuses, balances, limits and message
+     * text a parity investigation is actually conducted from; masked to its last four characters for the
+     * account and customer keys; length-only for names, address lines and telephone numbers; withheld
+     * entirely for the social-security parts, the date of birth, the government identifier, the funds
+     * transfer account and the credit score.
      *
-     * <p>Nothing is masked, redacted or omitted: not the three SSN parts, not the date of birth, not the
-     * government-issued identifier and not the electronic funds transfer account. {@code COACTUPC} paints
-     * every one of them on a 3270 in the clear, and withholding any of them here would be an unrequested
-     * behaviour change and a parity violation (practice <strong>B6</strong>). That decision is recorded in
-     * this type's own documentation rather than left implicit, and it cuts both ways - nothing is weakened
-     * either.
+     * <p>A plainly rendered value is shown <strong>as stored</strong> and quoted, so the trailing spaces
+     * of a fixed-width field - which are part of its value - stay visible, and a field holding nothing but
+     * {@link #BLANK_FIELD_MARKER} stays distinguishable from one holding a real value.
+     *
+     * <p>This masks the <em>rendering</em> and nothing else. The payload is untouched: every field is
+     * still a JSON member, every accessor still returns the stored value in full, and
+     * {@link #equals(Object)} still compares all 54 of them, because withholding any of them from the
+     * payload would be an unrequested behaviour change (practice <strong>B6</strong>). What is withheld
+     * is only what a build log would otherwise keep.
      *
      * @return the rendering; never {@code null}
      */
@@ -3116,7 +3135,7 @@ public final class AccountUpdateResponse {
         for (ScreenField field : ScreenField.values()) {
             rendered.append(field.label())
                     .append("='")
-                    .append(values.get(field))
+                    .append(SensitiveDiagnostics.render(disclosureOf(field), values.get(field)))
                     .append("' ")
                     .append(attributes.get(field))
                     .append(", ");
@@ -3129,6 +3148,62 @@ public final class AccountUpdateResponse {
                 .append(", navigationContext=").append(navigationContext)
                 .append(']')
                 .toString();
+    }
+
+    /**
+     * How much of one {@code COACTUP} field a diagnostic rendering may disclose.
+     *
+     * <p>The classification lives here rather than in {@link SensitiveDiagnostics} because a symbolic map
+     * is a closed, compile-time set of names taken straight from {@code app/cpy-bms/COACTUP.CPY}: this
+     * type can enumerate its sensitive fields exactly, whereas a name-pattern heuristic living in the
+     * authority would silently fail to match the next field somebody adds. The {@code switch} is over
+     * {@link ScreenField} and has no {@code default} for the withheld and masked arms, so a field added
+     * to the enum has to be classified before this compiles.
+     *
+     * <p>The four groups, and why each field is where it is:
+     * <ul>
+     *   <li><strong>Withheld entirely.</strong> The three social-security parts, the three date-of-birth
+     *       parts, the government-issued identifier, the electronic funds transfer account and the credit
+     *       score. For these even a partial value or a length is worth withholding, and none of them is
+     *       ever the thing a parity difference is diagnosed <em>by</em> - the difference is reported
+     *       against the field name, which stays.</li>
+     *   <li><strong>Masked to the last four characters.</strong> The account identifier and the customer
+     *       number. An identifier is what makes every other value on the screen attributable to a person,
+     *       and four trailing characters are enough to correlate two log lines without being enough to
+     *       identify anybody.</li>
+     *   <li><strong>Length only.</strong> First, middle and last name, both address lines, the city, the
+     *       postcode and all six telephone-number parts. A name has no useful prefix to reveal, so the
+     *       shape is reported and the content is dropped.</li>
+     *   <li><strong>Plain.</strong> Everything else, and deliberately so. The state and country codes are
+     *       two and three characters of coarse geography that identify nobody and are exactly what a
+     *       {@code CSLKPCDY} area-code or state-and-postcode cross-validation failure is read from. The
+     *       balances, limits, cycle amounts, the four date trios, the account and card statuses, the
+     *       disclosure group, the information and error lines and the screen furniture are all
+     *       parity-critical and carry no personal data once the identifiers above are masked - which is
+     *       the whole basis on which this module lets an amount stay legible.</li>
+     * </ul>
+     *
+     * <p>Package-private rather than private so the classification is asserted directly by test rather
+     * than inferred from a rendering, following {@code CardListResponse}.
+     *
+     * @param field the field being rendered; never {@code null} in practice, since the caller iterates
+     *              {@link ScreenField#values()}
+     * @return its classification; {@link SensitiveDiagnostics.Disclosure#REDACTED_VALUE} for {@code null},
+     *         so an unclassifiable field is withheld rather than published
+     */
+    static SensitiveDiagnostics.Disclosure disclosureOf(ScreenField field) {
+        if (field == null) {
+            return SensitiveDiagnostics.Disclosure.REDACTED_VALUE;
+        }
+        return switch (field) {
+            case ACTSSN1, ACTSSN2, ACTSSN3, DOBYEAR, DOBMON, DOBDAY, ACSGOVT, ACSEFTC, ACSTFCO ->
+                    SensitiveDiagnostics.Disclosure.REDACTED_VALUE;
+            case ACCTSID, ACSTNUM -> SensitiveDiagnostics.Disclosure.IDENTIFIER;
+            case ACSFNAM, ACSMNAM, ACSLNAM, ACSADL1, ACSADL2, ACSCITY, ACSZIPC,
+                 ACSPH1A, ACSPH1B, ACSPH1C, ACSPH2A, ACSPH2B, ACSPH2C ->
+                    SensitiveDiagnostics.Disclosure.TEXT;
+            default -> SensitiveDiagnostics.Disclosure.PLAIN;
+        };
     }
 
     // =================================================================================================

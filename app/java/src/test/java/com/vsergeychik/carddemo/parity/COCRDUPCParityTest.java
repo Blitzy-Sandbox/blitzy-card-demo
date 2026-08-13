@@ -334,6 +334,15 @@ class COCRDUPCParityTest {
     /** {@code 88 WS-PROMPT-FOR-ACCT} at {@code :177-178}. */
     private static final String MSG_ACCT_NOT_PROVIDED = "Account number not provided";
 
+    /**
+     * {@code 88 NO-SEARCH-CRITERIA-RECEIVED} at {@code :185-186}.
+     *
+     * <p>Set by {@code 1200-EDIT-MAP-INPUTS:655-658} - {@code IF FLG-ACCTFILTER-BLANK AND
+     * FLG-CARDFILTER-BLANK} - and it outranks both single-field prompts because it is assigned after
+     * them, unguarded by {@code WS-RETURN-MSG-OFF}.
+     */
+    private static final String MSG_NO_SEARCH_CRITERIA = "No input received";
+
     /** {@code 88 SEARCHED-ACCT-NOT-NUMERIC}'s literal as {@code 1210-EDIT-ACCOUNT:745} spells it. */
     private static final String MSG_ACCT_NOT_NUMERIC =
             "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER";
@@ -345,42 +354,67 @@ class COCRDUPCParityTest {
     /** {@code 88 PROMPT-FOR-SEARCH-KEYS} at {@code :162-163}, a {@code WS-INFO-MSG PIC X(40)} value. */
     private static final String INFO_PROMPT_FOR_KEYS = "Please enter Account and Card Number";
 
+    /**
+     * The {@code unitStimulus.linkage} name a {@code SERVICE} case states {@code WS-RETURN-MSG} under.
+     *
+     * <p>{@code WS-RETURN-MSG PIC X(75)} is an input to {@code 9200-WRITE-PROCESSING} rather than a
+     * screen field, so it has no {@code xxxI} item to travel in and no place in the commarea. Declaring
+     * it as a linkage value is what keeps it visible in the case file: on every path that reaches 9200
+     * through {@code 0000-MAIN} it is {@code SPACES}, cleared at {@code :384}, and a case that arranged
+     * anything else would be arranging it in the open.
+     */
+    private static final String LINKAGE_RETURN_MSG = "WS-RETURN-MSG";
+
+    /**
+     * The commarea key carrying the 329-byte {@code WS-THIS-PROGCOMMAREA} image.
+     *
+     * <p>{@code :404-406} moves {@code DFHCOMMAREA} beyond the 160-byte {@code CARDDEMO-COMMAREA} into
+     * this area whole, so a case that declares a warm turn declares the image, and the adapter decodes it
+     * at the offsets {@code app/cbl/COCRDUPC.cbl:206-241} lays out - through the production
+     * {@link CardUpdateRequest.CommArea#decode} rather than a second reading of the same copybook.
+     */
+    private static final String PROGRAM_AREA_KEY = "WS-THIS-PROGCOMMAREA";
+
     // =================================================================================================
     // The gate.
     // =================================================================================================
 
     /**
-     * The twenty scenarios in {@code case01} through {@code case20} order.
+     * The twenty cases, loaded from {@code src/test/resources/parity/COCRDUPC/} and from nowhere else.
      *
-     * <p>The count and the numbering are checked here rather than in a separate test, because a case set
-     * that lost an entry would otherwise make this gate <em>quieter</em>: nineteen passing cases and no
-     * failure at all is the worst possible outcome for an acceptance check. A wrong count therefore
-     * fails the whole class before a single case runs.
+     * <p>The resource directory is the only source. That is not a stylistic preference: a suite that
+     * built its cases in Java left the twenty shipped files unread, so they asserted nothing while
+     * reading in review as though they were the gate - and five of them had been added, one per commit,
+     * to a suite that could not run them. {@link ParityHarness#casesOf} refuses anything but exactly
+     * {@code case01.json} through {@code case20.json}, so a file added to the directory is executed the
+     * moment it exists and a file missing from it fails the class before a single case runs.
      *
-     * @return the twenty scenarios this program owns; never {@code null}
+     * <p>The count and the numbering are re-checked here as well, because a set that lost an entry would
+     * otherwise make this gate <em>quieter</em>: nineteen passing cases and no failure at all is the
+     * worst possible outcome for an acceptance check.
+     *
+     * @return the twenty cases this program owns, in case order; never {@code null}
      */
-    private static List<ParityScenario> cases() {
-        List<ParityScenario> scenarios = List.of(case01(), case02(), case03(), case04(), case05(),
-                case06(), case07(), case08(), case09(), case10(), case11(), case12(), case13(),
-                case14(), case15(), case16(), case17(), case18(), case19(), case20());
-        if (scenarios.size() != ParityHarness.CASES_PER_PROGRAM) {
+    private static List<ParityCase> cases() {
+        List<ParityCase> loaded = ParityHarness.casesOf(PROGRAM);
+        if (loaded.size() != ParityHarness.CASES_PER_PROGRAM) {
             throw new IllegalStateException("The parity gate for " + PROGRAM + " requires exactly "
-                    + ParityHarness.CASES_PER_PROGRAM + " cases, named case01 through case"
-                    + ParityHarness.CASES_PER_PROGRAM + ", but " + scenarios.size()
-                    + " were declared. A short set is not a smaller gate, it is a missing one: an "
-                    + "assertion nobody runs cannot fail.");
+                    + ParityHarness.CASES_PER_PROGRAM + " cases under src/test/resources/parity/"
+                    + PROGRAM + "/, named case01 through case" + ParityHarness.CASES_PER_PROGRAM
+                    + ", but " + loaded.size() + " loaded. A short set is not a smaller gate, it is a "
+                    + "missing one: an assertion nobody runs cannot fail.");
         }
         for (int ordinal = 1; ordinal <= ParityHarness.CASES_PER_PROGRAM; ordinal++) {
             String required = ParityHarness.caseId(ordinal);
-            String declared = scenarios.get(ordinal - 1).caseId();
+            String declared = loaded.get(ordinal - 1).caseId();
             if (!required.equals(declared)) {
                 throw new IllegalStateException("Parity case " + ordinal + " for " + PROGRAM
                         + " is \"" + declared + "\" where the gate requires \"" + required
-                        + "\". The identifiers are ordered and they name the fixture, so a mis-numbered "
-                        + "case would silently take another case's place.");
+                        + "\". The identifiers are the file-name stems and they are ordered, so a "
+                        + "mis-numbered file would silently take another case's place.");
             }
         }
-        return scenarios;
+        return loaded;
     }
 
     /**
@@ -392,23 +426,44 @@ class COCRDUPCParityTest {
      * observed one - instead of a bare "expected 0 but was 3". A difference is only actionable next to
      * the field it belongs to.
      *
-     * <p>The unit kind is passed explicitly from the scenario rather than read off the case, so the
-     * harness's cross-check against {@link ParityCase#unitKind()} stays meaningful: a case that declared
-     * one unit while the adapter constructed another would be caught before the unit was reached.
+     * <p>The unit kind comes from the case, because the case is what declares it. This program owns two
+     * units and each case names which one it is about, so {@link #unit} dispatches on that declaration
+     * rather than on the case identifier: an identifier names a case, it never configures one.
      *
-     * @param scenario the case and the adapter that reaches its unit, supplied by {@link #cases()}
+     * @param parityCase the case to run, supplied by {@link #cases()}
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("COCRDUPC: every case diffs to zero against the COBOL-derived baseline")
-    void theTranslationMatchesTheCobolFieldForField(ParityScenario scenario) {
+    void theTranslationMatchesTheCobolFieldForField(ParityCase parityCase) {
         DiffResult result = ParityHarness.usAscii()
-                .judge(scenario.parityCase(), scenario.adapterKind(), scenario.adapter());
+                .judge(parityCase, parityCase.unitKind(), COCRDUPCParityTest::unit);
 
         assertThat(result.count())
-                .describedAs("%s/%s (%s) must diff to zero. %s", PROGRAM, scenario.caseId(),
-                        scenario.unitName(), result.render())
+                .describedAs("%s/%s (%s) must diff to zero. %s", PROGRAM, parityCase.caseId(),
+                        parityCase.unitKind(), result.render())
                 .isZero();
+    }
+
+    /**
+     * Reaches the unit the case declares.
+     *
+     * <p>Two kinds and no default that guesses. A case declaring {@code BATCH_JOB} or {@code COMPONENT}
+     * would be a case file describing a program this is not, and running it through either adapter would
+     * report a plausible failure against the wrong unit.
+     *
+     * @param invocation the seeded datasets, the pinned clock, the declared stimulus and the recorder
+     * @return the recorded outcome; never {@code null}
+     */
+    private static UnitOutcome unit(Invocation invocation) {
+        return switch (invocation.unitKind()) {
+            case CONTROLLER_POJO -> controllerUnit(invocation);
+            case SERVICE -> serviceUnit(invocation);
+            case BATCH_JOB, COMPONENT -> throw new IllegalStateException("Case " + PROGRAM + '/'
+                    + invocation.caseId() + " declares unitKind " + invocation.unitKind()
+                    + ", which COCRDUPC has no unit for: it is a CICS online program, so its units are "
+                    + "CardUpdateController (CONTROLLER_POJO) and CardUpdateService (SERVICE).");
+        };
     }
 
     // =================================================================================================
@@ -419,11 +474,11 @@ class COCRDUPCParityTest {
     /**
      * This class's stem, the program name and the harness's resource convention agree.
      *
-     * <p>The twenty cases are declared in code rather than loaded from
-     * {@code src/test/resources/parity/COCRDUPC/}, which the harness supports equally - it validates
-     * either through the same {@link ParityCase} constructor. The convention is still asserted, because
-     * the identifiers a case carries are the file-name stems that directory would use, and the two must
-     * not drift apart.
+     * <p>The twenty cases are loaded from {@code src/test/resources/parity/COCRDUPC/} and the convention
+     * is asserted here because the identifiers a case carries <em>are</em> that directory's file-name
+     * stems: {@link ParityHarness#caseResourcePath} composes the path the loader reads from, so if this
+     * class's stem, the program name and that composition ever disagreed, the suite would be loading one
+     * program's cases under another program's name.
      */
     @Test
     @DisplayName("the class stem, the program name and the parity/COCRDUPC convention agree")
@@ -1005,758 +1060,169 @@ class COCRDUPCParityTest {
     @Test
     @DisplayName("the xxxP and xxxV attribute planes stay untouched on every case")
     void theProgrammedSymbolAndValidationPlanesAreNeverWritten() {
-        for (ParityScenario scenario : cases()) {
-            if (scenario.adapterKind() != UnitKind.CONTROLLER_POJO) {
+        for (ParityCase parityCase : cases()) {
+            if (parityCase.unitKind() != UnitKind.CONTROLLER_POJO) {
                 continue;
             }
-            ScreenRequest request = scenario.parityCase().screenRequest();
+            ScreenRequest request = parityCase.screenRequest();
             CardUpdateResponse painted = paint(requestFrom(request), request.eibcalen(),
-                    aidByte(request.aid()));
+                    aidByte(request.aid()), pathCardNumberOf(request));
             for (String stem : MAP_FIELDS) {
                 CardUpdateResponse.FieldAttributes attributes = painted.attributesOf(stem);
                 assertThat(attributes.getPs())
                         .as("%s/%sP - no program in this application writes a programmed-symbol byte",
-                                scenario.caseId(), stem)
+                                parityCase.caseId(), stem)
                         .isEqualTo(CardUpdateResponse.FieldAttributes.DEFAULT);
                 assertThat(attributes.getValidn())
-                        .as("%s/%sV - nor a validation byte", scenario.caseId(), stem)
+                        .as("%s/%sV - nor a validation byte", parityCase.caseId(), stem)
                         .isEqualTo(CardUpdateResponse.FieldAttributes.DEFAULT);
             }
         }
     }
 
     // =================================================================================================
-    // THE TWENTY CASES.
-    //
-    // case01-case14 drive CardUpdateService (9200-WRITE-PROCESSING and 9300-CHECK-CHANGE-IN-REC).
-    // case15-case20 drive CardUpdateController (the screen-shaped paths).
+    // The declared program area. One decoder, shared by both adapters, reading the image the case states.
     // =================================================================================================
 
     /**
-     * {@code case01} - the clean check. {@code SERVICE}.
+     * Decodes the {@code WS-THIS-PROGCOMMAREA} image the case declares.
      *
-     * <p>The snapshot the screen was painted from agrees with the record read back under the lock in all
-     * six compared fields, so {@code :1509} takes {@code CONTINUE} and the rewrite proceeds. Asserted at
-     * field level rather than as a whole image, so that what this case is about - the check passing, and
-     * the new expiry and status reaching the record - is what the failure message would name.
+     * <p>Absent, the area is the one {@code :390-393} leaves behind: {@code INITIALIZE} over both halves,
+     * which is {@code CCUP-CHANGE-ACTION} at {@code LOW-VALUES} and both snapshots all spaces. That is
+     * the cold-start state and it is a legitimate thing for a case to declare by omission, because
+     * {@code EIBCALEN} zero is how CICS reports it.
      *
-     * @return the scenario
+     * @param invocation the invocation, for the case's commarea and code page
+     * @return the decoded area; never {@code null}
+     * @throws IllegalStateException if the declared image is not exactly the area's declared width, since
+     *                               a short image is a case file that cannot describe the run it claims
      */
-    private static ParityScenario case01() {
-        return serviceScenario("case01",
-                "9300-CHECK-CHANGE-IN-REC finds no change at app/cbl/COCRDUPC.cbl:1503-1509, so the "
-                        + "rewrite proceeds. The snapshot holds the upper-cased embossed name the "
-                        + "INSPECT CONVERTING at :1499-1501 produces, which is what makes the six-way "
-                        + "AND true.",
-                foldedSnapshotOf(ROW_01),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                rewriteAt(0, Map.of(
-                        "CARD-NUM", KEY_01,
-                        "CARD-ACCT-ID", ACCT_01,
-                        "CARD-CVV-CD", "000",
-                        "CARD-EMBOSSED-NAME", picX("ANIYA VON", 50),
-                        "CARD-EXPIRAION-DATE", "2028-11-30",
-                        "CARD-ACTIVE-STATUS", "N"),
-                        stagedImage(KEY_01, ACCT_01, picX("ANIYA VON", 50), "2028-11-30", "N")),
-                replaceRow(0, stagedImage(KEY_01, ACCT_01, picX("ANIYA VON", 50), "2028-11-30", "N")),
-                blankReturnMessage());
+    private static CardUpdateRequest.CommArea programAreaOf(Invocation invocation) {
+        String image = invocation.commarea().get(PROGRAM_AREA_KEY);
+        if (image == null) {
+            return CardUpdateRequest.CommArea.initialised();
+        }
+        if (image.length() != CardUpdateRequest.CommArea.RECORD_LENGTH) {
+            throw new IllegalStateException("Case " + invocation.program() + '/' + invocation.caseId()
+                    + " declares a " + PROGRAM_AREA_KEY + " image of " + image.length()
+                    + " characters where WS-THIS-PROGCOMMAREA is "
+                    + CardUpdateRequest.CommArea.RECORD_LENGTH + " bytes - "
+                    + "CARD-UPDATE-SCREEN-DATA, CCUP-OLD-DETAILS, CCUP-NEW-DETAILS and "
+                    + "CARD-UPDATE-RECORD, at app/cbl/COCRDUPC.cbl:206-241. A short image would decode "
+                    + "into a state the program cannot be in.");
+        }
+        return CardUpdateRequest.CommArea.decode(image.getBytes(invocation.charset()),
+                invocation.codec());
     }
 
     /**
-     * {@code case02} - one field changed underneath. {@code SERVICE}.
+     * The card number the URI carries, taken from the case.
      *
-     * <p>The snapshot's CVV is {@code 999} where the record holds {@code 747}. The first operand of the
-     * AND chain at {@code :1503} is false, so the {@code ELSE} arm runs: {@code :1511} sets
-     * {@code DATA-WAS-CHANGED-BEFORE-UPDATE}, {@code :1512-1517} repaints all six snapshot items from
-     * the record, and {@code :1518} leaves without rewriting. The dataset must be untouched.
+     * <p>{@code CCUP-CARD-NUM} on the screen and the {@code {cardNum}} path variable are one key in this
+     * translation, so the value has to come from the case rather than from a constant: a hard-coded key
+     * disagreeing with a typed one is two keys in one request, which the handler refuses outright - and
+     * refuses correctly, since a 3270 has one key field and no URI.
      *
-     * @return the scenario
+     * <p>Order of preference mirrors where the program reads the key from: what the operator typed
+     * ({@code CARDSIDI}), then what the conversation carried ({@code CDEMO-CARD-NUM}), then spaces - the
+     * cold-start state in which {@code 1210-EDIT-ACCOUNT} prompts for it.
+     *
+     * @param invocation the invocation, for the case's received fields and commarea
+     * @return the sixteen-character key, space-padded, never {@code null}
      */
-    private static ParityScenario case02() {
-        return serviceScenario("case02",
-                "One compared field differs - the snapshot CVV is 999 where CARDDAT holds 747 - so "
-                        + "9300 sets DATA-WAS-CHANGED-BEFORE-UPDATE at :1511 and GO TO "
-                        + "9200-WRITE-PROCESSING-EXIT at :1518 abandons the rewrite.",
-                foldedSnapshotOf(ROW_01).withCvvCd("999"),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
+    private static String pathCardNumberOf(Invocation invocation) {
+        return pathCardNumber(invocation.mapFields(), invocation.commarea());
     }
 
     /**
-     * {@code case03} - several fields changed at once. {@code SERVICE}.
+     * The card number the URI carries, for a call site holding a {@link ScreenRequest}.
      *
-     * <p>Name, expiry year and active status all differ. The AND chain short-circuits at the first false
-     * operand, but the {@code ELSE} arm repaints <em>all six</em> items unconditionally at
-     * {@code :1512-1517} - it is not a per-field repair - so the outcome is identical to
-     * {@code case02}'s. That equivalence is the point: a translation that repainted only the fields it
-     * found different would leave the screen showing stale values for the rest.
-     *
-     * @return the scenario
+     * @param declared the case's screen request
+     * @return the sixteen-character key, space-padded, never {@code null}
      */
-    private static ParityScenario case03() {
-        return serviceScenario("case03",
-                "Three compared fields differ at once - embossed name, expiry year and active status. "
-                        + "The ELSE arm at :1510-1518 repaints all six snapshot items regardless of "
-                        + "which one failed, so the outcome matches the single-field case exactly.",
-                foldedSnapshotOf(ROW_01)
-                        .withCrdname(picX("WARD JONES", 50))
-                        .withExpyear("2025")
-                        .withCrdstcd("N"),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
+    private static String pathCardNumberOf(ScreenRequest declared) {
+        return pathCardNumber(declared.mapFields(), declared.commarea());
     }
 
     /**
-     * {@code case04} - a change on the byte immediately before the {@code FILLER} span. {@code SERVICE}.
+     * The card number the URI carries, resolved from the case's received fields and commarea.
      *
-     * <p>{@code CARD-ACTIVE-STATUS} occupies offset 90, a single byte, and {@code FILLER X(59)} begins at
-     * 91. Perturbing only that byte proves the comparison reads offset 90 and not 89 or 91: an
-     * off-by-one would compare a digit of the expiry date or the first reserved space instead, and both
-     * of those are identical between the snapshot and the record, so the check would wrongly pass.
-     *
-     * @return the scenario
+     * @param mapFields the received {@code xxxI} items
+     * @param commarea  the inbound {@code CARDDEMO-COMMAREA} fields
+     * @return the sixteen-character key, space-padded, never {@code null}
      */
-    private static ParityScenario case04() {
-        return serviceScenario("case04",
-                "Only CARD-ACTIVE-STATUS differs. It is the single byte at offset 90, immediately "
-                        + "before FILLER X(59) at 91, so a comparison reading one byte either side "
-                        + "would find no difference and wrongly allow the rewrite.",
-                foldedSnapshotOf(ROW_01).withCrdstcd("N"),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "Y", "11", "2028", "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
+    private static String pathCardNumber(Map<String, String> mapFields,
+                                         Map<String, String> commarea) {
+        String typed = mapFields.get("CARDSIDI");
+        if (typed != null) {
+            return picX(typed.trim(), CardDetails.CARDID_LENGTH);
+        }
+        String carried = commarea.get("CDEMO-CARD-NUM");
+        return carried == null || carried.isBlank()
+                ? picX("", CardDetails.CARDID_LENGTH)
+                : picX(carried.trim(), CardDetails.CARDID_LENGTH);
     }
 
     /**
-     * {@code case05} - a successful rewrite, asserted as the whole 150-byte image. {@code SERVICE}.
+     * The forced outcomes the case declared, among the operations named.
      *
-     * <p>This is the strongest assertion in the class. Declaring {@code expectedBytes} makes the differ
-     * compare every addressable span of the layout, {@code FILLER} included, so the case fails if the
-     * reserved 59 bytes are dropped, shortened, or filled with anything other than spaces (gates
-     * <strong>G19</strong> and <strong>G21</strong>).
+     * <p>Taken through {@link Invocation#forcedOutcome} rather than read off the case, because that call
+     * is what marks the outcome consumed - and the harness refuses a run that left a declared outcome
+     * unasked-for, which is how a case claiming to drive a {@code WHEN OTHER} arm is stopped from quietly
+     * taking the ordinary path instead.
      *
-     * <p>Note what the image says about the CVV. The stored record holds {@code 747}; the rewritten
-     * record holds {@code 000}, because {@code CCUP-NEW-CVV-CD} is never assigned. That is the source's
-     * behaviour and it is pinned here rather than papered over.
-     *
-     * @return the scenario
+     * @param invocation the invocation
+     * @param operations the operations this adapter is able to force
+     * @return the declared outcomes among those operations, in the order named
      */
-    private static ParityScenario case05() {
-        String rewritten = stagedImage(KEY_01, ACCT_01, picX("ANIYA VON", 50), "2028-11-30", "N");
-        return serviceScenario("case05",
-                "A clean check followed by EXEC CICS REWRITE at :1477-1483, asserted as the complete "
-                        + "150-byte image so that FILLER X(59) is compared too. The CVV lands as 000 "
-                        + "because CCUP-NEW-CVV-CD is never assigned anywhere in the program.",
-                foldedSnapshotOf(ROW_01),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                rewriteAt(0, Map.of(), rewritten),
-                replaceRow(0, rewritten),
-                blankReturnMessage());
+    private static Map<RepositoryOperation, ForcedOutcome> forcedOutcomesOf(Invocation invocation,
+                                                                           RepositoryOperation...
+                                                                                   operations) {
+        Map<RepositoryOperation, ForcedOutcome> forced = new LinkedHashMap<>();
+        for (RepositoryOperation operation : operations) {
+            if (invocation.hasForcedOutcome(operation)) {
+                forced.put(operation, invocation.forcedOutcome(operation));
+            }
+        }
+        return forced;
     }
 
     /**
-     * {@code case06} - the {@code INSPECT CONVERTING} fold is applied to the record, not the snapshot.
-     * {@code SERVICE}.
+     * Requires the case's received map fields to agree with the {@code CCUP-NEW-DETAILS} it declares.
      *
-     * <p>{@code app/data/ASCII/carddata.txt} row 1 stores {@code "Aniya Von"} in mixed case.
-     * {@code :1499-1501} folds the <em>record's</em> copy to upper before comparing, so a snapshot
-     * holding the raw mixed-case name differs and a snapshot holding the folded name does not. Together
-     * with {@code case01} this pins the direction of the fold: it happens on the left-hand operand only.
-     * A translation that folded both sides would pass {@code case01} and fail here.
+     * <p>Both are in the case file and both describe the same seven values, because that is what the
+     * program does: {@code 2000-PROCESS-INPUTS} moves each received {@code xxxI} item into its
+     * {@code CCUP-NEW-} counterpart before the confirm arm reaches
+     * {@code 9200-WRITE-PROCESSING}. Stating them twice is how a case remains readable at both levels -
+     * what was typed, and what the area therefore holds - and this check is what stops the two drifting
+     * into a case that would exercise something no operator could have produced.
      *
-     * @return the scenario
+     * @param invocation the invocation, for the case's received map fields
+     * @param newDetails the {@code CCUP-NEW-DETAILS} the declared area decoded to
      */
-    private static ParityScenario case06() {
-        return serviceScenario("case06",
-                "The snapshot holds the fixture's raw mixed-case name while :1499-1501 folds only the "
-                        + "record's copy to upper case, so the two differ. Folding both operands would "
-                        + "make this case pass and would lose a real difference elsewhere.",
-                foldedSnapshotOf(ROW_01).withCrdname(picX("Aniya Von", 50)),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE));
-    }
-
-    /**
-     * {@code case07} - the rewrite fails after the lock was taken. {@code SERVICE}.
-     *
-     * <p>The read succeeded and the check passed, so control reached {@code :1477}; the {@code REWRITE}
-     * then returned something other than {@code NORMAL}, and {@code :1491} sets
-     * {@code LOCKED-BUT-UPDATE-FAILED}. This arm is unreachable from data, so the case forces it - and
-     * forces it through {@link Invocation#forcedOutcome}, which marks the outcome consumed, so a case
-     * that declared a forced outcome nothing asked for is refused rather than quietly taking the
-     * ordinary path and passing for the wrong reason.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case07() {
-        return serviceScenario("case07",
-                "The record was locked and the check passed, but EXEC CICS REWRITE at :1477-1483 "
-                        + "returned other than NORMAL, so :1488-1492 sets LOCKED-BUT-UPDATE-FAILED. "
-                        + "CARDDAT must be left exactly as seeded.",
-                foldedSnapshotOf(ROW_01),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_LOCKED_BUT_UPDATE_FAILED),
-                Map.of(RepositoryOperation.REWRITE,
-                        new ForcedOutcome(FileStatus.Outcome.OTHER, 16, 0)));
-    }
-
-    /**
-     * {@code case08} - the record is not there to lock. {@code SERVICE}.
-     *
-     * <p>The key addresses a card the seeded slice does not hold, so the {@code READ ... UPDATE} at
-     * {@code :1427-1436} answers {@code NOTFND}. {@code :1444} sets {@code INPUT-ERROR}, {@code :1446}
-     * sets {@code COULD-NOT-LOCK-FOR-UPDATE} because {@code WS-RETURN-MSG} was still off, and
-     * {@code :1448} leaves. Neither {@code 9300} nor the rewrite is reached.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case08() {
-        return serviceScenario("case08",
-                "The card is absent from CARDDAT, so the READ ... UPDATE at :1427-1436 answers NOTFND "
-                        + "and :1441-1449 sets INPUT-ERROR with COULD-NOT-LOCK-FOR-UPDATE. The "
-                        + "concurrency check is never reached, because there is nothing to compare.",
-                foldedSnapshotOf(ROW_01).withCardid("9999999999999999"),
-                newDetailsOf(ACCT_01, "9999999999999999", picX("ANIYA VON", 50), "N", "11", "2028",
-                        "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_COULD_NOT_LOCK_FOR_UPDATE),
-                Map.of(),
-                "9999999999999999");
-    }
-
-    /**
-     * {@code case09} - the {@code :1445} guard keeps an earlier message. {@code SERVICE}.
-     *
-     * <p>{@code IF WS-RETURN-MSG-OFF} guards the assignment at {@code :1446}, so when a message is
-     * already sitting in {@code WS-RETURN-MSG} the lock failure does <em>not</em> overwrite it. The user
-     * keeps being told about the expiry month they typed wrongly rather than about a lock they never
-     * asked for. {@code INPUT-ERROR} is still set at {@code :1444}, unguarded - the guard covers the
-     * message and nothing else, and this case pins that distinction.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case09() {
-        return serviceScenario("case09",
-                "A message is already in WS-RETURN-MSG when the lock fails, so the IF WS-RETURN-MSG-OFF "
-                        + "guard at :1445 suppresses COULD-NOT-LOCK-FOR-UPDATE and the earlier text "
-                        + "survives. INPUT-ERROR at :1444 is outside that guard and is still set.",
-                foldedSnapshotOf(ROW_01).withCardid("9999999999999999"),
-                newDetailsOf(ACCT_01, "9999999999999999", picX("ANIYA VON", 50), "N", "11", "2028",
-                        "30"),
-                MSG_EXPIRY_MONTH_NOT_VALID,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(MSG_EXPIRY_MONTH_NOT_VALID),
-                Map.of(),
-                "9999999999999999");
-    }
-
-    /**
-     * {@code case10} - the read fails for a reason the data cannot produce. {@code SERVICE}.
-     *
-     * <p>{@code :1441} tests only for {@code DFHRESP(NORMAL)}; everything else takes the same
-     * {@code ELSE}. {@code case08} reached it through {@code NOTFND}, which real data can produce; this
-     * reaches it through an arbitrary non-zero {@code RESP}, which real data cannot. Both must behave
-     * identically, because the source draws no distinction between them - and the {@code RESP} and
-     * {@code RESP2} the case forces must be reported back rather than flattened to zero.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case10() {
-        return serviceScenario("case10",
-                "The READ ... UPDATE fails with an arbitrary non-zero RESP rather than NOTFND. :1441 "
-                        + "tests only for NORMAL, so this arm and case08's are the same arm, and the "
-                        + "forced RESP and RESP2 must survive into the result.",
-                foldedSnapshotOf(ROW_01),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "N", "11", "2028", "30"),
-                null,
-                noRewrite(),
-                SEED_ROWS,
-                returnMessage(CardUpdateService.MSG_COULD_NOT_LOCK_FOR_UPDATE),
-                Map.of(RepositoryOperation.READ_FOR_UPDATE,
-                        new ForcedOutcome(FileStatus.Outcome.OTHER, 12, 4)));
-    }
-
-    /**
-     * {@code case11} - {@code MOVE} to {@code PIC X(50)} pads on the right. {@code SERVICE}.
-     *
-     * <p>The screen supplies a nine-character name. {@code MOVE CCUP-NEW-CRDNAME TO
-     * CARD-UPDATE-EMBOSSED-NAME} at {@code :1466} pads it to fifty on the right with spaces, so the
-     * stored image carries the name at offset 30 followed by forty-one spaces - and offset 80, the first
-     * byte of the expiry date, still holds a digit. Padding on the left instead would move every
-     * subsequent field and the whole image with it.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case11() {
-        String rewritten = stagedImage(KEY_01, ACCT_01, picX("SHORT NAME", 50), "2031-02-28", "Y");
-        return serviceScenario("case11",
-                "A ten-character embossed name is padded to PIC X(50) on the RIGHT by the MOVE at "
-                        + ":1466, so the name sits at offset 30 and offset 80 still begins the expiry "
-                        + "date. Left-padding would displace every field after it.",
-                foldedSnapshotOf(ROW_01),
-                newDetailsOf(ACCT_01, KEY_01, picX("SHORT NAME", 50), "Y", "02", "2031", "28"),
-                null,
-                rewriteAt(0, Map.of("CARD-EMBOSSED-NAME", picX("SHORT NAME", 50)), rewritten),
-                replaceRow(0, rewritten),
-                blankReturnMessage());
-    }
-
-    /**
-     * {@code case12} - {@code MOVE} to {@code PIC 9(11)} zero-fills on the left. {@code SERVICE}.
-     *
-     * <p>{@code MOVE CC-ACCT-ID-N TO CARD-UPDATE-ACCT-ID} at {@code :1463} reads the numeric
-     * redefinition of the work area's account item and stores it into an eleven-digit picture. The work
-     * area is loaded through {@code CC-ACCT-ID-N} here, so the digits arrive without their leading
-     * zeros and the store has to supply them: {@code 2} becomes {@code 00000000002}. Right-filling would
-     * produce {@code 20000000000}, an account that does not exist, and the record would still be 150
-     * bytes wide - which is exactly why the direction needs its own case.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case12() {
-        String rewritten = stagedImage(KEY_03, ACCT_03, picX("ENRICO ROSENBAUM", 50), "2026-09-15",
-                "N");
-        return serviceScenario("case12",
-                "The account number reaches CARD-UPDATE-ACCT-ID PIC 9(11) through CC-ACCT-ID-N as the "
-                        + "bare value 2, and the MOVE at :1463 zero-fills it on the LEFT to "
-                        + "00000000002. Right-filling would store a different account at the same width.",
-                foldedSnapshotOf(ROW_03),
-                newDetailsOf(ACCT_03, KEY_03, picX("ENRICO ROSENBAUM", 50), "N", "09", "2026", "15"),
-                null,
-                rewriteAt(0, Map.of("CARD-ACCT-ID", ACCT_03), rewritten),
-                replaceRow(2, rewritten),
-                blankReturnMessage(),
-                Map.of(),
-                KEY_03);
-    }
-
-    /**
-     * {@code case13} - the {@code STRING} composes the expiry date. {@code SERVICE}.
-     *
-     * <p>{@code :1467-1474} concatenates {@code CCUP-NEW-EXPYEAR}, a literal hyphen,
-     * {@code CCUP-NEW-EXPMON}, another hyphen and {@code CCUP-NEW-EXPDAY} {@code DELIMITED BY SIZE} into
-     * a {@code PIC X(10)} receiver. {@code DELIMITED BY SIZE} means each operand contributes its full
-     * declared width, so {@code 4 + 1 + 2 + 1 + 2} fills the receiver exactly and the hyphens land at
-     * offsets 84 and 87 of the record. Those two positions are what {@code :1505-1507} skips when it
-     * reads the date back as three substrings.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case13() {
-        String rewritten = stagedImage(KEY_01, ACCT_01, picX("ANIYA VON", 50), "2030-01-05", "Y");
-        return serviceScenario("case13",
-                "STRING ... DELIMITED BY SIZE at :1467-1474 fills CARD-UPDATE-EXPIRAION-DATE PIC X(10) "
-                        + "exactly - 4 + 1 + 2 + 1 + 2 - putting the hyphens at record offsets 84 and "
-                        + "87, which are the two positions the (1:4), (6:2) and (9:2) reads skip.",
-                foldedSnapshotOf(ROW_01),
-                newDetailsOf(ACCT_01, KEY_01, picX("ANIYA VON", 50), "Y", "01", "2030", "05"),
-                null,
-                rewriteAt(0, Map.of("CARD-EXPIRAION-DATE", "2030-01-05"), rewritten),
-                replaceRow(0, rewritten),
-                blankReturnMessage());
-    }
-
-    /**
-     * {@code case14} - the CVV double hop, and the zero it always produces. {@code SERVICE}.
-     *
-     * <p>{@code :1464-1465} is two statements, not one: {@code CCUP-NEW-CVV-CD} goes into
-     * {@code CARD-CVV-CD-X PIC X(03)}, and {@code CARD-CVV-CD-N}, the {@code PIC 9(03)} redefinition of
-     * that same span, is read out into {@code CARD-UPDATE-CVV-CD}. Because nothing ever writes
-     * {@code CCUP-NEW-CVV-CD}, what makes the hop is the spaces left by {@code INITIALIZE
-     * CCUP-NEW-DETAILS} at {@code :586}, and spaces read as zoned digits are zeros.
-     *
-     * <p>Row 3 is used deliberately: its stored CVV is {@code 028}, so the {@code 000} that replaces it
-     * cannot be mistaken for a value that happened to already be there.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case14() {
-        String rewritten = stagedImage(KEY_03, ACCT_03, picX("ENRICO ROSENBAUM", 50), "2027-12-01",
-                "Y");
-        return serviceScenario("case14",
-                "The X(3)-to-9(3) redefinition hop at :1464-1465 carries the spaces that nothing ever "
-                        + "displaced, so CARD-UPDATE-CVV-CD becomes 000. Row 3 stores 028, so the "
-                        + "replacement is unambiguous.",
-                foldedSnapshotOf(ROW_03),
-                newDetailsOf(ACCT_03, KEY_03, picX("ENRICO ROSENBAUM", 50), "Y", "12", "2027", "01"),
-                null,
-                rewriteAt(0, Map.of("CARD-CVV-CD", "000"), rewritten),
-                replaceRow(2, rewritten),
-                blankReturnMessage(),
-                Map.of(),
-                KEY_03);
-    }
-
-    /**
-     * {@code case15} - {@code PF03} transfers control, and the response says where to. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)} at {@code app/cbl/COCRDUPC.cbl:473-476} has no
-     * stateless equivalent, so it becomes a response field the client acts on. The target is not a
-     * literal: {@code :449-453} takes {@code CDEMO-FROM-PROGRAM} when one was supplied and falls back to
-     * {@code LIT-MENUPGM} when it was blank, and this case supplies {@code COCRDLIC}, so the response
-     * names the card list and the client - not the server - performs the navigation.
-     *
-     * <p>Six further assignments happen on the way out and all six are pinned in the navigation context:
-     * {@code CDEMO-TO-TRANID} from {@code :446}, {@code CDEMO-FROM-TRANID} and
-     * {@code CDEMO-FROM-PROGRAM} from {@code :456-457}, the user type forced to {@code 'U'} at
-     * {@code :464}, the program context reset to {@code ENTER} at {@code :465}, and the map names stored
-     * at {@code :466-467}. The account and card identifiers survive because {@code :459-462} zeroes them
-     * only when the last mapset was the card list's, and here it was this program's own.
-     *
-     * <p>Nothing is sent. {@code CCARD-NEXT-MAP} is never assigned on this arm, so the send count is zero
-     * and the termination is {@link Termination#XCTL} rather than the {@code RETURN} three paragraphs
-     * later, which this path never reaches (gate <strong>G40</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case15() {
-        NavigationContext handedOver = navigationFromCardList()
-                .withFromTranid(THIS_TRANID)
-                .withFromProgram(THIS_PGM)
-                .withToTranid(CARD_LIST_TRANID)
-                .withToProgram(CARD_LIST_PGM)
-                .withUserTypeUser()
-                .withPgmEnter()
-                .withLastMapset(THIS_MAPSET)
-                .withLastMap(THIS_MAP);
-        return controllerScenario("case15",
-                "PF03 takes the first EVALUATE arm at :435-476 and issues EXEC CICS XCTL "
-                        + "PROGRAM(CDEMO-TO-PROGRAM). The response names COCRDLIC because :449-453 "
-                        + "prefers CDEMO-FROM-PROGRAM over LIT-MENUPGM, no map is sent, and the client "
-                        + "resolves the navigation - there is no server-side forward.",
-                EIBCALEN_FULL,
-                "DFHPF3",
-                navigationImage(navigationFromCardList()),
-                Map.of(),
-                new ExpectedResponse(CARD_LIST_PGM, null, null, navigationImage(handedOver),
-                        List.of(), null, Termination.XCTL));
-    }
-
-    /**
-     * {@code case16} - the cold start paints the prompt. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code EIBCALEN} is zero, so the {@code :388} guard initialises both commareas, sets
-     * {@code CDEMO-PGM-ENTER} and sets {@code CCUP-DETAILS-NOT-FETCHED}. The third {@code EVALUATE} arm
-     * at {@code :502-511} then matches, performs {@code 3000-SEND-MAP THRU 3000-SEND-MAP-EXIT} at
-     * {@code :507}, and flips the context to {@code REENTER} so the next pass validates instead of
-     * painting.
-     *
-     * <p>This is the {@code ENTER} half of gate <strong>G38</strong>. Nothing is highlighted: the account
-     * and card fields are empty, but an empty field on first entry is not an error - it is a field the
-     * user has not reached yet - so every {@code xxxC} item stays at {@code DFHDFCOL} except
-     * {@code EXPDAYC}, which {@code :1285} darkens unconditionally.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case16() {
-        return controllerScenario("case16",
-                "EIBCALEN is 0, so :388-394 initialises the commareas and the third EVALUATE arm at "
-                        + ":502-511 sends the map through the range perform at :507. This is the ENTER "
-                        + "half of the highlight matrix: nothing is reddened, because nothing has been "
-                        + "typed yet.",
-                EIBCALEN_NONE,
-                "DFHENTER",
-                Map.of(),
-                Map.of(),
-                new ExpectedResponse(null, THIS_MAPSET, THIS_MAP,
-                        navigationImage(NavigationContext.empty().withPgmReenter()),
-                        List.of(new ScreenSend(unreceivedPromptScreen(), defaultColours())),
-                        "ACCTSIDL", Termination.RETURN_TRANSID));
-    }
-
-    /**
-     * {@code case17} - {@code REENTER} with an unusable account number. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code 1210-EDIT-ACCOUNT} at {@code :721-758} finds eleven characters that are not eleven
-     * digits, sets {@code FLG-ACCTFILTER-NOT-OK} and moves the literal at {@code :745} into
-     * {@code WS-RETURN-MSG}. The highlight matrix's {@code NOT-OK} arm then reddens {@code ACCTSIDC} and
-     * <em>leaves the value alone</em>, which is the whole point of distinguishing it from a blank: the
-     * user is shown what was rejected rather than having it wiped.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case17() {
-        return controllerScenario("case17",
-                "REENTER with eleven non-digit characters in ACCTSIDI. 1210-EDIT-ACCOUNT sets "
-                        + "FLG-ACCTFILTER-NOT-OK and :745 supplies the message; the NOT-OK arm of the "
-                        + "highlight matrix reddens ACCTSIDC and preserves the typed value.",
-                EIBCALEN_FULL,
-                "DFHENTER",
-                navigationImage(navigationFromCardList()),
-                Map.of("ACCTSIDI", "ABCDEFGHIJK"),
-                new ExpectedResponse(THIS_PGM, THIS_MAPSET, THIS_MAP,
-                        navigationImage(navigationFromCardList().withAcctId(0L)),
-                        List.of(new ScreenSend(
-                                receivedPromptScreen("ABCDEFGHIJK", KEY_01, MSG_ACCT_NOT_NUMERIC),
-                                erroredColours("ACCTSID"))),
-                        "ACCTSIDL", Termination.RETURN_TRANSID));
-    }
-
-    /**
-     * {@code case18} - {@code REENTER} with a blank account number. {@code CONTROLLER_POJO}.
-     *
-     * <p>The other half of the matrix. {@code FLG-ACCTFILTER-BLANK} is set, {@code WS-PROMPT-FOR-ACCT}
-     * supplies the message, and {@code CSSETATY}'s blank arm both reddens {@code ACCTSIDC} and writes a
-     * single {@code '*'} into {@code ACCTSIDO}, because a reddened empty field would look identical to an
-     * ordinary one.
-     *
-     * <p>That asterisk is load-bearing on the next pass, not decoration: {@code 1100-RECEIVE-MAP} at
-     * {@code :612-613} and its five siblings test each incoming field against {@code '*'} as well as
-     * {@code SPACES} and map both to {@code LOW-VALUES}, so the marker the program wrote is understood as
-     * "still not supplied" when it comes back.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case18() {
-        return controllerScenario("case18",
-                "REENTER with ACCTSIDI blank. FLG-ACCTFILTER-BLANK is set, WS-PROMPT-FOR-ACCT supplies "
-                        + "the message, and the BLANK arm of CSSETATY writes DFHRED to ACCTSIDC and '*' "
-                        + "into ACCTSIDO - a marker :612-613 reads back as LOW-VALUES on the next pass.",
-                EIBCALEN_FULL,
-                "DFHENTER",
-                navigationImage(navigationFromCardList()),
-                Map.of("ACCTSIDI", ""),
-                new ExpectedResponse(THIS_PGM, THIS_MAPSET, THIS_MAP,
-                        navigationImage(navigationFromCardList().withAcctId(0L)),
-                        List.of(new ScreenSend(
-                                receivedPromptScreen(picX("*", 11), KEY_01, MSG_ACCT_NOT_PROVIDED),
-                                erroredColours("ACCTSID"))),
-                        "ACCTSIDL", Termination.RETURN_TRANSID));
-    }
-
-    /**
-     * {@code case19} - {@code PF9} is remapped to {@code ENTER}, not rejected. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code :413-424} sets {@code PFK-INVALID} first, admits four combinations, and then does
-     * {@code SET CCARD-AID-ENTER TO TRUE} for everything else. {@code PF9} is not among the four - it is
-     * resolved perfectly well by {@code CSSTRPFY} into {@code CCARD-AID-PFK09}, and then overwritten -
-     * so this case's expectation is <strong>byte for byte identical to {@code case18}'s</strong>, and
-     * that identity is the assertion. A translation that rejected an unrecognised key, or ignored the
-     * request, or reported which key was pressed, would differ here while passing every other case.
-     *
-     * <p>It also states the statelessness property for the whole class. This pass and {@code case18}'s
-     * are indistinguishable because the response is a pure function of the request: the identical
-     * commarea and map fields produce the identical screen, with no server-side session carrying anything
-     * between them (gates <strong>G37</strong> and rule <strong>R6</strong>).
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case19() {
-        return controllerScenario("case19",
-                "PF9 resolves to CCARD-AID-PFK09 and is then remapped to ENTER by :422-424, because it "
-                        + "is not one of the four combinations :414-420 admits. The expectation is "
-                        + "therefore identical to case18's, which is what proves both the remap and the "
-                        + "statelessness of the handler.",
-                EIBCALEN_FULL,
-                "DFHPF9",
-                navigationImage(navigationFromCardList()),
-                Map.of("ACCTSIDI", ""),
-                new ExpectedResponse(THIS_PGM, THIS_MAPSET, THIS_MAP,
-                        navigationImage(navigationFromCardList().withAcctId(0L)),
-                        List.of(new ScreenSend(
-                                receivedPromptScreen(picX("*", 11), KEY_01, MSG_ACCT_NOT_PROVIDED),
-                                erroredColours("ACCTSID"))),
-                        "ACCTSIDL", Termination.RETURN_TRANSID));
-    }
-
-    /**
-     * {@code case20} - all seventeen payload fields, on a screen reached with a commarea. {@code CONTROLLER_POJO}.
-     *
-     * <p>{@code case16} reaches the prompt through the {@code EIBCALEN = 0} half of the {@code :388}
-     * guard; this reaches the same screen through the <em>other</em> half at {@code :389-390} -
-     * {@code CDEMO-FROM-PROGRAM} equal to {@code LIT-MENUPGM} with {@code NOT CDEMO-PGM-REENTER} - which
-     * is a commarea that arrived and was <strong>deliberately discarded</strong>.
-     *
-     * <p>That discarding is the finding, and it is not intuitive. A commarea carrying a user identifier,
-     * a user type and the calling program's names is passed in, and {@code INITIALIZE CARDDEMO-COMMAREA}
-     * at {@code :391} throws all of it away. So the navigation context that comes back is
-     * <em>empty</em> - not the one that went in - with only the {@code REENTER} that {@code :509} sets
-     * afterwards. Arriving here from the menu means starting fresh, by design: the menu is where a user
-     * begins, so nothing carried from it is worth keeping. An expectation that echoed the inbound
-     * commarea would look far more reasonable and would be wrong.
-     *
-     * <p>Every one of the seventeen {@code xxxO} items is declared, and every one of the seventeen
-     * {@code xxxC} items with it, so this case covers the whole payload rather than the fields that
-     * happened to be interesting.
-     *
-     * @return the scenario
-     */
-    private static ParityScenario case20() {
-        return controllerScenario("case20",
-                "The prompt screen reached from the main menu rather than from a cold start - the "
-                        + "second half of the :388-390 guard - asserted across all seventeen xxxO "
-                        + "payload items and all seventeen xxxC attribute items at once. The inbound "
-                        + "commarea is discarded by INITIALIZE at :391, so what comes back is empty "
-                        + "rather than echoed.",
-                EIBCALEN_FULL,
-                "DFHENTER",
-                navigationImage(NavigationContext.empty()
-                        .withFromTranid(MENU_TRANID)
-                        .withFromProgram(MENU_PGM)
-                        .withUserId("USER0001")
-                        .withUserTypeUser()
-                        .withPgmEnter()),
-                Map.of(),
-                new ExpectedResponse(null, THIS_MAPSET, THIS_MAP,
-                        navigationImage(NavigationContext.empty().withPgmReenter()),
-                        List.of(new ScreenSend(unreceivedPromptScreen(), defaultColours())),
-                        "ACCTSIDL", Termination.RETURN_TRANSID));
-    }
-
-    // =================================================================================================
-    // Case construction. Two builders, one per unit, so a case never has to restate the parts that are
-    // the same for every case of its kind.
-    // =================================================================================================
-
-    /**
-     * Builds a {@link UnitKind#SERVICE} scenario with no forced outcome and {@link #KEY_01} as the key.
-     *
-     * @param caseId        {@code case01} through {@code case14}
-     * @param description   what the case pins, quoting the source lines it comes from
-     * @param oldDetails    {@code CCUP-OLD-DETAILS}, the snapshot the screen was painted from
-     * @param newDetails    {@code CCUP-NEW-DETAILS}, what the screen supplied
-     * @param returnMessage {@code WS-RETURN-MSG} on entry, or {@code null} for the cleared state
-     * @param writes        what the run must have written
-     * @param finalRows     what {@code CARDDAT} must hold afterwards
-     * @param messages      the message the run must have produced
-     * @return the scenario
-     */
-    private static ParityScenario serviceScenario(String caseId,
-                                                  String description,
-                                                  CardDetails oldDetails,
-                                                  CardDetails newDetails,
-                                                  String returnMessage,
-                                                  List<ExpectedRecord> writes,
-                                                  List<String> finalRows,
-                                                  List<EmittedMessage> messages) {
-        return serviceScenario(caseId, description, oldDetails, newDetails, returnMessage, writes,
-                finalRows, messages, Map.of(), KEY_01);
-    }
-
-    /**
-     * Builds a {@link UnitKind#SERVICE} scenario with forced outcomes and {@link #KEY_01} as the key.
-     *
-     * @param caseId         the case identifier
-     * @param description    what the case pins
-     * @param oldDetails     the snapshot
-     * @param newDetails     the screen's values
-     * @param returnMessage  {@code WS-RETURN-MSG} on entry, or {@code null}
-     * @param writes         what the run must have written
-     * @param finalRows      what {@code CARDDAT} must hold afterwards
-     * @param messages       the message the run must have produced
-     * @param forcedOutcomes the repository outcomes the data cannot produce
-     * @return the scenario
-     */
-    private static ParityScenario serviceScenario(String caseId,
-                                                  String description,
-                                                  CardDetails oldDetails,
-                                                  CardDetails newDetails,
-                                                  String returnMessage,
-                                                  List<ExpectedRecord> writes,
-                                                  List<String> finalRows,
-                                                  List<EmittedMessage> messages,
-                                                  Map<RepositoryOperation, ForcedOutcome>
-                                                          forcedOutcomes) {
-        return serviceScenario(caseId, description, oldDetails, newDetails, returnMessage, writes,
-                finalRows, messages, forcedOutcomes, KEY_01);
-    }
-
-    /**
-     * Builds a {@link UnitKind#SERVICE} scenario in full.
-     *
-     * <p>The dataset expectations are derived rather than restated: {@code CARDDAT} always appears on the
-     * {@link DatasetChannel#FINAL_STATE} channel at the seeded row count, and on the
-     * {@link DatasetChannel#WRITES} channel with as many rows as the case expects written - which is zero
-     * for the arms that abandon the rewrite, and that zero is an assertion in its own right.
-     *
-     * @param caseId         the case identifier
-     * @param description    what the case pins
-     * @param oldDetails     {@code CCUP-OLD-DETAILS}
-     * @param newDetails     {@code CCUP-NEW-DETAILS}
-     * @param returnMessage  {@code WS-RETURN-MSG} on entry, or {@code null} for the cleared state
-     * @param writes         what the run must have written
-     * @param finalRows      what {@code CARDDAT} must hold afterwards
-     * @param messages       the message the run must have produced
-     * @param forcedOutcomes the repository outcomes the data cannot produce
-     * @param cardKey        {@code CC-CARD-NUM}, the key {@code :1425} moves into the RIDFLD
-     * @return the scenario
-     */
-    private static ParityScenario serviceScenario(String caseId,
-                                                  String description,
-                                                  CardDetails oldDetails,
-                                                  CardDetails newDetails,
-                                                  String returnMessage,
-                                                  List<ExpectedRecord> writes,
-                                                  List<String> finalRows,
-                                                  List<EmittedMessage> messages,
-                                                  Map<RepositoryOperation, ForcedOutcome>
-                                                          forcedOutcomes,
-                                                  String cardKey) {
-        ParityCase parityCase = new ParityCase(PROGRAM, caseId, description, UnitKind.SERVICE,
-                Map.of(CARDDAT, DatasetInput.ofRows(SEED_ROWS)), Map.of(),
-                new ScreenRequest(EIBCALEN_FULL, null, PINNED_CLOCK, CHARSET_NAME, Map.of(),
-                        Map.of(), forcedOutcomes),
-                null, writes, finalStateOf(finalRows), 0, messages, List.of(),
-                List.of(new ExpectedDataset(CARDDAT, DatasetChannel.WRITES, writes.size(),
-                                CardRecord.RECORD_LENGTH),
-                        new ExpectedDataset(CARDDAT, DatasetChannel.FINAL_STATE, finalRows.size(),
-                                CardRecord.RECORD_LENGTH)));
-        return new ParityScenario(parityCase, UnitKind.SERVICE,
-                invocation -> serviceUnit(invocation, cardKey, oldDetails, newDetails, returnMessage),
-                "CardUpdateService.writeProcessing");
-    }
-
-    /**
-     * Builds a {@link UnitKind#CONTROLLER_POJO} scenario.
-     *
-     * <p>No dataset expectation is declared and no write is recorded, because the adapter records the
-     * response channel only. That is deliberate: {@code COCRDUPC}'s file verbs live in
-     * {@code 9200-WRITE-PROCESSING}, which the fourteen service cases own, and a controller case that
-     * also asserted the dataset would be asserting the same thing twice while making the reason for its
-     * own failure ambiguous.
-     *
-     * @param caseId      {@code case15} through {@code case20}
-     * @param description what the case pins
-     * @param eibcalen    {@code EIBCALEN}, either {@link #EIBCALEN_NONE} or {@link #EIBCALEN_FULL}
-     * @param aid         the {@code DFHAID} mnemonic for the raw {@code EIBAID} byte
-     * @param commarea    the inbound {@code CARDDEMO-COMMAREA} fields
-     * @param mapFields   the inbound {@code xxxI} items
-     * @param response    the response the run must produce
-     * @return the scenario
-     */
-    private static ParityScenario controllerScenario(String caseId,
-                                                     String description,
-                                                     int eibcalen,
-                                                     String aid,
-                                                     Map<String, String> commarea,
-                                                     Map<String, String> mapFields,
-                                                     ExpectedResponse response) {
-        ParityCase parityCase = new ParityCase(PROGRAM, caseId, description,
-                UnitKind.CONTROLLER_POJO, Map.of(CARDDAT, DatasetInput.ofRows(SEED_ROWS)), Map.of(),
-                new ScreenRequest(eibcalen, aid, PINNED_CLOCK, CHARSET_NAME, commarea, mapFields,
-                        Map.of()),
-                response, List.of(), List.of(), 0, List.of(), List.of(), List.of());
-        return new ParityScenario(parityCase, UnitKind.CONTROLLER_POJO,
-                COCRDUPCParityTest::controllerUnit, "CardUpdateController.updateCardDetail");
+    private static void requireReceivedFieldsMatch(Invocation invocation, CardDetails newDetails) {
+        Map<String, String> received = invocation.mapFields();
+        Map<String, String> fromArea = Map.of(
+                "ACCTSIDI", newDetails.acctid(),
+                "CARDSIDI", newDetails.cardid(),
+                "CRDNAMEI", newDetails.crdname(),
+                "CRDSTCDI", newDetails.crdstcd(),
+                "EXPMONI", newDetails.expmon(),
+                "EXPYEARI", newDetails.expyear(),
+                "EXPDAYI", newDetails.expday());
+        for (Map.Entry<String, String> entry : fromArea.entrySet()) {
+            String typed = received.get(entry.getKey());
+            if (typed == null) {
+                continue;
+            }
+            if (!picX(typed.trim(), entry.getValue().length()).equals(entry.getValue())) {
+                throw new IllegalStateException("Case " + invocation.program() + '/'
+                        + invocation.caseId() + " declares " + entry.getKey() + " as '" + typed
+                        + "' but its WS-THIS-PROGCOMMAREA holds '" + entry.getValue() + "' in the "
+                        + "matching CCUP-NEW- item. 2000-PROCESS-INPUTS copies one into the other, so "
+                        + "the two cannot disagree in a run the program could have produced.");
+            }
+        }
     }
 
     // =================================================================================================
@@ -1777,11 +1243,51 @@ class COCRDUPCParityTest {
      * observed doing that; something that merely ran the body would let the arrangement pass while
      * proving nothing about it.
      *
+     * <h2>Every argument comes from the case</h2>
+     * <p>{@code 9200-WRITE-PROCESSING} takes four things the seeded rows cannot supply: the key the
+     * {@code READ ... UPDATE} at {@code :1425} positions with, the snapshot the screen was painted from
+     * ({@code CCUP-OLD-DETAILS}), what the operator typed ({@code CCUP-NEW-DETAILS}) and
+     * {@code WS-RETURN-MSG} as it stands on entry. Each is read from the case here:
+     * <ul>
+     *   <li>the snapshot and the typed values are decoded from the {@code WS-THIS-PROGCOMMAREA} image the
+     *       case's commarea carries, at the offsets {@code app/cbl/COCRDUPC.cbl:206-241} declares - which
+     *       is exactly what {@code :404-406} does with {@code DFHCOMMAREA};</li>
+     *   <li>the key is {@code CDEMO-CARD-NUM} from the same commarea, which is what
+     *       {@code 1000-SEND-MAP}'s caller loaded {@code CC-CARD-NUM} from;</li>
+     *   <li>{@code WS-RETURN-MSG} is the case's {@code unitStimulus.linkage} entry of that name, because
+     *       it is a linkage value rather than a screen field and would otherwise be invisible in the
+     *       case file.</li>
+     * </ul>
+     *
+     * @param invocation the seeded datasets, the pinned clock, the codec, the declared stimulus and the
+     *                   recorder
+     * @return the recorded outcome; never {@code null}
+     */
+    private static UnitOutcome serviceUnit(Invocation invocation) {
+        CardUpdateRequest.CommArea area = programAreaOf(invocation);
+        String cardKey = picX(invocation.commarea().getOrDefault("CDEMO-CARD-NUM", "").trim(),
+                CardDetails.CARDID_LENGTH);
+        CardDetails oldDetails = area.oldDetails();
+        CardDetails newDetails = area.newDetails();
+        requireReceivedFieldsMatch(invocation, newDetails);
+        String returnMessage = invocation.stimulus().linkageValue(LINKAGE_RETURN_MSG)
+                .orElseThrow(() -> new IllegalStateException("Case " + PROGRAM + '/'
+                        + invocation.caseId() + " declares unitKind SERVICE but no "
+                        + LINKAGE_RETURN_MSG + " linkage value. 9200-WRITE-PROCESSING is handed "
+                        + "WS-RETURN-MSG as it stands on entry - SPACES on every path that reaches it "
+                        + "through 0000-MAIN, which clears it at :384 - and a case that left it "
+                        + "unstated would be running with a value nobody declared."));
+        return serviceUnit(invocation, cardKey, oldDetails, newDetails, returnMessage);
+    }
+
+    /**
+     * Runs {@code 9200-WRITE-PROCESSING} with the four values the case supplied.
+     *
      * @param invocation    the seeded datasets, the pinned clock, the codec and the recorder
      * @param cardKey       {@code CC-CARD-NUM}
      * @param oldDetails    {@code CCUP-OLD-DETAILS}
      * @param newDetails    {@code CCUP-NEW-DETAILS}
-     * @param returnMessage {@code WS-RETURN-MSG} on entry, or {@code null} for the cleared state
+     * @param returnMessage {@code WS-RETURN-MSG} on entry
      * @return the recorded outcome; never {@code null}
      */
     private static UnitOutcome serviceUnit(Invocation invocation,
@@ -1866,13 +1372,20 @@ class COCRDUPCParityTest {
      */
     private static UnitOutcome controllerUnit(Invocation invocation) {
         SeededDataset seeded = invocation.dataset(CARDDAT);
-        CardRepository repository = fixtureRepository(new ArrayList<>(seeded.rows()), Map.of());
+        List<String> rows = new ArrayList<>(seeded.rows());
+        List<String> rewritten = new ArrayList<>();
+        CardRepository repository = fixtureRepository(rows,
+                forcedOutcomesOf(invocation, RepositoryOperation.READ,
+                        RepositoryOperation.READ_FOR_UPDATE, RepositoryOperation.REWRITE),
+                new ArrayList<>(), rewritten::add);
 
         CardUpdateController controller = new CardUpdateController(repository,
                 serviceOver(repository), invocation.clock(), invocation.charset());
 
-        CardUpdateRequest request = requestFrom(invocation.commarea(), invocation.mapFields());
-        ScreenResponse<CardUpdateResponse> body = controller.updateCardDetail(KEY_01, request, null,
+        CardUpdateRequest request = requestFrom(invocation.commarea(), invocation.mapFields(),
+                programAreaOf(invocation));
+        ScreenResponse<CardUpdateResponse> body = controller.updateCardDetail(
+                pathCardNumberOf(invocation), request, null,
                 invocation.eibcalen(), Byte.toUnsignedInt(aidByte(invocation.aid()))).getBody();
         CardUpdateResponse painted = java.util.Objects.requireNonNull(body,
                 "COCRDUPC ends in EXEC CICS XCTL or EXEC CICS RETURN on every path, so the handler "
@@ -1880,6 +1393,19 @@ class COCRDUPCParityTest {
 
         UnitOutcome.Builder recorder = invocation.recorder();
         recorder.response(observed(painted, body));
+        // THE DATASET IS OBSERVED ON EVERY CONTROLLER CASE, not only on the cases that expect
+        // something of it. app/csd/CARDDEMO.CSD:25-36 defines CARDDAT with STATUS(ENABLED)
+        // OPENTIME(FIRSTREF), so the file is available to the transaction whether or not this path
+        // touches it - the program issues no OPEN and has none to fail - which makes "nothing was
+        // written and the three rows are exactly as seeded" an assertion available to every case
+        // rather than a silence. Recorded unconditionally and compared afterwards: what a run
+        // produced must never be selected by what the case expects of it.
+        if (rewritten.isEmpty()) {
+            recorder.openedWithoutWriting(CARDDAT, CardRecord.LAYOUT);
+        } else {
+            rewritten.forEach(image -> recorder.wrote(CARDDAT, CardRecord.LAYOUT, image));
+        }
+        recorder.finalState(CARDDAT, CardRecord.LAYOUT, rows);
         recorder.returnCode(0);
         return recorder.build();
     }
@@ -2008,6 +1534,27 @@ class COCRDUPCParityTest {
     private static CardRepository fixtureRepository(List<String> rows,
                                                     Map<RepositoryOperation, ForcedOutcome> forced,
                                                     List<CardRepository> served) {
+        return fixtureRepository(rows, forced, served, image -> { });
+    }
+
+    /**
+     * The fixture-backed repository, with every accepted rewrite reported to an observer.
+     *
+     * <p>The observer is how a controller case observes the dataset without the adapter having to guess:
+     * a rewrite that the repository accepted is a row the run changed, and one it refused is not. Only
+     * accepted rewrites are reported, because {@code 9200-WRITE-PROCESSING}'s lock-error and
+     * rewrite-error arms leave the record staged and the dataset untouched.
+     *
+     * @param rows     the mutable seeded rows, in key order
+     * @param forced   the outcomes the case forces, by operation
+     * @param served   every repository call, for the no-second-repository assertions
+     * @param onRewrite called with the stored image of each accepted rewrite
+     * @return the repository
+     */
+    private static CardRepository fixtureRepository(List<String> rows,
+                                                    Map<RepositoryOperation, ForcedOutcome> forced,
+                                                    List<CardRepository> served,
+                                                    java.util.function.Consumer<String> onRewrite) {
         CardRepository repository = Mockito.mock(CardRepository.class, unstubbed -> {
             throw new UnsupportedOperationException("COCRDUPC called CardRepository."
                     + unstubbed.getMethod().getName() + ", for which it has no statement. Its file "
@@ -2033,8 +1580,13 @@ class COCRDUPCParityTest {
         }).when(repository).readByAccountIdViaAltIndex(ArgumentMatchers.anyString());
         Mockito.doAnswer(rewrite -> {
             served.add(repository);
-            return rewriteRow(rows, rewrite.getArgument(0),
+            CardRepository.CardWriteResult result = rewriteRow(rows, rewrite.getArgument(0),
                     forced.get(RepositoryOperation.REWRITE));
+            if (result.outcome() == FileStatus.Outcome.OK) {
+                onRewrite.accept(((CardRecord) rewrite.getArgument(0))
+                        .encodeToImage(StandardCharsets.US_ASCII));
+            }
+            return result;
         }).when(repository).rewrite(ArgumentMatchers.any());
         return repository;
     }
@@ -2466,14 +2018,20 @@ class COCRDUPCParityTest {
     }
 
     /**
-     * The seventeen {@code xxxC} colour items with one field reddened by {@code CSSETATY}.
+     * The seventeen {@code xxxC} colour items with the named fields reddened by {@code CSSETATY}.
      *
-     * @param erroredStem the field stem whose colour item carries {@code DFHRED}
+     * <p>More than one field can be in error on a single pass: {@code 1200-EDIT-MAP-INPUTS:621-627}
+     * performs {@code 1210-EDIT-ACCOUNT} and then {@code 1220-EDIT-CARD} unconditionally, and each sets
+     * its own filter flag, so the highlight matrix reddens each independently.
+     *
+     * @param erroredStems the field stems whose colour items carry {@code DFHRED}
      * @return the seventeen attribute items
      */
-    private static Map<String, String> erroredColours(String erroredStem) {
+    private static Map<String, String> erroredColours(String... erroredStems) {
         Map<String, String> colours = new LinkedHashMap<>(defaultColours());
-        colours.put(erroredStem + "C", "DFHRED");
+        for (String erroredStem : erroredStems) {
+            colours.put(erroredStem + "C", "DFHRED");
+        }
         return Map.copyOf(colours);
     }
 
@@ -2604,7 +2162,23 @@ class COCRDUPCParityTest {
         return declared.eibcalen() == EIBCALEN_NONE && declared.commarea().isEmpty()
                 && declared.mapFields().isEmpty()
                 ? null
-                : requestFrom(declared.commarea(), declared.mapFields());
+                : requestFrom(declared.commarea(), declared.mapFields(),
+                        programAreaFrom(declared));
+    }
+
+    /**
+     * Decodes the {@code WS-THIS-PROGCOMMAREA} image a screen request declares, for the call sites that
+     * hold a {@link ScreenRequest} rather than an {@link Invocation}.
+     *
+     * @param declared the case's screen request
+     * @return the decoded area, or the {@code INITIALIZE}d one when the case declares no image
+     */
+    private static CardUpdateRequest.CommArea programAreaFrom(ScreenRequest declared) {
+        String image = declared.commarea().get(PROGRAM_AREA_KEY);
+        return image == null
+                ? CardUpdateRequest.CommArea.initialised()
+                : CardUpdateRequest.CommArea.decode(image.getBytes(FIXTURE_CHARSET),
+                        new FixedWidthCodec(FIXTURE_CHARSET));
     }
 
     /**
@@ -2618,12 +2192,17 @@ class COCRDUPCParityTest {
      * @return the request, or {@code null} when the case declares neither - the cold start
      */
     private static CardUpdateRequest requestFrom(Map<String, String> commarea,
-                                                 Map<String, String> mapFields) {
+                                                 Map<String, String> mapFields,
+                                                 CardUpdateRequest.CommArea programArea) {
         if (commarea.isEmpty() && mapFields.isEmpty()) {
             return null;
         }
         CardUpdateRequest request = new CardUpdateRequest();
         request.setNavigationContext(navigationFrom(commarea));
+        // :404-406 MOVE DFHCOMMAREA(LENGTH OF CARDDEMO-COMMAREA + 1: LENGTH OF WS-THIS-PROGCOMMAREA).
+        // The area is a request field in this translation because the conversation is stateless, so the
+        // warm turns a case declares are the warm turns the handler sees.
+        request.setCommArea(programArea);
         request.setAcctsid(mapFields.get("ACCTSIDI"));
         request.setCardsid(mapFields.get("CARDSIDI"));
         request.setCrdname(mapFields.get("CRDNAMEI"));
@@ -2643,11 +2222,29 @@ class COCRDUPCParityTest {
      * @return the painted screen
      */
     private static CardUpdateResponse paint(CardUpdateRequest request, int eibcalen, byte aid) {
+        return paint(request, eibcalen, aid, KEY_01);
+    }
+
+    /**
+     * Constructs the controller and calls its handler once for a stated URI key.
+     *
+     * <p>The key is a parameter because {@code CCUP-CARD-NUM} and the {@code {cardNum}} path variable are
+     * one key: a caller that stated a different one in the payload would be stating two, which the
+     * handler refuses before it reads anything.
+     *
+     * @param request        the request, or {@code null} for a cold start
+     * @param eibcalen       {@code EIBCALEN}
+     * @param aid            the raw {@code EIBAID} byte
+     * @param pathCardNumber the sixteen-character key the URI carries
+     * @return the painted screen
+     */
+    private static CardUpdateResponse paint(CardUpdateRequest request, int eibcalen, byte aid,
+                                            String pathCardNumber) {
         CardRepository repository = fixtureRepository(new ArrayList<>(SEED_ROWS), Map.of());
         CardUpdateController controller = new CardUpdateController(repository,
                 serviceOver(repository), ParityHarness.usAscii().clock(), FIXTURE_CHARSET);
-        ScreenResponse<CardUpdateResponse> body = controller.updateCardDetail(KEY_01, request, null,
-                eibcalen, Byte.toUnsignedInt(aid)).getBody();
+        ScreenResponse<CardUpdateResponse> body = controller.updateCardDetail(pathCardNumber, request,
+                null, eibcalen, Byte.toUnsignedInt(aid)).getBody();
         return java.util.Objects.requireNonNull(body, "every path answers with a body").screen();
     }
 
@@ -2680,50 +2277,4 @@ class COCRDUPCParityTest {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    // =================================================================================================
-    // The scenario. A case, the unit kind its adapter constructs, and the adapter itself.
-    // =================================================================================================
-
-    /**
-     * One case together with the way its unit is reached.
-     *
-     * <p>The unit kind is carried separately from {@link ParityCase#unitKind()} on purpose. The harness
-     * compares the two before the adapter runs, so a case that declared {@code SERVICE} while its adapter
-     * constructed a controller is caught at the boundary instead of producing a confusing diff.
-     *
-     * @param parityCase  the case, validated by {@link ParityCase}'s own constructor
-     * @param adapterKind the kind of unit {@code adapter} constructs
-     * @param adapter     how to construct and call that unit
-     * @param unitName    the unit named for a failure message, so a report says what it exercised
-     */
-    private record ParityScenario(ParityCase parityCase,
-                                  UnitKind adapterKind,
-                                  ParityHarness.ParityUnit adapter,
-                                  String unitName) {
-
-        /**
-         * The case identifier, for a failure message that names the case.
-         *
-         * @return {@code case01} through {@code case20}
-         */
-        String caseId() {
-            return parityCase.caseId();
-        }
-
-        /**
-         * The parameterized test's display name: the identifier, the unit and the first sentence.
-         *
-         * <p>The description's later sentences quote source lines and are long, and no field value is
-         * ever printed - a {@code CARDDAT} row carries a card number and a card verification value.
-         *
-         * @return a short label
-         */
-        @Override
-        public String toString() {
-            String description = parityCase.description();
-            int firstStop = description.indexOf(". ");
-            return caseId() + " [" + unitName + "] "
-                    + (firstStop < 0 ? description : description.substring(0, firstStop));
-        }
-    }
 }

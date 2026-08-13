@@ -526,7 +526,7 @@ final class COTRN02CParityTest {
     private static TransactionRepository.Browse backwardBrowseOver(ParityHarness.Invocation invocation,
                                                                    TransactMaster master) {
         master.startBackwardBrowse();
-        TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+        TransactionRepository.Browse browse = positionedBrowse();
         when(browse.direction()).thenReturn(TransactionRepository.BrowseDirection.BACKWARD);
         when(browse.readPrev()).thenAnswer(reading -> browseReadOf(invocation, master));
         when(browse.readNext()).thenThrow(new IllegalStateException(
@@ -809,9 +809,10 @@ final class COTRN02CParityTest {
         }
 
         // EIBAID. Declared by DFHAID mnemonic in the case, because the mnemonic is what a reader of the
-        // case needs to see, and converted here to the token the payload projects. An undeclared AID stays
-        // absent, which the translation reads as DFHNULL - the AID CICS reports when no key raised the
-        // interrupt, and one that matches none of the four named arms of the EVALUATE at :133-152.
+        // case needs to see, and rendered here as the one-character image the payload carries - the byte
+        // itself, never the folded token. An undeclared AID stays absent, which the translation reads as
+        // DFHNULL - the AID CICS reports when no key raised the interrupt, and one that matches none of
+        // the four named arms of the EVALUATE at :133-152.
         String token = aidTokenOf(invocation.aid());
         if (token != NO_AID_TOKEN) {
             request.setAid(token);
@@ -884,13 +885,15 @@ final class COTRN02CParityTest {
      * requirement is that the shared resolver reproduce those inline tests as identical boolean outcomes -
      * which is exactly what routing the case's mnemonic through it asserts.
      *
-     * <p>A mnemonic the resolver does not recognise - {@code DFHNULL} above all - yields no token, and the
-     * absent token is read as {@code DFHNULL} again on the way back in. That round trip is the
-     * {@code WHEN OTHER} arm.
+     * <p>The image is the one character whose code point <em>is</em> the byte, which is the shape the
+     * payload carries, and never the folded five-character {@code CCARD-AID} token: {@code CSSTRPFY} maps
+     * {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so a token cannot say which
+     * key of a pair was pressed and this program's inline tests compare the byte. A case that declares no
+     * AID sends no member at all, which the translation reads as {@code DFHNULL} - the {@code WHEN OTHER}
+     * arm.
      *
      * @param mnemonic the mnemonic the case declared, or {@code null} for no AID
-     * @return the five-character token, or {@code null} when the case declared none or the mnemonic
-     *         resolves to no key identity
+     * @return the one-character image, or {@code null} when the case declared no key
      */
     private static String aidTokenOf(String mnemonic) {
         if (mnemonic == null) {
@@ -898,9 +901,7 @@ final class COTRN02CParityTest {
         }
         for (Map.Entry<Byte, String> entry : CicsAid.mnemonicsByAid().entrySet()) {
             if (entry.getValue().equals(mnemonic)) {
-                return PfKeyResolver.resolve(entry.getKey())
-                        .map(PfKeyResolver.AidKey::token)
-                        .orElse(NO_AID_TOKEN);
+                return PfKeyResolver.aidImage(entry.getKey());
             }
         }
         throw new IllegalArgumentException('"' + mnemonic + "\" is not a DFHAID mnemonic that "
@@ -1239,7 +1240,7 @@ final class COTRN02CParityTest {
     /** @return a {@code TRANSACT} repository whose backward browse holds one record keyed {@code ...50} */
     private static TransactionRepository masterHoldingOneRecord() {
         TransactionRepository repository = mock(TransactionRepository.class);
-        TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+        TransactionRepository.Browse browse = positionedBrowse();
         when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.found(
                 TransactionRepository.CICS_FILE_NAME, recordKeyed("0000000000000050")));
         when(repository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
@@ -2061,7 +2062,7 @@ final class COTRN02CParityTest {
         @DisplayName("an empty master reports ENDFILE, which zeros TRAN-ID and yields identifier 1")
         void anEmptyMasterIsLoadable() {
             TransactionRepository transactions = mock(TransactionRepository.class);
-            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult
                     .endOfFile(TransactionRepository.CICS_FILE_NAME));
             when(transactions.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
@@ -2087,7 +2088,7 @@ final class COTRN02CParityTest {
         @DisplayName("a refused READPREV displays RESP and REAS, rejects, and never reaches the write")
         void theReadprevWhenOtherArmDisplaysAndRejects() {
             TransactionRepository transactions = mock(TransactionRepository.class);
-            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult
                     .other(TransactionRepository.CICS_FILE_NAME, UNEXPECTED_STATUS));
             when(transactions.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
@@ -2321,4 +2322,27 @@ final class COTRN02CParityTest {
                 + Path.of("").toAbsolutePath() + ". The parity assertions read the COBOL source and "
                 + "README.md as evidence for risk R-B, so the suite must run inside the repository.");
     }
+
+    /**
+     * A mocked {@code TRANSACT} browse whose {@code STARTBR} positioned successfully.
+     *
+     * <p>{@link TransactionRepository#startBrowse(TransactionRepository.BrowseDirection)} issues the
+     * position as a real operation and reports what it found, so a handle carries a positioning outcome
+     * that its caller's {@code EVALUATE WS-RESP-CD} branches on. A bare mock reports {@code null} for it,
+     * which is not a state a real handle can be in - so every mock is built here with the successful arm
+     * stubbed, and a test that wants {@code NOTFND} or {@code WHEN OTHER} re-stubs it.
+     *
+     * @return the mock; never {@code null}
+     */
+    private static TransactionRepository.Browse positionedBrowse() {
+        TransactionRepository.Browse handle = mock(TransactionRepository.Browse.class);
+        when(handle.positioningResult()).thenReturn(
+                TransactionRepository.ReadResult.found(TransactionRepository.CICS_FILE_NAME,
+                        new com.vsergeychik.carddemo.transaction.model.TranRecord(
+                                java.nio.charset.StandardCharsets.US_ASCII)));
+        when(handle.positioningOutcome()).thenReturn(FileStatus.Outcome.OK);
+        when(handle.isStarted()).thenReturn(true);
+        return handle;
+    }
+
 }

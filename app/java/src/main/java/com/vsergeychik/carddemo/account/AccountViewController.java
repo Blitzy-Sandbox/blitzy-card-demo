@@ -15,18 +15,25 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import jakarta.validation.Valid;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -97,7 +104,7 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <h2>Imports, and the five classes deliberately not used</h2>
  *
- * <p>This file imports only from its declared dependencies, so five conveniences other online
+ * <p>This file imports only from its declared dependencies, so four conveniences other online
  * controllers use are absent, each with a documented substitute:
  *
  * <ul>
@@ -110,12 +117,18 @@ import org.springframework.web.bind.annotation.RestController;
  *       highlight inline at {@code :561-565}, and so does {@link #setupScreenAttrs1300}.</li>
  *   <li>{@code AidRequestParameter} - both spellings of the attention-identifier parameter are
  *       accepted here, so the wire contract still matches every other screen.</li>
- *   <li>{@code CobolCharsetConfig} - this class performs only character-level {@code MOVE}s, so it
- *       uses one immutable charset-neutral {@link FixedWidthCodec}; all code-page work belongs to the
- *       repositories, which are the only classes that touch dataset bytes.</li>
  *   <li>{@code DatasetRelation.BackendDiagnostic} - the abend path logs its own single-argument line;
  *       a driver's message never reaches it.</li>
  * </ul>
+ *
+ * <p>{@code CobolCharsetConfig} <em>is</em> used, and was not always: the active dataset code page is
+ * injected by its bean name and carried in {@link #codec}. Most of what this class does is a
+ * character-level {@code MOVE} that no code page can affect, but three things are bytes - the
+ * {@code ACCOUNT-RECORD} work area and the two {@code DFHCOMMAREA} images - and a commarea image is
+ * only right in a stated page. An earlier revision named {@code US-ASCII} here while
+ * {@code application.yml} binds {@code IBM037} in production, which would have refused a value the
+ * terminal could legitimately have sent. The static {@link FixedWidthCodec} that remains is used only
+ * where the operation counts characters.</p>
  *
  * <p>{@link AbendException} <em>is</em> imported. It is the module's single abend mechanism, and
  * {@code config/WebConfig}'s {@code CobolErrorHandler} - a declared dependency of this file - carries
@@ -239,12 +252,20 @@ public class AccountViewController {
     // =================================================================================================
     // The PIC X move rule, and nothing else. movePicX, movePic9 and decodePic9 are pure character
     // operations - they left justify, truncate on the right and pad with spaces, exactly as COBOL does -
-    // and none of them consults the charset. Dataset bytes and their code page belong to the three
-    // repositories; this class never sees a byte, which is why one immutable charset-neutral codec is
-    // sufficient here and no Charset is injected (practice B8: the choice is stated, not defaulted).
+    // and none of them consults the charset, so the page this codec carries cannot change their result.
+    //
+    // It is NOT used where bytes are involved. The ACCOUNT-RECORD work area and the two DFHCOMMAREA
+    // round trips do turn characters into bytes, and they use the injected dataset codec instead: the
+    // commarea image travels through a code page, and a character that page can carry but US-ASCII
+    // cannot - which the JSON boundary now admits, because it judges against the active page - would
+    // have been refused here with a 500 rather than handled. Practice B8: the page is stated, injected
+    // and never defaulted.
     // =================================================================================================
 
-    /** The shared, stateless, immutable codec used for every {@code MOVE} in this class. */
+    /**
+     * The shared, stateless, immutable codec used for the {@code static} {@code MOVE}s in this class -
+     * every one of which is a pure character operation. Anything that becomes bytes uses {@link #codec}.
+     */
     private static final FixedWidthCodec PIC_X_CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
     // =================================================================================================
@@ -786,18 +807,34 @@ public class AccountViewController {
     private final Clock clock;
 
     /**
+     * The codec carrying the <em>active dataset</em> code page, for the two things here that are bytes:
+     * the {@code ACCOUNT-RECORD} work area at {@code :1162} and the {@code DFHCOMMAREA} images at
+     * {@code :1214-1215} and {@code :1448-1449}.
+     *
+     * <p>{@code COACTVWC} writes to no dataset, so this cannot corrupt one - but it decides whether a
+     * value the terminal could legitimately have sent survives the commarea round trip, and that is the
+     * same authority question. Qualified explicitly, never the platform default (practice B8).
+     */
+    private final FixedWidthCodec codec;
+
+    /**
      * Constructs the controller.
      *
      * @param accountRepository  the account master, {@code ACCTDAT}
      * @param cardXrefRepository the card cross reference and its {@code CXACAIX} path
      * @param customerRepository the customer master, {@code CUSTDAT}
      * @param clock              the clock behind {@code FUNCTION CURRENT-DATE}
+     * @param datasetCharset     the active dataset code page, from
+     *                           {@code @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)}; the
+     *                           page the record area and the commarea images are measured in, and never
+     *                           the platform default
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public AccountViewController(AccountRepository accountRepository,
             CardXrefRepository cardXrefRepository,
             CustomerRepository customerRepository,
-            Clock clock) {
+            Clock clock,
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset) {
         this.accountRepository = Objects.requireNonNull(accountRepository,
                 "An AccountRepository is required: 9300-GETACCTDATA-BYACCT reads ACCTDAT at "
                         + "app/cbl/COACTVWC.cbl:776-784 and this controller reaches it no other way");
@@ -811,17 +848,21 @@ public class AccountViewController {
         this.clock = Objects.requireNonNull(clock,
                 "A Clock is required: 1100-SCREEN-INIT reads FUNCTION CURRENT-DATE twice, and reading a "
                         + "clock inline would make every parity case non-deterministic");
+        this.codec = new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "The active dataset "
+                + "code page is required: the ACCOUNT-RECORD work area and the DFHCOMMAREA images are "
+                + "bytes, and bytes are only right in a stated page"));
     }
 
     /**
      * The codec this controller applies the {@code PIC X} and {@code PIC 9} move rules with.
      *
-     * <p>Exposed so a test can drive a move through the same instance the flow uses rather than a lookalike.
+     * <p>Exposed so a test can drive a move through the same instance the flow uses rather than a
+     * lookalike, and so a test can assert which code page the commarea images are measured in.
      *
-     * @return the shared charset-neutral codec, never {@code null}
+     * @return the injected dataset codec, never {@code null} and immutable
      */
     FixedWidthCodec codec() {
-        return PIC_X_CODEC;
+        return codec;
     }
 
     // =================================================================================================
@@ -843,13 +884,24 @@ public class AccountViewController {
      * @param eibAid   {@code EIBAID} under its alternate spelling, or {@code null} for {@code DFHENTER}
      * @param eibcalen {@code EIBCALEN}, or {@code null} to derive it from the payload
      * @param eibaid   {@code EIBAID} under its canonical spelling
-     * @return the painted {@code CACTVWAO} map area, the navigation context and the work area
+     * <h4>The presentation facts travel beside the screen, not inside it</h4>
+     * {@code 1300-SETUP-SCREEN-ATTRS} at {@code :541-572} produces two kinds of observable output. The 37
+     * {@code xxxI} values are the screen, and they are the payload. The cursor request
+     * ({@code MOVE -1 TO ACCTSIDL}) and the attribute bytes ({@code MOVE DFHRED TO ACCTSIDC},
+     * {@code MOVE DFHBMDAR TO INFOMSGC}) are {@code xxxL}, {@code xxxA} and {@code xxxC} items, which
+     * AAP 0.6.3 keeps out of the payload - so they are answered in {@code screenMetadata}, a
+     * <em>sibling</em> of the screen, exactly as the other sixteen screens answer them. Before that they
+     * were computed and then discarded, which meant a client could not tell a red, cursor-bearing
+     * account-number field from an ordinary one and could not reproduce what the terminal showed.
+     *
+     * @return the painted {@code CACTVWAO} map area with the navigation context and the work area, and
+     *         beside it the cursor request, the message colour and all 37 attribute quads
      * @throws IllegalArgumentException if the URI, {@code EIBCALEN} or {@code EIBAID} cannot describe a
      *                                  state this program can be entered in
      * @throws AbendException           if the interaction abends, reproducing {@code ABEND-ROUTINE}
      */
     @GetMapping(path = "/api/accounts/{acctId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<AccountViewResponse> viewAccount(
+    public ResponseEntity<ScreenResponse<AccountViewResponse>> viewAccount(
             @PathVariable("acctId") String acctId,
             @Valid @RequestBody(required = false) AccountViewRequest request,
             @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid,
@@ -860,7 +912,64 @@ public class AccountViewController {
         AccountViewRequest received = bind(acctId, request);
         int commareaLength = resolveEibcalen(eibcalen, received);
         byte attentionIdentifier = resolveAttentionIdentifier(resolveAidParameter(eibaid, eibAid));
-        return ResponseEntity.ok(handle(received, commareaLength, attentionIdentifier));
+        AccountViewResponse painted = handle(received, commareaLength, attentionIdentifier);
+        return ResponseEntity.ok(ScreenResponse.of(painted, screenMetadata(received, painted)));
+    }
+
+    /**
+     * The presentation facts {@code 1300-SETUP-SCREEN-ATTRS} sets, gathered into the shape the other
+     * sixteen screens answer with.
+     *
+     * <p>Three facts, and each comes from the half of the map that declares it:
+     *
+     * <ul>
+     *   <li><strong>The cursor</strong>, from the <em>request</em>. {@code ACCTSIDL} is an {@code xxxL}
+     *       item of the input group {@code CACTVWAI}, so {@code MOVE -1 TO ACCTSIDL} at {@code :548},
+     *       {@code :550} and {@code :552} is recorded on the request's per-field metadata. The first field
+     *       in copybook order that asked for it wins, which is what a 3270 does: one cursor, and the last
+     *       {@code MOVE -1} standing in the group is the one the terminal honours. All three of this
+     *       program's placements name {@code ACCTSID}, so there is no ambiguity to resolve here.</li>
+     *   <li><strong>The 37 attribute quads</strong>, from the <em>response</em>. {@code ACCTSIDC} and
+     *       {@code INFOMSGC} are {@code xxxC} items of the output group {@code CACTVWAO}, written at
+     *       {@code :555}, {@code :558}, {@code :564} and {@code :568}. Each quad is published unsigned,
+     *       because {@code DFHRED} is {@code X'F2'} and would otherwise read as a negative Java byte.</li>
+     *   <li><strong>The message colour</strong>, which is {@code ERRMSG}'s own colour item - the same
+     *       convention {@code TransactionViewController} uses, so a client reads one field name across
+     *       screens rather than a per-screen rule.</li>
+     * </ul>
+     *
+     * <p>{@code resetAllOutputFields} is {@code false}: {@code COACTVWC} has no
+     * {@code MOVE LOW-VALUES TO CACTVWAO}. Every send is preceded by
+     * {@code 1200-SETUP-SCREEN-VARIABLES}, which assigns every output field unconditionally, so there is
+     * no group-clear for the client to reproduce and claiming one would instruct it to blank a screen the
+     * program never blanked.
+     *
+     * <p>Both enums declare the same 37 constants in the same copybook order - the request's
+     * {@code xxxL}/{@code xxxA} view and the response's {@code xxxC} view of one map - so the two are
+     * addressed by name rather than by position.
+     *
+     * @param received the terminal input area, whose metadata carries the cursor requests
+     * @param painted  the map area as {@code 1300-SETUP-SCREEN-ATTRS} left it
+     * @return the metadata sibling, never {@code null}
+     */
+    ScreenMetadata screenMetadata(AccountViewRequest received, AccountViewResponse painted) {
+        Objects.requireNonNull(received, "The terminal input area carries the xxxL cursor requests");
+        Objects.requireNonNull(painted, "The painted map area carries the xxxC attribute bytes");
+        Map<String, ScreenMetadata.FieldMetadata> fields = new LinkedHashMap<>();
+        String cursorOn = null;
+        for (AccountViewResponse.ScreenField field : AccountViewResponse.ScreenField.values()) {
+            AccountViewResponse.FieldAttributes quad = painted.attributes(field);
+            fields.put(field.label(), ScreenMetadata.FieldMetadata.of(quad.getColour(), quad.getPs(),
+                    quad.getHilight(), quad.getValidn()));
+            if (cursorOn == null && received.metadata(
+                    AccountViewRequest.ScreenField.valueOf(field.name())).isCursorHere()) {
+                cursorOn = field.label();
+            }
+        }
+        return ScreenMetadata.of(cursorOn,
+                painted.attributes(AccountViewResponse.ScreenField.ERRMSG).getColour(),
+                false,
+                fields);
     }
 
     /**
@@ -899,21 +1008,24 @@ public class AccountViewController {
      * <p>Second, the request is copied rather than mutated in place, so a caller's object is never
      * altered by having been passed here.
      *
-     * <h4>The payload's own key field must not contradict the URI</h4>
-     * This route states the record's key twice - in the URI and in the screen field the URI binds - and
-     * a terminal has only one. The payload's member is therefore required to agree before it is
-     * overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
-     * refused at the boundary by
-     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
-     * Overwriting it silently, which is what happened before, discarded the operator's own typed key with
-     * no message. A client that echoes a painted screen agrees with the URI and never reaches the
-     * refusal.
+     * <h4>The URI seeds a first entry and is ignored on a re-entry</h4>
+     * A 3270 screen has one key field and no URI, and {@code COACTVWC} reads that field in exactly one
+     * place: {@code 2200-EDIT-MAP-INPUTS} at {@code :628-632}, which runs only on the
+     * {@code CDEMO-PGM-REENTER} arm at {@code :361-374}, after {@code 2100-RECEIVE-MAP}. On the
+     * {@code CDEMO-PGM-ENTER} arm at {@code :338-360} nothing is received at all: the program paints the
+     * screen from the key it was handed, which is what the path variable projects.
+     *
+     * <p>So the path value is written into {@code ACCTSIDI} on a first entry - no communication area, or
+     * one whose context is not re-entry - and on a re-entry the received field is left <strong>exactly as
+     * it arrived</strong> and processed by the source's own edit and read sequence. Typing another account
+     * number over a painted screen is a valid action of this screen, and it is neither overwritten nor
+     * refused here.
      *
      * @param acctId  the account identifier from the URI
      * @param request the received payload, or {@code null} on a cold start
-     * @return a request whose {@code ACCTSIDI} is the eleven-character image of {@code acctId}
-     * @throws IllegalArgumentException     if {@code acctId} is wider than {@code ACCTSIDI}
-     * @throws ScreenInputRejectedException if the payload's {@code acctsid} names a different account
+     * @return on a first entry, a request whose {@code ACCTSIDI} is the eleven-character image of
+     *         {@code acctId}; on a re-entry, the request as it arrived
+     * @throws IllegalArgumentException if {@code acctId} is wider than {@code ACCTSIDI}
      */
     AccountViewRequest bind(String acctId, AccountViewRequest request) {
         if (acctId.length() > AccountViewRequest.ACCTSID_LENGTH) {
@@ -924,10 +1036,26 @@ public class AccountViewController {
         }
         AccountViewRequest received =
                 request == null ? coldStartRequest() : new AccountViewRequest(request);
-        ScreenInputRejectedException.requireKeyAgreement(ACCTSID_MEMBER, acctId,
-                received.getAcctsid(), AccountViewRequest.ACCTSID_LENGTH, PIC_X_CODEC, NO_CRITERION_IMAGE);
-        received.setAcctsid(PIC_X_CODEC.movePicX(acctId, AccountViewRequest.ACCTSID_LENGTH));
+        if (!isReentry(received)) {
+            received.setAcctsid(PIC_X_CODEC.movePicX(acctId, AccountViewRequest.ACCTSID_LENGTH));
+        }
         return received;
+    }
+
+    /**
+     * Whether this turn is the {@code CDEMO-PGM-REENTER} arm - the one turn on which the program performs
+     * an {@code EXEC CICS RECEIVE MAP} and reads the operator's own typed key.
+     *
+     * <p>{@code app/cbl/COACTVWC.cbl:282-293} treats an absent communication area as no conversation at
+     * all, and {@code :338-374} dispatches on {@code CDEMO-PGM-CONTEXT}: {@code CDEMO-PGM-ENTER} paints,
+     * {@code CDEMO-PGM-REENTER} receives. A payload carrying no area, or one whose context is not
+     * {@value NavigationContext#PGM_CONTEXT_REENTER}, is therefore a turn on which nothing was received.
+     *
+     * @param received the payload as it arrived
+     * @return {@code true} when the source would perform {@code 2100-RECEIVE-MAP} on this turn
+     */
+    private static boolean isReentry(AccountViewRequest received) {
+        return received.hasNavigationContext() && received.getNavigationContext().isReenter();
     }
 
     /**
@@ -944,24 +1072,35 @@ public class AccountViewController {
     }
 
     /**
-     * Resolves {@code EIBCALEN}.
+     * Resolves {@code EIBCALEN} - the length of the area that arrived, tested for zero and nothing else.
      *
-     * <p>{@code COACTVWC} reads {@code EIBCALEN} exactly twice, at {@code :282} and {@code :462}, and both
-     * times only asks whether it is zero. So the accepted values are zero and the lengths of the areas this
-     * program addresses: {@value NavigationContext#COMMAREA_LENGTH}, which is what
-     * {@code AccountViewRequest.commareaLength()} reports for a payload carrying a context, and
-     * {@value #PASSED_COMMAREA_LENGTH}, which is that area followed by {@code WS-THIS-PROGCOMMAREA}. All
-     * three are unambiguous; anything else would be a length no area in this program has.
+     * <h4>Zero versus non-zero is the whole of what the source asks</h4>
+     * {@code app/cbl/COACTVWC.cbl:282} tests {@code EIBCALEN} against zero and never against any other
+     * value: zero means the transaction was typed at a clear screen and there is no conversation, and
+     * anything else means an area arrived and its first 160 bytes are {@code CARDDEMO-COMMAREA}.
+     * So this method preserves the length that arrived and branches on zero versus non-zero, exactly as
+     * the source does.
      *
-     * <p>A stated value must agree with what arrived. {@code EIBCALEN} describes the area CICS passed, so
-     * it cannot contradict the payload - and the contradiction matters, because {@code :282} uses it to
-     * decide whether the conversation's state survives the turn.
+     * <h4>Why no set of accepted lengths is enumerated</h4>
+     * Because the real lengths are several and all of them are legitimate. COMEN01C transfers control passing
+     * {@code CARDDEMO-COMMAREA} alone, and
+     * this program's own {@code COMMON-RETURN} passes {@code WS-COMMAREA}, declared {@code PIC X(2000)} - so a
+     * client continuing the pseudo-conversation faithfully reports 2000 while one
+     * arriving from the menu reports 160. An earlier revision accepted only zero and one
+     * synthetic length and answered {@code 400} to both of those real values, which refused the very
+     * payload this API's own response tells a client to send back. Any non-negative length is therefore
+     * accepted and carried through unchanged; only the zero test is acted on, because only the zero test
+     * exists in the source.
      *
-     * @param eibcalen the stated value, or {@code null} to derive it
-     * @param request  the received payload
-     * @return zero when no communication area arrived, otherwise a positive length
-     * @throws IllegalArgumentException if the stated value is not a length this program addresses, or
-     *                                  disagrees with the payload
+     * <p>A stated value must still agree with what actually arrived: {@code EIBCALEN} describes the area
+     * CICS passed, so a payload carrying a communication area cannot report zero and a payload carrying
+     * none cannot report a length. That is not an invented rule but the one relation the parameter has to
+     * the body, and {@code :282} branches on it.
+     *
+     * @param eibcalen the stated value, or {@code null} to derive it from the carrier
+     * @param request  the bound request, whose commarea presence is the carrier
+     * @return zero when no communication area arrived, otherwise the length that arrived
+     * @throws IllegalArgumentException if the stated value is negative, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, AccountViewRequest request) {
         boolean carried = request.hasNavigationContext();
@@ -969,14 +1108,9 @@ public class AccountViewController {
             return carried ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
         }
         int stated = eibcalen;
-        if (stated != NO_COMMAREA_LENGTH
-                && stated != NavigationContext.COMMAREA_LENGTH
-                && stated != PASSED_COMMAREA_LENGTH) {
+        if (stated < NO_COMMAREA_LENGTH) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
-                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
-                    + "program is " + NO_COMMAREA_LENGTH + ", " + NavigationContext.COMMAREA_LENGTH
-                    + " (CARDDEMO-COMMAREA) or " + PASSED_COMMAREA_LENGTH
-                    + " (CARDDEMO-COMMAREA plus WS-THIS-PROGCOMMAREA).");
+                    + ", and EIBCALEN is the length of the area CICS passed, which cannot be negative.");
         }
         if ((stated == NO_COMMAREA_LENGTH) == carried) {
             throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
@@ -1134,7 +1268,14 @@ public class AccountViewController {
         // numeric one. They are modelled as always-present values rather than as Optionals precisely
         // because 1200-SETUP-SCREEN-VARS can reach ACCOUNT-RECORD without a successful account read; see
         // projectAccountRecord1200.
-        task.accountRecord = new AccountRecord(PIC_X_CODEC.charset());
+        //
+        // Both are 01-level items of their own, so the INITIALIZE at :268-270 - which names CC-WORK-AREA,
+        // WS-MISC-STORAGE and WS-COMMAREA - does not reach them. Establishing them here is nonetheless
+        // exactly what COBOL leaves them holding, because this method runs once per interaction on the
+        // statement after the Conversation is created and nothing can have written either area first.
+        // COACTVWC has no second INITIALIZE, unlike COACTUPC at :983, so there is no mid-flow point at
+        // which this could blank an area a read had filled.
+        task.accountRecord = new AccountRecord(codec.charset());
         task.customerRecord = new CustomerRecord();
         // CARD-XREF-RECORD (COPY CVACT03Y at :251) is only ever read inside the arm that filled it, so an
         // absent value can be represented as absent without any path being able to observe it.
@@ -1187,7 +1328,7 @@ public class AccountViewController {
         // declared width, so a context carrying a short program name comes back space padded to PIC X(08),
         // exactly as the receiving area would hold it.
         task.carddemoCommarea = NavigationContext.fromFixedWidth(
-                PIC_X_CODEC, task.carddemoCommarea.toFixedWidth(PIC_X_CODEC));
+                codec, task.carddemoCommarea.toFixedWidth(codec));
         task.thisProgCommarea = ThisProgCommarea.fromImage(task.thisProgCommarea.toImage());
     }
 
@@ -1420,8 +1561,8 @@ public class AccountViewController {
                 PIC_X_CODEC.movePicX(task.wsReturnMsg, CardScreenState.CCARD_ERROR_MSG_LENGTH));
         // :397-400 - repack both areas into WS-COMMAREA at their declared offsets: the 160-character
         // context first, then the 12-character trailer, then the 1828 spaces INITIALIZE left behind.
-        String commareaImage = PIC_X_CODEC.decodeImage(
-                task.carddemoCommarea.toFixedWidth(PIC_X_CODEC), "CARDDEMO-COMMAREA");
+        String commareaImage = codec.decodeImage(
+                task.carddemoCommarea.toFixedWidth(codec), "CARDDEMO-COMMAREA");
         task.wsCommarea = PIC_X_CODEC.movePicX(
                 commareaImage + task.thisProgCommarea.toImage(), WS_COMMAREA_LENGTH);
         // :402-406 - EXEC CICS RETURN TRANSID('CAVW') COMMAREA(WS-COMMAREA).

@@ -5,24 +5,24 @@ import com.vsergeychik.carddemo.billing.dto.BillPaymentRequest;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentResponse;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentResponse.CursorField;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
-import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import jakarta.validation.Valid;
 import java.time.Clock;
-import java.util.Map;
 import java.util.Objects;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -239,6 +239,14 @@ public final class BillPaymentController {
     public static final String BILL_PAY_PATH = "/api/billpay";
 
     /**
+     * The payload member carrying the {@code CCARD-AID} token, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller knows which of its ten members contradicted the raw byte it also
+     * sent.
+     */
+    static final String AID_MEMBER = "aid";
+
+    /**
      * {@code WS-PGMNAME PIC X(08) VALUE 'COBIL00C'} - {@code app/cbl/COBIL00C.cbl:37}.
      *
      * <p>Moved into {@code PGMNAMEO} by {@code POPULATE-HEADER-INFO} at {@code :326} and into
@@ -299,40 +307,15 @@ public final class BillPaymentController {
     public static final char LOW_VALUE = '\u0000';
 
     /**
-     * Every {@code CCARD-AID} token mapped to the {@code EIBAID} byte it stands for.
+     * The width of the raw {@code EIBAID} form of {@link BillPaymentRequest#getAid()}: one character.
      *
-     * <p>{@link BillPaymentRequest#getAid()} carries the five-character token that
-     * {@code CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy} declares, because that is the form
-     * the whole module's online payloads use. {@code app/cbl/COBIL00C.cbl:125} evaluates the raw
-     * {@code EIBAID} byte, so the two have to be reconciled somewhere, and this table is where.
-     *
-     * <p>Built from the tokens {@link AidKey} itself publishes rather than from retyped literals, so
-     * the two cannot drift apart - including the two trailing spaces on {@code 'PA1  '} and
-     * {@code 'PA2  '}, which are part of the five-byte value and not incidental formatting.
-     *
-     * <p>Immutable, and the only {@code static} member here that is not a scalar constant.
-     * {@link Map#ofEntries} returns an unmodifiable map, so this is shared state that cannot be
-     * mutated by anything - which is what makes it admissible where a mutable static field would not
-     * be. A lookup with a default also keeps the reconciliation branch-free at the call site, which
-     * matters because the branch counter for this package is gated independently of every other.
+     * <p>{@link PfKeyResolver#AID_TOKEN_LENGTH} is five, the width of the {@code CCARD-AID} token the
+     * responses of this module publish; this is the width of the byte {@code :125} evaluates.
      */
-    private static final Map<String, Byte> EIBAID_BY_TOKEN = Map.ofEntries(
-            Map.entry(AidKey.ENTER.token(), CicsAid.DFHENTER),
-            Map.entry(AidKey.CLEAR.token(), CicsAid.DFHCLEAR),
-            Map.entry(AidKey.PA1.token(), CicsAid.DFHPA1),
-            Map.entry(AidKey.PA2.token(), CicsAid.DFHPA2),
-            Map.entry(AidKey.PFK01.token(), CicsAid.DFHPF1),
-            Map.entry(AidKey.PFK02.token(), CicsAid.DFHPF2),
-            Map.entry(AidKey.PFK03.token(), CicsAid.DFHPF3),
-            Map.entry(AidKey.PFK04.token(), CicsAid.DFHPF4),
-            Map.entry(AidKey.PFK05.token(), CicsAid.DFHPF5),
-            Map.entry(AidKey.PFK06.token(), CicsAid.DFHPF6),
-            Map.entry(AidKey.PFK07.token(), CicsAid.DFHPF7),
-            Map.entry(AidKey.PFK08.token(), CicsAid.DFHPF8),
-            Map.entry(AidKey.PFK09.token(), CicsAid.DFHPF9),
-            Map.entry(AidKey.PFK10.token(), CicsAid.DFHPF10),
-            Map.entry(AidKey.PFK11.token(), CicsAid.DFHPF11),
-            Map.entry(AidKey.PFK12.token(), CicsAid.DFHPF12));
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
 
     // =================================================================================================
     // Collaborators. Three fields, all final, all constructor-injected. No field injection, no setter,
@@ -449,8 +432,20 @@ public final class BillPaymentController {
      * byte rendered as the character {@code "ô"}, which made it the only screen of the seventeen a
      * client had to read differently.
      *
+     * <p><strong>The key may arrive as its raw byte, and that byte is what {@code :125} evaluates.</strong>
+     * Both spellings of {@link AidRequestParameter} bind and carry all 256 values of {@code EIBAID}, so
+     * {@code PF15} is distinguishable from {@code PF3}. {@code COBIL00C} does not copy
+     * {@code app/cpy/CSSTRPFY.cpy} - it compares the raw byte inline at {@code :125-141} and has no
+     * clause for {@code DFHPF15}, so on the mainframe {@code PF15} reaches {@code WHEN OTHER} and paints
+     * the invalid-key message. The five-character token cannot state that, because the copybook folds
+     * {@code PF15} onto {@code 'PFK03'} and this screen's {@code PF3} arm would run instead. A request
+     * that sends neither parameter keeps the token decode it always had.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start;
      *                validated against the symbolic map's declared widths
+     * @param eibaid  the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value, or
+     *                {@code null} when the request names no key
+     * @param eibAid  the accepted alternate spelling of the same parameter
      * @return the outbound screen: the ten map members, the communication area to send back next time,
      *         the six communication-area extension members, the navigation triple naming where the
      *         client goes if control transferred, and {@code screenMetadata} carrying the cursor
@@ -458,10 +453,15 @@ public final class BillPaymentController {
      */
     @PostMapping(path = BILL_PAY_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public ScreenResponse<BillPaymentResponse> payBill(
-            @Valid @RequestBody(required = false) final BillPaymentRequest request) {
+            @Valid @RequestBody(required = false) final BillPaymentRequest request,
+            @RequestParam(name = AidRequestParameter.CANONICAL_NAME, required = false)
+            final Integer eibaid,
+            @RequestParam(name = AidRequestParameter.ALTERNATE_NAME, required = false)
+            final Integer eibAid) {
         final BillPaymentRequest received =
                 Objects.requireNonNullElse(request, new BillPaymentRequest());
-        final BillPaymentResponse response = mainPara(received).response();
+        final BillPaymentResponse response =
+                mainPara(received, AidRequestParameter.resolve(eibaid, eibAid)).response();
         return ScreenResponse.of(response, screenMetadataOf(response, received));
     }
 
@@ -557,6 +557,24 @@ public final class BillPaymentController {
      * @throws NullPointerException if {@code request} is {@code null}
      */
     Invocation mainPara(final BillPaymentRequest request) {
+        return mainPara(request, null);
+    }
+
+    /**
+     * Runs {@code MAIN-PARA} with the raw attention identifier the request stated.
+     *
+     * <p>The overload the request mapping calls, and the one a test drives when the distinction between
+     * {@code PF3} and {@code PF15} is the point. {@link #mainPara(BillPaymentRequest)} delegates here
+     * with {@code null}, which is "the request named no raw byte" and leaves the payload's token as the
+     * only statement of the key - the behaviour that existed before the parameter did.
+     *
+     * @param request   the inbound screen; must not be {@code null}
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when the request
+     *                  named no key
+     * @return the state at the moment the task returned to CICS or transferred, never {@code null}
+     * @throws NullPointerException if {@code request} is {@code null}
+     */
+    Invocation mainPara(final BillPaymentRequest request, final Integer statedAid) {
         Objects.requireNonNull(request, "A payload is required: COBIL00C is driven entirely by its "
                 + "communication area, the EIBAID and the received map, all of which travel in it. An "
                 + "absent body is represented by an empty payload whose communication area is null, "
@@ -614,7 +632,7 @@ public final class BillPaymentController {
             return firstEntry(response, request, passed);
         }
 
-        return reentry(response, request, passed);
+        return reentry(response, request, passed, statedAid);
     }
 
     /**
@@ -728,21 +746,25 @@ public final class BillPaymentController {
      * {@code CONFIRMI OF COBIL0AI} - the received map, at its declared widths, with an untransmitted
      * field standing at {@code LOW-VALUES}.
      *
-     * @param response the payload being filled, already carrying the blanked message line of {@code :105}
-     * @param request  the inbound screen
-     * @param passed   {@code CARDDEMO-COMMAREA} exactly as it arrived
+     * @param response  the payload being filled, already carrying the blanked message line of
+     *                  {@code :105}
+     * @param request   the inbound screen
+     * @param passed    {@code CARDDEMO-COMMAREA} exactly as it arrived
+     * @param statedAid the raw {@code EIBAID} byte the request stated, or {@code null} when it stated
+     *                  none and the payload's token is the only statement of the key
      * @return the state at the moment the task returned to CICS or transferred, never {@code null}
      */
     private Invocation reentry(final BillPaymentResponse response,
                                final BillPaymentRequest request,
-                               final NavigationContext passed) {
+                               final NavigationContext passed,
+                               final Integer statedAid) {
 
         // :124  PERFORM RECEIVE-BILLPAY-SCREEN.
         final PaymentState state = new PaymentState(codec, passed);
         receiveBillpayScreen(response, state, request);
 
         // :125  EVALUATE EIBAID. Raw-byte equalities, exactly as the source's EVALUATE compares them.
-        final byte eibAid = eibAidOf(request.getAid());
+        final byte eibAid = resolveEibAid(statedAid, request.getAid());
 
         if (PfKeyResolver.isEnter(eibAid)) {                                              // :126
             // :127  PERFORM PROCESS-ENTER-KEY. The paragraph owns its own working storage, because it
@@ -1091,52 +1113,93 @@ public final class BillPaymentController {
 
     /**
      * The raw {@code EIBAID} byte that the {@code EVALUATE} at {@code app/cbl/COBIL00C.cbl:125} compares
-     * against, resolved from the five-character token the payload carries.
+     * against, read out of the payload's {@code aid} member.
      *
-     * <p>Three sources, in precedence order:
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention identifier,
+     * so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF3} as {@code U+00F3}, and
+     * {@code :125} compares exactly that. Three outcomes:
      *
      * <ol>
-     *   <li>a token this module knows, resolved through {@link #EIBAID_BY_TOKEN}. The value is brought to
-     *       its declared {@value PfKeyResolver#AID_TOKEN_LENGTH}-character width by the codec's
-     *       {@code PIC X} rule first, so both {@code "PA1"} and {@code "PA1  "} resolve - which is the
-     *       same {@code MOVE} the field would have performed on a terminal;</li>
-     *   <li>a token naming no key at all, which becomes {@link CicsAid#DFHNULL}. That byte matches none
-     *       of the program's three named values, so it reaches {@code WHEN OTHER} at {@code :138} and is
+     *   <li><strong>One character</strong> yields its code point, folding nothing: {@code DFHPF15}
+     *       arrives as {@code U+00C3} and stays distinct from {@code DFHPF3}, which is what
+     *       {@code EIBAID = DFHPF3} means on a terminal.</li>
+     *   <li><strong>Any other width</strong> yields {@link CicsAid#DFHNULL}. That byte matches none of
+     *       the program's three named values, so it reaches {@code WHEN OTHER} at {@code :138} and is
      *       answered with the standard invalid-key message - the same answer the program gives any key it
      *       does not handle. This is where {@link PfKeyResolver}'s explicit no-match outcome lands: the
      *       {@code EVALUATE} in {@code app/cpy/CSSTRPFY.cpy} has no {@code WHEN OTHER} arm and no
-     *       {@code DFHPA3} arm, so "nothing matched" is a real state rather than a defaulted one;</li>
-     *   <li>an absent or empty token, which becomes {@link CicsAid#DFHENTER}. A CICS terminal always
-     *       presents some attention identifier, so absence is not a state the source can be in, and
-     *       {@code ENTER} is the only default that cannot reach a branch the operator could not have
+     *       {@code DFHPA3} arm, so "nothing matched" is a real state rather than a defaulted one.</li>
+     *   <li><strong>An absent or empty value</strong> yields {@link CicsAid#DFHENTER}. A CICS terminal
+     *       always presents some attention identifier, so absence is not a state the source can be in,
+     *       and {@code ENTER} is the only default that cannot reach a branch the operator could not have
      *       reached. It is also safe on this screen in particular: {@code ENTER} with no confirmation
      *       character displays the balance and asks for confirmation at {@code :237-239}; the payment
      *       itself is gated on {@code CONFIRMI} holding {@code 'Y'} or {@code 'y'} at {@code :173-177},
      *       and that gate is untouched.</li>
      * </ol>
      *
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code CSSTRPFY} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so
+     * {@code 'PFK03'} stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}. Decoding it had to choose,
+     * and choosing {@code DFHPF3} navigated back for a {@code PF15} press the source answers with
+     * {@code WHEN OTHER} at {@code :138}. {@code COBIL00C} does not copy {@code CSSTRPFY} - its
+     * {@code COPY} list at {@code :63-85} carries {@code DFHAID} and not {@code CSSTRPFY} - so the fold
+     * is not its behaviour and there is nothing to invert. A five-character token is therefore no longer
+     * a byte at all: it is a width this program cannot identify, which is {@code WHEN OTHER}. The token
+     * survives as derived metadata on the way out, where {@link PfKeyResolver#resolve(byte)} produces it.
+     *
+     * <p>A character above {@link #MAX_AID_CODE_POINT} is reported as {@code DFHNULL} rather than
+     * narrowed: {@code EIBAID} is one byte, so a cast of {@code U+01F3} would keep its low eight bits and
+     * land on {@code 0xF3}, which <em>is</em> {@code DFHPF3}, the key {@code :128} navigates back on.
+     *
      * <p>The dispatch that follows uses {@link PfKeyResolver#isEnter(byte)},
      * {@link PfKeyResolver#isPf3(byte)} and {@link PfKeyResolver#isPf4(byte)}, which are byte equalities
      * exactly as the source's {@code EVALUATE EIBAID} compares them. The folding form -
-     * {@link PfKeyResolver#resolve(byte)}, which maps {@code PF13} through {@code PF24} back onto
-     * {@code PFK01} through {@code PFK12} - is deliberately <strong>not</strong> used for the dispatch:
-     * {@code COBIL00C} does not copy {@code CSSTRPFY} and compares the raw byte, so folding would let one
-     * key behave like another in a program that has no such behaviour.
+     * {@link PfKeyResolver#resolve(byte)} - is deliberately <strong>not</strong> used for the dispatch,
+     * for the same reason it is not used to read the input.
      *
-     * <p>No query parameter carrying a raw byte is accepted. The attention identifier is conversation
-     * state and travels in the payload with the communication area and the screen values, which is the
-     * whole of what keeps this endpoint stateless; a second carrier would be a second source of truth
-     * able to contradict the first.
+     * <p>This is the decode for a request that stated <strong>only</strong> the token. A request may also
+     * state the raw byte, and then that byte is acted on instead - see
+     * {@link #resolveEibAid(Integer, String)}. The token remains a carrier of conversation state, so the
+     * endpoint stays stateless either way; what the raw byte adds is the twelve values the token cannot
+     * express, and a token that contradicts it is refused rather than silently dropped, so the two can
+     * never quietly disagree.
      *
-     * @param aid the token from the payload, possibly {@code null}
+     * @param aid the {@code aid} member from the payload, possibly {@code null}
      * @return the {@code EIBAID} byte to evaluate
      */
     byte eibAidOf(final String aid) {
         if (aid == null || aid.isEmpty()) {
             return CicsAid.DFHENTER;
         }
-        return EIBAID_BY_TOKEN.getOrDefault(codec.movePicX(aid, PfKeyResolver.AID_TOKEN_LENGTH),
-                CicsAid.DFHNULL);
+        if (aid.length() != RAW_AID_LENGTH) {
+            return CicsAid.DFHNULL;
+        }
+        final char stated = aid.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return CicsAid.DFHNULL;
+        }
+        return (byte) stated;
+    }
+
+    /**
+     * Chooses which of the two statements of the key the request made is acted on: the raw byte when it
+     * is there, the token otherwise.
+     *
+     * <p>The byte wins because it is the lossless one - see {@link AidRequestParameter} - and because
+     * this program compares {@code EIBAID} inline, so a folded token would give {@code PF15} this
+     * screen's {@code PF3} arm instead of {@code WHEN OTHER}. A token stated beside a disagreeing byte is
+     * refused rather than dropped.
+     *
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when absent
+     * @param aid       the payload's {@code CCARD-AID} token, or {@code null} when absent
+     * @return the {@code EIBAID} byte {@code :125} evaluates
+     */
+    byte resolveEibAid(final Integer statedAid, final String aid) {
+        if (statedAid == null) {
+            return eibAidOf(aid);
+        }
+        return AidRequestParameter.requireStatedAid(AID_MEMBER, statedAid, aid, codec);
     }
 
     /**

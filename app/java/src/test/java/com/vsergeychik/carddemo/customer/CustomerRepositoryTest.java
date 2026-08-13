@@ -487,6 +487,43 @@ class CustomerRepositoryTest {
     }
 
     /**
+     * A mocked chain that describes a usable column, answers the keyed read with no rows, and refuses the
+     * unreadable-row probe that follows it.
+     *
+     * <p>For the one arm of the absence proof (finding DB-05) no seeded relation can produce: a probe the
+     * backend will not run, which leaves the absence unprovable.
+     *
+     * @return a template whose keyed read is empty and whose probe is refused
+     * @throws SQLException never; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate emptyReadThenRefusedProbe() throws SQLException {
+        DataSource dataSource = Mockito.mock(DataSource.class);
+        Connection connection = Mockito.mock(Connection.class);
+        Statement statement = Mockito.mock(Statement.class);
+        ResultSet describeResultSet = Mockito.mock(ResultSet.class);
+        ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+        Mockito.when(dataSource.getConnection()).thenReturn(connection);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(describeResultSet);
+        Mockito.when(describeResultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
+
+        PreparedStatement keyedRead = Mockito.mock(PreparedStatement.class);
+        ResultSet noRows = Mockito.mock(ResultSet.class);
+        Mockito.when(noRows.next()).thenReturn(false);
+        Mockito.when(keyedRead.executeQuery()).thenReturn(noRows);
+        Mockito.when(connection.prepareStatement(Mockito.anyString())).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.endsWith("IS NULL")) {
+                throw new SQLException("the unreadable-row probe is refused");
+            }
+            return keyedRead;
+        });
+        return new JdbcTemplate(dataSource);
+    }
+
+    /**
      * A mocked chain that describes a usable column but refuses every prepared statement.
      *
      * @return a template whose probe succeeds and whose reads and writes fail
@@ -1127,6 +1164,59 @@ class CustomerRepositoryTest {
     class KeyedReadTests {
 
         @Test
+        @DisplayName("finding DB-05: a present-but-unreadable row is not reported as an absent customer")
+        void anUnreadableRowIsNotReportedAsAbsent() {
+            // CUST-ID is the leading nine bytes of the record image, so a row whose record-image column
+            // holds nothing has no knowable key: the keyed predicate cannot match it and the read comes
+            // back empty. '23' from there would have COACTVWC paint "Customer not found" and CBTRN01C
+            // abend about a record that is present in the dataset.
+            List<String> rows = new ArrayList<>(fixtureRows());
+            rows.add(null);
+            CustomerRepository repository = repository(seeded(rows));
+
+            ReadResult result = repository.readByKey("999999997");
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.customer()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a genuinely absent key still reports '23', proved rather than assumed")
+        void aGenuinelyAbsentKeyIsStillNotFound() {
+            CustomerRepository repository = repository(seeded(fixtureRows()));
+
+            ReadResult result = repository.readByKey("999999997");
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a read that found its record is untouched by an unreadable row")
+        void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
+            List<String> rows = new ArrayList<>(fixtureRows());
+            rows.add(null);
+            String first = fixtureRows().get(0);
+
+            ReadResult result = repository(seeded(rows)).readByKey(keyImageOf(first));
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.customer().orElseThrow().recordImage(ASCII)).isEqualTo(first);
+        }
+
+        @Test
+        @DisplayName("finding DB-05: a probe the backend refuses is reported, never assumed absent")
+        void aRefusedProbeIsReportedRatherThanAssumedAbsent() throws SQLException {
+            ReadResult result = repository(emptyReadThenRefusedProbe()).readByKey("000000001");
+
+            assertThat(result.isNotFound())
+                    .as("the probe established nothing, so the absence stays unproved")
+                    .isFalse();
+            assertThat(result.isOther()).isTrue();
+        }
+
+        @Test
         @DisplayName("finds every fixture record by its numeric identifier")
         void findsByNumericIdentifier() {
             List<String> rows = fixtureRows();
@@ -1378,14 +1468,20 @@ class CustomerRepositoryTest {
             List<String> prepared = new ArrayList<>();
             CustomerRepository repository = repository(recordingPreparedStatements(prepared));
 
+            // Two statements per read, not one: the record is absent from this empty relation, so the
+            // keyed read is followed by the unreadable-row probe that proves the absence before '23' is
+            // reported (finding DB-05). Neither probe carries FOR UPDATE - it takes no lock, because it
+            // asks about the relation rather than about a record.
             repository.readByKey("000000001");
-            assertThat(prepared).hasSize(1);
+            assertThat(prepared).hasSize(2);
             assertThat(prepared.get(0)).doesNotContain("FOR UPDATE");
+            assertThat(prepared.get(1)).endsWith("IS NULL").doesNotContain("FOR UPDATE");
 
             prepared.clear();
             withUnitOfWork(() -> repository.readForUpdate("000000001"));
-            assertThat(prepared).hasSize(1);
+            assertThat(prepared).hasSize(2);
             assertThat(prepared.get(0)).endsWith("FOR UPDATE");
+            assertThat(prepared.get(1)).endsWith("IS NULL").doesNotContain("FOR UPDATE");
         }
 
         @Test

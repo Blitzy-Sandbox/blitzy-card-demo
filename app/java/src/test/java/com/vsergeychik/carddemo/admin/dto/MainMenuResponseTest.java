@@ -1997,21 +1997,36 @@ class MainMenuResponseTest {
         }
 
         @Test
-        @DisplayName("an absent communication area becomes the initial 160-byte area, never null")
-        void anAbsentContextFallsBackToTheInitialArea() {
-            // COBOL has no null: a COMMAREA is always 160 bytes of something. This is also the false arm
-            // of the only conditional in the builder, so both arms are exercised - the true arm by the
-            // echo tests above.
-            MainMenuResponse response = MainMenuResponse.builder()
+        @DisplayName("an explicit null communication area is kept, because EIBCALEN = 0 is a real state")
+        void anExplicitlyAbsentContextIsKept() {
+            // The builder DEFAULTS to an initial 160-byte area, and that default is unchanged. What it no
+            // longer does is overwrite an explicit null - because on one path null is the answer.
+            //
+            // app/cbl/COMEN01C.cbl:175-177 RETURN-TO-SIGNON-SCREEN is a bare
+            // XCTL PROGRAM(CDEMO-TO-PROGRAM) with NO COMMAREA option, so COSGN00C is entered with
+            // EIBCALEN = 0 and takes its cold start at app/cbl/COSGN00C.cbl:80-83. Substituting an
+            // initial area here would hand the client 160 bytes to send on, sign-on would see a non-zero
+            // EIBCALEN, and it would run its re-entry path instead - a flow that transfer cannot reach on
+            // the mainframe. The option transfer at :152-155 DOES name COMMAREA, and it still echoes the
+            // area; the difference between the two XCTLs is the whole point.
+            MainMenuResponse transferred = MainMenuResponse.builder()
                     .navigationContext(null)
                     .build();
 
+            assertThat(transferred.navigationContext())
+                    .describedAs("null means 'no communication area travelled', and it survives")
+                    .isNull();
+            assertThat(transferred.withNavigationContext(null).navigationContext())
+                    .describedAs("and it survives a derived copy, because toBuilder passes it through")
+                    .isNull();
+
+            // The default is untouched: everything that does not deliberately state null still gets an
+            // area, so initial() and every painted path are unchanged.
+            MainMenuResponse response = MainMenuResponse.builder().build();
             assertThat(response.navigationContext()).isNotNull()
                     .isEqualTo(NavigationContext.empty());
             assertThat(response.navigationContext().toFixedWidth(CODEC)).hasSize(160);
-            assertThat(MainMenuResponse.builder().build().navigationContext())
-                    .isEqualTo(NavigationContext.empty());
-            assertThat(response.withNavigationContext(null).navigationContext())
+            assertThat(MainMenuResponse.initial().navigationContext())
                     .isEqualTo(NavigationContext.empty());
         }
 

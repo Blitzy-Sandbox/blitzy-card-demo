@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.billing.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
@@ -282,6 +283,16 @@ import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
  * @see BillPaymentRequest
  * @see NavigationContext
  */
+@JsonPropertyOrder({
+        // The same ten xxxI items in the same app/cpy-bms/COBIL00.CPY order the request publishes,
+        // so a client reading the request and the response reads one screen in one order. Without
+        // this, reflection moves the seven @JsonProperty-renamed members to the end of the object.
+        "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "actidin", "curbal",
+        "confirm", "errmsg",
+        // Transport extensions after the map: the commarea, the three XCTL targets COBIL00C names
+        // through CDEMO-TO-PROGRAM, and the paging state.
+        "navigationContext", "nextProgram", "nextMapset", "nextMap", "trnIdFirst", "trnIdLast",
+        "pageNum", "nextPageFlg", "trnSelFlg", "trnSelected"})
 public class BillPaymentResponse {
 
     // =================================================================================================

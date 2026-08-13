@@ -845,6 +845,33 @@ public class AccountRepository {
     }
 
     /**
+     * Refuses a record whose bytes are in any code page but this dataset's.
+     *
+     * <p>{@link AccountRecord} is byte-backed: it is constructed over a {@code Charset} and
+     * {@link AccountRecord#toByteArray()} hands back what it holds. This repository binds those bytes as
+     * they are, so the record's page and the dataset's page have to be the same one, and a caller that
+     * built the record elsewhere is the only place that can get it wrong.
+     *
+     * <p>{@link IllegalArgumentException} rather than a {@link WriteResult}: no {@code FILE STATUS} and
+     * no CICS {@code RESP} describes "the caller encoded this in the wrong page", and
+     * {@code app/cbl/COACTUPC.cbl:4076-4081} has no arm for it. It is a wiring defect, and it is raised
+     * where it can still be prevented.
+     *
+     * @param record the record about to be written
+     * @throws IllegalArgumentException if the record's code page is not this dataset's
+     */
+    private void requireOwnCodePage(AccountRecord record) {
+        if (!record.charset().equals(codec.charset())) {
+            throw new IllegalArgumentException("An ACCOUNT-RECORD encoded in " + record.charset().name()
+                    + " cannot be written to dataset '" + datasetName + "', which is stored in "
+                    + codec.charset().name() + ". The record's bytes are bound to the page it was built "
+                    + "with and this repository writes them unchanged, so the rewrite would store "
+                    + "corrupt bytes and report success. Build the record with the dataset's own code "
+                    + "page - AccountRepository.datasetCharset() reports it.");
+        }
+    }
+
+    /**
      * Rewrites one record against already-resolved statements.
      *
      * <p>Shared by {@link #rewrite(AccountRecord)}, which resolves the dataset's shape for itself, and by
@@ -856,6 +883,15 @@ public class AccountRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private WriteResult rewrite(Statements sql, AccountRecord record) {
+        // A record built over another code page is refused before anything is attempted, because nothing
+        // below this line transcodes: record.toByteArray() returns the bytes the record already holds,
+        // and they are bound to the page it was constructed with. Writing them into a dataset stored in
+        // a different page does not fail - it succeeds, reports FILE STATUS '00', and stores a record
+        // whose every byte outside the invariant range is wrong. An earlier revision of COACTUPC's
+        // update path staged its 300-byte image with a hard-coded US-ASCII codec while production binds
+        // IBM037, and the US-ASCII test profile made the two agree, so nothing failed anywhere.
+        requireOwnCodePage(record);
+
         // A rewrite with no unit of work open is refused before anything is attempted: the pool hands out
         // connections with auto-commit disabled, so the UPDATE would execute, report the row it replaced,
         // and then be rolled back when the connection was returned - and this method would report
@@ -985,7 +1021,7 @@ public class AccountRepository {
                     + "' to read " + subject);
         }
         return readKeyed(forUpdate ? sql.selectByKeyForUpdate() : sql.selectByKey(), keyImage,
-                subject);
+                subject, sql.probeUnreadableRows());
     }
 
     /**
@@ -995,12 +1031,14 @@ public class AccountRepository {
      * so it supplies the statement rather than describing the dataset a second time. One body serves
      * both entry points, so a keyed read cannot behave differently depending on which one issued it.
      *
-     * @param statement the composed keyed select, with or without {@code FOR UPDATE}
-     * @param keyImage  the key exactly as the record stores it
-     * @param subject   how to name the operation in a diagnostic - never the key's value
+     * @param statement           the composed keyed select, with or without {@code FOR UPDATE}
+     * @param keyImage            the key exactly as the record stores it
+     * @param subject             how to name the operation in a diagnostic - never the key's value
+     * @param unreadableRowsProbe the statement that proves the absence before it is reported
      * @return the discriminated outcome; never {@code null}
      */
-    private ReadResult readKeyed(String statement, String keyImage, String subject) {
+    private ReadResult readKeyed(String statement, String keyImage, String subject,
+            String unreadableRowsProbe) {
         List<byte[]> rows;
         try {
             rows = jdbcTemplate.query(firstRowMatching(statement, asPrefixPattern(keyImage)),
@@ -1012,9 +1050,9 @@ public class AccountRepository {
 
         // As in the browse, the list itself is never null, so emptiness is the whole of the test.
         if (rows.isEmpty()) {
-            // The INVALID KEY condition. Reported, never thrown, so the caller can display the
-            // identifier before it decides what to do - see readByKey(long).
-            return ReadResult.notFound();
+            // The INVALID KEY condition - but only once it has been PROVED. Reported, never thrown, so the
+            // caller can display the identifier before it decides what to do - see readByKey(long).
+            return provenAbsence(subject, unreadableRowsProbe);
         }
         byte[] recordImage = rows.get(0);
         if (recordImage == null) {
@@ -1028,6 +1066,59 @@ public class AccountRepository {
             return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
         }
         return decoded(recordImage, subject);
+    }
+
+    /**
+     * Reports the {@code INVALID KEY} condition only once no row of the dataset is
+     * <strong>unreadable</strong>, and the invalid-request outcome when one is.
+     *
+     * <h2>Why an absence has to be proved</h2>
+     * <p>{@code ACCT-ID} is the leading eleven bytes of {@code ACCOUNT-RECORD}, so it lives
+     * <em>inside</em> the record image. SQL evaluates every comparison against a null as {@code UNKNOWN},
+     * so the keyed predicate cannot match a row whose record-image column holds nothing, and such a row
+     * leaves the read with no matching row: on the face of it {@code NOTFND}. But every consumer acts on
+     * that answer as a fact - {@code app/cbl/CBTRN02C.cbl:1500-B} rejects a transaction with reason 103,
+     * {@code app/cbl/COACTVWC.cbl} paints "Account not found", and {@code app/cbl/CBACT04C.cbl:378}
+     * abends outright - so reporting it while a present record sits unreadable in the relation states
+     * something the data does not support.
+     *
+     * <p>The answer is therefore confirmed with one further row-limited read before it is returned, on the
+     * empty path only. A read that found its record is untouched: a VSAM {@code READ} of a key that
+     * resolves does not fail because another record is damaged.
+     *
+     * <p>The outcome for a present-but-unreadable row is the permanent-error status carrying
+     * {@link FileStatus#INVREQ} - the same arm this method's sibling already reports for a row it can see,
+     * so no caller's guard chain changes shape.
+     *
+     * @param subject             how to name the operation in a diagnostic - never the key's value
+     * @param unreadableRowsProbe the statement selecting the rows with no record image
+     * @return {@link ReadResult#notFound()} when the absence is established, the permanent-error outcome
+     *         when it is not; never {@code null}
+     */
+    private ReadResult provenAbsence(String subject, String unreadableRowsProbe) {
+        List<byte[]> unreadable;
+        try {
+            unreadable = jdbcTemplate.query(firstRow(unreadableRowsProbe), recordImageMapper());
+        } catch (DataAccessException translated) {
+            // The probe established nothing, so the absence stays unproved. Reported on the arm a refused
+            // read is reported on rather than falling back to '23', which would be exactly the unsupported
+            // claim this probe exists to prevent.
+            return reportRead(translated, "establish that the account master dataset '" + datasetName
+                    + "' holds no unreadable row before reporting " + subject + " as absent");
+        }
+        // As everywhere else in this class, the list itself is never null, so emptiness is the whole test.
+        if (unreadable.isEmpty()) {
+            // A genuine INVALID KEY: no row matched the key and no row of the dataset is unreadable, so
+            // the absence is established rather than assumed.
+            return ReadResult.notFound();
+        }
+        LOG.error("A keyed read of " + subject + " from the account master dataset '" + datasetName
+                + "' matched no row, but the dataset holds a row with no record image at column position "
+                + RECORD_IMAGE_COLUMN_INDEX + " - and ACCT-ID is part of that image, so that row's key "
+                + "cannot be known; reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " rather than reporting as absent a "
+                + "record that may be the one asked for");
+        return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
     }
 
     // =================================================================================================
@@ -1533,12 +1624,18 @@ public class AccountRepository {
      * @param selectByKeyForUpdate the keyed read with the row lock the CICS {@code READ ... UPDATE}
      *                    takes, valid only inside a unit of work
      * @param rewrite     the rewrite: replace the image of the record whose image begins with the key
+     * @param probeUnreadableRows the rows whose record-image column holds nothing. Not a COBOL
+     *                    operation: it is what lets a keyed read <em>prove</em> an absence before
+     *                    reporting {@code NOTFND}, because {@code ACCT-ID} lives inside the record image
+     *                    and a row with no image therefore has no knowable key - see
+     *                    {@link AccountRepository#provenAbsence(String, String)}
      */
     record Statements(String selectFirst,
                       String selectNext,
                       String selectByKey,
                       String selectByKeyForUpdate,
-                      String rewrite) {
+                      String rewrite,
+                      String probeUnreadableRows) {
 
         /**
          * Composes the statements over one dataset and one record-image column.
@@ -1559,7 +1656,8 @@ public class AccountRepository {
                     relation.selectAfterAscending(recordImageColumn),
                     relation.selectByKey(recordImageColumn),
                     relation.selectByKeyForUpdate(recordImageColumn),
-                    relation.rewriteByKey(recordImageColumn));
+                    relation.rewriteByKey(recordImageColumn),
+                    relation.selectUnreadableRows(recordImageColumn));
         }
     }
 
@@ -1854,7 +1952,7 @@ public class AccountRepository {
             }
             return repository.readKeyed(statements.selectByKey(),
                     AccountRecord.keyImage(acctId, repository.codec.charset()),
-                    "the account identifier " + acctId);
+                    "the account identifier " + acctId, statements.probeUnreadableRows());
         }
 
         /**
@@ -1882,7 +1980,7 @@ public class AccountRepository {
                 return ReadResult.of(openStatus);
             }
             return repository.readKeyed(statements.selectByKeyForUpdate(), keyImage,
-                    "the record identification field for update");
+                    "the record identification field for update", statements.probeUnreadableRows());
         }
 
         /**

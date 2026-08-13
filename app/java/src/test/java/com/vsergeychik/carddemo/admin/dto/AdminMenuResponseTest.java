@@ -800,13 +800,26 @@ class AdminMenuResponseTest {
         }
 
         @Test
-        @DisplayName("an absent communication area becomes the initial COMMAREA, never null")
-        void absentCommunicationAreaBecomesTheInitialCommarea() {
-            final AdminMenuResponse response = AdminMenuResponse.builder()
+        @DisplayName("an explicit null communication area is kept, because EIBCALEN = 0 is a real state")
+        void anExplicitlyAbsentCommunicationAreaIsKept() {
+            // Every screen member is normalised, and the communication area deliberately is not. For a
+            // DFHMDF field null is never an answer - a field always has a width and therefore an image.
+            // For a COMMAREA, absence IS a CICS state: app/cbl/COADM01C.cbl:165-167 is a bare
+            // XCTL PROGRAM(CDEMO-TO-PROGRAM) with no COMMAREA option, so COSGN00C is entered with
+            // EIBCALEN = 0 and takes its cold start at app/cbl/COSGN00C.cbl:80-83. The option transfer at
+            // :142-145 does name COMMAREA and still echoes the area.
+            final AdminMenuResponse transferred = AdminMenuResponse.builder()
                     .navigationContext(null)
                     .build();
-            assertThat(response.navigationContext())
+            assertThat(transferred.navigationContext())
+                    .describedAs("null means 'no communication area travelled', and it survives")
+                    .isNull();
+
+            // The builder's default is untouched, so nothing that does not state null changes.
+            assertThat(AdminMenuResponse.builder().build().navigationContext())
                     .isNotNull()
+                    .isEqualTo(NavigationContext.empty());
+            assertThat(AdminMenuResponse.empty().navigationContext())
                     .isEqualTo(NavigationContext.empty());
         }
 

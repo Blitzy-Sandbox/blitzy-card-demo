@@ -322,8 +322,7 @@ final class COUSR01CParityTest {
         KeySequencedFile file = new KeySequencedFile(seeded.rows());
 
         UserAddController controller = new UserAddController(
-                stubbedRepository(invocation, codec, file), invocation.clock(),
-                invocation.charset());
+                stubbedRepository(invocation, codec, file), invocation.clock());
 
         ProgramState state = controller.mainPara(requestOf(invocation, codec),
                 aidByteOf(invocation.aid()), invocation.eibcalen());
@@ -356,6 +355,9 @@ final class COUSR01CParityTest {
     private static SecUserRepository stubbedRepository(Invocation invocation, FixedWidthCodec codec,
                                                       KeySequencedFile file) {
         SecUserRepository repository = mock(SecUserRepository.class);
+        // The controller takes its code page from the dataset it writes through, so the stub reports the
+        // case's own page rather than letting the controller name one.
+        when(repository.datasetCharset()).thenReturn(codec.charset());
         when(repository.add(any(SecUserRecord.class))).thenAnswer(call -> {
             SecUserRecord offered = call.getArgument(0);
             String image = codec.decodeImage(SecUserRecord.encode(offered, codec),

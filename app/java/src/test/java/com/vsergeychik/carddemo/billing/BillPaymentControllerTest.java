@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.billing;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -22,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.billing.BillPaymentController.Invocation;
 import com.vsergeychik.carddemo.billing.BillPaymentService.PaymentState;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentRequest;
@@ -37,11 +39,13 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.WebConfig;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
@@ -227,6 +231,17 @@ import org.springframework.web.bind.annotation.RequestMapping;
  */
 @DisplayName("BillPaymentController - COBIL00C, the CB00 bill-payment screen, POST /api/billpay")
 class BillPaymentControllerTest {
+
+    /**
+     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
+     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
+     *
+     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
+     * judges every value against the page in force rather than against a page of its own choosing: a
+     * mapper built for a test has to name the same one the profile does or it is not the production
+     * mapper.
+     */
+    private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
     // =================================================================================================
     // Constants. Every one is immutable, so none of them is mutable static state (practice B9).
@@ -613,7 +628,8 @@ class BillPaymentControllerTest {
      */
     private static ObjectMapper productionMapper() {
         Jackson2ObjectMapperBuilder builder = Jackson2ObjectMapperBuilder.json();
-        Jackson2ObjectMapperBuilderCustomizer customizer = new WebConfig().carddemoJacksonCustomizer();
+        Jackson2ObjectMapperBuilderCustomizer customizer =
+                new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET);
         customizer.customize(builder);
         return builder.build();
     }
@@ -747,7 +763,7 @@ class BillPaymentControllerTest {
             mockMvc(mapper).perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.trnname").value(BillPaymentResponse.TRANSACTION_ID));
@@ -1066,7 +1082,7 @@ class BillPaymentControllerTest {
                 stubEnterKeyOutcome(unconfirmedOutcome());
 
                 Invocation invocation =
-                        controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, " "));
+                        controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "));
 
                 verify(service, times(1)).processEnterKey(eq(ACCT_KEY), eq(" "),
                         eq(NavigationContext.empty().withPgmReenter()));
@@ -1081,7 +1097,7 @@ class BillPaymentControllerTest {
             void theReceivedMapReachesTheCoreAtDeclaredWidths() {
                 stubEnterKeyOutcome(unconfirmedOutcome());
 
-                controller.mainPara(reentry(AidKey.ENTER.token(), "1", ""));
+                controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), "1", ""));
 
                 // RECEIVE-BILLPAY-SCREEN leaves each item at its PICTURE width: X(11) and X(1).
                 verify(service).processEnterKey(eq("1          "), eq(" "),
@@ -1091,7 +1107,7 @@ class BillPaymentControllerTest {
             @Test
             @DisplayName("DFHPF3 at :129-130 falls back to COMEN01C when CDEMO-FROM-PROGRAM is blank")
             void pf3FallsBackToTheMainMenu() {
-                BillPaymentRequest request = reentry(AidKey.PFK03.token(), ACCT_KEY, " ");
+                BillPaymentRequest request = reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " ");
 
                 BillPaymentResponse response = controller.mainPara(request).response();
 
@@ -1103,7 +1119,7 @@ class BillPaymentControllerTest {
             @Test
             @DisplayName("DFHPF3 at :132-133 returns to CDEMO-FROM-PROGRAM when one is named")
             void pf3ReturnsToTheCaller() {
-                BillPaymentRequest request = reentry(AidKey.PFK03.token(), ACCT_KEY, " ");
+                BillPaymentRequest request = reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " ");
                 request.setNavigationContext(
                         populatedCommarea().withPgmReenter().withFromProgram("COMEN01C"));
 
@@ -1116,7 +1132,7 @@ class BillPaymentControllerTest {
             @Test
             @DisplayName("DFHPF3 with a LOW-VALUES caller also falls back to COMEN01C")
             void pf3WithALowValuesCallerFallsBack() {
-                BillPaymentRequest request = reentry(AidKey.PFK03.token(), ACCT_KEY, " ");
+                BillPaymentRequest request = reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " ");
                 request.setNavigationContext(NavigationContext.empty().withPgmReenter()
                         .withFromProgram(lowValues(NavigationContext.FROM_PROGRAM_LENGTH)));
 
@@ -1128,7 +1144,7 @@ class BillPaymentControllerTest {
             @Test
             @DisplayName("DFHPF3 sends no screen, so the map travels back exactly as RECEIVE left it")
             void pf3EchoesTheReceivedMap() {
-                BillPaymentRequest request = reentry(AidKey.PFK03.token(), ACCT_KEY, "Y");
+                BillPaymentRequest request = reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, "Y");
 
                 Invocation invocation = controller.mainPara(request);
 
@@ -1148,7 +1164,7 @@ class BillPaymentControllerTest {
             @DisplayName("DFHPF4 at :136-137 clears the current screen")
             void pf4ClearsTheScreen() {
                 Invocation invocation =
-                        controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y"));
+                        controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y"));
 
                 verify(service, times(1)).clearCurrentScreen(any(PaymentState.class));
                 verify(service, never()).processEnterKey(any(), any(), any(NavigationContext.class));
@@ -1159,7 +1175,7 @@ class BillPaymentControllerTest {
             @DisplayName("WHEN OTHER at :138-141 raises the flag and reports the standard text")
             void whenOtherReportsAnInvalidKey() {
                 Invocation invocation =
-                        controller.mainPara(reentry(AidKey.PFK12.token(), ACCT_KEY, " "));
+                        controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF12), ACCT_KEY, " "));
 
                 verify(service, times(1)).invalidKeyPressed(any(PaymentState.class));
                 verify(service, never()).processEnterKey(any(), any(), any(NavigationContext.class));
@@ -1185,6 +1201,99 @@ class BillPaymentControllerTest {
                 verify(service, times(1)).invalidKeyPressed(any(PaymentState.class));
                 verify(service, never()).processEnterKey(any(), any(), any(NavigationContext.class));
                 verify(service, never()).clearCurrentScreen(any(PaymentState.class));
+            }
+
+            @Test
+            @DisplayName("a raw PF15 byte reaches WHEN OTHER, where the folded token took the PF3 arm")
+            void aRawUpperKeyIsNotItsFoldedPartner() {
+                // COBIL00C compares EIBAID inline at :125-141 and names no DFHPF15, so on the terminal
+                // PF15 paints the invalid-key message. CSSTRPFY folds PF15 onto 'PFK03', so a request
+                // that could only send the token had to take this screen's PF3 exit instead.
+                assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15)).contains(AidKey.PFK03);
+
+                Invocation invocation = controller.mainPara(reentry(null, ACCT_KEY, " "),
+                        Byte.toUnsignedInt(CicsAid.DFHPF15));
+
+                verify(service, times(1)).invalidKeyPressed(any(PaymentState.class));
+                verify(service, never()).processEnterKey(any(), any(), any(NavigationContext.class));
+                verify(service, never()).clearCurrentScreen(any(PaymentState.class));
+                assertThat(invocation.state().isErrFlagOn()).isTrue();
+            }
+
+            @Test
+            @DisplayName("a raw PF3 byte still takes the :128 back exit, so the lower key is unaffected")
+            void aRawLowerKeyStillTakesItsArm() {
+                Invocation invocation = controller.mainPara(reentry(null, ACCT_KEY, " "),
+                        Byte.toUnsignedInt(CicsAid.DFHPF3));
+
+                verify(service, never()).invalidKeyPressed(any(PaymentState.class));
+                assertThat(invocation.state().isErrFlagOn()).isFalse();
+                assertThat(invocation.response().getNextProgram().strip()).isNotEmpty();
+            }
+
+            @ParameterizedTest(name = "a raw DFHPF{0} byte is an invalid key here")
+            @ValueSource(ints = {13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+            @DisplayName("all twelve upper function keys reach WHEN OTHER when stated as raw bytes")
+            void everyUpperKeyIsInvalidHere(int pfNumber) {
+                controller.mainPara(reentry(null, ACCT_KEY, " "),
+                        Byte.toUnsignedInt(upperFunctionKey(pfNumber)));
+
+                verify(service, times(1)).invalidKeyPressed(any(PaymentState.class));
+                verify(service, never()).processEnterKey(any(), any(), any(NavigationContext.class));
+                verify(service, never()).clearCurrentScreen(any(PaymentState.class));
+            }
+
+            @Test
+            @DisplayName("the byte wins over the token, and a token restating it is accepted")
+            void theByteWinsAndAConsistentTokenIsAccepted() {
+                controller.mainPara(reentry(AidKey.PFK03.token(), ACCT_KEY, " "),
+                        Byte.toUnsignedInt(CicsAid.DFHPF15));
+
+                verify(service, times(1)).invalidKeyPressed(any(PaymentState.class));
+            }
+
+            @Test
+            @DisplayName("a token naming a different key is refused rather than discarded")
+            void aDisagreeingTokenIsRefused() {
+                assertThatThrownBy(() -> controller.mainPara(
+                        reentry(AidKey.PFK04.token(), ACCT_KEY, " "),
+                        Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                        .isInstanceOf(ScreenInputRejectedException.class)
+                        .hasMessageContaining("aid");
+
+                verify(service, never()).invalidKeyPressed(any(PaymentState.class));
+                verify(service, never()).clearCurrentScreen(any(PaymentState.class));
+            }
+
+            @ParameterizedTest(name = "a stated {0} is refused")
+            @ValueSource(ints = {-1, 256, 4096})
+            @DisplayName("a value that is not one byte is refused rather than narrowed")
+            void anImpossibleByteIsRefused(int stated) {
+                assertThatThrownBy(() -> controller.mainPara(reentry(null, ACCT_KEY, " "), stated))
+                        .isInstanceOf(ScreenInputRejectedException.class);
+
+                verify(service, never()).invalidKeyPressed(any(PaymentState.class));
+            }
+
+            @Test
+            @DisplayName("both spellings of the parameter reach the same byte through the route")
+            void bothSpellingsAreHonoured() {
+                controller.payBill(reentry(null, ACCT_KEY, " "),
+                        Byte.toUnsignedInt(CicsAid.DFHPF15), null);
+                verify(service, times(1)).invalidKeyPressed(any(PaymentState.class));
+
+                controller.payBill(reentry(null, ACCT_KEY, " "), null,
+                        Byte.toUnsignedInt(CicsAid.DFHPF15));
+                verify(service, times(2)).invalidKeyPressed(any(PaymentState.class));
+            }
+
+            /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
+            private static byte upperFunctionKey(int pfNumber) {
+                try {
+                    return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
+                } catch (ReflectiveOperationException absent) {
+                    throw new AssertionError("CicsAid does not declare DFHPF" + pfNumber, absent);
+                }
             }
 
             @Test
@@ -1237,7 +1346,8 @@ class BillPaymentControllerTest {
             void theEnterReenterMatrix(String context, String actIdIn, String confirm,
                                        boolean consultsTheCore) {
                 stubEnterKeyOutcome(unconfirmedOutcome());
-                BillPaymentRequest request = reentry(AidKey.ENTER.token(), actIdIn, confirm);
+                BillPaymentRequest request = reentry(
+                        PfKeyResolver.aidImage(CicsAid.DFHENTER), actIdIn, confirm);
                 boolean firstEntry = "ENTER".equals(context);
                 if (firstEntry) {
                     request.setNavigationContext(NavigationContext.empty());
@@ -1265,7 +1375,7 @@ class BillPaymentControllerTest {
                 stubEnterKeyOutcome(unconfirmedOutcome());
 
                 Invocation invocation =
-                        controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, " "));
+                        controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "));
 
                 assertThat(invocation.state().respCd()).isEqualTo(FileStatus.NORMAL);
                 assertThat(invocation.state().reasCd()).isEqualTo(FileStatus.NO_REASON_CODE);
@@ -1365,10 +1475,10 @@ class BillPaymentControllerTest {
             assertThat(controller.mainPara(new BillPaymentRequest()).response().getNextProgram())
                     .isEqualTo(BillPaymentResponse.SIGN_ON_PROGRAM);
             // :130 PF3 with no caller -> COMEN01C.
-            assertThat(controller.mainPara(reentry(AidKey.PFK03.token(), ACCT_KEY, " "))
+            assertThat(controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " "))
                     .response().getNextProgram()).isEqualTo(BillPaymentResponse.MAIN_MENU_PROGRAM);
             // :132-133 PF3 with a caller -> CDEMO-FROM-PROGRAM.
-            BillPaymentRequest fromCardList = reentry(AidKey.PFK03.token(), ACCT_KEY, " ");
+            BillPaymentRequest fromCardList = reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " ");
             fromCardList.setNavigationContext(NavigationContext.empty().withPgmReenter()
                     .withFromProgram("COCRDLIC"));
             assertThat(controller.mainPara(fromCardList).response().getNextProgram())
@@ -1387,7 +1497,7 @@ class BillPaymentControllerTest {
             MvcResult result = mockMvc(mapper).perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(
-                                    reentry(AidKey.PFK03.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.nextProgram")
                             .value(BillPaymentResponse.MAIN_MENU_PROGRAM))
@@ -1510,7 +1620,8 @@ class BillPaymentControllerTest {
         @DisplayName(":563-566 blanks the three fields and the message, and :562 parks the cursor")
         void blanksEveryFieldAndParksTheCursor() {
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y")).response();
 
             assertThat(response.getActIdIn())
                     .isEqualTo(spaces(BillPaymentResponse.ACT_ID_IN_LENGTH));
@@ -1527,7 +1638,8 @@ class BillPaymentControllerTest {
         @DisplayName("the header is repainted, because :555 performs SEND-BILLPAY-SCREEN")
         void repaintsTheHeader() {
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y")).response();
 
             assertThat(response.getTitle01()).isEqualTo(ScreenTitles.CCDA_TITLE01);
             assertThat(response.getTrnName()).isEqualTo(BillPaymentResponse.TRANSACTION_ID);
@@ -1538,7 +1650,7 @@ class BillPaymentControllerTest {
         @DisplayName("clearing the screen raises no error flag and reads no account")
         void raisesNoErrorAndReadsNothing() {
             Invocation invocation =
-                    controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y"));
+                    controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y"));
 
             assertThat(invocation.state().isErrFlagOn()).isFalse();
             verify(service, never()).processEnterKey(any(), any(), any(NavigationContext.class));
@@ -1549,7 +1661,8 @@ class BillPaymentControllerTest {
         @DisplayName("the context stays at REENTER, because :137 does not return to a previous screen")
         void keepsTheContextAtReenter() {
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y")).response();
 
             assertThat(response.getNavigationContext().isReenter()).isTrue();
             assertThat(response.getNextProgram())
@@ -1573,14 +1686,15 @@ class BillPaymentControllerTest {
         @DisplayName("the cursor indicator is metadata, and no xxxL member exists to carry it")
         void theCursorIsMetadataAndNoLengthItemIsPublished() throws Exception {
             Map<String, Object> wire = wireForm(
-                    controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response());
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y")).response());
 
             // The cursor request derives from the MOVE -1 TO xxxL statements, and AAP 0.6.3 keeps the xxxL
             // items out of the payload - so it is not a member of the screen type. It reaches the client on
             // screenMetadata.cursorField, which payBill assembles; the enum is still the internal carrier
             // and is still readable through the accessor.
             assertThat(wire).doesNotContainKey("cursorField");
-            assertThat(controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y"))
+            assertThat(controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y"))
                     .response().getCursorField()).isSameAs(CursorField.ACTIDIN);
             assertThat(wire).doesNotContainKeys("actIdInL", "confirmL", "ACTIDINL", "CONFIRML");
             assertThat(CursorField.values())
@@ -1591,7 +1705,8 @@ class BillPaymentControllerTest {
         @DisplayName("the fifteen ACTIDINL sites land on ACTIDIN - the clear path, :562")
         void theClearPathParksTheCursorInTheAccountField() {
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, "Y")).response();
 
             assertThat(response.getCursorField()).isEqualTo(CursorField.ACTIDIN);
         }
@@ -1601,7 +1716,8 @@ class BillPaymentControllerTest {
         void theEmptyIdentifierPathParksTheCursorInTheAccountField() {
             stubEnterKeyOutcome(emptyAccountIdOutcome());
 
-            Invocation invocation = controller.mainPara(reentry(AidKey.ENTER.token(), "", " "));
+            Invocation invocation = controller.mainPara(reentry(
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER), "", " "));
 
             assertThat(invocation.response().getCursorField()).isEqualTo(CursorField.ACTIDIN);
             assertThat(invocation.state().isErrFlagOn()).isTrue();
@@ -1613,7 +1729,8 @@ class BillPaymentControllerTest {
             stubEnterKeyOutcome(unconfirmedOutcome());
 
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, " ")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ")).response();
 
             assertThat(response.getCursorField()).isEqualTo(CursorField.CONFIRM);
             assertThat(response.getErrMsg().strip())
@@ -1630,7 +1747,8 @@ class BillPaymentControllerTest {
             });
 
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Q")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Q")).response();
 
             assertThat(response.getCursorField()).isEqualTo(CursorField.CONFIRM);
         }
@@ -1641,7 +1759,8 @@ class BillPaymentControllerTest {
             stubEnterKeyOutcome(paidOutcome("0000000000000001"));
 
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y")).response();
 
             assertThat(response.getMessageHighlight())
                     .isEqualTo(Character.toString(BmsAttributes.unsigned(BmsAttributes.DFHGREEN)))
@@ -1654,11 +1773,11 @@ class BillPaymentControllerTest {
         void noErrorPathColoursAnything() {
             stubEnterKeyOutcome(emptyAccountIdOutcome());
 
-            assertThat(controller.mainPara(reentry(AidKey.ENTER.token(), "", " "))
+            assertThat(controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), "", " "))
                     .response().getMessageHighlight()).isNull();
-            assertThat(controller.mainPara(reentry(AidKey.PFK12.token(), ACCT_KEY, " "))
+            assertThat(controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF12), ACCT_KEY, " "))
                     .response().getMessageHighlight()).isNull();
-            assertThat(controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, " "))
+            assertThat(controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, " "))
                     .response().getMessageHighlight()).isNull();
             assertThat(controller.mainPara(firstEntry()).response().getMessageHighlight()).isNull();
         }
@@ -1670,7 +1789,7 @@ class BillPaymentControllerTest {
             String red = Character.toString(BmsAttributes.unsigned(BmsAttributes.DFHRED));
 
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.ENTER.token(), "", " ")).response();
+                    controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), "", " ")).response();
 
             // COBIL00C copies DFHBMSCA but NOT CSSETATY: grep reports zero occurrences. Inventing a
             // red-plus-asterisk highlight on a screen that has none would be a new feature (practice B5).
@@ -1713,7 +1832,7 @@ class BillPaymentControllerTest {
             stubEnterKeyOutcome(unconfirmedOutcome());
 
             Map<String, Object> wire = wireForm(controller
-                    .mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, " ")).response());
+                    .mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ")).response());
 
             assertThat(wire.keySet()).containsExactlyInAnyOrderElementsOf(RESPONSE_MEMBERS);
             assertThat(BillPaymentResponse.MAP_FIELD_COUNT).isEqualTo(MAP_FIELD_WIDTHS.size());
@@ -1723,7 +1842,7 @@ class BillPaymentControllerTest {
         @DisplayName("the request accepts exactly the same ten fields, plus the state it carries")
         void theRequestAcceptsExactlyTheDeclaredMembers() throws Exception {
             Map<String, Object> wire = wireForm(withExtension(
-                    reentry(AidKey.ENTER.token(), ACCT_KEY, "Y")));
+                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y")));
 
             assertThat(wire.keySet()).containsExactlyInAnyOrderElementsOf(REQUEST_MEMBERS);
             assertThat(wire.keySet()).containsAll(MAP_FIELD_WIDTHS.keySet());
@@ -1735,7 +1854,8 @@ class BillPaymentControllerTest {
             stubEnterKeyOutcome(paidOutcome("0000000000000001"));
 
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y")).response();
             Map<String, Object> wire = wireForm(response);
 
             MAP_FIELD_WIDTHS.forEach((field, width) -> {
@@ -1791,7 +1911,7 @@ class BillPaymentControllerTest {
         void noMetadataItemIsPublished() throws Exception {
             stubEnterKeyOutcome(paidOutcome("0000000000000001"));
             Map<String, Object> wire = wireForm(controller
-                    .mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y")).response());
+                    .mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y")).response());
 
             for (String field : MAP_FIELD_WIDTHS.keySet()) {
                 for (String suffix : METADATA_SUFFIXES) {
@@ -1819,14 +1939,15 @@ class BillPaymentControllerTest {
             ObjectMapper mapper = productionMapper();
 
             String json = mapper.writeValueAsString(controller
-                    .mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y")).response());
+                    .mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y")).response());
 
             // Its source is an edited PICTURE, so the sign, the leading zeros and the decimal point are
             // all part of the value. No monetary quantity is ever a primitive real number in this module,
             // and none is a JSON number on this screen either.
             assertThat(json).contains("\"curbal\":\"" + EDITED_BALANCE + "\"");
             assertThat(json).doesNotContain("\"curbal\":" + EDITED_BALANCE);
-            assertThat(wireForm(controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y"))
+            assertThat(wireForm(controller.mainPara(reentry(
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y"))
                     .response()).get("curbal")).isInstanceOf(String.class);
         }
 
@@ -1838,7 +1959,8 @@ class BillPaymentControllerTest {
             stubEnterKeyOutcome(state -> state.setMessage(eighty));
 
             BillPaymentResponse response =
-                    controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, " ")).response();
+                    controller.mainPara(reentry(
+                            PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ")).response();
 
             assertThat(response.getErrMsg())
                     .hasSize(BillPaymentResponse.ERR_MSG_LENGTH)
@@ -1855,7 +1977,7 @@ class BillPaymentControllerTest {
             mockMvc(mapper).perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), "", ""))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), "", ""))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.errmsg").value(codec.movePicX(
                             BillPaymentService.MSG_ACCT_ID_EMPTY,
@@ -1873,7 +1995,7 @@ class BillPaymentControllerTest {
             mockMvc(mapper).perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.screenMetadata.cursorField")
                             .value(CursorField.CONFIRM.name()));
@@ -1917,8 +2039,8 @@ class BillPaymentControllerTest {
             // PF3 echoes the map exactly as RECEIVE left it, so this proves the transport alone.
             MvcResult result = mockMvc(mapper).perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(
-                                    reentry(AidKey.PFK03.token(), paddedAccount, paddedConfirm))))
+                            .content(mapper.writeValueAsString(reentry(
+                                    PfKeyResolver.aidImage(CicsAid.DFHPF3), paddedAccount, paddedConfirm))))
                     .andExpect(status().isOk())
                     .andReturn();
 
@@ -1975,7 +2097,7 @@ class BillPaymentControllerTest {
             MvcResult result = mockMvc(mapper).perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andReturn();
 
@@ -1994,7 +2116,8 @@ class BillPaymentControllerTest {
         void twoIdenticalRequestsProduceIdenticalResponses() throws Exception {
             stubEnterKeyOutcome(unconfirmedOutcome());
             ObjectMapper mapper = productionMapper();
-            String body = mapper.writeValueAsString(reentry(AidKey.ENTER.token(), ACCT_KEY, " "));
+            String body = mapper.writeValueAsString(reentry(
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "));
             MockMvc mvc = mockMvc(mapper);
 
             String first = mvc.perform(post(BillPaymentController.BILL_PAY_PATH)
@@ -2011,7 +2134,7 @@ class BillPaymentControllerTest {
         @DisplayName("a brand-new controller answers identically, because nothing was retained")
         void aFreshControllerAnswersIdentically() throws Exception {
             stubEnterKeyOutcome(unconfirmedOutcome());
-            BillPaymentRequest request = reentry(AidKey.ENTER.token(), ACCT_KEY, " ");
+            BillPaymentRequest request = reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ");
             ObjectMapper mapper = productionMapper();
 
             String fromTheFirst = mapper.writeValueAsString(
@@ -2042,7 +2165,8 @@ class BillPaymentControllerTest {
         @DisplayName("all three pieces of conversation state arrive in the payload and leave in it")
         void everyPieceOfConversationStateTravelsInThePayload() throws Exception {
             stubEnterKeyOutcome(unconfirmedOutcome());
-            BillPaymentRequest request = withExtension(reentry(AidKey.ENTER.token(), ACCT_KEY, " "));
+            BillPaymentRequest request = withExtension(reentry(
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "));
             request.setNavigationContext(populatedCommarea().withPgmReenter());
 
             Map<String, Object> wire = wireForm(controller.mainPara(request).response());
@@ -2121,7 +2245,7 @@ class BillPaymentControllerTest {
             // lines, yet they are part of the area the program hands back. Round-tripped, never written.
             stubEnterKeyOutcome(unconfirmedOutcome());
             NavigationContext inbound = populatedCommarea().withPgmReenter();
-            BillPaymentRequest request = reentry(AidKey.ENTER.token(), ACCT_KEY, " ");
+            BillPaymentRequest request = reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ");
             request.setNavigationContext(inbound);
 
             NavigationContext returned =
@@ -2138,7 +2262,7 @@ class BillPaymentControllerTest {
         void allSixExtensionMembersAreCarried() {
             stubEnterKeyOutcome(unconfirmedOutcome());
             BillPaymentRequest request =
-                    withExtension(reentry(AidKey.ENTER.token(), ACCT_KEY, " "));
+                    withExtension(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "));
 
             BillPaymentResponse response = controller.mainPara(request).response();
 
@@ -2197,7 +2321,7 @@ class BillPaymentControllerTest {
             // And the two states really do take the two branches of :112.
             controller.mainPara(firstEntry());
             verify(service, times(1)).sendBillpayScreen(any(PaymentState.class));
-            controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, " "));
+            controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, " "));
             verify(service, times(1)).clearCurrentScreen(any(PaymentState.class));
         }
 
@@ -2218,9 +2342,9 @@ class BillPaymentControllerTest {
             // simply carried. Asserted rather than assumed, because inventing a role check here would
             // be a new feature on a program that authenticates nobody (practice B6, gate G41).
             stubEnterKeyOutcome(unconfirmedOutcome());
-            BillPaymentRequest asAdmin = reentry(AidKey.ENTER.token(), ACCT_KEY, " ");
+            BillPaymentRequest asAdmin = reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ");
             asAdmin.setNavigationContext(administrator.withPgmReenter());
-            BillPaymentRequest asUser = reentry(AidKey.ENTER.token(), ACCT_KEY, " ");
+            BillPaymentRequest asUser = reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " ");
             asUser.setNavigationContext(ordinary.withPgmReenter());
 
             assertThat(controller.mainPara(asAdmin).response().getErrMsg())
@@ -2345,13 +2469,15 @@ class BillPaymentControllerTest {
             assertThat(BillPaymentController.LOW_VALUE).isEqualTo('\u0000');
         }
 
-        @ParameterizedTest(name = "the token {0} resolves to the EIBAID byte {1}")
-        @DisplayName("the CCARD-AID token resolves to the raw EIBAID byte the EVALUATE compares")
-        @CsvSource({
-            "ENTER,125", "CLEAR,109", "'PA1  ',108", "'PA2  ',110",
-            "PFK01,-15", "PFK03,-13", "PFK04,-12", "PFK12,124"})
-        void theTokenResolvesToTheEibAidByte(String token, byte expected) {
-            assertThat(controller.eibAidOf(token)).isEqualTo(expected);
+        @ParameterizedTest(name = "the byte {0} is read back as itself")
+        @DisplayName("the payload's one character IS the raw EIBAID byte the EVALUATE compares")
+        @ValueSource(ints = {0x40, 0x6C, 0x6D, 0x6E, 0x7D, 0xC3, 0xF1, 0xF3, 0xF4, 0x7C, 0xFF})
+        void theTokenResolvesToTheEibAidByte(int unsigned) {
+            byte stated = (byte) unsigned;
+
+            assertThat(controller.eibAidOf(PfKeyResolver.aidImage(stated)))
+                    .as("nothing is folded, so PF15 stays distinct from PF3 and reaches WHEN OTHER")
+                    .isEqualTo(stated);
         }
 
         @Test
@@ -2359,22 +2485,49 @@ class BillPaymentControllerTest {
         void theFourArmsAreTheFourPredicates() {
             // COBIL00C does not copy CSSTRPFY - grep reports zero occurrences - and tests EIBAID inline
             // at :125. The shared resolver must nonetheless produce identical boolean outcomes.
-            assertThat(PfKeyResolver.isEnter(controller.eibAidOf(AidKey.ENTER.token()))).isTrue();
-            assertThat(PfKeyResolver.isPf3(controller.eibAidOf(AidKey.PFK03.token()))).isTrue();
-            assertThat(PfKeyResolver.isPf4(controller.eibAidOf(AidKey.PFK04.token()))).isTrue();
-            assertThat(PfKeyResolver.isEnter(controller.eibAidOf(AidKey.PFK03.token()))).isFalse();
-            assertThat(PfKeyResolver.isPf3(controller.eibAidOf(AidKey.PFK04.token()))).isFalse();
-            assertThat(PfKeyResolver.isPf4(controller.eibAidOf(AidKey.CLEAR.token()))).isFalse();
-            assertThat(PfKeyResolver.resolve(controller.eibAidOf(AidKey.PFK12.token())))
+            assertThat(PfKeyResolver.isEnter(controller.eibAidOf(
+                    PfKeyResolver.aidImage(CicsAid.DFHENTER)))).isTrue();
+            assertThat(PfKeyResolver.isPf3(controller.eibAidOf(
+                    PfKeyResolver.aidImage(CicsAid.DFHPF3)))).isTrue();
+            assertThat(PfKeyResolver.isPf4(controller.eibAidOf(
+                    PfKeyResolver.aidImage(CicsAid.DFHPF4)))).isTrue();
+            assertThat(PfKeyResolver.isEnter(controller.eibAidOf(
+                    PfKeyResolver.aidImage(CicsAid.DFHPF3)))).isFalse();
+            assertThat(PfKeyResolver.isPf3(controller.eibAidOf(
+                    PfKeyResolver.aidImage(CicsAid.DFHPF4)))).isFalse();
+            assertThat(PfKeyResolver.isPf4(controller.eibAidOf(
+                    PfKeyResolver.aidImage(CicsAid.DFHCLEAR)))).isFalse();
+            assertThat(PfKeyResolver.resolve(controller.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF12))))
                     .contains(AidKey.PFK12);
         }
 
         @Test
-        @DisplayName("an unpadded token still resolves, because the PIC X rule pads it first")
-        void anUnpaddedTokenStillResolves() {
+        @DisplayName("a CCARD-AID token is not one byte, so it names no key: WHEN OTHER at :138")
+        void aFoldedTokenIsNoLongerDecoded() {
+            // CSSTRPFY folds PF3 and PF15 both onto 'PFK03'; COBIL00C's COPY list at :63-85 carries
+            // DFHAID and not CSSTRPFY, so it compares EIBAID itself and the fold is not its behaviour.
             assertThat(PfKeyResolver.AID_TOKEN_LENGTH).isEqualTo(5);
-            assertThat(controller.eibAidOf("PA1")).isEqualTo(CicsAid.DFHPA1);
-            assertThat(controller.eibAidOf("PA2")).isEqualTo(CicsAid.DFHPA2);
+            assertThat(controller.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(controller.eibAidOf("PA1  ")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(controller.eibAidOf("PA1")).isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("PF15 is not PF3: it navigates nowhere and takes WHEN OTHER, as on a terminal")
+        void highFunctionKeysAreNotFolded() {
+            byte pf15 = controller.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF15));
+
+            assertThat(pf15).isEqualTo(CicsAid.DFHPF15);
+            assertThat(PfKeyResolver.isPf3(pf15)).isFalse();
+            assertThat(PfKeyResolver.resolve(pf15))
+                    .as("CSSTRPFY does fold it onto PFK03 - which is why the token is not the input")
+                    .contains(AidKey.PFK03);
+        }
+
+        @Test
+        @DisplayName("a character above the one-byte AID space is DFHNULL, never narrowed onto PF3")
+        void aCharacterAboveTheAidSpaceIsDfhnull() {
+            assertThat(controller.eibAidOf(String.valueOf((char) 0x01F3))).isEqualTo(CicsAid.DFHNULL);
         }
 
         @Test
@@ -2384,6 +2537,7 @@ class BillPaymentControllerTest {
             assertThat(controller.eibAidOf("")).isEqualTo(CicsAid.DFHENTER);
             // DFHNULL matches no arm of the EVALUATE, which is precisely WHEN OTHER.
             assertThat(controller.eibAidOf("NOPE!")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(controller.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHNULL);
             assertThat(PfKeyResolver.resolve(CicsAid.DFHNULL)).isEmpty();
             assertThat(PfKeyResolver.isEnter(CicsAid.DFHNULL)).isFalse();
             assertThat(PfKeyResolver.isPf3(CicsAid.DFHNULL)).isFalse();
@@ -2442,9 +2596,19 @@ class BillPaymentControllerTest {
     }
 
     @Nested
+    // CobolCharsetConfig joins the slice because the web layer now depends on it: WebConfig's Jackson
+    // customizer takes the screen code page by bean name, so that an inbound screen value is judged
+    // against the code page this deployment states rather than against the platform default.
+    // @WebMvcTest loads web configuration only, so without this import the slice has no such bean - and
+    // the dependency is deliberately mandatory: a missing code page must fail the context, never quietly
+    // become a default. The profile's carddemo.charset.* properties are what it resolves.
     @WebMvcTest(BillPaymentController.class)
     @ActiveProfiles("test")
-    @Import(SliceCollaborators.class)
+    // CobolCharsetConfig comes with the slice because WebConfig now depends on it: the inbound
+    // screen-text boundary judges every value against the ACTIVE code page, so the page has to be
+    // in the context. Importing the real configuration rather than stubbing a Charset bean means
+    // the slice judges against the page application-test.yml names, exactly as the deployment does.
+    @Import({SliceCollaborators.class, CobolCharsetConfig.class})
     @DisplayName("the Spring MVC slice - real dispatcher, real WebConfig, mocked decision core")
     class TheSpringSlice {
 
@@ -2480,7 +2644,7 @@ class BillPaymentControllerTest {
             sliceMvc.perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.trnname").value(BillPaymentResponse.TRANSACTION_ID))
@@ -2516,7 +2680,7 @@ class BillPaymentControllerTest {
             sliceMvc.perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(productionMapper().writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.curdate").value(EXPECTED_CUR_DATE))
                     .andExpect(jsonPath("$.curtime").value(EXPECTED_CUR_TIME));
@@ -2540,7 +2704,7 @@ class BillPaymentControllerTest {
         @Test
         @DisplayName("Bean Validation is honoured: an account field wider than X(11) is refused")
         void beanValidationRejectsAnOverWideAccountField() throws Exception {
-            BillPaymentRequest tooWide = reentry(AidKey.ENTER.token(),
+            BillPaymentRequest tooWide = reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER),
                     "9".repeat(BillPaymentRequest.ACT_ID_IN_LENGTH + 1), " ");
 
             sliceMvc.perform(post(BillPaymentController.BILL_PAY_PATH)
@@ -2561,7 +2725,7 @@ class BillPaymentControllerTest {
             sliceMvc.perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(productionMapper().writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), "", ""))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), "", ""))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.errmsg").value(sliceCodec.movePicX(
                             BillPaymentService.MSG_ACCT_ID_EMPTY,
@@ -2589,7 +2753,7 @@ class BillPaymentControllerTest {
             MvcResult result = sliceMvc.perform(post(BillPaymentController.BILL_PAY_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(productionMapper().writeValueAsString(
-                                    reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
+                                    reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andReturn();
 
@@ -2626,10 +2790,10 @@ class BillPaymentControllerTest {
 
             controller.mainPara(new BillPaymentRequest());
             controller.mainPara(firstEntry());
-            controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y"));
-            controller.mainPara(reentry(AidKey.PFK03.token(), ACCT_KEY, " "));
-            controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, " "));
-            controller.mainPara(reentry(AidKey.PFK12.token(), ACCT_KEY, " "));
+            controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHENTER), ACCT_KEY, "Y"));
+            controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF3), ACCT_KEY, " "));
+            controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF4), ACCT_KEY, " "));
+            controller.mainPara(reentry(PfKeyResolver.aidImage(CicsAid.DFHPF12), ACCT_KEY, " "));
 
             List<String> consulted = new ArrayList<>();
             mockingDetails(service).getInvocations()

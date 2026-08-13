@@ -108,9 +108,65 @@
     "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
-  "expectedFinalState": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "0500024453765740",
+        "CARD-ACCT-ID": "00000000050",
+        "CARD-CVV-CD": "747",
+        "CARD-EMBOSSED-NAME": "Aniya Von                                         ",
+        "CARD-EXPIRAION-DATE": "2023-03-09",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "fields": {
+        "CARD-NUM": "0683586198171516",
+        "CARD-ACCT-ID": "00000000027",
+        "CARD-CVV-CD": "567",
+        "CARD-EMBOSSED-NAME": "Ward Jones                                        ",
+        "CARD-EXPIRAION-DATE": "2025-07-13",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "fields": {
+        "CARD-NUM": "0923877193247330",
+        "CARD-ACCT-ID": "00000000002",
+        "CARD-CVV-CD": "028",
+        "CARD-EMBOSSED-NAME": "Enrico Rosenbaum                                  ",
+        "CARD-EXPIRAION-DATE": "2024-08-11",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
   "expectedReturnCode": 0,
   "expectedMessages": [],
   "normalisations": [],
-  "expectedDatasets": []
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
 }

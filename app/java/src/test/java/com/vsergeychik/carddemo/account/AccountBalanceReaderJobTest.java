@@ -1645,6 +1645,20 @@ class AccountBalanceReaderJobTest {
         }
 
         @Test
+        @DisplayName("the default sink encodes in the injected dataset code page, not the platform's")
+        void theDefaultSinkEncodesInTheDatasetCodePage() {
+            // CBACT02C:78 DISPLAYs the 150-byte CARD-RECORD itself, so a SYSOUT line carries the
+            // dataset's own stored characters and the code page has to be the one the dataset was read
+            // in (practice B8). System.out is bound to file.encoding - a property of the JVM, not of the
+            // program - so it is deliberately not the stream underneath.
+            AccountBalanceReaderJob job = jobOver(cardRepositoryMock());
+
+            PrintStream stream = ((PrintStreamSysoutSink) job.sysoutSink()).stream();
+            assertThat(stream.charset()).isEqualTo(FIXTURE_CHARSET);
+            assertThat(stream).isNotSameAs(System.out);
+        }
+
+        @Test
         @DisplayName("the default sink writes one undecorated line per call, in order")
         void theDefaultSinkWritesUndecoratedLinesInOrder() {
             ByteArrayOutputStream captured = new ByteArrayOutputStream();
@@ -1673,10 +1687,19 @@ class AccountBalanceReaderJobTest {
         }
 
         @Test
-        @DisplayName("the standard-output sink factory yields a print-stream sink")
-        void theStandardOutputFactoryYieldsAPrintStreamSink() {
-            assertThat(AccountBalanceReaderJob.standardOutputSysoutSink())
-                    .isInstanceOf(PrintStreamSysoutSink.class);
+        @DisplayName("the standard-output factory takes the code page as a parameter and demands one")
+        void theStandardOutputFactoryTakesItsCharsetAsAParameter() {
+            // The production dataset code page is IBM037 (application.yml), the test profile's is
+            // US-ASCII, and neither is reached for by this factory - it is told. Building a sink is
+            // side-effect free; only writing through it reaches the process's own standard output, which
+            // is why nothing is emitted here.
+            Charset ebcdic = Charset.forName("IBM037");
+            assertThat(((PrintStreamSysoutSink) AccountBalanceReaderJob.standardOutput(ebcdic)).stream()
+                    .charset()).isEqualTo(ebcdic);
+            assertThat(((PrintStreamSysoutSink) AccountBalanceReaderJob.standardOutput(FIXTURE_CHARSET))
+                    .stream().charset()).isEqualTo(FIXTURE_CHARSET);
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> AccountBalanceReaderJob.standardOutput(null));
         }
     }
 

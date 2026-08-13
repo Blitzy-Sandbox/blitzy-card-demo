@@ -20,6 +20,8 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import com.vsergeychik.carddemo.parity.FieldDiffer.DiffResult;
@@ -196,6 +198,24 @@ class COACTVWCParityTest {
     /** The dataset binding key of the customer master - {@code CUSTDAT} of {@code :188-189}. */
     private static final String CUSTDAT = CustomerRepository.CICS_FILE_NAME;
 
+    /**
+     * The three {@code <VERB>-<DD>} names a case may declare a forced read at, mapped to the dataset
+     * binding each names.
+     *
+     * <p>Exactly {@code COACTVWC}'s three file verbs and nothing else: the {@code EXEC CICS READ} of
+     * {@code CXACAIX} at {@code :787} - a path over the {@code CCXREF} base cluster rather than a
+     * dataset of its own - the account read at {@code :843} and the customer read at {@code :864}. The
+     * keys are built from the same binding constants the stubs use, so a rename cannot leave a case file
+     * declaring a site that matches nothing.
+     *
+     * <p>{@link ParityCase.ScreenRequest#forcedOutcomes()} is keyed by {@link RepositoryOperation}, and
+     * all three of these are {@code READ}, so the key cannot say which. This is what says which.
+     */
+    private static final Map<String, String> READ_SITES = Map.of(
+            "READ-" + CCXREF, CCXREF,
+            "READ-" + ACCTDAT, ACCTDAT,
+            "READ-" + CUSTDAT, CUSTDAT);
+
     /** The number of cases the gate requires, restated locally so a wrong count fails loudly. */
     private static final int REQUIRED_CASES = ParityHarness.CASES_PER_PROGRAM;
 
@@ -320,8 +340,8 @@ class COACTVWCParityTest {
         FileStatus.Outcome forced = invocation.hasForcedOutcome(RepositoryOperation.READ)
                 ? invocation.forcedOutcome(RepositoryOperation.READ).outcome()
                 : null;
-        String forcedSite = forcedSite(invocation.caseId(), forced, crossReference, accounts,
-                customers);
+        String forcedSite = forcedSite(invocation.caseId(), forced, invocation.stimulus(),
+                invocation.datasets());
 
         AccountViewResponse painted = paint(invocation.caseId(), invocation.datasets(), forcedSite,
                 invocation.mapFields(), invocation.commarea(), invocation.eibcalen(),
@@ -365,13 +385,86 @@ class COACTVWCParityTest {
                 seededAccountRepository(seeded.get(ACCTDAT), forcedSite),
                 seededCardXrefRepository(seeded.get(CCXREF), forcedSite),
                 seededCustomerRepository(seeded.get(CUSTDAT), forcedSite),
-                clock);
+                clock, FIXTURE_CHARSET);
         AccountViewRequest request = requestOf(caseId, mapFields, commarea, eibcalen);
-        return Objects.requireNonNull(
+        // The endpoint answers a ScreenResponse: the 37 xxxI members unwrapped at the top level, and the
+        // xxxL cursor request plus the 37 xxxC attribute quads beside them under screenMetadata. This
+        // helper's subject is the map area, so it takes screen(); assertMetadataProjection below is where
+        // the sibling is checked.
+        ScreenResponse<AccountViewResponse> envelope = Objects.requireNonNull(
                 controller.viewAccount(pathAccountIdOf(mapFields), request, null, eibcalen,
                         Byte.toUnsignedInt(aidByteOf(caseId, aid))).getBody(),
                 "COACTVWC leaves either by EXEC CICS XCTL at :349 or by EXEC CICS RETURN at :402 and "
                         + ":885, so viewAccount always answers with a body");
+        assertMetadataProjection(caseId, envelope);
+        return envelope.screen();
+    }
+
+    /**
+     * Asserts the metadata sibling states exactly the presentation facts {@code 1300-SETUP-SCREEN-ATTRS}
+     * set, and that none of them leaked into the payload.
+     *
+     * <p>Run on every controller paint rather than in one dedicated case, because the property is about
+     * the envelope's shape and therefore has to hold on every path the twenty cases reach - the account
+     * found, not found, filtered, blank-filtered and abending arms alike.
+     *
+     * <p>Three things are checked. All 37 quads are present and each is published <strong>unsigned</strong>,
+     * because {@code DFHRED} is {@code X'F2'} and a signed byte would reach a client as {@code -14}. The
+     * cursor names the field whose {@code xxxL} item holds {@code -1}, which for this program is always
+     * {@code ACCTSID} ({@code :548}, {@code :550}, {@code :552}). And {@code resetAllOutputFields} is
+     * false, because {@code COACTVWC} has no {@code MOVE LOW-VALUES TO CACTVWAO} for a client to
+     * reproduce.
+     *
+     * <p>The cursor is asserted against the program's whole cursor vocabulary rather than recomputed from
+     * the caller's request, because {@code viewAccount} binds the URI onto a <em>new</em> request and
+     * mutates that copy's {@code xxxL} items - so the payload a caller holds is deliberately not the one
+     * the cursor was recorded on. {@code AccountViewControllerTest} pins the exact field per path.
+     *
+     * @param caseId   the case identifier, for diagnostics
+     * @param envelope the answer the endpoint produced
+     */
+    private static void assertMetadataProjection(String caseId,
+            ScreenResponse<AccountViewResponse> envelope) {
+        AccountViewResponse painted = envelope.screen();
+        ScreenMetadata metadata = envelope.screenMetadata();
+
+        assertThat(metadata.fields())
+                .describedAs("%s: every one of the 37 COACTVW fields declares a four-item attribute "
+                        + "quad in app/cpy-bms/COACTVW.CPY, and the client needs all of them to render "
+                        + "what the terminal showed", caseId)
+                .hasSize(AccountViewResponse.FIELD_COUNT);
+
+        for (AccountViewResponse.ScreenField field : AccountViewResponse.ScreenField.values()) {
+            AccountViewResponse.FieldAttributes quad = painted.attributes(field);
+            ScreenMetadata.FieldMetadata published = metadata.fields().get(field.label());
+            assertThat(published)
+                    .describedAs("%s: %s has no published quad", caseId, field.label())
+                    .isNotNull();
+            assertThat(published.colour())
+                    .describedAs("%s: %sC is X'%02X', and it must reach the client unsigned", caseId,
+                            field.label(), quad.getColour())
+                    .isEqualTo(Byte.toUnsignedInt(quad.getColour()));
+            assertThat(published.protection())
+                    .describedAs("%s: %sP is the programmed-symbol plane", caseId, field.label())
+                    .isEqualTo(Byte.toUnsignedInt(quad.getPs()));
+            assertThat(published.highlight()).isEqualTo(Byte.toUnsignedInt(quad.getHilight()));
+            assertThat(published.validation()).isEqualTo(Byte.toUnsignedInt(quad.getValidn()));
+        }
+
+        assertThat(metadata.cursorField())
+                .describedAs("%s: ACCTSID is this program's entire cursor vocabulary - all three arms of "
+                        + ":546-552 move -1 to ACCTSIDL and no other xxxL item is ever written - and null "
+                        + "is the transfer path at :349, which sends no map and so places no cursor",
+                        caseId)
+                .isIn(null, AccountViewResponse.ScreenField.ACCTSID.label());
+        assertThat(metadata.messageColour())
+                .describedAs("%s: the message colour is ERRMSG's own xxxC item", caseId)
+                .isEqualTo(Byte.toUnsignedInt(
+                        painted.attributes(AccountViewResponse.ScreenField.ERRMSG).getColour()));
+        assertThat(metadata.resetAllOutputFields())
+                .describedAs("%s: COACTVWC has no MOVE LOW-VALUES TO CACTVWAO, so there is no "
+                        + "group-clear for the client to reproduce", caseId)
+                .isFalse();
     }
 
     /**
@@ -379,25 +472,42 @@ class COACTVWCParityTest {
      *
      * <p>{@link ParityCase.ScreenRequest#forcedOutcomes()} is keyed by
      * {@link RepositoryOperation}, and all three of this program's reads are {@code READ}, so the key
-     * alone cannot name a site. The rule that resolves it is the one a case already states in its
-     * {@code inputs}: <strong>a forced outcome applies to the read of whichever dataset the case
-     * declares empty.</strong> That is not a convention invented for convenience - an empty dataset is
-     * a dataset whose rows cannot answer any key, so it is exactly the site at which an outcome has to
-     * be supplied rather than seeded, and because the other two datasets still hold their rows the
-     * reads before it still succeed and the flow still reaches the site being driven.
+     * alone cannot name a site. The site is therefore <strong>declared</strong>, as a
+     * {@code <VERB>-<DD>} entry in {@link ParityCase.UnitStimulus#callSiteOutcomes()}: one of
+     * {@code READ-CCXREF}, {@code READ-ACCTDAT} or {@code READ-CUSTDAT}.
      *
-     * @param caseId         the case identifier, for diagnostics
-     * @param forced         the outcome the case forces, or {@code null} when it forces none
-     * @param crossReference the seeded {@code CCXREF} rows
-     * @param accounts       the seeded {@code ACCTDAT} rows
-     * @param customers      the seeded {@code CUSTDAT} rows
+     * <p>It used to be <em>inferred</em> - from whichever dataset the case happened to declare empty -
+     * and that was the defect this replaces. The inference was sound but it was a convention: a reader of
+     * a case file could not see which of the three reads was driven without knowing the rule and
+     * cross-checking three {@code inputs} entries, and a case could not drive a read of a dataset that
+     * still held rows. Declaring the site says it once, in the file, where the expectation that depends
+     * on it also lives.
+     *
+     * <p>The old rule survives as a required cross-check rather than as the decision. An empty dataset is
+     * a dataset whose rows cannot answer any key, so it is exactly the site at which an outcome has to be
+     * supplied rather than seeded - and because the other two still hold their rows, the reads before it
+     * still succeed and the flow still reaches the site being driven. So the declared site must also be
+     * the case's one empty dataset, and a case whose two declarations disagree is refused rather than
+     * quietly honouring one of them.
+     *
+     * @param caseId   the case identifier, for diagnostics
+     * @param forced   the outcome the case forces, or {@code null} when it forces none
+     * @param stimulus the case's declared stimulus, which names the site
+     * @param seeded   the seeded datasets keyed by binding name
      * @return the dataset key whose read is driven, or {@code null}
-     * @throws IllegalStateException if the case forces an outcome without declaring exactly one empty
-     *                               dataset, or forces an outcome an empty dataset cannot produce
+     * @throws IllegalStateException if the case forces an outcome the site cannot produce, declares no
+     *                               site or more than one, names a dataset this program does not read, or
+     *                               names a site that is not the one dataset it declares empty
      */
     private static String forcedSite(String caseId, FileStatus.Outcome forced,
-            SeededDataset crossReference, SeededDataset accounts, SeededDataset customers) {
+            ParityCase.UnitStimulus stimulus, Map<String, SeededDataset> seeded) {
+        Map<String, ParityCase.CallSiteOutcome> declaredSites = stimulus.callSiteOutcomes();
         if (forced == null) {
+            if (!declaredSites.isEmpty()) {
+                throw new IllegalStateException(PROGRAM + "/" + caseId + " declares call sites "
+                        + declaredSites.keySet() + " but forces no read outcome. Naming a site without an "
+                        + "outcome to report there would be a control that does nothing.");
+            }
             return null;
         }
         if (forced != FileStatus.Outcome.OTHER) {
@@ -409,24 +519,48 @@ class COACTVWCParityTest {
                     + FileStatus.Outcome.END_OF_FILE + " is a browse outcome and COACTVWC opens no "
                     + "browse.");
         }
+        if (declaredSites.size() != 1) {
+            throw new IllegalStateException(PROGRAM + "/" + caseId + " forces a read outcome but "
+                    + "declares " + declaredSites.size() + " call sites " + declaredSites.keySet()
+                    + ". Exactly one is required, because all three of this program's reads are READ and "
+                    + "the declared site is what names which of them is driven: none would leave the "
+                    + "outcome applying to nothing, and two would leave it ambiguous.");
+        }
+
+        String site = declaredSites.keySet().iterator().next();
+        String dataset = READ_SITES.get(site);
+        if (dataset == null) {
+            throw new IllegalStateException(PROGRAM + "/" + caseId + " declares an outcome at '" + site
+                    + "', which is not one of " + READ_SITES.keySet() + ". Those three are the program's "
+                    + "only file verbs - the EXEC CICS READs at :843, :787 and :864 - so a name matching "
+                    + "none of them would leave every read untouched while the case read as though one "
+                    + "were driven.");
+        }
+        ParityCase.CallSiteOutcome outcome = declaredSites.get(site);
+        if (outcome.status() != null || outcome.resp() != null || outcome.afterRecords() != null) {
+            throw new IllegalStateException(PROGRAM + "/" + caseId + " declares a status, a RESP or a "
+                    + "record count at " + site + ". The outcome itself is carried by the case's "
+                    + "forcedOutcomes member, which is the shape ParityCase gives an online read; the "
+                    + "call-site entry exists to name WHICH read, so a second spelling of the outcome "
+                    + "here could contradict it.");
+        }
+
         List<String> declaredEmpty = new ArrayList<>(1);
-        if (crossReference.isEmpty()) {
-            declaredEmpty.add(CCXREF);
+        for (Map.Entry<String, String> readSite : READ_SITES.entrySet()) {
+            if (seeded.get(readSite.getValue()).isEmpty()) {
+                declaredEmpty.add(readSite.getValue());
+            }
         }
-        if (accounts.isEmpty()) {
-            declaredEmpty.add(ACCTDAT);
+        if (!List.of(dataset).equals(declaredEmpty)) {
+            throw new IllegalStateException(PROGRAM + "/" + caseId + " declares its outcome at " + site
+                    + " but its empty datasets are " + declaredEmpty + ". The driven read must be the "
+                    + "case's one empty dataset: an empty dataset is one whose rows cannot answer any "
+                    + "key, which is exactly why the outcome has to be supplied rather than seeded, and "
+                    + "because the other two still hold their rows the reads before it still succeed and "
+                    + "the flow still reaches the site being driven. Two declarations that disagree are "
+                    + "refused rather than one being quietly honoured.");
         }
-        if (customers.isEmpty()) {
-            declaredEmpty.add(CUSTDAT);
-        }
-        if (declaredEmpty.size() != 1) {
-            throw new IllegalStateException(PROGRAM + "/" + caseId + " forces a read "
-                    + "outcome but declares " + declaredEmpty.size() + " empty datasets " + declaredEmpty
-                    + ". Exactly one is required, because all three of this program's reads are READ "
-                    + "and the empty dataset is what names the site: none would leave the outcome "
-                    + "applying to nothing, and two would leave it ambiguous.");
-        }
-        return declaredEmpty.get(0);
+        return dataset;
     }
 
     /**
@@ -443,8 +577,7 @@ class COACTVWCParityTest {
         ParityCase.ForcedOutcome declared =
                 parityCase.screenRequest().forcedOutcomes().get(RepositoryOperation.READ);
         String forcedSite = forcedSite(parityCase.caseId(),
-                declared == null ? null : declared.outcome(), seeded.get(CCXREF),
-                seeded.get(ACCTDAT), seeded.get(CUSTDAT));
+                declared == null ? null : declared.outcome(), parityCase.unitStimulus(), seeded);
         return paint(parityCase.caseId(), seeded, forcedSite,
                 parityCase.screenRequest().mapFields(), parityCase.screenRequest().commarea(),
                 parityCase.screenRequest().eibcalen(), parityCase.screenRequest().aid(),

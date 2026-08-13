@@ -17,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.admin.MainMenuService.MainMenuInput;
 import com.vsergeychik.carddemo.admin.MainMenuService.MainMenuOutcome;
 import com.vsergeychik.carddemo.admin.MainMenuService.ReceiveOutcome;
@@ -37,6 +38,7 @@ import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -73,6 +75,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -593,6 +596,37 @@ class MainMenuControllerTest {
     }
 
     /**
+     * The {@code RETURN-TO-SIGNON-SCREEN} transfer: {@code app/cbl/COMEN01C.cbl:175-177}, a bare
+     * {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} that names <strong>no {@code COMMAREA} option</strong>.
+     *
+     * <p>Distinct from {@link #transferringOutcome(String, NavigationContext)}, which stands for the
+     * option transfer at {@code :152-155} and does name one. The difference is the single boolean
+     * {@code nextProgramCarriesCommarea}, and it is the whole of what this path observably differs by, so
+     * the outcome is built positionally here rather than through the shared helper - which derives that
+     * flag from "a transfer was named" and therefore cannot express this case.
+     *
+     * @param context the communication area the program holds at the moment of the transfer; it still
+     *                holds all sixteen values, and the transfer simply does not pass them on
+     * @return the outcome, never {@code null}
+     */
+    private static MainMenuOutcome signOnTransferOutcome(final NavigationContext context) {
+        return new MainMenuOutcome(paintedOptionLines(),
+                message80(SPACE),
+                MainMenuService.MAP_MESSAGE_COLOUR,
+                false,
+                CODEC.movePicX(SPACE, MainMenuService.OPTION_LENGTH),
+                CODEC.movePicX(MainMenuService.SIGNON_PROGRAM, NavigationContext.TO_PROGRAM_LENGTH),
+                false,
+                false,
+                false,
+                context,
+                MainMenuService.TRANSACTION_ID,
+                CODEC.movePicX(SPACE, MainMenuResponse.NEXT_MAPSET_LENGTH),
+                CODEC.movePicX(SPACE, MainMenuResponse.NEXT_MAP_LENGTH),
+                ReceiveOutcome.NORMAL);
+    }
+
+    /**
      * A payload whose twenty items are each space-filled to the width the symbolic map declares.
      *
      * @param context the inbound {@code CARDDEMO-COMMAREA}, or {@code null} for {@code EIBCALEN = 0}
@@ -745,6 +779,25 @@ class MainMenuControllerTest {
      */
     private static ObjectNode envelopeOf(final String body) throws JsonProcessingException {
         return (ObjectNode) new ObjectMapper().readTree(body);
+    }
+
+    /**
+     * The module's <strong>production</strong> mapper, built through {@code WebConfig}'s own customizer.
+     *
+     * <p>Used where the assertion is about what actually reaches the wire - property inclusion above all.
+     * A bare {@code new ObjectMapper()} would answer a different question, because
+     * {@code spring.jackson.default-property-inclusion: always} is the setting that turns a {@code null}
+     * communication area into a stated {@code "navigationContext": null} rather than an omitted member.
+     *
+     * <p>The code page is stated explicitly (practice <strong>B8</strong>): the screen deserializer needs
+     * one to decide representability, and it is never taken from the platform.
+     *
+     * @return a mapper configured exactly as the running application's is, never {@code null}
+     */
+    private static ObjectMapper productionMapper() {
+        Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
+        new WebConfig().carddemoJacksonCustomizer(MESSAGE_CHARSET).customize(builder);
+        return builder.build();
     }
 
     /**
@@ -2128,6 +2181,103 @@ class MainMenuControllerTest {
         }
 
         @Test
+        @DisplayName("the no-COMMAREA transfer hands back NO communication area, so sign-on cold-starts")
+        void theSignOnTransferCarriesNoCommunicationArea() {
+            // app/cbl/COMEN01C.cbl:175-177 RETURN-TO-SIGNON-SCREEN is a bare
+            // XCTL PROGRAM(CDEMO-TO-PROGRAM) with no COMMAREA option, so COSGN00C is entered with
+            // EIBCALEN = 0 and answers at app/cbl/COSGN00C.cbl:80-83 with its cold start. A response
+            // echoing an area would make the client send one on, and sign-on would run its re-entry
+            // path instead - a flow this transfer cannot reach on the mainframe.
+            NavigationContext held = signOnHandoffContext().withPgmReenter();
+
+            MainMenuResponse painted = answerFor(signOnTransferOutcome(held),
+                    blankScreen(held, CicsAid.DFHPF3)).screen();
+
+            assertThat(painted.navigationContext())
+                    .as("stated absence: there is no area to carry forward")
+                    .isNull();
+            assertThat(painted.nextProgram())
+                    .as("and the successor is still named, so the client knows where to go")
+                    .isEqualTo(MainMenuService.SIGNON_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("the option transfer DOES hand back the area, because :152-155 names COMMAREA")
+        void theOptionTransferStillCarriesTheArea() {
+            // The contrast that makes the case above meaningful: both paths are XCTLs, and only one of
+            // them names COMMAREA. Collapsing the two would lose the distinction the source draws.
+            NavigationContext held = signOnHandoffContext().withPgmReenter();
+
+            MainMenuResponse painted = answerFor(transferringOutcome("COACTVWC", held),
+                    blankScreen(held, CicsAid.DFHENTER)).screen();
+
+            assertThat(painted.navigationContext())
+                    .as("the option XCTL passes CARDDEMO-COMMAREA, so the client carries it on")
+                    .isEqualTo(held);
+        }
+
+        @Test
+        @DisplayName("the painted RETURN still hands back the area, because :107-110 names COMMAREA")
+        void thePaintedReturnStillCarriesTheArea() {
+            // The third arm, and the reason the condition is not "nextProgramCarriesCommarea is false":
+            // that flag is also false here, yet EXEC CICS RETURN ... COMMAREA(CARDDEMO-COMMAREA) at
+            // :107-110 does pass the area. Only "a transfer was named AND it carries none" isolates the
+            // bare XCTL.
+            NavigationContext held = signOnHandoffContext().withPgmReenter();
+
+            MainMenuOutcome painted = paintedOutcome(held);
+            assertThat(painted.nextProgramCarriesCommarea())
+                    .as("false on the RETURN path too, which is why it cannot be the test on its own")
+                    .isFalse();
+            assertThat(painted.hasNextProgram())
+                    .as("but no successor is named, which is what separates the two")
+                    .isFalse();
+
+            assertThat(answerFor(painted, blankScreen(held, CicsAid.DFHENTER)).screen()
+                    .navigationContext())
+                    .isEqualTo(held);
+        }
+
+        @Test
+        @DisplayName("the wire says \"navigationContext\": null - a stated member, not an omitted one")
+        void theWireStatesTheAbsenceRatherThanOmittingIt() throws Exception {
+            // spring.jackson.default-property-inclusion: always, so a null member is serialised rather
+            // than dropped. That matters: an omitted member and a null member read the same to a lenient
+            // client but not to a strict one, and "there is no communication area" is a positive
+            // statement about this transfer.
+            NavigationContext held = signOnHandoffContext().withPgmReenter();
+            ObjectMapper mapper = productionMapper();
+
+            String body = mapper.writeValueAsString(answerFor(signOnTransferOutcome(held),
+                    blankScreen(held, CicsAid.DFHPF3)));
+
+            assertThat(envelopeOf(body).has("navigationContext")).isTrue();
+            assertThat(envelopeOf(body).get("navigationContext").isNull()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a client following the transfer reaches sign-on's EIBCALEN = 0 cold start")
+        void theClientFollowingTheTransferReachesTheColdStart() throws Exception {
+            // The end-to-end contract, stated once: what this response hands the client is exactly what
+            // makes the next call take COSGN00C's cold-start arm. The client re-supplies whatever
+            // navigationContext it was given, and null re-supplied is an absent communication area -
+            // which is how SignOnInput expresses EIBCALEN = 0.
+            NavigationContext held = signOnHandoffContext().withPgmReenter();
+            ObjectMapper mapper = productionMapper();
+
+            String body = mapper.writeValueAsString(answerFor(signOnTransferOutcome(held),
+                    blankScreen(held, CicsAid.DFHPF3)));
+            NavigationContext carriedForward = mapper.treeToValue(
+                    envelopeOf(body).get("navigationContext"), NavigationContext.class);
+
+            assertThat(carriedForward).isNull();
+            assertThat(new com.vsergeychik.carddemo.user.SignOnService.SignOnInput(carriedForward,
+                    CicsAid.DFHENTER, null, null).isCommareaPresent())
+                    .as("EIBCALEN = 0, which app/cbl/COSGN00C.cbl:80-83 answers with the cold start")
+                    .isFalse();
+        }
+
+        @Test
         @DisplayName("all ten option targets are covered, and the eleventh is the sign-on return")
         void theTargetInventoryIsComplete() {
             assertThat(MENU_OPT_PROGRAMS)
@@ -2462,9 +2612,15 @@ class MainMenuControllerTest {
     }
 
     @Nested
+    // CobolCharsetConfig joins the slice because the web layer now depends on it: WebConfig's Jackson
+    // customizer takes the screen code page by bean name, so that an inbound screen value is judged
+    // against the code page this deployment states rather than against the platform default.
+    // @WebMvcTest loads web configuration only, so without this import the slice has no such bean - and
+    // the dependency is deliberately mandatory: a missing code page must fail the context, never quietly
+    // become a default. The profile's carddemo.charset.* properties are what it resolves.
     @WebMvcTest(MainMenuController.class)
     @ActiveProfiles("test")
-    @Import(SliceCollaborators.class)
+    @Import({SliceCollaborators.class, CobolCharsetConfig.class})
     @DisplayName("The Spring MVC slice - real dispatcher, real WebConfig, stubbed decision core")
     class TheSpringSlice {
 

@@ -289,7 +289,10 @@ import java.util.List;
  *                              already-narrowed message written by {@code app/cbl/COADM01C.cbl:177}
  * @param navigationContext     the echoed {@code CARDDEMO-COMMAREA} of
  *                              {@code app/cpy/COCOM01Y.cpy}, returned to the client so no
- *                              conversation state is held on the server
+ *                              conversation state is held on the server - or {@code null} on the one
+ *                              path that carries none, the bare {@code XCTL} of
+ *                              {@code app/cbl/COADM01C.cbl:165-167}, which enters the sign-on program
+ *                              with {@code EIBCALEN = 0}
  * @param nextProgram           the {@code EXEC CICS XCTL} target, {@code PIC X(08)} wide like
  *                              {@code CDEMO-TO-PROGRAM}: an option target from
  *                              {@code app/cpy/COADM02Y.cpy}, or {@value #SIGNON_PROGRAM} on the
@@ -665,13 +668,34 @@ public record AdminMenuResponse(
     // =================================================================================================
 
     /**
-     * Canonical constructor, normalising absent members to their COBOL-initial values.
+     * Canonical constructor, normalising absent <em>screen</em> members to their COBOL-initial values.
      *
      * <p>No length is enforced here and no value is truncated. The declared widths are advertised as
      * Bean Validation bounds on the record header and as the {@code *_LENGTH} constants; performing an
      * alphanumeric {@code MOVE} - pad a short value on the right, truncate a long one on the right -
      * is {@code common.FixedWidthCodec}'s single responsibility, and duplicating it here would create
      * a second place for the rule to drift.
+     *
+     * <h4>{@code navigationContext} is the one member left exactly as given, {@code null} included</h4>
+     * For a screen field, {@code null} is never an answer: a {@code DFHMDF} definition always has a
+     * width and therefore always has an image, so an absent one is substituted. A communication area is
+     * different - <strong>its absence is itself a CICS state</strong>, {@code EIBCALEN = 0}, and one path
+     * through this program produces exactly that.
+     *
+     * <p>{@code COADM01C} leaves through two {@code XCTL} statements.
+     * {@code app/cbl/COADM01C.cbl:142-145} names {@code COMMAREA(CARDDEMO-COMMAREA)} and passes the area
+     * on. {@code :165-167} - {@code RETURN-TO-SIGNON-SCREEN} - is a bare
+     * {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} with <strong>no {@code COMMAREA} option</strong>, so
+     * {@code COSGN00C} is entered with {@code EIBCALEN = 0} and takes its cold start at
+     * {@code app/cbl/COSGN00C.cbl:80-83}: every output field cleared, the cursor on the user id, no
+     * validation and no read of {@code USRSEC}.
+     *
+     * <p>Substituting an initial area there would hand the client a 160-byte area to send on to sign-on,
+     * sign-on would find {@code EIBCALEN} non-zero, and it would run its <em>re-entry</em> path - a flow
+     * that transfer cannot reach on the mainframe. So {@code null} is stored as {@code null} and
+     * serialises as JSON {@code null}: this payload's way of saying no communication area travelled.
+     * {@link #empty()} and the builder still default to an initial area, so nothing that does not
+     * deliberately state {@code null} changes.
      */
     public AdminMenuResponse {
         trnName = orUnpainted(trnName, TRN_NAME_LENGTH);
@@ -694,7 +718,7 @@ public record AdminMenuResponse(
         optn012 = orUnpainted(optn012, OPTION_LINE_LENGTH);
         option = orUnpainted(option, OPTION_LENGTH);
         errMsg = orUnpainted(errMsg, ERR_MSG_LENGTH);
-        navigationContext = orEmptyContext(navigationContext);
+        // navigationContext is deliberately NOT normalised - see the constructor documentation.
         nextProgram = orSpaces(nextProgram, NEXT_PROGRAM_LENGTH);
         nextMapset = orSpaces(nextMapset, NEXT_MAPSET_LENGTH);
         nextMap = orSpaces(nextMap, NEXT_MAP_LENGTH);
@@ -997,21 +1021,6 @@ public record AdminMenuResponse(
      */
     private static String orUnpainted(final String value, final int width) {
         return value == null ? ScreenFieldImage.unpainted(width) : value;
-    }
-
-    /**
-     * {@code context}, or {@link NavigationContext#empty()} when it is absent.
-     *
-     * <p>Substituting rather than rejecting keeps the type usable in the same way an unwritten screen
-     * field is: a caller can always read the communication area back. A blank context is also the
-     * honest translation of {@code EIBCALEN = 0}, the no-commarea entry that
-     * {@code app/cbl/COADM01C.cbl:82-84} handles by routing to the sign-on screen.
-     *
-     * @param context the supplied context, possibly {@code null}
-     * @return a non-{@code null} communication area
-     */
-    private static NavigationContext orEmptyContext(final NavigationContext context) {
-        return context == null ? NavigationContext.empty() : context;
     }
 
     /**

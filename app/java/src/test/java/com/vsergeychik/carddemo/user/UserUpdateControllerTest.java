@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -27,9 +28,9 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenResponse;
-import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -1065,7 +1066,8 @@ class UserUpdateControllerTest {
 
         @ParameterizedTest(name = "{0} -> the byte this screen branches on")
         @CsvSource({"ENTER", "PFK03", "PFK04", "PFK05", "PFK12"})
-        @DisplayName("the five keys the screen names round-trip to their own byte")
+        @DisplayName("the five keys the screen names arrive as their own byte, and the folded token does "
+                + "not")
         void theFiveNamedKeysRoundTrip(String token) {
             byte expected = switch (token) {
                 case "ENTER" -> CicsAid.DFHENTER;
@@ -1074,17 +1076,125 @@ class UserUpdateControllerTest {
                 case "PFK05" -> CicsAid.DFHPF5;
                 default -> CicsAid.DFHPF12;
             };
-            assertThat(UserUpdateController.resolveAttentionIdentifier(token)).isEqualTo(expected);
             assertThat(UserUpdateController.resolveAttentionIdentifier(
-                    AidKey.valueOf(token).token())).isEqualTo(expected);
+                    PfKeyResolver.aidImage(expected))).isEqualTo(expected);
+            assertThat(UserUpdateController.resolveAttentionIdentifier(AidKey.valueOf(token).token()))
+                    .as("the five-character CCARD-AID token is not one byte, so it names no key: "
+                            + "CSSTRPFY folds PF15 onto PFK03 and PF17 onto PFK05, and COUSR02C compares "
+                            + "EIBAID itself")
+                    .isEqualTo(CicsAid.DFHNULL);
         }
 
-        @ParameterizedTest(name = "\"{0}\" has no WHEN clause, so it is DFHNULL")
+        @Test
+        @DisplayName("a high function key stays itself and reaches WHEN OTHER at :127")
+        void highFunctionKeysAreNotFolded() {
+            assertThat(UserUpdateController.resolveAttentionIdentifier(
+                    PfKeyResolver.aidImage(CicsAid.DFHPF17))).isEqualTo(CicsAid.DFHPF17);
+            assertThat(PfKeyResolver.isPf5(CicsAid.DFHPF17))
+                    .as("PF17 must not reach the PF5 arm, which performs UPDATE-USER-INFO")
+                    .isFalse();
+        }
+
+        @ParameterizedTest(name = "\"{0}\" is not one byte, so it is DFHNULL")
         @ValueSource(strings = {"PFK01", "CLEAR", "PA1  ", "nope", ""})
-        @DisplayName("every other token is DFHNULL, which reaches WHEN OTHER at :127")
+        @DisplayName("every value that is not one byte is DFHNULL, which reaches WHEN OTHER at :127")
         void everyOtherTokenIsNull(String token) {
             assertThat(UserUpdateController.resolveAttentionIdentifier(token))
                     .isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("a stated raw byte is what is acted on, and PF15 stays distinct from PF3")
+        void aStatedByteWinsAndKeepsTheUpperKeysDistinct() {
+            // The token cannot express PF15 - CSSTRPFY folds it onto 'PFK03' - and COUSR02C tests EIBAID
+            // inline at :108-128 with no DFHPF15 clause, so on the terminal PF15 is an invalid key.
+            assertThat(UserUpdateController.resolveEibAid(
+                    Byte.toUnsignedInt(CicsAid.DFHPF15), null)).isEqualTo(CicsAid.DFHPF15);
+            assertThat(UserUpdateController.resolveEibAid(
+                    Byte.toUnsignedInt(CicsAid.DFHPF3), null)).isEqualTo(CicsAid.DFHPF3);
+            assertThat(PfKeyResolver.isPf3(CicsAid.DFHPF15))
+                    .as(":111 tests WHEN DFHPF3, which PF15 is not")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the stated byte wins over the payload's own image of the same key")
+        void theParameterWinsOverThePayload() {
+            assertThat(UserUpdateController.resolveEibAid(Byte.toUnsignedInt(CicsAid.DFHPF5),
+                    PfKeyResolver.aidImage(CicsAid.DFHPF5)))
+                    .as("one key stated twice, consistently")
+                    .isEqualTo(CicsAid.DFHPF5);
+        }
+
+        @Test
+        @DisplayName("no stated byte leaves the payload's one-character image as the only statement")
+        void anAbsentByteFallsBackToTheImage() {
+            assertThat(UserUpdateController.resolveEibAid(null, null)).isEqualTo(CicsAid.DFHENTER);
+            assertThat(UserUpdateController.resolveEibAid(null,
+                    PfKeyResolver.aidImage(CicsAid.DFHPF3))).isEqualTo(CicsAid.DFHPF3);
+            assertThat(UserUpdateController.resolveEibAid(null, AidKey.PFK03.token()))
+                    .as("a five-character token is not one byte, so it is DFHNULL and reaches WHEN OTHER")
+                    .isEqualTo(CicsAid.DFHNULL);
+        }
+
+        @Test
+        @DisplayName("a token restating the byte agrees; one naming a different key is refused")
+        void theTokenMayRestateTheByteButNotContradictIt() {
+            assertThat(UserUpdateController.resolveEibAid(Byte.toUnsignedInt(CicsAid.DFHPF15),
+                    AidKey.PFK03.token()))
+                    .as("'PFK03' is exactly what CSSTRPFY stores for PF15, so the two agree")
+                    .isEqualTo(CicsAid.DFHPF15);
+
+            assertThatThrownBy(() -> UserUpdateController.resolveEibAid(
+                    Byte.toUnsignedInt(CicsAid.DFHPF3), AidKey.PFK12.token()))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("aid");
+        }
+
+        @ParameterizedTest(name = "a stated {0} is refused")
+        @ValueSource(ints = {-1, 256, 4096})
+        @DisplayName("a value that is not one byte is refused rather than narrowed")
+        void anImpossibleByteIsRefused(int stated) {
+            assertThatThrownBy(() -> UserUpdateController.resolveEibAid(stated, null))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @ParameterizedTest(name = "a raw DFHPF{0} byte reaches WHEN OTHER over the route")
+        @ValueSource(ints = {13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+        @DisplayName("all twelve upper function keys are invalid keys here, end to end over the route")
+        void everyUpperKeyIsInvalidOverTheRoute(int pfNumber) {
+            byte upper = functionKeyByte(pfNumber);
+
+            UserUpdateResponse painted = controller.updateUser(USER_ID, populated(reenter()),
+                    UserUpdateController.PASSED_COMMAREA_LENGTH,
+                    Byte.toUnsignedInt(upper), null).screen();
+
+            assertThat(painted.errMsg().strip())
+                    .isEqualTo(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("both spellings of the parameter reach the same byte through the route")
+        void bothSpellingsAreHonoured() {
+            assertThat(controller.updateUser(USER_ID, populated(reenter()),
+                    UserUpdateController.PASSED_COMMAREA_LENGTH,
+                    Byte.toUnsignedInt(CicsAid.DFHPF15), null).screen().errMsg().strip())
+                    .isEqualTo(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
+            assertThat(controller.updateUser(USER_ID, populated(reenter()),
+                    UserUpdateController.PASSED_COMMAREA_LENGTH, null,
+                    Byte.toUnsignedInt(CicsAid.DFHPF15)).screen().errMsg().strip())
+                    .isEqualTo(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
+        }
+
+        /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
+        private static byte functionKeyByte(int pfNumber) {
+            try {
+                return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
+            } catch (ReflectiveOperationException absent) {
+                throw new AssertionError("CicsAid does not declare DFHPF" + pfNumber, absent);
+            }
         }
     }
 
@@ -1438,45 +1548,52 @@ class UserUpdateControllerTest {
         }
 
         @Test
-        @DisplayName("the path variable is the identity and lands in USRIDIN")
+        @DisplayName("on a first entry the path variable is the identity and lands in USRIDIN")
         void thePathVariableIsTheIdentity() {
             stubFoundRead();
 
-            // A blank USRIDIN lets the URI state the key alone, which is what a client echoing a
-            // cold-start screen sends.
+            // A first entry is the arm :99-102 takes its key from, so the URI states it.
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    screen(" ".repeat(8), "Sam", "Spade", STORED_PWD, "U", reenter()), null));
+                    screen(" ".repeat(8), "Sam", "Spade", STORED_PWD, "U", enter()), null, null, null));
 
             verify(repository).readForUpdate(USER_ID);
             assertThat(response.usrIdIn()).isEqualTo(USER_ID);
         }
 
         @Test
-        @DisplayName("a USRIDIN naming a different user is refused, naming the member and reading nothing")
+        @DisplayName("a re-entry USRIDIN naming a different user is the key the source reads, because "
+                + ":179-217 validates and :322 reads on the field the operator typed")
         void aDisagreeingIdentityIsRefused() {
-            // USRIDIN is the field the operator types into, so a value there naming a second user is two
-            // keys in one request. It used to be replaced with no message, which discarded the typed
-            // identity; it is now refused before any read.
-            assertThatThrownBy(() -> controller.updateUser(USER_ID,
-                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null))
-                    .isInstanceOf(ScreenInputRejectedException.class)
-                    .hasMessageContaining("usridin")
-                    .hasMessageNotContaining("IGNORED1");
+            // COUSR02C has no URI. :90-110 restores the commarea and its first-entry arm copies
+            // CDEMO-CU02-USR-SELECTED over USRIDINI; on a re-entry PROCESS-ENTER-KEY reads USRIDINI
+            // itself. Typing another user id over the painted screen is the source-valid way to fetch
+            // the next record, so the read keys on what arrived.
+            when(repository.readForUpdate("IGNORED1")).thenReturn(ReadResult.found(storedUser()));
 
-            verify(repository, never()).readForUpdate(anyString());
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null, null, null));
+
+            verify(repository).readForUpdate("IGNORED1");
+            verify(repository, never()).readForUpdate(USER_ID);
+            assertThat(response.usrIdIn()).isEqualTo("IGNORED1");
         }
 
-        @ParameterizedTest(name = "a body stating USRIDIN as \"{0}\" lets the URI supply it")
+        @ParameterizedTest(name = "a re-entry stating USRIDIN as \"{0}\" keeps exactly that")
         @ValueSource(strings = {"        ", "USER0001", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
-        @DisplayName("blank, LOW-VALUES and the URI's own key all agree with the URI")
+        @DisplayName("a re-entry's own field is authoritative, and the source's empty-field message at "
+                + ":194-199 is the answer to a blank one rather than a substituted key")
         void theStatesThatAgreeAreAccepted(String stated) {
             stubFoundRead();
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    screen(stated, "Sam", "Spade", STORED_PWD, "U", reenter()), null));
+                    screen(stated, "Sam", "Spade", STORED_PWD, "U", reenter()), null, null, null));
 
-            verify(repository).readForUpdate(USER_ID);
-            assertThat(response.usrIdIn()).isEqualTo(USER_ID);
+            assertThat(response.usrIdIn()).isEqualTo(stated);
+            if (USER_ID.equals(stated)) {
+                verify(repository).readForUpdate(USER_ID);
+            } else {
+                verify(repository, never()).readForUpdate(anyString());
+            }
         }
 
         @Test
@@ -1491,7 +1608,7 @@ class UserUpdateControllerTest {
                     new Cu02Info(null, null, 0, Cu02Info.NEXT_PAGE_NO, "S", "USER0002");
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    withExtension(populated(enter()), selectsAnotherUser), null));
+                    withExtension(populated(enter()), selectsAnotherUser), null, null, null));
 
             verify(repository).readForUpdate(USER_ID);
             verify(repository, never()).readForUpdate("USER0002");
@@ -1507,7 +1624,7 @@ class UserUpdateControllerTest {
                     "USER0002");
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    withExtension(populated(enter()), arrived), null));
+                    withExtension(populated(enter()), arrived), null, null, null));
 
             assertThat(response.cu02Info().usridFirst()).isEqualTo(arrived.usridFirst());
             assertThat(response.cu02Info().usridLast()).isEqualTo(arrived.usridLast());
@@ -1546,7 +1663,7 @@ class UserUpdateControllerTest {
         @DisplayName("a path identity wider than PIC X(08) is REFUSED, never truncated onto another user")
         void anOverWidePathIdentityIsRefused() {
             assertThatThrownBy(() -> controller.updateUser("USER00019",
-                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null))
+                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("USRIDIN");
 
@@ -1559,13 +1676,13 @@ class UserUpdateControllerTest {
         void eibcalenIsDerivedFromTheCarrier() {
             // No communication area -> the cold start at :90.
             UserUpdateResponse cold = screenOf(controller.updateUser(USER_ID,
-                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null), null));
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null), null, null, null));
             assertThat(cold.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
 
             // A communication area -> the transaction runs.
             stubFoundRead();
             UserUpdateResponse warm = screenOf(controller.updateUser(USER_ID,
-                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", reenter()), null));
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", reenter()), null, null, null));
             assertThat(warm.fName()).isEqualTo(padded("Sam", 20));
         }
 
@@ -1574,12 +1691,12 @@ class UserUpdateControllerTest {
         void aStatedEibcalenThatAgreesIsTaken() {
             UserUpdateResponse cold = screenOf(controller.updateUser(USER_ID,
                     screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null),
-                    UserUpdateController.NO_COMMAREA_LENGTH));
+                    UserUpdateController.NO_COMMAREA_LENGTH, null, null));
             assertThat(cold.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
 
             stubFoundRead();
             UserUpdateResponse warm = screenOf(controller.updateUser(USER_ID,
-                    populated(reenter()), UserUpdateController.PASSED_COMMAREA_LENGTH));
+                    populated(reenter()), UserUpdateController.PASSED_COMMAREA_LENGTH, null, null));
             assertThat(warm.fName()).isEqualTo(padded("Sam", 20));
         }
 
@@ -1589,26 +1706,35 @@ class UserUpdateControllerTest {
             // Claiming state that was not sent - which used to force the cold start and discard the
             // conversation the payload actually carried.
             assertThatThrownBy(() -> controller.updateUser(USER_ID, populated(reenter()),
-                    UserUpdateController.NO_COMMAREA_LENGTH))
+                    UserUpdateController.NO_COMMAREA_LENGTH, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("a communication area");
 
             assertThatThrownBy(() -> controller.updateUser(USER_ID,
                     screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null),
-                    UserUpdateController.PASSED_COMMAREA_LENGTH))
+                    UserUpdateController.PASSED_COMMAREA_LENGTH, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("no communication area");
 
             verify(repository, never()).readForUpdate(anyString());
         }
 
-        @ParameterizedTest(name = "eibcalen = {0} is refused")
-        @ValueSource(ints = {-1, 1, 159, 160, 193, 195, 2000})
-        @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
+        @ParameterizedTest(name = "eibcalen = {0} is preserved, because line 90 tests only for zero")
+        @ValueSource(ints = {1, 159, 160, 193, 195, 2000})
+        @DisplayName("Every non-zero length is carried through: 160 is what COADM01C's XCTL passes and "
+                + "194 what COUSR00C's and this program's own RETURN pass, and all of them are real")
         void anImpossibleEibcalenIsRefused(int stated) {
-            assertThatThrownBy(() -> controller.updateUser(USER_ID, populated(reenter()), stated))
+            assertThat(UserUpdateController.resolveEibcalen(stated, populated(reenter())))
+                    .isEqualTo(stated);
+        }
+
+        @Test
+        @DisplayName("A negative EIBCALEN is refused: it is not a length at all")
+        void aNegativeEibcalenIsRefused() {
+            assertThatThrownBy(() -> controller.updateUser(USER_ID, populated(reenter()), -1, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(UserUpdateController.EIBCALEN_PARAM);
+                    .hasMessageContaining(UserUpdateController.EIBCALEN_PARAM)
+                    .hasMessageContaining("cannot be negative");
             verify(repository, never()).readForUpdate(anyString());
         }
 
@@ -1621,7 +1747,7 @@ class UserUpdateControllerTest {
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
                     withExtension(populated(reenter()), sent),
-                    UserUpdateController.PASSED_COMMAREA_LENGTH));
+                    UserUpdateController.PASSED_COMMAREA_LENGTH, null, null));
 
             assertThat(response.cu02Info()).isEqualTo(sent);
             verify(repository).readForUpdate(USER_ID);
@@ -1633,14 +1759,12 @@ class UserUpdateControllerTest {
             stubFoundRead();
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    populated(reenter()), null));
+                    populated(reenter()), null, null, null));
 
-            // Five items at their VALUE-clause state, and the sixth - the one identity item - carrying
-            // the URI's user, because the path is authoritative in every carrier of the key.
-            Cu02Info initial = Cu02Info.initial();
-            assertThat(response.cu02Info())
-                    .isEqualTo(new Cu02Info(initial.usridFirst(), initial.usridLast(),
-                            initial.pageNum(), initial.nextPageFlg(), initial.usrSelFlg(), USER_ID));
+            // Every item at its VALUE-clause state, the selected id included: this is a re-entry, and
+            // the extension is the list program's carrier - :99-102 reads it only on a first entry, so
+            // there is nothing for the URI to seed here.
+            assertThat(response.cu02Info()).isEqualTo(Cu02Info.initial());
         }
 
         @Test
@@ -1649,7 +1773,7 @@ class UserUpdateControllerTest {
             stubFoundRead();
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    populated(reenter()), null));
+                    populated(reenter()), null, null, null));
 
             assertThat(response.nextProgram()).isEqualTo(UserUpdateController.WS_PGMNAME);
             assertThat(response.nextMapset()).isEqualTo(UserUpdateResponse.MAPSET_NAME);
@@ -1665,7 +1789,7 @@ class UserUpdateControllerTest {
         @DisplayName("on a transfer the reply names the target program and leaves both maps blank")
         void aTransferNamesTheTargetAndNoMap() {
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null), null));
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null), null, null, null));
 
             assertThat(response.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
             assertThat(response.nextMapset()).isBlank();
@@ -1678,7 +1802,7 @@ class UserUpdateControllerTest {
             stubFoundRead();
 
             ScreenResponse<UserUpdateResponse> answer =
-                    controller.updateUser(USER_ID, populated(reenter()), null);
+                    controller.updateUser(USER_ID, populated(reenter()), null, null, null);
 
             assertThat(answer.screenMetadata()).isNotNull();
             assertThat(answer.screenMetadata().fields())
@@ -1691,10 +1815,10 @@ class UserUpdateControllerTest {
         @Test
         @DisplayName("a null path variable or a null payload is refused before anything runs")
         void nullArgumentsAreRefused() {
-            assertThatThrownBy(() -> controller.updateUser(null, populated(reenter()), null))
+            assertThatThrownBy(() -> controller.updateUser(null, populated(reenter()), null, null, null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("user id");
-            assertThatThrownBy(() -> controller.updateUser(USER_ID, null, null))
+            assertThatThrownBy(() -> controller.updateUser(USER_ID, null, null, null, null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("request");
             verify(repository, never()).readForUpdate(anyString());
@@ -1938,7 +2062,8 @@ class UserUpdateControllerTest {
             // PFK05, because UPDATE-USER-INFO is the paragraph that owns the five-arm chain. The default
             // ENTER arm runs PROCESS-ENTER-KEY, whose guard at :146 tests only USRIDINI.
             UserUpdateRequest blankFirstName = withAid(
-                    screen(USER_ID, "  ", "Spade", STORED_PWD, "U", reenter()), AidKey.PFK05.token());
+                    screen(USER_ID, "  ", "Spade", STORED_PWD, "U", reenter()),
+                            PfKeyResolver.aidImage(CicsAid.DFHPF5));
 
             httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -1966,13 +2091,13 @@ class UserUpdateControllerTest {
             // the id arm at :180 is therefore driven by direct invocation, in LowValuesGuardChain.
             List<UserUpdateRequest> blanks = List.of(
                     withAid(screen(USER_ID, "  ", "Spade", STORED_PWD, "U", reenter()),
-                            AidKey.PFK05.token()),
+                            PfKeyResolver.aidImage(CicsAid.DFHPF5)),
                     withAid(screen(USER_ID, "Sam", "  ", STORED_PWD, "U", reenter()),
-                            AidKey.PFK05.token()),
+                            PfKeyResolver.aidImage(CicsAid.DFHPF5)),
                     withAid(screen(USER_ID, "Sam", "Spade", "  ", "U", reenter()),
-                            AidKey.PFK05.token()),
+                            PfKeyResolver.aidImage(CicsAid.DFHPF5)),
                     withAid(screen(USER_ID, "Sam", "Spade", STORED_PWD, " ", reenter()),
-                            AidKey.PFK05.token()));
+                            PfKeyResolver.aidImage(CicsAid.DFHPF5)));
 
             for (UserUpdateRequest blank : blanks) {
                 MvcResult answered = http.perform(put("/api/users/{userId}", USER_ID)
@@ -2066,7 +2191,8 @@ class UserUpdateControllerTest {
         @DisplayName("the route is PUT /api/users/{userId}, from app/csd/CARDDEMO.CSD:469-470")
         void theRouteIsThePutMapping() throws Exception {
             Method mapped = UserUpdateController.class.getMethod("updateUser",
-                    String.class, UserUpdateRequest.class, Integer.class);
+                    String.class, UserUpdateRequest.class, Integer.class, Integer.class,
+                    Integer.class);
             PutMapping mapping = mapped.getAnnotation(PutMapping.class);
 
             assertThat(mapping).isNotNull();
@@ -2280,11 +2406,30 @@ class UserUpdateControllerTest {
             // which reads and may rewrite; the other three keys touch neither.
             stubFoundRead();
             stubSuccessfulRewrite();
-            byte aid = UserUpdateController.resolveAttentionIdentifier(key.token());
+            byte aid = UserUpdateController.resolveAttentionIdentifier(
+                    PfKeyResolver.aidImage(byteBehind(key)));
 
             assertThat(PfKeyResolver.resolve(aid)).contains(key);
             assertThat(PfKeyResolver.isAid(aid, aid)).isTrue();
             assertThat(reentryWith(populated(reenter()), aid).aidKey()).contains(key);
+        }
+
+        /**
+         * The low byte of the folded pair a condition name stands for - the key this screen's legend
+         * offers.
+         *
+         * @param key the condition name
+         * @return the byte
+         */
+        private byte byteBehind(AidKey key) {
+            return switch (key) {
+                case ENTER -> CicsAid.DFHENTER;
+                case PFK03 -> CicsAid.DFHPF3;
+                case PFK04 -> CicsAid.DFHPF4;
+                case PFK05 -> CicsAid.DFHPF5;
+                case PFK12 -> CicsAid.DFHPF12;
+                default -> throw new AssertionError("this suite drives only the five keys :108-131 names");
+            };
         }
     }
 

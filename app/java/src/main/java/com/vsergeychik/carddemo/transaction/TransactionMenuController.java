@@ -8,9 +8,8 @@ import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
-import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
-import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -31,12 +30,9 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.Charset;
 import java.time.Clock;
-import java.util.Collections;
-import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -166,24 +162,28 @@ import org.springframework.web.bind.annotation.RestController;
  * against one constant each. That matters: they are exact-byte tests, so {@code DFHPF15} does
  * <em>not</em> behave as {@code DFHPF3} here, which is precisely what {@code EIBAID = DFHPF3}
  * means. The resolver's folded 26-branch map, which does collapse {@code PF13}-{@code PF24} onto
- * {@code PFK01}-{@code PFK12}, is used only where a <em>token</em> is needed - see
+ * {@code PFK01}-{@code PFK12}, is used in one direction only - to publish the {@code CCARD-AID} token
+ * a response reports. It is never inverted to obtain a byte, because inverting it has to guess which
+ * key of a folded pair was pressed; the byte arrives as itself, on the query parameter or as the
+ * payload's one-character {@code aid} image - see
  * {@link #resolveEibAid(TransactionListRequest, Integer)}.
  *
- * <h2>Reading the file: {@code STARTBR} has no status here, and why that is still faithful</h2>
+ * <h2>Reading the file: the {@code STARTBR} status comes from the {@code STARTBR}</h2>
  *
- * {@link TransactionRepository#startBrowse(String, BrowseDirection)} performs no backend call and
- * reports no status - it re-positions by value on each step, which is what keeps the online layer
- * free of server-side cursors. {@code COTRN00C}, however, has a three-armed
- * {@code EVALUATE WS-RESP-CD} after its {@code STARTBR} [{@code :602-619}], and one of those arms
- * carries a message no other paragraph produces. The two are reconciled exactly, not approximately:
+ * {@link TransactionRepository#startBrowse(String, BrowseDirection)} issues the position as a real
+ * operation and reports what it found through {@link Browse#positioningOutcome()}: a record at or after
+ * the {@code RIDFLD} is {@code DFHRESP(NORMAL)}, nothing is {@code DFHRESP(NOTFND)}, and a refusal is
+ * {@code WHEN OTHER}. That is exactly the three-armed {@code EVALUATE WS-RESP-CD} of {@code :602-619},
+ * one of whose arms carries a message no other paragraph produces.
  *
  * <ul>
- *   <li>{@code STARTBR ... GTEQ} raises {@code NOTFND} if and only if no record has a key at or after
- *       the {@code RIDFLD} - which is <em>the same condition</em> under which the first
- *       {@code READNEXT} of that browse would report {@code ENDFILE}. So {@link TransactBrowse}
- *       positions and then issues <strong>one probe read</strong>, buffering its record for the first
- *       real read. A record means {@code DFHRESP(NORMAL)}; nothing means {@code DFHRESP(NOTFND)}; a
- *       failure means {@code WHEN OTHER}. No record is lost and none is read twice.</li>
+ *   <li>No cursor is held: the repository's probe establishes whether a record satisfies the position,
+ *       discards the row and re-positions by value on each subsequent step - which is what keeps the
+ *       online layer free of server-side conversation state (rule R6). Because the row is discarded, no
+ *       record is consumed by positioning and the first real read still returns it, so the skip-read at
+ *       {@code :286} still skips exactly one record. An earlier revision recovered the status with a probe
+ *       <em>read</em> here and had to buffer the record it consumed; the status now comes from the verb
+ *       that reports it.</li>
  *   <li>When the probe finds nothing the browse is <em>ended</em>, so a subsequent read reports the
  *       invalid-request condition - exactly as CICS does for a {@code READNEXT} with no browse in
  *       progress, which is the state {@code :285-287} can genuinely reach because its guard is
@@ -393,67 +393,15 @@ public class TransactionMenuController {
     private static final int AID_MAX = 255;
 
     /**
-     * The AID token each key resolves to, mapped back to the one byte that produces it.
+     * The width of the raw {@code EIBAID} form of the payload's {@code aid} member: one character.
      *
-     * <p>Needed because the request payload carries a five-character {@code CCARD-AID} token while
-     * every test this program performs is against a raw {@code EIBAID} byte. The table is the inverse
-     * of {@link PfKeyResolver#resolve(byte)} restricted to its <em>primary</em> pre-image: that map
-     * folds {@code DFHPF13}-{@code DFHPF24} onto {@code PFK01}-{@code PFK12}, so a token cannot say
-     * whether {@code PF3} or {@code PF15} was pressed and the low-numbered key is chosen as
-     * canonical. A caller that must distinguish them sends the byte in {@link #EIBAID_PARAM}, which
-     * takes precedence for exactly that reason.
-     *
-     * <p>Built once, unmodifiable, and verified against the resolver at class initialisation so the
-     * two directions cannot drift apart. Immutable, therefore not mutable static state (gate G53).
+     * <p>{@link PfKeyResolver#AID_TOKEN_LENGTH} is the width of the {@code CCARD-AID} token the
+     * responses publish, which is five; this is the width of the byte {@code EVALUATE EIBAID} tests.
      */
-    private static final Map<AidKey, Byte> CANONICAL_AID_BYTES = canonicalAidBytes();
+    static final int RAW_AID_LENGTH = 1;
 
-    /**
-     * Builds {@link #CANONICAL_AID_BYTES} and proves it against {@link PfKeyResolver}.
-     *
-     * <p>Every one of the sixteen {@code CCARD-AID} condition names is present, and each entry is
-     * checked by resolving its byte back through the shared resolver. A typo therefore fails at class
-     * initialisation, naming the offending key, rather than silently sending a request down the wrong
-     * arm of {@code EVALUATE EIBAID}.
-     *
-     * @return an unmodifiable, fully populated and verified table
-     * @throws IllegalStateException if any entry does not round-trip, or if a key is missing
-     */
-    private static Map<AidKey, Byte> canonicalAidBytes() {
-        EnumMap<AidKey, Byte> table = new EnumMap<>(AidKey.class);
-        table.put(AidKey.ENTER, CicsAid.DFHENTER);
-        table.put(AidKey.CLEAR, CicsAid.DFHCLEAR);
-        table.put(AidKey.PA1, CicsAid.DFHPA1);
-        table.put(AidKey.PA2, CicsAid.DFHPA2);
-        table.put(AidKey.PFK01, CicsAid.DFHPF1);
-        table.put(AidKey.PFK02, CicsAid.DFHPF2);
-        table.put(AidKey.PFK03, CicsAid.DFHPF3);
-        table.put(AidKey.PFK04, CicsAid.DFHPF4);
-        table.put(AidKey.PFK05, CicsAid.DFHPF5);
-        table.put(AidKey.PFK06, CicsAid.DFHPF6);
-        table.put(AidKey.PFK07, CicsAid.DFHPF7);
-        table.put(AidKey.PFK08, CicsAid.DFHPF8);
-        table.put(AidKey.PFK09, CicsAid.DFHPF9);
-        table.put(AidKey.PFK10, CicsAid.DFHPF10);
-        table.put(AidKey.PFK11, CicsAid.DFHPF11);
-        table.put(AidKey.PFK12, CicsAid.DFHPF12);
-        if (table.size() != AidKey.values().length) {
-            throw new IllegalStateException("The canonical AID table must carry every CCARD-AID "
-                    + "condition name of app/cpy/CVCRD01Y.cpy: PfKeyResolver.AidKey declares "
-                    + AidKey.values().length + " and the table carries " + table.size());
-        }
-        for (Map.Entry<AidKey, Byte> entry : table.entrySet()) {
-            Optional<AidKey> resolved = PfKeyResolver.resolve(entry.getValue());
-            if (resolved.isEmpty() || resolved.get() != entry.getKey()) {
-                throw new IllegalStateException("The canonical byte chosen for AID token '"
-                        + entry.getKey().token() + "' resolves to "
-                        + resolved.map(Enum::name).orElse("no key")
-                        + " through PfKeyResolver; the two directions must agree or a token would "
-                        + "select an arm of EVALUATE EIBAID the operator never reached");
-            }
-        }
-        return Collections.unmodifiableMap(table);
-    }
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
 
     // =================================================================================================
     // Collaborators. Three, all final, all constructor-injected, none of them mutable state (B9).
@@ -715,13 +663,14 @@ public class TransactionMenuController {
 
     /**
      * Resolves the {@code EIBAID} byte a request presented, from the query parameter if it named one
-     * and from the payload's token otherwise.
+     * and from the payload's one-character {@code aid} image otherwise.
      *
-     * <p><strong>The parameter wins, and deliberately.</strong> A raw byte distinguishes
-     * {@code DFHPF3} from {@code DFHPF15}; the five-character token cannot, because
-     * {@link PfKeyResolver#resolve(byte)} folds the two onto one condition name. This program tests
-     * the raw byte [{@code :119-134}, {@code :285}, {@code :339}], so the more specific source is
-     * preferred whenever it is available.
+     * <p><strong>The parameter wins, and deliberately.</strong> It states the byte as an unsigned
+     * {@code 0..255} integer, which is the plainest way to say it over HTTP; the payload's member says
+     * the same thing as the character whose code point <em>is</em> that byte. This program tests the raw
+     * byte [{@code :119-134}, {@code :285}, {@code :339}], so the explicit numeric form is preferred
+     * whenever it is available. Neither carrier is a {@code CCARD-AID} token - see
+     * {@link #aidByteOfToken(String)} for why a token is never decoded back into a byte.
      *
      * @param request the inbound payload, or {@code null}
      * @param eibaid  the unsigned byte value, or {@code null} when the caller named no key
@@ -755,44 +704,59 @@ public class TransactionMenuController {
     }
 
     /**
-     * Maps the payload's five-character {@code CCARD-AID} token back onto the raw byte this program
-     * tests against.
+     * Reads the raw {@code EIBAID} byte out of the payload's {@code aid} member.
      *
-     * <p>Three outcomes, and each one is a decision rather than a fallback:
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention
+     * identifier, so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF3} as {@code U+00F3},
+     * and {@code EVALUATE EIBAID} at {@code :119-134} compares exactly that. Three outcomes, and each
+     * one is a decision rather than a fallback:
      *
      * <ul>
      *   <li><strong>Absent, blank or low values yields {@link CicsAid#DFHENTER}.</strong> A CICS
      *       terminal always presents some AID, and blank is not one. {@code ENTER} is the key this
-     *       program treats as the ordinary case, so it is the only default that cannot reach a branch
-     *       the operator could not have reached.</li>
-     *   <li><strong>A recognised token yields its canonical byte</strong> from
-     *       {@link #CANONICAL_AID_BYTES}.</li>
-     *   <li><strong>An unrecognised token yields {@link CicsAid#DFHNULL}</strong>, which
+     *       program treats as the ordinary case [{@code :120}], so it is the only default that cannot
+     *       reach a branch the operator could not have reached.</li>
+     *   <li><strong>One character yields its code point</strong> as the byte, refusing nothing and
+     *       folding nothing: {@code DFHPF15} arrives as {@code U+00C3} and stays distinct from
+     *       {@code DFHPF3}.</li>
+     *   <li><strong>Any other width yields {@link CicsAid#DFHNULL}</strong>, which
      *       {@link PfKeyResolver#resolve(byte)} matches to no condition name at all. That is the
-     *       faithful representation of "a key this program does not handle", and it lands on the
+     *       faithful representation of "a key this program cannot identify", and it lands on the
      *       {@code WHEN OTHER} arm at {@code :129} exactly as an unhandled key does.</li>
      * </ul>
      *
-     * <p>The token is reshaped to its declared width through the codec first, so a caller that sent a
-     * short value is padded by the {@code PIC X} move rule rather than failing to match.
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK03'} stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}. Decoding it
+     * had to choose, and choosing {@code DFHPF3} sent a PF15 press down {@code :122-124}'s
+     * {@code WHEN DFHPF3} arm - the transfer of control back to the menu - where the source takes
+     * {@code WHEN OTHER} at {@code :129} and repaints with the invalid-key message. {@code COTRN00C}
+     * does not copy {@code CSSTRPFY}: it compares {@code EIBAID} itself, so the fold is not its
+     * behaviour and there is nothing to invert. The token survives as derived metadata on the way out,
+     * which is where {@link PfKeyResolver#resolve(byte)} produces it.
      *
-     * @param token the token, of any length, or {@code null}
+     * <p>A character above {@link #MAX_AID_CODE_POINT} is reported as {@code DFHNULL} rather than
+     * narrowed: {@code EIBAID} is one byte, so a cast of {@code U+01F3} would keep its low eight bits
+     * and land on {@code 0xF3}, which <em>is</em> {@code DFHPF3} - the key {@code :122} acts on.
+     *
+     * @param token the {@code aid} member as it arrived, of any length, or {@code null}
      * @return the raw AID byte
      */
     byte aidByteOfToken(String token) {
         if (token == null) {
             return CicsAid.DFHENTER;
         }
-        String padded = codec.movePicX(token, PfKeyResolver.AID_TOKEN_LENGTH);
-        if (isAllSpaces(padded) || isAllLowValues(padded)) {
+        if (isAllSpaces(token) || isAllLowValues(token)) {
             return CicsAid.DFHENTER;
         }
-        for (Map.Entry<AidKey, Byte> entry : CANONICAL_AID_BYTES.entrySet()) {
-            if (entry.getKey().token().equals(padded)) {
-                return entry.getValue();
-            }
+        if (token.length() != RAW_AID_LENGTH) {
+            return CicsAid.DFHNULL;
         }
-        return CicsAid.DFHNULL;
+        char stated = token.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return CicsAid.DFHNULL;
+        }
+        return (byte) stated;
     }
 
     // =================================================================================================
@@ -800,7 +764,7 @@ public class TransactionMenuController {
     // =================================================================================================
 
     /**
-     * Runs the whole transaction, taking the attention identifier from the payload's token.
+     * Runs the whole transaction, taking the attention identifier from the payload's {@code aid} image.
      *
      * <p>This is the plainest entry point: a payload in, a payload out, no HTTP and no Spring context.
      *
@@ -2070,29 +2034,25 @@ public class TransactionMenuController {
     // =================================================================================================
 
     /**
-     * A {@code TRANSACT} browse that reports a positioning status, which the repository's handle does
-     * not.
+     * A {@code TRANSACT} browse paired with the {@code RIDFLD} decision that precedes it.
      *
      * <p>{@code COTRN00C} has a three-armed {@code EVALUATE WS-RESP-CD} after its {@code STARTBR}
      * [{@code :602-619}] and one of those arms carries {@link #MSG_AT_TOP_OF_PAGE}, a literal no other
-     * paragraph produces. {@link TransactionRepository#startBrowse(String, BrowseDirection)} performs
-     * no backend call and so cannot report {@code NOTFND}. The two are reconciled by one probe read:
+     * paragraph produces. The status those arms branch on is
+     * {@link Browse#positioningOutcome()} - reported by the position itself, which discards the row it
+     * probed, so nothing is consumed and the first {@link #read()} still returns the first record.
      *
-     * <ul>
-     *   <li>{@code STARTBR ... GTEQ} raises {@code NOTFND} exactly when no record has a key at or after
-     *       the {@code RIDFLD}, which is exactly when the first read of that browse would find
-     *       nothing. So the probe's outcome <em>is</em> the positioning status.</li>
-     *   <li>A record found by the probe is <strong>buffered</strong> and handed to the first
-     *       {@link #read()}, so no record is consumed by the probe and none is read twice. That is what
-     *       lets the skip-read at {@code :286} still skip exactly one record.</li>
-     *   <li>When the probe finds nothing the underlying browse is ended, so a later read reports the
-     *       invalid-request condition - which is what CICS reports for a {@code READNEXT} with no
-     *       browse in progress, and is the state {@code :285-287} genuinely reaches because
-     *       {@code NOTFND} does not set {@code WS-ERR-FLG}.</li>
-     * </ul>
+     * <p>What this wrapper still owns is the {@code RIDFLD} case the repository has no way to express: a
+     * page key that cannot be positioned at all in the requested direction ({@link Ridfld#isUnreachable})
+     * reports end of file without any backend call, because there is no key to position at.
      *
-     * <p>The handle holds no server-side cursor: the repository re-positions by value on each step.
-     * It knows no page size (gate G39) - that ten reads make a page is the caller's decision.
+     * <p>When positioning fails the underlying browse is ended, so a later read reports the
+     * invalid-request condition - which is what CICS reports for a {@code READNEXT} with no browse in
+     * progress, and is the state {@code :285-287} genuinely reaches because {@code NOTFND} does not set
+     * {@code WS-ERR-FLG}.
+     *
+     * <p>The handle holds no server-side cursor and knows no page size (gate G39) - that ten reads make a
+     * page is the caller's decision.
      */
     static final class TransactBrowse implements AutoCloseable {
 
@@ -2102,18 +2062,13 @@ public class TransactionMenuController {
         /** The repository handle, or {@code null} when no browse could be positioned at all. */
         private final Browse browse;
 
-        /** The probe's outcome, which is the CICS {@code STARTBR} status. */
+        /** The outcome the {@code STARTBR} reported, which is the CICS positioning status. */
         private final ReadResult positioning;
 
-        /** The probe's record, awaiting the first read; cleared once handed over. */
-        private ReadResult buffered;
-
-        private TransactBrowse(BrowseDirection direction, Browse browse, ReadResult positioning,
-                               ReadResult buffered) {
+        private TransactBrowse(BrowseDirection direction, Browse browse, ReadResult positioning) {
             this.direction = direction;
             this.browse = browse;
             this.positioning = positioning;
-            this.buffered = buffered;
         }
 
         /**
@@ -2133,21 +2088,19 @@ public class TransactionMenuController {
             Objects.requireNonNull(ridfld, "A RIDFLD is required to position a browse");
             if (ridfld.isUnreachable(direction)) {
                 return new TransactBrowse(direction, null,
-                        ReadResult.endOfFile(TransactionRepository.CICS_FILE_NAME), null);
+                        ReadResult.endOfFile(TransactionRepository.CICS_FILE_NAME));
             }
             Browse opened = ridfld.isBoundary()
                     ? repository.startBrowse(direction)
                     : repository.startBrowse(ridfld.key(), direction);
-            ReadResult probe = direction == BrowseDirection.FORWARD
-                    ? opened.readNext()
-                    : opened.readPrev();
-            if (probe.outcome() == Outcome.OK) {
-                return new TransactBrowse(direction, opened, probe, probe);
+            ReadResult positioning = opened.positioningResult();
+            if (opened.isStarted()) {
+                return new TransactBrowse(direction, opened, positioning);
             }
             // Nothing at or beyond the anchor, or a refusal: either way no browse is in progress, so a
             // read after this reports the invalid-request condition rather than resuming silently.
             opened.endBrowse();
-            return new TransactBrowse(direction, opened, probe, null);
+            return new TransactBrowse(direction, opened, positioning);
         }
 
         /**
@@ -2165,11 +2118,6 @@ public class TransactionMenuController {
          * @return the discriminated outcome; never {@code null}
          */
         ReadResult read() {
-            if (buffered != null) {
-                ReadResult first = buffered;
-                buffered = null;
-                return first;
-            }
             if (browse == null) {
                 return ReadResult.other(TransactionRepository.CICS_FILE_NAME,
                         TransactionRepository.PERMANENT_ERROR_STATUS);

@@ -5,9 +5,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.vsergeychik.carddemo.card.CardListController;
 import com.vsergeychik.carddemo.card.CardSelectController;
+import com.vsergeychik.carddemo.transaction.ReportRequestController;
+import com.vsergeychik.carddemo.transaction.TransactionAddController;
 import com.vsergeychik.carddemo.transaction.TransactionMenuController;
+import com.vsergeychik.carddemo.transaction.TransactionViewController;
+import com.vsergeychik.carddemo.user.SignOnController;
 import com.vsergeychik.carddemo.user.UserAddController;
+import com.vsergeychik.carddemo.user.UserDeleteController;
 import com.vsergeychik.carddemo.user.UserMenuController;
+import com.vsergeychik.carddemo.user.UserUpdateController;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -34,7 +40,7 @@ import org.springframework.web.bind.annotation.RequestParam;
  * reading it.
  *
  * <h2>What this class is defending</h2>
- * Runtime testing found that the five online routes which accept the attention identifier as a query
+ * Runtime testing found that the five online routes which accepted the attention identifier as a query
  * parameter had each spelled the parameter for themselves - three {@code eibaid}, two {@code eibAid} -
  * and Spring MVC discards a query parameter no handler declares. A caller that used a sibling screen's
  * spelling therefore had its key <strong>silently ignored</strong>: the request executed as
@@ -65,37 +71,79 @@ final class AidRequestParameterTest {
     /**
      * Every handler that binds the {@code EIBAID} query parameter, named by the route it serves.
      *
-     * <p>Five entries, which is every route the runtime survey found declaring the parameter. A sixth
-     * screen that binds it and is not listed here is not a failure of this test - the reflection below
-     * reads the annotations of whatever is listed - but adding the entry is how the next screen inherits
-     * the guard.
+     * <p>Twelve entries, which is every route that declares the parameter. Five already had it; the
+     * other seven gained it when the attention identifier stopped being read from a folded
+     * {@code CCARD-AID} token - the token cannot express {@code PF13} to {@code PF24}, because
+     * {@code app/cpy/CSSTRPFY.cpy:54-77} folds them onto {@code PFK01} to {@code PFK12}, and none of
+     * those programs copies that copybook, so each of them tests {@code EIBAID} inline and therefore
+     * treats {@code PF15} differently from {@code PF3} on the mainframe. A raw byte is the only carrier
+     * that can say which was pressed.
+     *
+     * <p>A thirteenth screen that binds the parameter and is not listed here is not a failure of this
+     * test - the reflection below reads the annotations of whatever is listed - but adding the entry is
+     * how the next screen inherits the guard.
      */
     private static final Map<String, Method> HANDLERS = handlers();
 
     private static Map<String, Method> handlers() {
         try {
-            return Map.of(
-                    "GET /api/cards",
-                    CardListController.class.getDeclaredMethod("getCards",
-                            com.vsergeychik.carddemo.card.dto.CardListRequest.class,
-                            Integer.class, Integer.class),
-                    "GET /api/cards/{cardNum}",
-                    CardSelectController.class.getDeclaredMethod("viewCardDetail",
-                            String.class,
-                            com.vsergeychik.carddemo.card.dto.CardSelectRequest.class,
-                            Integer.class, Integer.class, Integer.class),
-                    "GET /api/users",
-                    UserMenuController.class.getDeclaredMethod("getUsers",
-                            com.vsergeychik.carddemo.user.dto.UserListRequest.class,
-                            Integer.class, Integer.class),
-                    "POST /api/users",
-                    UserAddController.class.getDeclaredMethod("addUser",
-                            com.vsergeychik.carddemo.user.dto.UserAddRequest.class,
-                            Integer.class, Integer.class, Integer.class),
-                    "GET /api/transactions",
-                    TransactionMenuController.class.getDeclaredMethod("getTransactions",
-                            com.vsergeychik.carddemo.transaction.dto.TransactionListRequest.class,
-                            Integer.class, Integer.class));
+            return Map.ofEntries(
+                    Map.entry("GET /api/cards",
+                            CardListController.class.getDeclaredMethod("getCards",
+                                    com.vsergeychik.carddemo.card.dto.CardListRequest.class,
+                                    Integer.class, Integer.class)),
+                    Map.entry("GET /api/cards/{cardNum}",
+                            CardSelectController.class.getDeclaredMethod("viewCardDetail",
+                                    String.class,
+                                    com.vsergeychik.carddemo.card.dto.CardSelectRequest.class,
+                                    Integer.class, Integer.class, Integer.class)),
+                    Map.entry("GET /api/users",
+                            UserMenuController.class.getDeclaredMethod("getUsers",
+                                    com.vsergeychik.carddemo.user.dto.UserListRequest.class,
+                                    Integer.class, Integer.class)),
+                    Map.entry("POST /api/users",
+                            UserAddController.class.getDeclaredMethod("addUser",
+                                    com.vsergeychik.carddemo.user.dto.UserAddRequest.class,
+                                    Integer.class, Integer.class, Integer.class)),
+                    Map.entry("GET /api/transactions",
+                            TransactionMenuController.class.getDeclaredMethod("getTransactions",
+                                    com.vsergeychik.carddemo.transaction.dto.TransactionListRequest.class,
+                                    Integer.class, Integer.class)),
+                    Map.entry("GET /api/transactions/{tranId}",
+                            TransactionAddController.class.getDeclaredMethod("viewTransaction",
+                                    String.class,
+                                    com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest.class,
+                                    Integer.class, Integer.class)),
+
+                    // The seven whose only channel for the key used to be the lossy token.
+                    Map.entry("POST /api/signon",
+                            SignOnController.class.getDeclaredMethod("signOn",
+                                    com.vsergeychik.carddemo.user.dto.SignOnRequest.class,
+                                    Integer.class, Integer.class)),
+                    Map.entry("POST /api/billpay",
+                            com.vsergeychik.carddemo.billing.BillPaymentController.class
+                                    .getDeclaredMethod("payBill",
+                                            com.vsergeychik.carddemo.billing.dto
+                                                    .BillPaymentRequest.class,
+                                            Integer.class, Integer.class)),
+                    Map.entry("POST /api/reports",
+                            ReportRequestController.class.getDeclaredMethod("submitReportRequest",
+                                    com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest.class,
+                                    Integer.class, Integer.class)),
+                    Map.entry("POST /api/transactions",
+                            TransactionViewController.class.getDeclaredMethod("addTransaction",
+                                    com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest.class,
+                                    Integer.class, Integer.class)),
+                    Map.entry("PUT /api/users/{userId}",
+                            UserUpdateController.class.getDeclaredMethod("updateUser",
+                                    String.class,
+                                    com.vsergeychik.carddemo.user.dto.UserUpdateRequest.class,
+                                    Integer.class, Integer.class, Integer.class)),
+                    Map.entry("DELETE /api/users/{userId}",
+                            UserDeleteController.class.getDeclaredMethod("deleteUser",
+                                    String.class,
+                                    com.vsergeychik.carddemo.user.dto.UserDeleteRequest.class,
+                                    Integer.class, Integer.class)));
         } catch (NoSuchMethodException absent) {
             throw new AssertionError("a route that binds the EIBAID parameter has changed shape", absent);
         }
@@ -300,11 +348,18 @@ final class AidRequestParameterTest {
         @DisplayName("every route in the survey is covered, and they agree on the canonical name")
         void theSurveyIsComplete() {
             assertThat(routes()).containsExactly(
+                    "DELETE /api/users/{userId}",
                     "GET /api/cards",
                     "GET /api/cards/{cardNum}",
                     "GET /api/transactions",
+                    "GET /api/transactions/{tranId}",
                     "GET /api/users",
-                    "POST /api/users");
+                    "POST /api/billpay",
+                    "POST /api/reports",
+                    "POST /api/signon",
+                    "POST /api/transactions",
+                    "POST /api/users",
+                    "PUT /api/users/{userId}");
 
             // Read from the live annotations rather than from each controller's constant: the constants
             // are package-private, as they should be, and the annotation is what Spring actually binds
@@ -351,10 +406,243 @@ final class AidRequestParameterTest {
         @Test
         @DisplayName("the handler map is built from live reflection, so a renamed handler fails loudly")
         void theHandlerMapIsLive() {
-            assertThat(HANDLERS).hasSize(5);
+            assertThat(HANDLERS).hasSize(12);
             assertThat(HANDLERS.values()).allSatisfy(handler ->
                     assertThat(Objects.requireNonNull(handler).getParameterCount())
                             .isGreaterThanOrEqualTo(3));
+        }
+    }
+
+    @Nested
+    @DisplayName("requireAidByte - narrowing the stated value to the one byte it names")
+    class RequireAidByte {
+
+        @ParameterizedTest(name = "{0} narrows to the byte 0x{1}")
+        @CsvSource({"0, 00", "1, 01", "13, 0D", "127, 7F", "128, 80", "193, C1", "243, F3",
+            "252, FC", "255, FF"})
+        @DisplayName("every value in 0-255 narrows to the unsigned reinterpretation of that byte")
+        void theWholeOneByteSpaceNarrows(int stated, String expectedHex) {
+            assertThat(AidRequestParameter.requireAidByte(stated))
+                    .isEqualTo((byte) Integer.parseInt(expectedHex, 16));
+        }
+
+        @Test
+        @DisplayName("the AIDs above 127 arrive unsigned and compare equal to their CicsAid constants")
+        void theHighAidsSurviveTheNarrowing() {
+            // This is the whole reason the parameter is unsigned: DFHPF13 is 0xC1, which Java's byte
+            // renders as -63 and a query string cannot spell.
+            assertThat(AidRequestParameter.requireAidByte(Byte.toUnsignedInt(CicsAid.DFHPF13)))
+                    .isEqualTo(CicsAid.DFHPF13);
+            assertThat(AidRequestParameter.requireAidByte(Byte.toUnsignedInt(CicsAid.DFHPF17)))
+                    .isEqualTo(CicsAid.DFHPF17);
+            assertThat(AidRequestParameter.requireAidByte(Byte.toUnsignedInt(CicsAid.DFHPF24)))
+                    .isEqualTo(CicsAid.DFHPF24);
+            assertThat(AidRequestParameter.requireAidByte(Byte.toUnsignedInt(CicsAid.DFHENTER)))
+                    .isEqualTo(CicsAid.DFHENTER);
+        }
+
+        @ParameterizedTest(name = "{0} is refused")
+        @CsvSource({"-1", "-63", "256", "259", "1000", "-2147483648", "2147483647"})
+        @DisplayName("a value outside 0-255 is refused rather than narrowed, because (byte) 259 is 3")
+        void anOutOfRangeValueIsRefused(int stated) {
+            assertThatThrownBy(() -> AidRequestParameter.requireAidByte(stated))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining(AidRequestParameter.CANONICAL_NAME)
+                    .hasMessageContaining("0")
+                    .hasMessageContaining("255")
+                    .as("and never the rejected value")
+                    .hasMessageNotContaining(String.valueOf(stated));
+        }
+
+        @Test
+        @DisplayName("the refusal is classified OUTSIDE_RANGE, so its published text is the fixed one")
+        void theRefusalIsClassified() {
+            ScreenInputRejectedException refusal = (ScreenInputRejectedException)
+                    org.assertj.core.api.Assertions.catchThrowable(
+                            () -> AidRequestParameter.requireAidByte(256));
+
+            assertThat(refusal.reason())
+                    .isEqualTo(ScreenInputRejectedException.Reason.OUTSIDE_RANGE);
+            assertThat(refusal.publicDetail())
+                    .contains(AidRequestParameter.CANONICAL_NAME)
+                    .doesNotContain("255")
+                    .doesNotContain("EIBAID");
+        }
+
+        @Test
+        @DisplayName("absence is the caller's decision, so null is a programming error and not a refusal")
+        void absenceIsNotNarrowed() {
+            assertThatThrownBy(() -> AidRequestParameter.requireAidByte(null))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("the bounds are the inclusive one-byte range and are published as constants")
+        void theBoundsAreTheOneByteRange() {
+            assertThat(AidRequestParameter.MIN_AID_VALUE).isZero();
+            assertThat(AidRequestParameter.MAX_AID_VALUE).isEqualTo(255);
+        }
+    }
+
+    @Nested
+    @DisplayName("requireTokenAgreement - a payload token may restate the byte, never contradict it")
+    class RequireTokenAgreement {
+
+        /** The code page is stated explicitly, never taken from the platform (practice B8). */
+        private final FixedWidthCodec codec =
+                new FixedWidthCodec(java.nio.charset.StandardCharsets.US_ASCII);
+
+        @Test
+        @DisplayName("no token at all agrees: the byte is then the request's only statement of the key")
+        void anAbsentTokenAgrees() {
+            AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPF3, null, codec);
+        }
+
+        @ParameterizedTest(name = "a token of \"{0}\" states no key and agrees")
+        @CsvSource({"'     '", "''", "'  '"})
+        @DisplayName("an all-spaces token is an unpainted field and states no key")
+        void anAllSpacesTokenAgrees(String token) {
+            AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPF17, token, codec);
+        }
+
+        @Test
+        @DisplayName("an all-LOW-VALUES token is a field RECEIVE MAP never touched, and states no key")
+        void anAllLowValuesTokenAgrees() {
+            AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPF17,
+                    "\u0000".repeat(PfKeyResolver.AID_TOKEN_LENGTH), codec);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @org.junit.jupiter.params.provider.EnumSource(PfKeyResolver.AidKey.class)
+        @DisplayName("a token restating the byte's own key agrees, for all sixteen keys")
+        void aTokenRestatingTheSameKeyAgrees(PfKeyResolver.AidKey key) {
+            AidRequestParameter.requireTokenAgreement("aid", key.primaryAid(), key.token(), codec);
+        }
+
+        @ParameterizedTest(name = "DFHPF{0} with the folded token PFK{1} agrees")
+        @CsvSource({"13, 01", "15, 03", "17, 05", "24, 12"})
+        @DisplayName("a folded upper key agrees with the token CSSTRPFY itself would store for it")
+        void aFoldedByteAgreesWithItsFoldedToken(int pfNumber, String foldedOnto) {
+            // The token is a value the copybook produces, so 'PFK05' is a truthful restatement of PF17.
+            // The byte still wins, which is what lets COUSR03C reach WHEN OTHER - see its own suite.
+            byte upper = aidByte("DFHPF" + pfNumber);
+            AidRequestParameter.requireTokenAgreement("aid", upper,
+                    PfKeyResolver.AidKey.valueOf("PFK" + foldedOnto).token(), codec);
+        }
+
+        @Test
+        @DisplayName("a token naming a different key is refused, and neither key is echoed")
+        void aDisagreeingTokenIsRefused() {
+            assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid",
+                    CicsAid.DFHPF3, PfKeyResolver.AidKey.PFK05.token(), codec))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("aid")
+                    .hasMessageContaining(AidRequestParameter.CANONICAL_NAME)
+                    .hasMessageNotContaining("PFK05")
+                    .hasMessageNotContaining("PFK03");
+        }
+
+        @Test
+        @DisplayName("a byte no resolver tests stores no token, so any token beside it disagrees")
+        void aTokenBesideAnUntestedByteIsRefused() {
+            assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid",
+                    CicsAid.DFHPA3, PfKeyResolver.AidKey.ENTER.token(), codec))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+            // But no token beside it is still fine: nothing is being contradicted.
+            AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPA3, null, codec);
+        }
+
+        @Test
+        @DisplayName("a token that is not a token at all is refused rather than ignored")
+        void aNonsenseTokenIsRefused() {
+            assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid",
+                    CicsAid.DFHENTER, "hello", codec))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @Test
+        @DisplayName("the comparison is at PIC X(5) and never by trimming, so padding is honoured")
+        void theComparisonIsAtTheDeclaredWidth() {
+            // 'PA1  ' carries two significant trailing spaces; a trimming comparison would accept
+            // 'PA1' for PA2's byte just as readily.
+            AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPA1, "PA1", codec);
+            assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid",
+                    CicsAid.DFHPA2, "PA1", codec))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @Test
+        @DisplayName("the refusal is classified CONTRADICTORY_SPELLINGS, so no new public text appears")
+        void theRefusalReusesTheContradictionReason() {
+            ScreenInputRejectedException refusal = (ScreenInputRejectedException)
+                    org.assertj.core.api.Assertions.catchThrowable(
+                            () -> AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPF3,
+                                    PfKeyResolver.AidKey.PFK05.token(), codec));
+
+            assertThat(refusal.reason())
+                    .isEqualTo(ScreenInputRejectedException.Reason.CONTRADICTORY_SPELLINGS);
+            assertThat(refusal.publicDetail())
+                    .contains("aid")
+                    .doesNotContain("PFK")
+                    .doesNotContain("EIBAID")
+                    .doesNotContain("CSSTRPFY");
+        }
+
+        @Test
+        @DisplayName("the member name and the codec are both required")
+        void bothCollaboratorsAreRequired() {
+            assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement(null, CicsAid.DFHENTER,
+                    "ENTER", codec)).isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHENTER,
+                    "ENTER", null)).isInstanceOf(NullPointerException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("requireStatedAid - the composed rule the six routes call")
+    class RequireStatedAid {
+
+        private final FixedWidthCodec codec =
+                new FixedWidthCodec(java.nio.charset.StandardCharsets.US_ASCII);
+
+        @Test
+        @DisplayName("it narrows and then cross-checks, handing back the byte to act on")
+        void itNarrowsThenCrossChecks() {
+            assertThat(AidRequestParameter.requireStatedAid("aid",
+                    Byte.toUnsignedInt(CicsAid.DFHPF17), null, codec))
+                    .isEqualTo(CicsAid.DFHPF17);
+            assertThat(AidRequestParameter.requireStatedAid("aid",
+                    Byte.toUnsignedInt(CicsAid.DFHPF3), "PFK03", codec))
+                    .isEqualTo(CicsAid.DFHPF3);
+        }
+
+        @Test
+        @DisplayName("the range is checked first, because an impossible value names no key to compare to")
+        void theRangeIsCheckedFirst() {
+            ScreenInputRejectedException refusal = (ScreenInputRejectedException)
+                    org.assertj.core.api.Assertions.catchThrowable(
+                            () -> AidRequestParameter.requireStatedAid("aid", 999, "PFK05", codec));
+
+            assertThat(refusal.reason())
+                    .as("out of range, not a contradiction - the order of the two guards is observable")
+                    .isEqualTo(ScreenInputRejectedException.Reason.OUTSIDE_RANGE);
+        }
+
+        @Test
+        @DisplayName("a disagreeing token is refused even though the byte itself is valid")
+        void aDisagreementStillRefuses() {
+            assertThatThrownBy(() -> AidRequestParameter.requireStatedAid("aid",
+                    Byte.toUnsignedInt(CicsAid.DFHPF3), "PFK05", codec))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+    }
+
+    /** The {@link CicsAid} constant of a given name, read reflectively so the name is the source. */
+    private static byte aidByte(String constantName) {
+        try {
+            return CicsAid.class.getDeclaredField(constantName).getByte(null);
+        } catch (ReflectiveOperationException absent) {
+            throw new AssertionError("CicsAid does not declare " + constantName, absent);
         }
     }
 }

@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.transaction;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -9,7 +11,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.NumericIntrinsics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
-import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -59,6 +61,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -255,6 +258,45 @@ public class ReportRequestController {
 
     /** The REST resource this screen is exposed as. */
     public static final String REPORTS_PATH = "/api/reports";
+
+    /**
+     * The payload member carrying the attention identifier, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller with a seventeen-field body knows which member contradicted the
+     * raw byte it also sent. Its value is the one-character {@code EIBAID} image - see
+     * {@link #eibAidOf(String)} - not the folded {@code CCARD-AID} token.
+     */
+    static final String AID_MEMBER = "aid";
+
+    /**
+     * Query parameter carrying the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value.
+     *
+     * <p>{@link AidRequestParameter#CANONICAL_NAME}, the one spelling every online route accepts. It is
+     * the plainest way to state one byte over HTTP, and it is the form that can name any of the 26 AIDs
+     * {@code app/cbl/CORPT00C.cbl:184} may be handed - including the twelve high function keys a
+     * {@code CCARD-AID} token cannot distinguish from their low twins.
+     */
+    public static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /** The accepted alternate spelling of {@value #EIBAID_PARAM} - see {@link AidRequestParameter}. */
+    public static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
+
+    /** The lowest value an unsigned {@code EIBAID} byte can carry. */
+    static final int AID_MIN = 0;
+
+    /** The highest value an unsigned {@code EIBAID} byte can carry. */
+    static final int AID_MAX = 255;
+
+    /**
+     * The width of the raw {@code EIBAID} form of {@link ReportRequestRequest#aid()}: one character.
+     *
+     * <p>{@link ReportRequestRequest#AID_LENGTH} is five, the width of the {@code CCARD-AID} token the
+     * responses of this module publish; this is the width of the byte {@code :184} evaluates.
+     */
+    static final int RAW_AID_LENGTH = 1;
+
+    /** The highest code point an attention identifier can hold - {@code EIBAID} is one byte. */
+    static final char MAX_AID_CODE_POINT = 0x00FF;
 
     /**
      * {@code MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM} - CORPT00C.cbl:173 and 543. The sign-on screen: the
@@ -946,16 +988,34 @@ public class ReportRequestController {
      * the seventeen screen fields arrive in the body, and the response carries the screen to paint and
      * the program to go to next. No conversation is retained between calls.
      *
+     * <p><strong>The key may arrive as its raw byte, and that byte is what line 184 evaluates.</strong>
+     * Both spellings of {@link AidRequestParameter} bind and carry all 256 values of {@code EIBAID}.
+     * {@code CORPT00C} does not copy {@code app/cpy/CSSTRPFY.cpy}: it tests the raw byte at lines 185 and
+     * 187 and names no other, so {@code PF15} takes the invalid-key arm on the terminal. The
+     * five-character token cannot say {@code PF15}, because the copybook folds it onto {@code 'PFK03'} and
+     * this program would then take its {@code PF3} arm. A request that sends neither parameter keeps the
+     * token decode it always had.
+     *
      * @param request the inbound screen; validated against the symbolic map's declared widths
+     * @param eibaid  the attention identifier as an unsigned {@code 0}-{@code 255} byte under
+     *                {@value #EIBAID_PARAM}, or {@code null} to take it from the payload's own
+     *                {@code aid} member
+     * @param eibAid  the same value under {@value #EIBAID_PARAM_ALIAS}; at most one need be sent
      * @return the outbound screen, never {@code null}
-     * @throws NullPointerException if {@code request} is {@code null}
+     * @throws NullPointerException     if {@code request} is {@code null}
+     * @throws IllegalArgumentException if the stated byte is outside {@code 0}-{@code 255}, or if both
+     *                                  spellings are present and disagree
      */
+    // The two query parameters are appended last: Spring binds by the name in the annotation and never
+    // by position, so the single argument this method already had keeps its meaning for every caller.
     @PostMapping(path = REPORTS_PATH,
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ScreenResponse<ReportRequestResponse> submitReportRequest(
-            @Valid @RequestBody ReportRequestRequest request) {
-        ProgramState state = mainPara(request);
+            @Valid @RequestBody ReportRequestRequest request,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
+        ProgramState state = mainPara(request, AidRequestParameter.resolve(eibaid, eibAid));
         return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
@@ -986,6 +1046,42 @@ public class ReportRequestController {
      * @throws NullPointerException if {@code request} is {@code null}
      */
     public ProgramState mainPara(ReportRequestRequest request) {
+        return mainPara(request, null);
+    }
+
+    /**
+     * {@code MAIN-PARA} with the raw attention identifier the request stated.
+     *
+     * <p>The overload the request mapping calls, and the one a test drives when the distinction between
+     * {@code PF3} and {@code PF15} is the point. {@link #mainPara(ReportRequestRequest)} delegates here
+     * with {@code null}, which is "the request named no raw byte" and leaves the payload's token as the
+     * only statement of the key - the behaviour that existed before the parameter did.
+     *
+     * @param request   the inbound screen; must not be {@code null}
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when the request
+     *                  named no key
+     * @return the state at the moment the task returned to CICS or transferred, never {@code null}
+     * @throws NullPointerException if {@code request} is {@code null}
+     */
+    public ProgramState mainPara(ReportRequestRequest request, Integer statedAid) {
+        Objects.requireNonNull(request, "A request is required: CORPT00C is driven entirely by its "
+                + "communication area, the EIBAID and the received map, all of which travel in it");
+        return mainPara(request, resolveEibAid(statedAid, request.aid()));
+    }
+
+    /**
+     * {@code MAIN-PARA} with the attention identifier supplied separately from the payload.
+     *
+     * <p>The route calls this one, because the byte may arrive on the query string as well as in the
+     * body and the query string wins. {@link #mainPara(ReportRequestRequest)} is the same execution with
+     * the byte read out of the payload's own one-character {@code aid} image.
+     *
+     * @param request the inbound screen; must not be {@code null}
+     * @param eibAid  the raw {@code EIBAID} byte {@code :184} evaluates
+     * @return the state at the moment the task returned to CICS or transferred, never {@code null}
+     * @throws NullPointerException if {@code request} is {@code null}
+     */
+    public ProgramState mainPara(ReportRequestRequest request, byte eibAid) {
         Objects.requireNonNull(request, "A request is required: CORPT00C is driven entirely by its "
                 + "communication area, the EIBAID and the received map, all of which travel in it");
 
@@ -1021,9 +1117,8 @@ public class ReportRequestController {
         // L183 PERFORM RECEIVE-TRNRPT-SCREEN.
         receiveTrnrptScreen(state, request);
 
-        // L184-L195 EVALUATE EIBAID, in the source's order with WHEN OTHER last. The raw AID byte is
-        // reconstructed from the payload token so the two tests read as the source's two tests.
-        byte eibAid = eibAidOf(request.aid());
+        // L184-L195 EVALUATE EIBAID, in the source's order with WHEN OTHER last. The byte is the one the
+        // caller stated - never reconstructed from a token - so the two tests read as the source's two.
         if (PfKeyResolver.isEnter(eibAid)) {                                             // WHEN DFHENTER
             processEnterKey(state);                                                      // L186
             return state;
@@ -2049,38 +2144,65 @@ public class ReportRequestController {
     }
 
     /**
-     * Reconstructs the {@code EIBAID} byte that line 184's {@code EVALUATE EIBAID} tests, from the
-     * five-character token the payload carries.
+     * Reads the {@code EIBAID} byte that line 184's {@code EVALUATE EIBAID} tests out of the payload's
+     * {@code aid} member.
      *
-     * <p>The request carries the key as {@code PfKeyResolver.AidKey#token()} produces it, already
-     * space-padded to {@link PfKeyResolver#AID_TOKEN_LENGTH}. This program names exactly two AID
-     * values - {@code DFHENTER} at line 185 and {@code DFHPF3} at line 187 - so exactly two tokens map
-     * to a byte and everything else, spaces included, maps to {@link CicsAid#DFHNULL} and takes the
-     * {@code WHEN OTHER} arm. That mirrors the source's {@code EVALUATE}, which also names two values
-     * and defaults everything else.
+     * <p><strong>One character is the byte.</strong> Its code point <em>is</em> the attention
+     * identifier, so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF3} as {@code U+00F3},
+     * and line 184 compares exactly that. The same byte may instead be stated as an unsigned
+     * {@code 0}-{@code 255} integer on {@value #EIBAID_PARAM}, which takes precedence when both are
+     * supplied.
      *
-     * <p>One consequence of carrying a resolved token rather than a raw byte is worth recording. On the
-     * terminal, {@code PF15} is a distinct AID from {@code PF3}, and {@code CORPT00C} tests the raw byte
-     * - so {@code PF15} would take the invalid-key arm there. {@code CSSTRPFY} folds {@code PF13} to
-     * {@code PF24} back onto {@code PFK01} to {@code PFK12}, so a client that resolves through it
-     * delivers {@code PF15} as the token {@code PFK03} and this program acts on it. The payload's
-     * contract is the resolved token, so that folding is the client's choice and is documented here
-     * rather than silently absorbed.
+     * <h4>Why a {@code CCARD-AID} token is no longer decoded back to a byte</h4>
+     * {@code app/cpy/CSSTRPFY.cpy} folds {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code
+     * 'PFK12'}, so {@code 'PFK03'} stands for {@code DFHPF3} <em>and</em> {@code DFHPF15}. Decoding it
+     * had to choose, and choosing {@code DFHPF3} sent a {@code PF15} press down line 187's
+     * {@code WHEN DFHPF3} arm - the return to the main menu - where the source takes {@code WHEN OTHER}
+     * at line 190 and repaints with the invalid-key message. {@code CORPT00C} does not copy
+     * {@code CSSTRPFY} - it is one of the twelve programs that compare {@code EIBAID} itself - so the
+     * fold is not its behaviour and there is nothing to invert. The token survives as derived metadata
+     * on the way out, which is where {@link PfKeyResolver#resolve(byte)} produces it.
      *
-     * @param aidToken the resolved key token, or {@code null} when no key was resolved
-     * @return {@link CicsAid#DFHENTER}, {@link CicsAid#DFHPF3} or {@link CicsAid#DFHNULL}
+     * <p><strong>Any other width, and an absent value, yield {@link CicsAid#DFHNULL}</strong>, which is
+     * neither of the two values this program names, so it takes the {@code WHEN OTHER} arm at line 190.
+     * That mirrors the source's {@code EVALUATE}, which also names two values and defaults everything
+     * else - and it is where "a key I cannot identify" belongs. A character above
+     * {@link #MAX_AID_CODE_POINT} is reported the same way rather than narrowed: {@code EIBAID} is one
+     * byte, so a cast of {@code U+01F3} would keep its low eight bits and land on {@code 0xF3}, which
+     * <em>is</em> {@code DFHPF3}, the key line 187 acts on.
+     *
+     * @param aidImage the {@code aid} member as it arrived, or {@code null} when the payload omitted it
+     * @return the raw EBCDIC attention-identifier byte; never throws
      */
-    public static byte eibAidOf(String aidToken) {
-        if (aidToken == null) {
+    public static byte eibAidOf(String aidImage) {
+        if (aidImage == null || aidImage.length() != RAW_AID_LENGTH) {
             return CicsAid.DFHNULL;
         }
-        if (AidKey.ENTER.token().equals(aidToken)) {
-            return CicsAid.DFHENTER;
+        char stated = aidImage.charAt(0);
+        if (stated > MAX_AID_CODE_POINT) {
+            return CicsAid.DFHNULL;
         }
-        if (AidKey.PFK03.token().equals(aidToken)) {
-            return CicsAid.DFHPF3;
+        return (byte) stated;
+    }
+
+    /**
+     * Chooses which of the two statements of the key the request made is acted on: the raw byte when it
+     * is there, the token otherwise.
+     *
+     * <p>The byte wins because it is the lossless one - see {@link AidRequestParameter} - and because this
+     * program tests {@code EIBAID} inline, so a folded token would give {@code PF15} the {@code PF3} arm
+     * at line 187 rather than the invalid-key arm at line 194. A token stated beside a disagreeing byte is
+     * refused rather than dropped.
+     *
+     * @param statedAid the raw {@code EIBAID} byte as an unsigned value, or {@code null} when absent
+     * @param aidToken  the payload's {@code CCARD-AID} token, or {@code null} when absent
+     * @return the {@code EIBAID} byte line 184 evaluates
+     */
+    byte resolveEibAid(Integer statedAid, String aidToken) {
+        if (statedAid == null) {
+            return eibAidOf(aidToken);
         }
-        return CicsAid.DFHNULL;
+        return AidRequestParameter.requireStatedAid(AID_MEMBER, statedAid, aidToken, codec);
     }
 
     /**

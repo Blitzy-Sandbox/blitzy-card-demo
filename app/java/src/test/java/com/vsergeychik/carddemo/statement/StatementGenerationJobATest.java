@@ -82,6 +82,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
 import org.springframework.dao.DataAccessException;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore;
+import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.jdbc.support.JdbcTransactionManager;
@@ -99,6 +103,7 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Unit tests for {@link StatementGenerationJobA}, the translation of {@code app/cbl/CBSTM03A.CBL}.
@@ -215,8 +220,9 @@ class StatementGenerationJobATest {
 
     /**
      * The physical-record ordinal every physical-sequential read is ordered by, as
-     * {@code application-test.yml} configures it: H2's own row-identifier pseudo-column, which increases
-     * with each insert and so hands the records back in the order they were written - which is what a
+     * {@code application-test.yml} configures it: the shipped test profile names H2's row-identifier
+     * pseudo-column, which increases with each insert, and the record-image store behind this suite holds
+     * rows in write order, so both hand the records back in the order they were written - which is what a
      * {@code SORT} of an unsorted file and a {@code REPRO} of a sorted one both require.
      */
     private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
@@ -2864,22 +2870,21 @@ class StatementGenerationJobATest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // A NOTE ON THE CREATE TABLE STATEMENTS BELOW, recorded rather than quietly settled (practice B4).
+    // THE RELATIONS THIS SUITE RUNS AGAINST, AND WHY NONE OF THEM IS CREATED.
     //
     // Gate G44 requires that no DDL, no schema migration, no entity annotation and no generated table
     // definition exist in this module - the migration must not invent a relational schema for datasets
-    // that are VSAM clusters and sequential files. It does not: there is no DDL for any of the eleven
-    // datasets, no migration tool, no entity type, and the shipped configuration sets the batch
-    // JobRepository's schema initialisation to never. Every dataset a run touches is addressed through a
-    // carddemo.datasets binding, and the class under test issues SELECT, INSERT and DELETE only.
+    // that are VSAM clusters and sequential files - and this suite satisfies it literally rather than by
+    // argument. A relation here is DECLARED to a RecordImageDataSource, which is a map from dataset name
+    // to a list of record images. There is no schema, so no CREATE TABLE is executed, and there is
+    // nothing that could be migrated.
     //
-    // The two helpers below do issue CREATE TABLE, and the conflict is stated here rather than papered
-    // over. What they create is not schema: it is a single-column throwaway relation inside a private
-    // in-memory database that exists for the duration of ONE test method, standing in for the one thing a
-    // site's driver is assumed to present - a fixed-width dataset as one record-image column. Without it
-    // JdbcDatasetUtilityPort could not be exercised at all, and it is the port that carries the four
-    // utility steps' data path. Nothing created here is shipped, migrated, or reachable from main; the
-    // column is named RECORD_IMAGE and carries no field structure, so no copybook is being relationalised.
+    // Only the storage engine is replaced. Everything above the driver is the shipped code path: the real
+    // JdbcTemplate, the real JdbcDatasetUtilityPort, DatasetRelation's real composed statements,
+    // RecordImageForm's real getString/getBytes choice, the real DatasetUnitOfWork and a real
+    // JdbcTransactionManager. The store recognises exactly the statement shapes this module composes and
+    // refuses anything else loudly, so a change to a composed statement fails here rather than returning a
+    // plausible but different answer.
     // ---------------------------------------------------------------------------------------------
 
     /**
@@ -2904,18 +2909,35 @@ class StatementGenerationJobATest {
      */
     private static JdbcTemplate seededRelation(String database, String dsname, int recordLength,
             List<String> rows) {
-        org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
-                new org.springframework.jdbc.datasource.DriverManagerDataSource(
-                        "jdbc:h2:mem:stmtjoba-" + database
-                                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("CREATE TABLE \"" + dsname + "\" (RECORD_IMAGE VARCHAR(" + recordLength
-                + "))");
-        for (String row : rows) {
-            template.update("INSERT INTO \"" + dsname + "\" VALUES (?)", row);
-        }
-        return template;
+        Objects.requireNonNull(database, "A per-test store is labelled with the test that owns it");
+        RecordImageDataSource backend = new RecordImageDataSource();
+        backend.define(dsname, RecordImageDataSource.RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER,
+                recordLength);
+        backend.store().seed(dsname, rows);
+        return new JdbcTemplate(backend);
+    }
+
+    /**
+     * The store behind a template built by {@link #seededRelation} or {@link #binaryRelation}.
+     *
+     * @param template the template
+     * @return the relations it serves
+     */
+    private static RecordImageStore store(JdbcTemplate template) {
+        return ((RecordImageDataSource) Objects.requireNonNull(template.getDataSource(),
+                "A per-test template always has its store behind it")).store();
+    }
+
+    /**
+     * Declares a further character relation on an existing template's store.
+     *
+     * @param template     the template whose store to extend
+     * @param dsname       the dataset name
+     * @param recordLength the record width
+     */
+    private static void declareRelation(JdbcTemplate template, String dsname, int recordLength) {
+        store(template).define(dsname, RecordImageDataSource.RECORD_IMAGE_COLUMN,
+                ColumnForm.CHARACTER, recordLength);
     }
 
     /**
@@ -2928,15 +2950,11 @@ class StatementGenerationJobATest {
      * @return a template over the empty relation
      */
     private static JdbcTemplate binaryRelation(String database, String dsname, int recordLength) {
-        org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
-                new org.springframework.jdbc.datasource.DriverManagerDataSource(
-                        "jdbc:h2:mem:stmtjobabin-" + database
-                                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("CREATE TABLE \"" + dsname + "\" (RECORD_IMAGE VARBINARY(" + recordLength
-                + "))");
-        return template;
+        Objects.requireNonNull(database, "A per-test store is labelled with the test that owns it");
+        RecordImageDataSource backend = new RecordImageDataSource();
+        backend.define(dsname, RecordImageDataSource.RECORD_IMAGE_COLUMN, ColumnForm.BINARY,
+                recordLength);
+        return new JdbcTemplate(backend);
     }
 
     /**
@@ -2970,8 +2988,7 @@ class StatementGenerationJobATest {
             assertThat(port.writeRecordImages(binding, List.of(record))).isEqualTo(1);
 
             // The stored bytes are the dataset's own, unconverted: 'a' is 0x81 in IBM037.
-            byte[] stored = template.queryForObject(
-                    "SELECT RECORD_IMAGE FROM \"" + dsname + "\"", byte[].class);
+            byte[] stored = store(template).rowBytes(dsname).get(0);
             assertThat(stored).hasSize(80);
             assertThat(stored[0]).isEqualTo((byte) 0x81);
             assertThat(stored).isEqualTo(record.getBytes(EBCDIC));
@@ -2986,7 +3003,8 @@ class StatementGenerationJobATest {
             String source = "TEST.BINARY.SORTOUT";
             String target = "TEST.BINARY.WORKKSDS";
             JdbcTemplate template = binaryRelation("binary-copy", source, 80);
-            template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARBINARY(80))");
+            store(template).define(target, RecordImageDataSource.RECORD_IMAGE_COLUMN,
+                    ColumnForm.BINARY, 80);
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
                     RecordImageForm.BINARY, ORDINAL, unitOfWork());
             DatasetBinding from = sequential(source, 80, 8000);
@@ -2998,8 +3016,7 @@ class StatementGenerationJobATest {
 
             // Asserted against the STORED bytes, not only against the read-back: a read and a write that
             // corrupt symmetrically would satisfy a round-trip comparison and satisfy nothing else.
-            List<byte[]> stored = template.query("SELECT RECORD_IMAGE FROM \"" + target + "\"",
-                    (row, index) -> row.getBytes(1));
+            List<byte[]> stored = store(template).rowBytes(target);
             assertThat(stored).hasSize(2);
             assertThat(stored.get(0)).isEqualTo(records.get(0).getBytes(EBCDIC));
             assertThat(stored.get(1)).isEqualTo(records.get(1).getBytes(EBCDIC));
@@ -3080,8 +3097,8 @@ class StatementGenerationJobATest {
             String source = "TEST.REPRO.SOURCE";
             String target = "TEST.REPRO.TARGET";
             JdbcTemplate template = seededRelation("repro-partial-load", source, 80, List.of());
-            template.execute("CREATE TABLE \"" + target
-                    + "\" (RECORD_IMAGE VARCHAR(80) PRIMARY KEY)");
+            store(template).defineUnique(target, RecordImageDataSource.RECORD_IMAGE_COLUMN,
+                    ColumnForm.CHARACTER, 80);
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
                     RecordImageForm.CHARACTER, ORDINAL, new DatasetUnitOfWork(
                             new JdbcTransactionManager(template.getDataSource())));
@@ -3093,7 +3110,7 @@ class StatementGenerationJobATest {
             assertThatExceptionOfType(DataAccessException.class)
                     .isThrownBy(() -> port.copyRecordImages(from, to));
 
-            assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
+            assertThat(store(template).rows(target))
                     .as("the records already REPROed stay loaded, as an interrupted IDCAMS leaves them")
                     .containsExactlyInAnyOrder(record80("A"), record80("B"));
         }
@@ -3104,7 +3121,7 @@ class StatementGenerationJobATest {
             String source = "TEST.REPRO.SRC2";
             String target = "TEST.REPRO.TGT2";
             JdbcTemplate template = seededRelation("repro-rollback", source, 80, List.of());
-            template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARCHAR(80))");
+            declareRelation(template, target, 80);
             DatasetUnitOfWork boundary = new DatasetUnitOfWork(
                     new JdbcTransactionManager(template.getDataSource()));
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
@@ -3122,7 +3139,7 @@ class StatementGenerationJobATest {
                 throw new IllegalStateException("the step fails after the REPRO");
             }));
 
-            assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
+            assertThat(store(template).rows(target))
                     .as("a partial KSDS load is what DISP=SHR leaves; a rollback would erase it")
                     .containsExactlyInAnyOrder(record80("A"), record80("B"));
         }
@@ -3140,7 +3157,7 @@ class StatementGenerationJobATest {
             String source = "TEST.REPRO.SRC3";
             String target = "TEST.REPRO.TGT3";
             JdbcTemplate template = seededRelation("repro-unbounded", source, 80, List.of());
-            template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARCHAR(80))");
+            declareRelation(template, target, 80);
             JdbcDatasetUtilityPort unbounded = new JdbcDatasetUtilityPort(template, ASCII,
                     RecordImageForm.CHARACTER, ORDINAL);
             DatasetBinding from = sequential(source, 80, 8000);
@@ -3151,7 +3168,7 @@ class StatementGenerationJobATest {
 
             // Record for record AND in order, which is the whole reason the port takes a physical-record
             // ordinal: SQL returns rows in no order unless one is asked for.
-            assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
+            assertThat(store(template).rows(target))
                     .containsExactly(record80("A"), record80("B"), record80("C"));
         }
 

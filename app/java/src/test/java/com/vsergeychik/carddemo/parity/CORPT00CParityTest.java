@@ -438,23 +438,25 @@ final class CORPT00CParityTest {
     }
 
     /**
-     * The five-character AID token a {@code DFHAID} mnemonic resolves to, as the payload carries it.
+     * The one-character {@code EIBAID} image a {@code DFHAID} mnemonic resolves to, as the payload
+     * carries it.
      *
-     * <p>Two indirections, and both are deliberate. {@code DFHAID} is IBM-supplied and absent from this
+     * <p>One indirection, and it is deliberate: {@code DFHAID} is IBM-supplied and absent from this
      * repository (risk R-D), so {@link CicsAid} is the single reproduction of it and the
-     * mnemonic-to-byte correspondence is read from there rather than restated. The byte is then folded
-     * to a token by {@link PfKeyResolver}, which is the module's one reproduction of
-     * {@code app/cpy/CSSTRPFY.cpy} - and using it here matters even though {@code CORPT00C} does
-     * <em>not</em> copy that member: this program tests {@code EIBAID} inline at {@code :184-195}, and
-     * the inline tests and the shared resolver have to produce identical boolean outcomes or two
-     * screens would disagree about which key was pressed.
+     * mnemonic-to-byte correspondence is read from there rather than restated. The byte is then rendered
+     * by {@link PfKeyResolver#aidImage(byte)} as the one character whose code point <em>is</em> that
+     * byte, which is the shape the payload carries.
      *
-     * <p>A mnemonic {@link PfKeyResolver} does not fold - {@code DFHPA3} and {@code DFHNULL} among them -
-     * has no token, so no AID is set and the request keeps its initialised spaces. That is the correct
-     * projection: the {@code WHEN OTHER} arm is exactly where such a key belongs.
+     * <p>It is <strong>not</strong> folded to a {@code CCARD-AID} token. {@code CORPT00C} does not copy
+     * {@code app/cpy/CSSTRPFY.cpy} - it tests {@code EIBAID} inline at {@code :184-195} - and that
+     * copybook maps {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so a token
+     * cannot say which key of a pair was pressed. Carrying the byte also lets a case name any key at all,
+     * including {@code DFHPA3}, which the fold has no branch for; each such key matches neither of the
+     * program's two named values and so reaches {@code WHEN OTHER} at {@code :190}, which is exactly
+     * where it belongs.
      *
      * @param mnemonic the mnemonic the case declared, or {@code null} for a path that reads no AID
-     * @return the token, or {@code null} when the case declared no AID or the AID folds to none
+     * @return the one-character image, or {@code null} when the case declared no AID
      * @throws IllegalArgumentException if the mnemonic names no constant {@link CicsAid} reproduces
      */
     private static String aidTokenOf(String mnemonic) {
@@ -463,8 +465,7 @@ final class CORPT00CParityTest {
         }
         for (Map.Entry<Byte, String> entry : CicsAid.mnemonicsByAid().entrySet()) {
             if (entry.getValue().equals(mnemonic)) {
-                Optional<AidKey> folded = PfKeyResolver.resolve(entry.getKey());
-                return folded.map(AidKey::token).orElse(null);
+                return PfKeyResolver.aidImage(entry.getKey());
             }
         }
         throw new IllegalArgumentException('"' + mnemonic + "\" is not a DFHAID mnemonic that "
@@ -1059,17 +1060,23 @@ final class CORPT00CParityTest {
         @Test
         @DisplayName("EVALUATE EIBAID names exactly two keys and defaults everything else")
         void theTwoNamedAidsAndTheDefault() {
-            assertThat(ReportRequestController.eibAidOf(AidKey.ENTER.token()))
+            assertThat(ReportRequestController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHENTER)))
                     .as("WHEN DFHENTER at app/cbl/CORPT00C.cbl:185")
                     .isEqualTo(CicsAid.DFHENTER);
-            assertThat(ReportRequestController.eibAidOf(AidKey.PFK03.token()))
-                    .as("WHEN DFHPF3 at :187, reached through CSSTRPFY's PF3-to-PFK03 fold")
+            assertThat(ReportRequestController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF3)))
+                    .as("WHEN DFHPF3 at :187, compared as the byte the payload carried")
                     .isEqualTo(CicsAid.DFHPF3);
-            assertThat(ReportRequestController.eibAidOf(AidKey.PFK05.token()))
+            assertThat(ReportRequestController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF5)))
+                    .as("PF5 arrives as itself, and :190's WHEN OTHER is where it lands")
+                    .isEqualTo(CicsAid.DFHPF5);
+            assertThat(PfKeyResolver.isEnter(CicsAid.DFHPF5) || PfKeyResolver.isPf3(CicsAid.DFHPF5))
                     .as("WHEN OTHER at :190 - PF5 is named by neither arm")
-                    .isEqualTo(CicsAid.DFHNULL);
-            assertThat(ReportRequestController.eibAidOf(AidKey.CLEAR.token()))
-                    .as("CLEAR is not named either, so it defaults too")
+                    .isFalse();
+            assertThat(ReportRequestController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHCLEAR)))
+                    .as("CLEAR arrives as itself too, and is named by neither arm")
+                    .isEqualTo(CicsAid.DFHCLEAR);
+            assertThat(ReportRequestController.eibAidOf("PFK03"))
+                    .as("a five-character CCARD-AID token is not one byte, so it names no key at all")
                     .isEqualTo(CicsAid.DFHNULL);
             assertThat(ReportRequestController.eibAidOf(null))
                     .as("no key pressed is DFHNULL, which also defaults")
@@ -1082,17 +1089,20 @@ final class CORPT00CParityTest {
         }
 
         @Test
-        @DisplayName("PF15 is folded onto PFK03 by the resolver, which the inline test then acts on")
-        void theFoldIsTheClientsAndIsRecordedAsSuch() {
+        @DisplayName("PF15 arrives as PF15 and takes WHEN OTHER: the fold is not this program's")
+        void theFoldIsNotAppliedAtAll() {
             assertThat(aidTokenOf(CicsAid.mnemonicsByAid().get(CicsAid.DFHPF15)))
-                    .as("app/cpy/CSSTRPFY.cpy folds PF13 to PF24 back onto PFK01 to PFK12, so a client "
-                            + "resolving through it delivers PF15 as PFK03 - which this program's inline "
-                            + "test at :187 then treats as PF3. The fold is the client's choice and is "
-                            + "recorded rather than silently absorbed")
-                    .isEqualTo(AidKey.PFK03.token());
+                    .as("app/cpy/CSSTRPFY.cpy folds PF13 to PF24 back onto PFK01 to PFK12, but CORPT00C "
+                            + "does not copy it - it compares EIBAID inline at :187 - so PF15 travels as "
+                            + "itself and is neither of the two bytes this program names")
+                    .isEqualTo(PfKeyResolver.aidImage(CicsAid.DFHPF15))
+                    .isNotEqualTo(PfKeyResolver.aidImage(CicsAid.DFHPF3));
+            assertThat(ReportRequestController.eibAidOf(
+                    aidTokenOf(CicsAid.mnemonicsByAid().get(CicsAid.DFHPF15))))
+                    .isEqualTo(CicsAid.DFHPF15);
             assertThat(aidTokenOf(CicsAid.mnemonicsByAid().get(CicsAid.DFHPA3)))
-                    .as("CSSTRPFY does not test PA3, so it folds to no token at all")
-                    .isNull();
+                    .as("a key CSSTRPFY has no branch for is still a key a terminal can send")
+                    .isEqualTo(PfKeyResolver.aidImage(CicsAid.DFHPA3));
         }
 
         @Test
@@ -1777,7 +1787,7 @@ final class CORPT00CParityTest {
         ReportRequestRequest initial = ReportRequestRequest.empty();
         return initial
                 .withNavigationContext(initial.navigationContext().withPgmReenter())
-                .withAid(AidKey.ENTER.token());
+                .withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER));
     }
 
     /**

@@ -1,7 +1,7 @@
 {
   "program": "CBTRN01C",
   "caseId": "case03",
-  "description": "The zoned-decimal sign overpunch, which is the whole reason this case exists: CBTRN01C displays the RAW 350-byte DALYTRAN-RECORD at :168 and never an edited image, so the overpunched trailing byte of DALYTRAN-AMT has to survive into the emitted line untouched, and any codec that normalises a sign, strips a byte or reformats an amount fails here rather than somewhere downstream where the cause is no longer visible. DALYTRAN-AMT is PIC S9(09)V99, so 9 + 2 = eleven zoned DISPLAY bytes at offsets 133-143, an offset reached mechanically by summing the CVTRA06Y spans that precede it - DALYTRAN-ID X(16), DALYTRAN-TYPE-CD X(02), DALYTRAN-CAT-CD 9(04), DALYTRAN-SOURCE X(10) and DALYTRAN-DESC X(100) - with the sign overpunched into byte 143 alone and never carried as a separate character (practice B11). Three records are seeded, in an order chosen deliberately over file order so that one run spans every sign family the fixture contains, and each amount is stated here as raw bytes AND as its signed decimal value so a reviewer can re-derive the overpunch by eye rather than trusting a decoder (practice B8). Seed 1 is dailytran.txt row 2 (zero-based 1), DALYTRAN-ID 0000000001774260, amount bytes 0000009190} whose '}' closes the D zone as digit 0 NEGATIVE, so the value is -919.00 - the negative amount, and the byte a sign-normalising codec corrupts first. Seed 2 is row 26 (zero-based 25), ID 0000000084515950, bytes 0000003250{ whose '{' is digit 0 POSITIVE, so +325.00 - the same digit zero seed 1 carried, under the opposite zone, which is what makes the pair discriminating rather than two spellings of one thing. Seed 3 is row 1 (zero-based 0), ID 0000000000683580, bytes 0000005047G whose 'G' is digit 7 positive, so +504.77 - a non-zero final digit, so the case pins the C-zone letters too and not merely the two brace characters. The tables are '{ABCDEFGHI' for digits 0-9 positive and '}JKLMNOPQR' for digits 0-9 negative. No COMP-3 or PACKED-DECIMAL is declared in any copybook in app/cpy, so every persisted numeric field in this system is zoned DISPLAY and no packed-decimal nibble unpacking is ever required - which is exactly why these eleven bytes can be asserted literally. The three cards resolve through cardxref.txt and acctdata.txt: 0927987108636232 (row 4) to customer 000000020 and account 00000000020, 8931369351894783 (row 45) to 000000008 and 00000000008, and 4859452612877065 (row 21) to 000000007 and 00000000007, each account being row N of acctdata.txt for account N, verified against ACCT-ID at bytes 1-11. So MAIN-PARA at :155-197 opens the six files at :157-162, and the loop at :164-186 turns four times: three times reading '00', echoing the record at :168, taking 2000-LOOKUP-XREF's NOT INVALID KEY arm and displaying its four lines in source order - :235 the banner, :236 the card, :237 the account, :238 the customer - then 3000-READ-ACCOUNT's NOT INVALID KEY arm and its one line at :249. THE POST-END-OF-FILE LOOKUP: on the fourth turn the READ reports '10', :208 moves 16 into APPL-RESULT and :217 moves 'Y' into END-OF-DAILY-TRANS-FILE, so the inner guard at :167 - which closes at :169 and covers ONLY the DISPLAY at :168 - suppresses the record echo, while :170-172 and the account read at :173-179 sit OUTSIDE that guard and run anyway. They run against the STALE DALYTRAN-CARD-NUM, because a READ INTO does not disturb its receiving area AT END, and the stale card is therefore the THIRD seeded record's 4859452612877065 and emphatically not the first record's - which is the distinction this case pins and which the seeding order was chosen to expose, since a harness that echoed file order would leave 0927987108636232 stale instead. Entries 20-23 of expectedMessages are that repeat, four lines with no record echo before them, and entry 24 is its account read; hoisting :170-172 inside the guard, or reading the first record's card, makes this case fail, which is the point (practice B5). Twenty-five lines, fifteen file verbs, four lookups for three records - a run always performs recordsRead + 1. RETURN-CODE 0: CBTRN01C contains no MOVE statement targeting RETURN-CODE anywhere, and APPL-RESULT transits 8 at each open seed, 0 on '00' and 16 on the '10' at :208 without ever reaching RETURN-CODE, so normal completion is 0 and the CALL 'CEE3ABD' at :473 is unreached (gate G47 covers the '00' opens, the three '00' reads and the '10' that ends the pass as a normal boundary rather than an error). expectedWrites is EMPTY as a positive assertion and not an absence of interest: the source contains zero WRITE and zero REWRITE statements and all six files are OPEN INPUT, and the six WRITES-channel dataset expectations say the same thing per dataset at its exact copybook width. All six DD names the program declares at :29-62 are present in inputs, in the program's own OPEN order at :157-162, because the footprint is part of the behaviour: DALYTRAN, XREFFILE and ACCTFILE carry rows, while CUSTFILE, CARDFILE and TRANFILE are declared empty at their copybook widths - CVCUS01Y 500, CVACT02Y 150 and CVTRA05Y 350 - which states positively that the program opens them at :158-160 and closes them at :189-191 and that no READ in it ever touches them, the only reads being DALYTRAN at :203, XREF-FILE at :229 and ACCOUNT-FILE at :243. Never assert a CUSTFILE or CARDFILE read here; the program performs none. The three seeded datasets are pinned unchanged on the final-state channel at their copybook widths, all nine rows - DALYTRAN 350 from CVTRA06Y and ACCTFILE 300 from CVACT01Y as record images, so the overpunch bytes and CVACT01Y's FILLER X(178) space-filled across bytes 123-300 are both proved present, and the misspelled ACCT-EXPIRAION-DATE keeps the copybook's own spelling (I1) - which is what proves every FILLER span was emitted (gates G19 and G21). The cross-reference rows are seeded at the 36 bytes the fixture actually holds and are NOT pre-padded; the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER X(14) once, at seed time, and each row's final state pins all four spans by name - 16 + 9 + 11 + 14 = the whole 50 bytes, so no byte goes unasserted (gate G16, risk R-F). Baseline provenance, practice B12: these expected values are STATICALLY DERIVED from app/cbl/CBTRN01C.cbl read paragraph by paragraph over :155-250, cross-checked against the copybook byte layouts in app/cpy (CVTRA06Y 350, CVACT03Y 50, CVACT01Y 300, every offset mechanically diffable by eye) and against the real ASCII fixtures, every byte string extracted by command and none retyped. They were NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment - no z/OS or CICS runtime, an indexed-file handler the available compiler reports as disabled, which excludes the five ORGANIZATION INDEXED files this very program declares, and no Language Environment CEE* services, so CALL 'CEE3ABD' could not be reached even deliberately. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated for explicit user confirmation as risk R-A rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and nothing here reads a clock, draws an unpredictable value or consults the environment - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). Two divergences are documented rather than 'fixed' (practice B4). First, rule R1: the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing at all; CBTRN01C is also the migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13, requirement I4). Second, CBTRN01CParityTest declares a Java case03 covering a different branch - the '23' INVALID KEY arm of 3000-READ-ACCOUNT - because that class was written while this fixture directory did not yet exist and it builds its twenty scenarios in Java rather than loading them; this fixture is authored to its own specification, the divergence is recorded here rather than resolved by editing another agent's file, and it is flagged for reconciliation if and when that class adopts ParityHarness.casesOf(\"CBTRN01C\"). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set B1-B12 and its absence is not licence to assert less. Gates carried: G13, G15, G16, G18, G19, G21, G47 and G51 - the unit is the TransactionPostingJob tasklet body driven directly, with no JobLauncher, no HTTP layer, no application context and no database in the path. G32 does not apply: CBTRN01C contains zero GO TO statements.",
+  "description": "The zoned-decimal sign overpunch, which is the whole reason this case exists: CBTRN01C displays the RAW 350-byte DALYTRAN-RECORD at :168 and never an edited image, so the overpunched trailing byte of DALYTRAN-AMT has to survive into the emitted line untouched, and any codec that normalises a sign, strips a byte or reformats an amount fails here rather than somewhere downstream where the cause is no longer visible. DALYTRAN-AMT is PIC S9(09)V99, so 9 + 2 = eleven zoned DISPLAY bytes at offsets 133-143, an offset reached mechanically by summing the CVTRA06Y spans that precede it - DALYTRAN-ID X(16), DALYTRAN-TYPE-CD X(02), DALYTRAN-CAT-CD 9(04), DALYTRAN-SOURCE X(10) and DALYTRAN-DESC X(100) - with the sign overpunched into byte 143 alone and never carried as a separate character (practice B11). Three records are seeded, in an order chosen deliberately over file order so that one run spans every sign family the fixture contains, and each amount is stated here as raw bytes AND as its signed decimal value so a reviewer can re-derive the overpunch by eye rather than trusting a decoder (practice B8). Seed 1 is dailytran.txt row 2 (zero-based 1), DALYTRAN-ID 0000000001774260, amount bytes 0000009190} whose '}' closes the D zone as digit 0 NEGATIVE, so the value is -919.00 - the negative amount, and the byte a sign-normalising codec corrupts first. Seed 2 is row 26 (zero-based 25), ID 0000000084515950, bytes 0000003250{ whose '{' is digit 0 POSITIVE, so +325.00 - the same digit zero seed 1 carried, under the opposite zone, which is what makes the pair discriminating rather than two spellings of one thing. Seed 3 is row 1 (zero-based 0), ID 0000000000683580, bytes 0000005047G whose 'G' is digit 7 positive, so +504.77 - a non-zero final digit, so the case pins the C-zone letters too and not merely the two brace characters. The tables are '{ABCDEFGHI' for digits 0-9 positive and '}JKLMNOPQR' for digits 0-9 negative. No COMP-3 or PACKED-DECIMAL is declared in any copybook in app/cpy, so every persisted numeric field in this system is zoned DISPLAY and no packed-decimal nibble unpacking is ever required - which is exactly why these eleven bytes can be asserted literally. The three cards resolve through cardxref.txt and acctdata.txt: 0927987108636232 (row 4) to customer 000000020 and account 00000000020, 8931369351894783 (row 45) to 000000008 and 00000000008, and 4859452612877065 (row 21) to 000000007 and 00000000007, each account being row N of acctdata.txt for account N, verified against ACCT-ID at bytes 1-11. So MAIN-PARA at :155-197 opens the six files at :157-162, and the loop at :164-186 turns four times: three times reading '00', echoing the record at :168, taking 2000-LOOKUP-XREF's NOT INVALID KEY arm and displaying its four lines in source order - :235 the banner, :236 the card, :237 the account, :238 the customer - then 3000-READ-ACCOUNT's NOT INVALID KEY arm and its one line at :249. THE POST-END-OF-FILE LOOKUP: on the fourth turn the READ reports '10', :208 moves 16 into APPL-RESULT and :217 moves 'Y' into END-OF-DAILY-TRANS-FILE, so the inner guard at :167 - which closes at :169 and covers ONLY the DISPLAY at :168 - suppresses the record echo, while :170-172 and the account read at :173-179 sit OUTSIDE that guard and run anyway. They run against the STALE DALYTRAN-CARD-NUM, because a READ INTO does not disturb its receiving area AT END, and the stale card is therefore the THIRD seeded record's 4859452612877065 and emphatically not the first record's - which is the distinction this case pins and which the seeding order was chosen to expose, since a harness that echoed file order would leave 0927987108636232 stale instead. Entries 20-23 of expectedMessages are that repeat, four lines with no record echo before them, and entry 24 is its account read; hoisting :170-172 inside the guard, or reading the first record's card, makes this case fail, which is the point (practice B5). Twenty-five lines, fifteen file verbs, four lookups for three records - a run always performs recordsRead + 1. RETURN-CODE 0: CBTRN01C contains no MOVE statement targeting RETURN-CODE anywhere, and APPL-RESULT transits 8 at each open seed, 0 on '00' and 16 on the '10' at :208 without ever reaching RETURN-CODE, so normal completion is 0 and the CALL 'CEE3ABD' at :473 is unreached (gate G47 covers the '00' opens, the three '00' reads and the '10' that ends the pass as a normal boundary rather than an error). expectedWrites is EMPTY as a positive assertion and not an absence of interest: the source contains zero WRITE and zero REWRITE statements and all six files are OPEN INPUT, and the six WRITES-channel dataset expectations say the same thing per dataset at its exact copybook width. All six DD names the program declares at :29-62 are present in inputs, in the program's own OPEN order at :157-162, because the footprint is part of the behaviour: DALYTRAN, XREFFILE and ACCTFILE carry rows, while CUSTFILE, CARDFILE and TRANFILE are declared empty at their copybook widths - CVCUS01Y 500, CVACT02Y 150 and CVTRA05Y 350 - which states positively that the program opens them at :158-160 and closes them at :189-191 and that no READ in it ever touches them, the only reads being DALYTRAN at :203, XREF-FILE at :229 and ACCOUNT-FILE at :243. Never assert a CUSTFILE or CARDFILE read here; the program performs none. The three seeded datasets are pinned unchanged on the final-state channel at their copybook widths, all nine rows - DALYTRAN 350 from CVTRA06Y and ACCTFILE 300 from CVACT01Y as record images, so the overpunch bytes and CVACT01Y's FILLER X(178) space-filled across bytes 123-300 are both proved present, and the misspelled ACCT-EXPIRAION-DATE keeps the copybook's own spelling (I1) - which is what proves every FILLER span was emitted (gates G19 and G21). The cross-reference rows are seeded at the 36 bytes the fixture actually holds and are NOT pre-padded; the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER X(14) once, at seed time, and each row's final state pins all four spans by name - 16 + 9 + 11 + 14 = the whole 50 bytes, so no byte goes unasserted (gate G16, risk R-F). Baseline provenance, practice B12: these expected values are STATICALLY DERIVED from app/cbl/CBTRN01C.cbl read paragraph by paragraph over :155-250, cross-checked against the copybook byte layouts in app/cpy (CVTRA06Y 350, CVACT03Y 50, CVACT01Y 300, every offset mechanically diffable by eye) and against the real ASCII fixtures, every byte string extracted by command and none retyped. They were NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment - no z/OS or CICS runtime, an indexed-file handler the available compiler reports as disabled, which excludes the five ORGANIZATION INDEXED files this very program declares, and no Language Environment CEE* services, so CALL 'CEE3ABD' could not be reached even deliberately. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated for explicit user confirmation as risk R-A rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and nothing here reads a clock, draws an unpredictable value or consults the environment - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). Two divergences are documented rather than 'fixed' (practice B4). First, rule R1: the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing at all; CBTRN01C is also the migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13, requirement I4). Second, CBTRN01CParityTest declares a Java case03 covering a different branch - the '23' INVALID KEY arm of 3000-READ-ACCOUNT - because that class was written while this fixture directory did not yet exist and it builds its twenty scenarios in Java rather than loading them; this fixture is authored to its own specification, the divergence is recorded here rather than resolved by editing another agent's file, and it is flagged for reconciliation if and when that class adopts ParityHarness.casesOf(\"CBTRN01C\"). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set B1-B12 and its absence is not licence to assert less. Gates carried: G13, G15, G16, G18, G19, G21, G47 and G51 - the unit is the TransactionPostingJob tasklet body driven directly, with no JobLauncher, no HTTP layer, no application context and no database in the path. G32 does not apply: CBTRN01C contains zero GO TO statements.\n\nTHE READ SEQUENCE, DECLARED RATHER THAN INFERRED. expectedOperations names every read this run must issue, in order and with the key it is given, and it says three things no byte fingerprint can. First, WHICH VERB: the daily file's read is readNext because :203 reads sequentially and takes whatever record is next, while the cross reference and the account are read at :229 and :243 by a key the program built - a translation that turned either keyed read into a browse would produce identical SYSOUT. Second, HOW MANY: there is always one readNext more than there are records, because the loop at :164-186 reads again to learn it is at end of file, and the lookup that follows sits at :170-172 OUTSIDE the guard that closed at :169 - so the last lookup runs on the card number the previous record left in WORKING-STORAGE. Third, WITH WHAT: the key is recorded as declared, so on the trailing lookup it is the PREVIOUS record's card number, and on a run whose daily file was empty it is absent entirely because the record area never held anything. Every entry here was derived from this case's own expected DISPLAY lines - one echo per record at :168, one lookup block per iteration - and never from a run.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
@@ -258,22 +258,16 @@
       "recordLength": 350
     },
     {
-      "dataset": "XREFFILE",
-      "channel": "FINAL_STATE",
-      "rowCount": 3,
-      "recordLength": 50
-    },
-    {
-      "dataset": "ACCTFILE",
-      "channel": "FINAL_STATE",
-      "rowCount": 3,
-      "recordLength": 300
-    },
-    {
       "dataset": "CUSTFILE",
       "channel": "FINAL_STATE",
       "rowCount": 0,
       "recordLength": 500
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
     },
     {
       "dataset": "CARDFILE",
@@ -282,10 +276,74 @@
       "recordLength": 150
     },
     {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 300
+    },
+    {
       "dataset": "TRANFILE",
       "channel": "FINAL_STATE",
       "rowCount": 0,
       "recordLength": 350
+    }
+  ],
+  "expectedOperations": [
+    {
+      "dataset": "DALYTRAN",
+      "operation": "readNext"
+    },
+    {
+      "dataset": "XREFFILE",
+      "operation": "read",
+      "key": "0927987108636232"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "operation": "read",
+      "key": "00000000020"
+    },
+    {
+      "dataset": "DALYTRAN",
+      "operation": "readNext"
+    },
+    {
+      "dataset": "XREFFILE",
+      "operation": "read",
+      "key": "8931369351894783"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "operation": "read",
+      "key": "00000000008"
+    },
+    {
+      "dataset": "DALYTRAN",
+      "operation": "readNext"
+    },
+    {
+      "dataset": "XREFFILE",
+      "operation": "read",
+      "key": "4859452612877065"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "operation": "read",
+      "key": "00000000007"
+    },
+    {
+      "dataset": "DALYTRAN",
+      "operation": "readNext"
+    },
+    {
+      "dataset": "XREFFILE",
+      "operation": "read",
+      "key": "4859452612877065"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "operation": "read",
+      "key": "00000000007"
     }
   ]
 }

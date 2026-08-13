@@ -101,25 +101,43 @@ public record ScreenMetadata(String cursorField,
     }
 
     /**
-     * The attribute quad of one screen field - its {@code xxxC}, {@code xxxP}, {@code xxxH} and
-     * {@code xxxV} items - as unsigned 0-255 values.
+     * The attribute quad of one screen field - its colour, protection, highlighting and validation
+     * bytes - as unsigned 0-255 values.
      *
-     * <p>The four names are the symbolic map's own, and they are kept in the copybook's offset order
-     * so that a reader comparing this against {@code app/cpy-bms/*.CPY} meets them in the same
-     * sequence:
+     * <p>The names are the symbolic map's own, and they are kept in the copybook's offset order so that
+     * a reader comparing this against {@code app/cpy-bms/*.CPY} meets them in the same sequence:
      *
      * <ol>
      *   <li>{@code xxxC} - the colour attribute, {@code DFHDFCOL} until something overrides it and
      *       {@code DFHRED} once an edit has failed;</li>
-     *   <li>{@code xxxP} - the programmed-symbol attribute;</li>
+     *   <li>the protection byte - see below, because this is the one slot whose source differs by
+     *       screen;</li>
      *   <li>{@code xxxH} - the highlighting attribute, {@code DFHBLINK}, {@code DFHREVRS} or
      *       {@code DFHUNDLN} when set;</li>
      *   <li>{@code xxxV} - the validation attribute, which carries {@code DFHMUSTFI} and its
      *       relatives.</li>
      * </ol>
      *
+     * <h2>The protection slot carries the basic attribute byte, from whichever group holds it</h2>
+     *
+     * <p>A 3270 field has one basic attribute byte, and it decides protected against unprotected, dark
+     * against bright, and whether the field is modified-data-tagged. A BMS symbolic map exposes it
+     * twice: as {@code xxxP} hanging off the <em>output</em> group, and as {@code xxxA} redefining the
+     * <em>input</em> group's {@code xxxF} flag byte. Which one a program writes is the program's choice,
+     * and the two update screens both choose {@code xxxA}: {@code COACTUPC} at
+     * {@code app/cbl/COACTUPC.cbl:3300}'s attribute paragraph and {@code COCRDUPC} at
+     * {@code app/cbl/COCRDUPC.cbl:1171-1208}, {@code :1309-1317} write {@code DFHBMFSE},
+     * {@code DFHBMPRF}, {@code DFHBMDAR} and {@code DFHBMBRY} into {@code xxxA OF <map>AI}.
+     *
+     * <p>So this slot holds <strong>the basic attribute byte as the program set it</strong> - the
+     * {@code xxxA} item where the program writes that, and {@code xxxP} where it writes that instead. It
+     * is one semantic value either way, which is what lets a client render any of the seventeen screens
+     * with one rule. Reporting the unwritten half instead would publish {@code x'00'} for every field on
+     * every path and make a protected field indistinguishable from a typeable one.
+     *
      * @param colour     the {@code xxxC} byte as 0-255
-     * @param protection the {@code xxxP} byte as 0-255
+     * @param protection the basic attribute byte as 0-255: the {@code xxxA} item where the program
+     *                   writes one, the {@code xxxP} item otherwise
      * @param highlight  the {@code xxxH} byte as 0-255
      * @param validation the {@code xxxV} byte as 0-255
      */
@@ -129,7 +147,8 @@ public record ScreenMetadata(String cursorField,
          * Builds a quad from the four raw attribute bytes, reading each as unsigned.
          *
          * @param colour     the {@code xxxC} item
-         * @param protection the {@code xxxP} item
+         * @param protection the basic attribute byte - the {@code xxxA} item where the program writes
+         *                   one, the {@code xxxP} item otherwise
          * @param highlight  the {@code xxxH} item
          * @param validation the {@code xxxV} item
          * @return the quad; never {@code null}

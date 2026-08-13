@@ -1069,7 +1069,13 @@ public class SecUserRepository {
         if (match.matched() == 0) {
             // The INVALID KEY condition: RESP 13, DFHRESP(NOTFND). Reported, never thrown - COSGN00C's
             // WHEN 13 arm and COUSR02C's and COUSR03C's WHEN DFHRESP(NOTFND) arms all paint a message.
-            return ReadResult.notFound();
+            // But only once the absence has been PROVED: SEC-USR-ID is the leading eight bytes of the
+            // record image (app/cpy/CSUSR01Y.cpy), so a row whose record-image column holds nothing has no
+            // knowable key and the keyed LIKE cannot match it - SQL evaluates every comparison against a
+            // null as UNKNOWN. Reporting NOTFND while such a row sits in the dataset paints "User not
+            // found" for a user who may well be there, and on COSGN00C's path it refuses a sign-on the
+            // legacy system would have allowed.
+            return provenAbsence(sql.probeUnreadableRows());
         }
         if (match.matched() > SINGLE_ROW) {
             // Fan-out on a unique primary key. Refused rather than resolved, for the reason the write
@@ -1519,6 +1525,81 @@ public class SecUserRepository {
     }
 
     /**
+     * Reports the {@code NOTFND} condition only once no row of the dataset is
+     * <strong>unreadable</strong>, and the invalid-request outcome when one is.
+     *
+     * <h2>Why this absence has to be proved</h2>
+     * <p>{@code SEC-USR-ID} lives <em>inside</em> the record image, so a row whose record-image column
+     * holds nothing has no knowable key and cannot be matched by the keyed predicate: that leaves the read
+     * with no matching row and, on the face of it, {@code NOTFND}. But {@code NOTFND} is a positive claim
+     * that every consumer acts on - {@code app/cbl/COSGN00C.cbl} refuses the sign-on,
+     * {@code app/cbl/COUSR02C.cbl} and {@code app/cbl/COUSR03C.cbl} paint "User ID NOT found" - so making
+     * it while an unreadable row sits in the dataset reports a user who is present as absent. That is
+     * exactly what {@link #unreadableRow(String)} already refuses to do for a row the read could see.
+     *
+     * <p>The proof costs one row-limited read, on the not-found path only. A read that found its record is
+     * untouched: a VSAM {@code READ} of a key that resolves does not fail because another record is
+     * damaged. The outcome is {@link FileStatus#INVREQ} behind {@link #PERMANENT_ERROR_STATUS} - the same
+     * arm the visible form of this condition already reports - so no caller's guard chain changes shape.
+     *
+     * <p>Neither the key nor any row content is logged: this dataset holds user identifiers and, per
+     * {@code app/cpy/CSUSR01Y.cpy}, plaintext passwords.
+     *
+     * @param unreadableRowsProbe the statement selecting the rows whose record-image column holds nothing
+     * @return {@link ReadResult#notFound()} when the absence is established, the permanent-error outcome
+     *         when it is not; never {@code null}
+     */
+    private ReadResult provenAbsence(String unreadableRowsProbe) {
+        KeyedMatch unreadable;
+        try {
+            unreadable = rowsWithNoImage(unreadableRowsProbe);
+        } catch (DataAccessException refused) {
+            // The probe established nothing, so the absence stays unproved. Reported on the arm a refused
+            // read is reported on rather than as NOTFND, which would be exactly the unsupported claim this
+            // probe exists to prevent.
+            return reportRead(refused, "establish that the security-user dataset '" + datasetName
+                    + "' holds no unreadable row before reporting a record as absent");
+        }
+        if (unreadable.matched() == 0) {
+            // A genuine DFHRESP(NOTFND): no row matched the key and no row of the dataset is unreadable,
+            // so the absence is established rather than assumed.
+            return ReadResult.notFound();
+        }
+        LOG.error("A keyed read of the security-user dataset '" + datasetName + "' matched no row, but the "
+                + "dataset holds a row with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
+                + " - and SEC-USR-ID is part of that image, so that row's key cannot be known; reporting "
+                + "file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                + " rather than reporting as absent a user who may well be defined");
+        return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
+    }
+
+    /**
+     * Counts, up to one, the rows whose record-image column holds nothing.
+     *
+     * <p>Issued through the same bounded creator and the same
+     * {@link com.vsergeychik.carddemo.common.DatasetRelation.RecordImageForm} the keyed reads use, so the
+     * probe cannot drift from the read it qualifies and exercises no path the reads do not. It binds no
+     * parameter: the predicate is {@code IS NULL} over the record-image column, which names no key. Only
+     * whether a row came back matters, so nothing past the first is examined.
+     *
+     * @param probeStatement the composed unreadable-row select
+     * @return {@link KeyedMatch#none()} when no row is unreadable, otherwise a match carrying one row
+     * @throws DataAccessException if the backend refuses
+     */
+    private KeyedMatch rowsWithNoImage(String probeStatement) {
+        PreparedStatementCreator creator =
+                connection -> bounded(connection.prepareStatement(probeStatement));
+        ResultSetExtractor<KeyedMatch> extractor = resultSet ->
+                resultSet.next() ? new KeyedMatch(SINGLE_ROW, null) : KeyedMatch.none();
+        KeyedMatch probed = jdbcTemplate.query(creator, extractor);
+        // A driver that produced no result object at all is degraded to the no-row answer, which is the
+        // same choice rowMatching(...) makes and documents for the read itself. Deliberately the same: one
+        // treatment of "the template answered with nothing" across this class, rather than a read that
+        // degrades to NOTFND and a probe that escalates the very same non-answer to WHEN OTHER.
+        return probed == null ? KeyedMatch.none() : probed;
+    }
+
+    /**
      * Reports a row that is present but carries no record image.
      *
      * <p>Present-and-unreadable is not an end of file and not a not-found: it is an invalid request, which
@@ -1888,6 +1969,9 @@ public class SecUserRepository {
      * @param rewrite                the {@code REWRITE}, taking the new image then the keyed pattern
      * @param selectByImageForUpdate the locking whole-image probe, taking the held image
      * @param deleteByImage          the held-record {@code DELETE}, taking the held image
+     * @param probeUnreadableRows    the rows whose record-image column holds nothing. Not a CICS command:
+     *                               it is what lets {@code NOTFND} be proved rather than assumed - see
+     *                               {@link SecUserRepository#provenAbsence(String)}
      */
     record Statements(String selectByKey,
                       String selectByKeyForUpdate,
@@ -1895,7 +1979,8 @@ public class SecUserRepository {
                       String insert,
                       String rewrite,
                       String selectByImageForUpdate,
-                      String deleteByImage) {
+                      String deleteByImage,
+                      String probeUnreadableRows) {
 
         /** The {@code FOR UPDATE} clause, appended where a row lock is wanted. */
         private static final String FOR_UPDATE = " FOR UPDATE";
@@ -1932,7 +2017,8 @@ public class SecUserRepository {
                     relation.insertRecordImage(column),
                     relation.rewriteByKey(column),
                     "SELECT * FROM " + relation.identifier() + wholeImagePredicate + FOR_UPDATE,
-                    "DELETE FROM " + relation.identifier() + wholeImagePredicate);
+                    "DELETE FROM " + relation.identifier() + wholeImagePredicate,
+                    relation.selectUnreadableRows(column));
         }
     }
 
@@ -2756,15 +2842,20 @@ public class SecUserRepository {
                 return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
             }
             if (statements == null) {
-                // The STARTBR did not succeed, so the source never reaches a read at all: both paging
-                // paragraphs guard their loops with IF NOT ERR-FLG-ON. Reporting the open's own outcome
-                // keeps a caller that ignored that guard on the branch the open put it on.
+                // A STARTBR that did not succeed establishes NO BROWSE, and a browse operation without a
+                // browse is INVREQ - not a repeat of whatever the open reported. NOTFND in particular is
+                // the condition the STARTBR raised, and reporting it again here would claim the READNEXT
+                // had itself looked for a key and failed to find one, which it cannot have done: there is
+                // no browse for it to look in. This is the same answer the ended-browse arm above gives,
+                // and for the same reason - both are "no active browse".
+                //
+                // The open's own outcome is not lost by this: it stays on the cursor, where openStatus(),
+                // openDiagnostic() and isOpen() report it, and isOpen() is what the paging paragraphs
+                // actually branch on before they read.
                 LOG.error("A read was requested on a browse of " + CICS_FILE_NAME + " that reported "
-                        + FileStatus.toStatusImage(openStatus) + " when it was positioned; reporting that "
-                        + "outcome rather than reading from a browse that was never established");
-                return openDiagnostic
-                        .map(diagnostic -> ReadResult.of(openStatus, diagnostic))
-                        .orElseGet(() -> ReadResult.of(openStatus, openResponse));
+                        + FileStatus.toStatusImage(openStatus) + " when it was positioned, so no browse "
+                        + "was established; reporting the invalid-request response");
+                return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
             }
 
             Row row;

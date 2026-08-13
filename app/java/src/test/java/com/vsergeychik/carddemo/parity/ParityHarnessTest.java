@@ -663,7 +663,7 @@ class ParityHarnessTest {
                         return UnitOutcome.ofReturnCode(0);
                     }))
                 .withMessageContainingAll("forces no outcome for delete", "[rewrite]")
-                .withCauseInstanceOf(IllegalArgumentException.class);
+                .withCauseInstanceOf(ParityCase.Redaction.SanitisedCause.class);
         }
 
         @Test
@@ -775,23 +775,150 @@ class ParityHarnessTest {
                 .withMessageContaining(IllegalStateException.class.getName())
                 .withMessageNotContaining("PASSWORD")
                 .withMessageNotContaining(SECRET)
-                .withCauseInstanceOf(IllegalStateException.class);
+                .withCauseInstanceOf(ParityCase.Redaction.SanitisedCause.class);
         }
 
         @Test
-        @DisplayName("the failure is still named and still chained, so nothing is lost locally")
-        void theFailureIsNamedAndChained() {
+        @DisplayName("the chained cause is a surrogate: the raw text survives in neither rendering")
+        void theChainedCauseCarriesNoRawText() {
+            // Sanitising the harness's own message is only half the job. A chained cause is rendered
+            // by the runner independently, and trimStackTrace is false in app/java/pom.xml - so
+            // surefire prints the whole "Caused by:" chain. Chaining the original throwable would put
+            // the raw text into the log through that second rendering, and one sanitised rendering
+            // beside one raw rendering sanitises nothing (CWE-532).
+            String leaky = "row 'USER0001LAWRENCE            THOMAS              PASSWORDU' rejected"
+                + " - secret=" + SECRET;
+            IllegalStateException raised = new IllegalStateException(leaky);
+
+            Throwable thrown = Assertions.catchThrowable(
+                () -> ParityHarness.usAscii().run(batchCase(), UnitKind.BATCH_JOB, invocation -> {
+                    throw raised;
+                }));
+
+            Assertions.assertThat(thrown).isInstanceOf(IllegalStateException.class);
+            Assertions.assertThat(thrown.getCause())
+                .as("the cause is a surrogate, never the throwable itself")
+                .isInstanceOf(ParityCase.Redaction.SanitisedCause.class)
+                .isNotSameAs(raised);
+            Assertions.assertThat(thrown.getCause().getCause())
+                .as("and the surrogate chains nothing further, so there is no deeper rendering for "
+                    + "the raw message to reappear in")
+                .isNull();
+            Assertions.assertThat(thrown.getCause().getSuppressed())
+                .as("nor is the original suppressed onto it, which the runner would also print")
+                .isEmpty();
+
+            // The decisive assertion: render the whole thing the way a test runner does - every
+            // message and every frame of every link in the chain - and require the credential to be
+            // absent from ALL of it. Before the surrogate this string contained the row twice, once
+            // scrubbed and once raw.
+            String rendered = renderLikeARunner(thrown);
+            Assertions.assertThat(rendered)
+                .as("the fully rendered stack output, which is what reaches a build log and a CI "
+                    + "artefact. Rendered:%n%s", rendered)
+                .doesNotContain(SECRET)
+                .doesNotContain("PASSWORD");
+            Assertions.assertThat(countOccurrences(rendered, "secret=" + ParityCase.Redaction.MASK))
+                .as("the scrubbed form appears in both renderings, which is how it is known that the "
+                    + "second rendering exists and was sanitised too rather than merely absent")
+                .isEqualTo(2);
+
+            // The policy boundary, stated rather than implied: what sanitiseDiagnostic closes is
+            // credential material - a known credential value anywhere in the text, and a credential
+            // quoted as a labelled value. The names in this row sit inside a message shorter than
+            // MAX_DIAGNOSTIC_LENGTH, so they survive in both renderings, and that is the documented
+            // policy rather than an oversight: free text carries no field names for classification to
+            // reach, and the case that leaks a whole record image - a 500-byte customer row, names and
+            // social-security number included - is closed by the length bound instead. This assertion
+            // pins that boundary so a later change to the policy has to come here and restate it.
+            Assertions.assertThat(rendered)
+                .as("names inside a short quoted row are bounded, not masked - the documented "
+                    + "third rule - so they are expected here and are not what this test judges")
+                .contains("LAWRENCE");
+        }
+
+        /**
+         * Counts non-overlapping occurrences of {@code needle} in {@code haystack}.
+         *
+         * <p>Used to prove a rendering happened <em>twice</em> and was sanitised both times. An
+         * assertion that the raw text is absent cannot distinguish "sanitised in both renderings" from
+         * "there was only ever one rendering", and the defect this guards against is precisely the
+         * second rendering.
+         *
+         * @param haystack the text to search
+         * @param needle the text to count
+         * @return the number of non-overlapping occurrences
+         */
+        private static int countOccurrences(String haystack, String needle) {
+            int count = 0;
+            for (int at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + needle.length())) {
+                count++;
+            }
+            return count;
+        }
+
+        @Test
+        @DisplayName("the surrogate keeps the type and the throw site, so nothing actionable is lost")
+        void theSurrogateKeepsTheTypeAndTheThrowSite() {
             IllegalArgumentException raised = new IllegalArgumentException("width 57 of 80");
 
-            Assertions.assertThatIllegalStateException()
-                .isThrownBy(() -> ParityHarness.usAscii().run(batchCase(), UnitKind.BATCH_JOB, invocation -> {
+            Throwable thrown = Assertions.catchThrowable(
+                () -> ParityHarness.usAscii().run(batchCase(), UnitKind.BATCH_JOB, invocation -> {
                     throw raised;
-                }))
+                }));
+
+            Assertions.assertThat(thrown)
                 .as("the type is the part a reader acts on and carries no data, so it is named in "
                     + "full; the message is bounded and scrubbed but not discarded")
-                .withMessageContaining(IllegalArgumentException.class.getName())
-                .withMessageContaining("width 57 of 80")
-                .withCause(raised);
+                .hasMessageContaining(IllegalArgumentException.class.getName())
+                .hasMessageContaining("width 57 of 80");
+
+            ParityCase.Redaction.SanitisedCause surrogate =
+                (ParityCase.Redaction.SanitisedCause) thrown.getCause();
+            Assertions.assertThat(surrogate.originalType())
+                .as("the original type is retained as metadata, because a class name carries no data "
+                    + "and is what a reader dispatches on")
+                .isEqualTo(IllegalArgumentException.class.getName());
+            Assertions.assertThat(surrogate.getMessage())
+                .as("and it names that type in its own message, so the Caused by: line reads like the "
+                    + "one it replaces")
+                .contains(IllegalArgumentException.class.getName())
+                .contains("width 57 of 80");
+            Assertions.assertThat(surrogate.getStackTrace())
+                .as("the stack frames are copied from the original, frame for frame: a frame is a "
+                    + "class name, a method name and a line number, so it locates the throw site "
+                    + "exactly and carries no record content")
+                .isNotEmpty()
+                .containsExactly(raised.getStackTrace());
+        }
+
+        /**
+         * Renders a throwable chain the way a test runner does - every message and every frame of every
+         * link, including suppressed ones.
+         *
+         * <p>Assembled here rather than taken from {@code printStackTrace} so the assertion is over a
+         * string this test owns, and so a suppressed throwable cannot be silently omitted from what is
+         * checked. This is the text that reaches a build log, and it is the text the redaction policy
+         * has to hold for.
+         *
+         * @param thrown the top of the chain
+         * @return every message and frame in the chain, newline separated
+         */
+        private static String renderLikeARunner(Throwable thrown) {
+            StringBuilder rendered = new StringBuilder();
+            for (Throwable link = thrown; link != null; link = link.getCause()) {
+                rendered.append(link.getClass().getName()).append(": ").append(link.getMessage())
+                    .append(System.lineSeparator());
+                for (StackTraceElement frame : link.getStackTrace()) {
+                    rendered.append("\tat ").append(frame).append(System.lineSeparator());
+                }
+                for (Throwable suppressed : link.getSuppressed()) {
+                    rendered.append("\tSuppressed: ").append(suppressed.getClass().getName())
+                        .append(": ").append(suppressed.getMessage())
+                        .append(System.lineSeparator());
+                }
+            }
+            return rendered.toString();
         }
 
         @Test

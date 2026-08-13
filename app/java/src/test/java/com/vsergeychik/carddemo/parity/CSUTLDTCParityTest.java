@@ -18,6 +18,8 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -346,39 +348,19 @@ class CSUTLDTCParityTest {
                     null, null, "Date is invalid", null, null));
 
     /**
-     * Each case's two {@code LINKAGE SECTION} parameters, keyed by case identifier.
+     * The two {@code LINKAGE SECTION} parameter names a case declares its values under.
      *
-     * <p>{@code LS-DATE} and {@code LS-DATE-FORMAT} are both {@code PIC X(10)} ({@code :84-:85}), so
-     * every value below is written out to exactly ten characters - trailing spaces included - rather
-     * than left to a pad. That is not cosmetic: a mask of {@code '<XX>YYYYMMDD'} would be
-     * <em>truncated</em> to {@code '<XX>YYYYMM'} by the receiving {@code PIC X(10)} and would then
-     * report 2507 for want of a day rather than the 2509 it appears to ask for, so the declared width
-     * has to be visible at the point the value is written.
-     *
-     * <p>Immutable, and the only reason it is {@code static} is that a {@code @MethodSource} is
-     * static. There is no mutable static state in this class.
+     * <p>{@code LS-DATE} and {@code LS-DATE-FORMAT} are both {@code PIC X(10)} ({@code :84-:85}), so a
+     * case writes each out to exactly ten characters - trailing spaces included - rather than leaving
+     * them to a pad. That is not cosmetic: a mask of {@code '<XX>YYYYMMDD'} would be <em>truncated</em>
+     * to {@code '<XX>YYYYMM'} by the receiving {@code PIC X(10)} and would then report 2507 for want of
+     * a day rather than the 2509 it appears to ask for, so the declared width has to be visible at the
+     * point the value is written. {@link Linkage} re-checks both widths when the case is decoded.
      */
-    private static final Map<String, Linkage> LINKAGE = Map.ofEntries(
-            Map.entry("case01", new Linkage("2022-07-19", "YYYY-MM-DD")),
-            Map.entry("case02", new Linkage("19/07/2022", "DD/MM/YYYY")),
-            Map.entry("case03", new Linkage("1582-10-15", "YYYY-MM-DD")),
-            Map.entry("case04", new Linkage("2022-07-1 ", "YYYY-MM-DD")),
-            Map.entry("case05", new Linkage("2022-07-19", "          ")),
-            Map.entry("case06", new Linkage("2022-07-19", "YYYY      ")),
-            Map.entry("case07", new Linkage("2023-02-29", "YYYY-MM-DD")),
-            Map.entry("case08", new Linkage("2022-06-31", "YYYY-MM-DD")),
-            Map.entry("case09", new Linkage("XX220719  ", "<XX>YYMMDD")),
-            Map.entry("case10", new Linkage("1582-10-14", "YYYY-MM-DD")),
-            Map.entry("case11", new Linkage("BC220719  ", "<BC>YYMMDD")),
-            Map.entry("case12", new Linkage("2022-00-15", "YYYY-MM-DD")),
-            Map.entry("case13", new Linkage("2022-13-15", "YYYY-MM-DD")),
-            Map.entry("case14", new Linkage("2022XYZ19 ", "YYYYMMMDD ")),
-            Map.entry("case15", new Linkage("2022-07-19", "QQQQ-MM-DD")),
-            Map.entry("case16", new Linkage("2022-07-19", "YYYY-MM-YY")),
-            Map.entry("case17", new Linkage("2022-07-19", "<AD-MM-DD ")),
-            Map.entry("case18", new Linkage("ABCD-EF-GH", "YYYY-MM-DD")),
-            Map.entry("case19", new Linkage("          ", "YYYY-MM-DD")),
-            Map.entry("case20", new Linkage("0000-01-01", "YYYY-MM-DD")));
+    private static final String LS_DATE = "LS-DATE";
+
+    /** The mask parameter's name - {@code LS-DATE-FORMAT PIC X(10)} at {@code :85}. */
+    private static final String LS_DATE_FORMAT = "LS-DATE-FORMAT";
 
     /**
      * The two parameters one case calls the subprogram with.
@@ -468,7 +450,7 @@ class CSUTLDTCParityTest {
     @DisplayName("every case diffs to zero against its statically derived 80-byte expectation")
     void everyCaseDiffsToZero(ParityCase parityCase) {
         DiffResult diff = ParityHarness.usAscii().judge(parityCase, UnitKind.SERVICE, invocation -> {
-            Linkage linkage = linkageFor(invocation.caseId());
+            Linkage linkage = linkageFrom(invocation.stimulus());
             DateValidationResult result = new DateUtilityJob(invocation.charset())
                     .validateDate(linkage.lsDate(), linkage.lsDateFormat());
             // :97 MOVE WS-MESSAGE TO LS-RESULT, then :98 MOVE WS-SEVERITY-N TO RETURN-CODE. The
@@ -509,7 +491,10 @@ class CSUTLDTCParityTest {
                     .as("every case in parity/%s/ must name that program", PROGRAM)
                     .isEqualTo(PROGRAM);
         }
-        assertThat(caseIds).containsExactlyElementsOf(LINKAGE.keySet().stream().sorted().toList());
+        assertThat(caseIds)
+                .as("every shipped case declares the two CALL parameters this subprogram takes, so the "
+                        + "set of cases and the set of declared linkage pairs are the same set")
+                .containsExactlyElementsOf(shippedLinkage().keySet().stream().sorted().toList());
     }
 
     /**
@@ -574,7 +559,7 @@ class CSUTLDTCParityTest {
     @DisplayName("each case description quotes the exact LS-DATE and LS-DATE-FORMAT it is run with")
     void eachCaseDescriptionStatesTheLinkageParametersItIsRunWith() {
         for (ParityCase parityCase : cases()) {
-            Linkage linkage = linkageFor(parityCase.caseId());
+            Linkage linkage = linkageFor(parityCase);
             assertThat(parityCase.description())
                     .as("%s must quote LS-DATE='%s' so the case file and the LINKAGE table it is run "
                             + "from cannot drift apart", parityCase.caseId(), linkage.lsDate())
@@ -587,20 +572,74 @@ class CSUTLDTCParityTest {
     }
 
     /**
-     * Looks up a case's two parameters, failing loudly rather than defaulting.
+     * The two parameters a case calls the subprogram with, decoded from the linkage that case declares.
      *
-     * @param caseId the case identifier the harness supplied
+     * <h2>Why this is not a table keyed by case identifier</h2>
+     * <p>It was one, and the table was the whole input side of this program: {@code CSUTLDTC} seeds no
+     * dataset and drives no screen, so {@code LS-DATE} and {@code LS-DATE-FORMAT} are the only things a
+     * case varies. With them in Java, a case file said what the eighty-byte result had to be and gave no
+     * indication of the date and mask that produced it - {@code parity/CSUTLDTC/case01.json} and
+     * {@code case04.json} were indistinguishable on disk although one tests a valid date and the other a
+     * short day - and the identifier configured the run, so renumbering silently changed what was
+     * validated.
+     *
+     * <p>{@code unitStimulus.linkage} carries them now, keyed by the copybook's own data names, and this
+     * method is the only thing that reads them.
+     *
+     * @param parityCase the case
      * @return the pair to call the subprogram with
+     * @throws IllegalArgumentException if either parameter is absent or is not exactly ten characters, or
+     *     if the case declares a kind of stimulus this subprogram has no use for
      */
-    private static Linkage linkageFor(String caseId) {
-        Linkage linkage = LINKAGE.get(caseId);
-        assertThat(linkage)
-                .as("case %s has no LS-DATE / LS-DATE-FORMAT pair declared in this test class. Every "
-                        + "one of the %d cases needs one, because CSUTLDTC's inputs are CALL "
-                        + "parameters rather than seeded datasets and there is nowhere else for them "
-                        + "to come from.", caseId, EXPECTED_CASE_COUNT)
-                .isNotNull();
-        return linkage;
+    private static Linkage linkageFor(ParityCase parityCase) {
+        return linkageFrom(parityCase.unitStimulus());
+    }
+
+    /**
+     * @param stimulus the declared stimulus
+     * @return the pair to call the subprogram with
+     * @throws IllegalArgumentException as {@link #linkageFor(ParityCase)} documents
+     */
+    private static Linkage linkageFrom(ParityCase.UnitStimulus stimulus) {
+        if (!stimulus.callSiteOutcomes().isEmpty() || !stimulus.operationScript().isEmpty()
+                || !stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
+            throw new IllegalArgumentException(PROGRAM + " opens no file, calls no subprogram of its "
+                    + "own, follows no conditional job step and runs under no environmental variant: it "
+                    + "is pure computation over two CALL parameters, so its only stimulus is its "
+                    + "linkage.");
+        }
+        return new Linkage(requireLinkage(stimulus, LS_DATE), requireLinkage(stimulus, LS_DATE_FORMAT));
+    }
+
+    /**
+     * @param stimulus the declared stimulus
+     * @param name the linkage data name
+     * @return the declared value
+     * @throws IllegalArgumentException if the case declares no value under that name, which for this
+     *     program means a case with no input at all
+     */
+    private static String requireLinkage(ParityCase.UnitStimulus stimulus, String name) {
+        String value = stimulus.linkage().get(name);
+        if (value == null) {
+            throw new IllegalArgumentException("No " + name + " is declared in unitStimulus.linkage. "
+                    + PROGRAM + "'s inputs are its two CALL parameters rather than seeded datasets, so a "
+                    + "case that declares neither declares nothing and would validate whatever the "
+                    + "default happened to be. Declared: " + stimulus.linkage().keySet() + '.');
+        }
+        return value;
+    }
+
+    /**
+     * Every shipped case's linkage, in case order, for the assertions that take a census of the set.
+     *
+     * @return case identifier to linkage, unmodifiable and in ascending case order
+     */
+    private static Map<String, Linkage> shippedLinkage() {
+        Map<String, Linkage> declared = new LinkedHashMap<>();
+        for (ParityCase parityCase : ParityHarness.casesOf(PROGRAM)) {
+            declared.put(parityCase.caseId(), linkageFor(parityCase));
+        }
+        return Collections.unmodifiableMap(declared);
     }
 
     // =================================================================================================
@@ -724,7 +763,7 @@ class CSUTLDTCParityTest {
         Set<Integer> observedReturnCodes = new LinkedHashSet<>();
 
         for (ParityCase parityCase : cases()) {
-            Linkage linkage = linkageFor(parityCase.caseId());
+            Linkage linkage = linkageFor(parityCase);
             DateValidationResult result = new DateUtilityJob(charset)
                     .validateDate(linkage.lsDate(), linkage.lsDateFormat());
             observedResults.add(result.result());
@@ -845,7 +884,7 @@ class CSUTLDTCParityTest {
         }
 
         for (ParityCase parityCase : cases()) {
-            Linkage linkage = linkageFor(parityCase.caseId());
+            Linkage linkage = linkageFor(parityCase);
             assertThat(service.validateDate(linkage.lsDate(), linkage.lsDateFormat()).result())
                     .as("%s selected WHEN OTHER", parityCase.caseId())
                     .isNotEqualTo(whenOther);
@@ -1042,7 +1081,7 @@ class CSUTLDTCParityTest {
         DateUtilityJob service = new DateUtilityJob(charset);
 
         for (ParityCase parityCase : cases()) {
-            Linkage linkage = linkageFor(parityCase.caseId());
+            Linkage linkage = linkageFor(parityCase);
             DateValidationResult result = service.validateDate(linkage.lsDate(),
                     linkage.lsDateFormat());
             String reassembled = assembleWsMessage(codec, result.severityCode(),
@@ -1212,7 +1251,7 @@ class CSUTLDTCParityTest {
      * @param messageNumber the four characters expected at offset 15
      */
     private static void assertMessageNumber(Charset charset, String caseId, String messageNumber) {
-        Linkage linkage = linkageFor(caseId);
+        Linkage linkage = shippedLinkage().get(caseId);
         assertThat(new DateUtilityJob(charset)
                 .validateDate(linkage.lsDate(), linkage.lsDateFormat()).messageNumber())
                 .as("%s must report message %s", caseId, messageNumber)

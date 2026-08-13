@@ -191,7 +191,7 @@ To install this repository on the mainframe please follow the following steps
 
 ## Building and running the Java module
 
-The repository also carries a Java translation of the same application in `app/java`, added alongside the mainframe source rather than in place of it. It is a like-for-like migration of the COBOL programs in `app/cbl`: the CICS online transactions become stateless REST endpoints, the batch programs become Spring Batch jobs, and every observable output -- record bytes, field values, numeric scale, message text and return codes -- is held identical to what the COBOL produces. No mainframe artefact changes, and the installation path described above remains valid and complete on its own.
+The repository also carries a Java translation of the same application in `app/java`, added alongside the mainframe source rather than in place of it. It is a like-for-like migration of the COBOL programs in `app/cbl`: the CICS online transactions become stateless REST endpoints, the batch programs become Spring Batch jobs, and the migration targets byte-for-byte equivalence of every observable output -- record bytes, field values, numeric scale, message text and return codes. That target is gated rather than asserted: every program is diffed field by field against expected values, and a module is not complete until its diff count is zero. What those expected values are is stated plainly under Verification gates below -- they are derived from the COBOL sources, the copybook byte layouts, the JCL contracts and the sample data in `app/data/ASCII`, and they were **not** captured from a run of the legacy programs, which needs a mainframe this build does not have. So the gate establishes conformance to derived expectations, not observed equivalence with a live COBOL execution; that limitation is open and unresolved, and is carried as risk R-A in [docs/project-guide.md](docs/project-guide.md). No mainframe artefact changes, and the installation path described above remains valid and complete on its own.
 
 ### Prerequisites
 
@@ -206,7 +206,7 @@ Nothing else is needed to build and test the module: no database server, no cont
 mvn -f app/java/pom.xml clean verify
 ```
 
-That one command is the gate. It compiles the module, runs every unit and parity test, and enforces the coverage threshold in a single pass. Add `-B` for a non-interactive batch-mode run and `-Dsurefire.useFile=false` to keep test output on the console. There is no watch mode: every command here runs to completion and stops.
+That one command is the gate. It compiles the module, runs every unit and parity test, and enforces the coverage threshold in a single pass. Add `-B` for a non-interactive batch-mode run and `-Dsurefire.useFile=false` to keep test output on the console. There is no watch mode: every build command and every batch submission runs to completion and stops. The two commands that start the online service -- `mvn spring-boot:run` and `java -jar` with no job name -- are the exception, and deliberately so: a server runs until it is interrupted.
 
 Narrower commands are useful when only one gate is of interest
 
@@ -218,7 +218,7 @@ Narrower commands are useful when only one gate is of interest
 
 ### Running the online transactions
 
-The entry point is `com.vsergeychik.carddemo.CardDemoApplication`. Run it from the build, or from the jar the build produces - either form needs the data source described under Configuration and data access below, and refuses to start without it
+The entry point is `com.vsergeychik.carddemo.CardDemoApplication`. Run it from the build, or from the jar the build produces - either form needs the data source and the CICS region identity described under Configuration and data access below, and refuses to start without them
 
 ```shell
 mvn -f app/java/pom.xml spring-boot:run
@@ -226,8 +226,12 @@ mvn -f app/java/pom.xml spring-boot:run
 
 ```shell
 mvn -f app/java/pom.xml clean package
-java -jar app/java/target/carddemo.jar
+LOADER_PATH=/opt/carddemo/drivers java -jar app/java/target/carddemo.jar
 ```
+
+`LOADER_PATH` is how the deployment's own JDBC driver reaches the application, and it is not optional in a real deployment: the build pins no driver coordinate, so the driver jar is never inside `carddemo.jar`. Put it - together with any file the driver itself needs - in a directory of your choosing and name that directory in `LOADER_PATH` (or `-Dloader.path=...`, which takes a comma-separated list of directories and jars). The jar is packaged with Spring Boot's `PropertiesLauncher` for exactly this reason.
+
+**A `-cp` entry beside `-jar` will not work.** `java -cp /opt/carddemo/drivers/driver.jar -jar carddemo.jar` is silently ignored by the JVM: with `-jar`, the class path comes from the archive alone. That command fails at startup with *"The JDBC driver class ... is not on the classpath"* while the driver sits on the machine, which is why the diagnostic itself names `LOADER_PATH`.
 
 The programs listed under Online below are served as REST resources under `/api`, one per CICS transaction -- `POST /api/signon`, `GET /api/menu`, `GET /api/accounts/{acctId}`, `GET /api/cards`, `GET /api/transactions`, `POST /api/billpay`, `GET /api/users` and their siblings. CICS is pseudo-conversational, so the migration keeps no server-side session: the communication area, the key that was pressed and the screen's own field values all travel in the request and response payloads, and every reply carries the state the next call needs.
 
@@ -240,15 +244,37 @@ java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
      com.vsergeychik.carddemo.CardDemoApplication --spring.profiles.active=test
 ```
 
-Started that way the service answers on `/api` with no mainframe and no database server in sight. Its datasets begin empty, so a batch job launched against a fresh in-memory database reads nothing until something seeds it.
+Started that way the context comes up and `/api` answers with no mainframe and no database server in sight. What that command does not do is create a dataset. This module issues no DDL at all, by design -- that is the same guarantee the production deployment depends on -- so the profile only says *where* each dataset lives, and an in-memory database starts with no relation in it. Until the relations exist a data-backed call fails rather than reading nothing: sign-on answers `Unable to verify the User ...` because the backend reported `SQLSTATE 42S02`, which the repository maps to file status `9000`, and `accountBalanceJob` abends with `ERROR OPENING ACCTFILE`, `RETURN-CODE=12` and process exit code 12. The test suite never meets that, because each test creates and seeds the relations it needs itself, which is why `mvn -f app/java/pom.xml clean verify` needs none of the steps below.
+
+To give a local run some data, create one relation per dataset -- the record image in column 1, the copybook width, one row per fixed-width record -- and point the run at a database that outlives the provisioning step, because the profile's own in-memory database is created fresh per run. The dataset names this profile uses are listed in `app/java/src/main/resources/application-test.yml` and the records come from `app/data/ASCII`. The account master is shown here; every other dataset follows the same two steps. From `app/java`
+
+```shell
+CP="target/test-classes:target/classes:$(cat target/cp.txt)"
+DB="$PWD/target/local/carddemo"
+DS="CARDDEMO.TEST.ACCTDATA.VSAM.KSDS"
+mkdir -p target/local
+
+{ printf 'CREATE TABLE "%s" (RECORD_IMAGE CHAR(300));\n' "$DS"
+  sed -e "s/'/''/g" -e "s|^|INSERT INTO \"$DS\" VALUES ('|" -e "s|\$|');|" ../data/ASCII/acctdata.txt
+} > target/local/provision.sql
+
+java -cp "$CP" org.h2.tools.RunScript -url "jdbc:h2:file:$DB" -user sa -script target/local/provision.sql
+java -cp "$CP" com.vsergeychik.carddemo.CardDemoApplication \
+     --spring.profiles.active=test --spring.datasource.url="jdbc:h2:file:$DB"
+```
+
+The sign-on dataset is the one exception worth naming: no file under `app/data/ASCII` holds users, and the ten the application ships with come from the inline data in `app/jcl/DUSRSECJ.jcl`, padded to the 80-byte record `app/cpy/CSUSR01Y.cpy` declares. [docs/project-guide.md](docs/project-guide.md) carries this procedure in full, alongside what a real deployment has to expose in place of an in-memory database.
 
 ### Running a batch job
 
 `spring.batch.job.enabled` is `false`, so starting the application runs no job. Each job is submitted explicitly by name, one per process, exactly as JCL submits one `EXEC PGM=` step at a time
 
 ```shell
-java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=accountBalanceJob
+LOADER_PATH=/opt/carddemo/drivers java -jar app/java/target/carddemo.jar \
+     --carddemo.batch.job-name=accountBalanceJob
 ```
+
+A submission reads the datasets through the same deployment-supplied driver, so it needs the same `LOADER_PATH`. The name may also be given as the `CARDDEMO_BATCH_JOB_NAME` environment variable, which is the relaxed spelling of the same property. Supplying the job name either way also selects a non-web process: no HTTP port is bound, because a job has nothing to serve, and the process ends when the job does.
 
 The process exit code is the program's `RETURN-CODE`, so gating one job on the result of the one before it behaves as `COND` does on the mainframe.
 
@@ -258,9 +284,11 @@ The interest calculation translated from CBACT04C is the only job that takes a p
 
 Dataset names and the JDBC `DataSource` are entirely configuration bound in `app/java/src/main/resources/application.yml`, so no dataset name and no connection detail is compiled into the code. The site-specific data access driver is a deployment-time input, supplied through `CARDDEMO_DATASOURCE_URL`, `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME` and the matching credential variables; the build deliberately pins no driver of its own, and startup is refused with a message naming the missing property when none is supplied.
 
+The CICS region identity is a deployment input for the same reason. `COSGN00C` obtains two of its eleven screen fields from `EXEC CICS ASSIGN APPLID` and `EXEC CICS ASSIGN SYSID`, which have no Java equivalent, so they are supplied through `CARDDEMO_CICS_APPLID` and `CARDDEMO_CICS_SYSID`. Neither has a default: both fields are compared byte for byte by the parity suite, so a deployment that states no region is refused at startup rather than painting eight spaces into a field a real region would have filled.
+
 The module reaches the existing datasets over plain JDBC and changes nothing about how they are stored: no DDL, no schema migration, no ORM and no new database. Record layouts stay exactly as the copybooks in `app/cpy` define them, which is why the dataset and copybook table above is the reference every Java record width is checked against, and why the code pages are named explicitly -- IBM037 for the EBCDIC datasets, US-ASCII for the sample text files -- rather than left to a platform default.
 
-`application-test.yml` rebinds every dataset onto in-memory test data seeded from the nine fixed-width fixtures derived from app/data/ASCII, so the test suite runs with no external database and no mainframe connectivity.
+`application-test.yml` rebinds all 27 dataset bindings onto in-memory test data, so the test suite runs with no external database and no mainframe connectivity. Seventeen of them are backed by the nine fixed-width fixtures derived from app/data/ASCII -- one fixture reaches several DD names where the legacy estate addresses one dataset under more than one name, and `cardxref`'s 36-byte rows are padded up to the 50 bytes CVACT03Y declares. `USRSEC` is seeded inline from the ten sign-on rows of app/jcl/DUSRSECJ.jcl, padded from 57 bytes to 80. The remaining nine -- `DALYREJS`, `DATEPARM`, `HTMLFILE`, `STMTFILE`, `SYSTRAN`, `TRANFILE`, `TRANREPT`, `TRANSACT` and `TRNXFILE` -- hold nothing at the start of a run: they are what a run produces rather than what it reads, and each test seeds only what its own case declares. The seeding is the tests' own work rather than the profile's: a test declares the datasets its case needs, loads its rows, and holds them privately for the duration of that one case.
 
 ### Verification gates
 

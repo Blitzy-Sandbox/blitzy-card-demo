@@ -777,8 +777,15 @@ public class TranCatBalRepository {
         // emptiness is the whole of the invalid-key test, and no unreachable null arm is written.
         if (rows.isEmpty()) {
             // The INVALID KEY condition of app/cbl/CBTRN02C.cbl:L475-L478. An EXPECTED outcome and the
-            // signal to create the record, so it is reported and never thrown.
-            return ReadResult.notFound();
+            // signal to create the record, so it is reported and never thrown - but only once the absence
+            // has been PROVED. All three components of TRAN-CAT-KEY live inside the record image
+            // (app/cpy/CVTRA01Y.cpy:5-8), so a row whose record-image column holds nothing has no knowable
+            // key and the keyed LIKE predicate cannot match it: SQL evaluates every comparison against a
+            // null as UNKNOWN. Reporting '23' while such a row sits in the dataset sends the caller to
+            // 2700-A-CREATE-TCATBAL-REC, which WRITEs a record whose key may already be present - so the
+            // unproved absence is answered either by a duplicate-key '22' or, worse, by a second balance
+            // for a category that already has one.
+            return provenAbsence(sql.probeUnreadableRows(), subject);
         }
         byte[] recordImage = rows.get(0);
         if (recordImage == null) {
@@ -791,6 +798,60 @@ public class TranCatBalRepository {
             return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
         }
         return decoded(recordImage, subject);
+    }
+
+    /**
+     * Reports the {@code INVALID KEY} condition only once no row of the dataset is
+     * <strong>unreadable</strong>, and the invalid-request outcome when one is.
+     *
+     * <h2>Why this absence in particular has to be proved</h2>
+     * <p>{@code '23'} is not a diagnostic here - it is an instruction. {@code 2700-UPDATE-TCATBAL}
+     * ({@code app/cbl/CBTRN02C.cbl:L475-L478}) takes it as "this account has no balance for this category
+     * yet" and falls through to {@code 2700-A-CREATE-TCATBAL-REC}, which {@code WRITE}s a new record. So an
+     * unproved absence does not mislead a reader, it writes to the dataset: either the {@code WRITE} is
+     * refused as a duplicate key, or - if the unreadable row's key is not in fact this key - a category
+     * that already has a balance quietly acquires a second one and the sum of the balances stops matching
+     * the account.
+     *
+     * <p>The proof is one row-limited read on the not-found path only. A read that found its record is
+     * untouched: a VSAM {@code READ} of a key that resolves does not fail because another record in the
+     * cluster is damaged.
+     *
+     * <p>The outcome when a row is unreadable is {@link FileStatus#INVREQ} behind
+     * {@link #PERMANENT_ERROR_STATUS} - the same arm the visible form of this condition already reports two
+     * lines above - so the caller's guard chain keeps its shape and {@code 2700-UPDATE-TCATBAL} lands on
+     * its {@code WHEN OTHER} rather than on its create.
+     *
+     * @param unreadableRowsProbe the statement selecting the rows whose record-image column holds nothing
+     * @param subject             how to name the operation in a diagnostic
+     * @return {@link ReadResult#notFound()} when the absence is established, the permanent-error outcome
+     *         when it is not; never {@code null}
+     */
+    private ReadResult provenAbsence(String unreadableRowsProbe, String subject) {
+        List<byte[]> unreadable;
+        try {
+            unreadable = jdbcTemplate.query(firstRow(unreadableRowsProbe), recordImageMapper());
+        } catch (DataAccessException translated) {
+            // The probe established nothing, so the absence stays unproved - and must not become the '23'
+            // that authorises a WRITE. Reported on the arm a refused read is reported on.
+            return reportRead(translated, "establish that the transaction category balance dataset '"
+                    + datasetName + "' holds no unreadable row before reporting " + subject
+                    + " as absent - which would authorise 2700-A-CREATE-TCATBAL-REC to write it");
+        }
+        // As on the keyed read above, the list itself is never null, so emptiness is the whole test.
+        if (unreadable.isEmpty()) {
+            // A genuine INVALID KEY: nothing matched the key and no row of the dataset is unreadable, so
+            // the create at app/cbl/CBTRN02C.cbl:L503-L524 is the right next step.
+            return ReadResult.notFound();
+        }
+        LOG.error("A keyed read of " + subject + " from the transaction category balance dataset '"
+                + datasetName + "' matched no row, but the dataset holds a row with no record image at "
+                + "column position " + RECORD_IMAGE_COLUMN_INDEX + " - and TRAN-CAT-KEY is part of that "
+                + "image, so that row's key cannot be known; reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                + " rather than the INVALID KEY that would have a balance written for a category that may "
+                + "already have one");
+        return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
     }
 
     // =================================================================================================
@@ -1665,13 +1726,18 @@ public class TranCatBalRepository {
      * @param rewrite              the rewrite: replace the image of the record whose image begins with the
      *                             key
      * @param insert               the write: add one record image
+     * @param probeUnreadableRows  the rows whose record-image column holds nothing. Not a COBOL operation:
+     *                             it is what lets a not-found answer be proved before it authorises a
+     *                             {@code WRITE} - see
+     *                             {@link TranCatBalRepository#provenAbsence(String, String)}
      */
     record Statements(String selectFirst,
                       String selectNext,
                       String selectByKey,
                       String selectByKeyForUpdate,
                       String rewrite,
-                      String insert) {
+                      String insert,
+                      String probeUnreadableRows) {
 
         /**
          * Composes the statements over one dataset and one record-image column.
@@ -1693,7 +1759,8 @@ public class TranCatBalRepository {
                     relation.selectByKey(recordImageColumn),
                     relation.selectByKeyForUpdate(recordImageColumn),
                     relation.rewriteByKey(recordImageColumn),
-                    relation.insertRecordImage(recordImageColumn));
+                    relation.insertRecordImage(recordImageColumn),
+                    relation.selectUnreadableRows(recordImageColumn));
         }
     }
 
