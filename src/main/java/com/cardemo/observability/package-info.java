@@ -373,14 +373,19 @@
  *       {@code true}. This is why naming a contributor in a group before its bean exists makes the
  *       application unbootable - a fail-fast that is wanted.</li>
  *   <li>{@code management.endpoint.health.group.readiness.include} is
- *       {@code readinessState,db,s3,sqs} - the substrate, and all three substrate contributors are declared
- *       in {@link HealthIndicators}. {@code db} is deliberately <em>not</em> the auto-configured datasource
+ *       {@code readinessState,db,s3,sqs,sns} - the substrate, and all four substrate contributors are
+ *       declared in {@link HealthIndicators}. {@code sns} was absent from this list until the change that
+ *       added {@code snsHealthIndicator}: notification was the one required cloud dependency readiness said
+ *       nothing about, so an instance whose topic had never been provisioned answered
+ *       {@code /actuator/health/readiness} with {@code 200 UP} and failed only at the first report
+ *       submission. {@code db} is deliberately <em>not</em> the auto-configured datasource
  *       contributor: that one has no deadline of its own, so it inherited the pool's 30 s
  *       {@code connection-timeout} and a measured readiness probe with the database stopped took 30 009 ms -
- *       six times the container health check's own five-second timeout - while the two AWS probes answered
- *       inside 1 500 ms. {@code management.health.db.enabled} is therefore {@code false} and
- *       {@code dbHealthIndicator} takes the same {@code db} key with the same 1 500 ms budget, so all three
- *       contributors now share one deadline. {@code group.liveness.include} is {@code livenessState}
+ *       more than four times the container health check's own seven-second timeout - while the AWS probes
+ *       answered inside 1 500 ms. {@code management.health.db.enabled} is therefore {@code false} and
+ *       {@code dbHealthIndicator} takes the same {@code db} key with the same 1 500 ms budget, so all four
+ *       contributors share one deadline. Because Actuator evaluates a group's members sequentially their
+ *       budgets add, which is why the container timeout is 7 s rather than 5 s. {@code group.liveness.include} is {@code livenessState}
  *       alone, so a dependency outage takes the instance out of rotation <strong>without</strong> triggering
  *       a restart.</li>
  *   <li>{@code management.tracing.sampling.probability} is set explicitly to {@code 1.0} in the base profile

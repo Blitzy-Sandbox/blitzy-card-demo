@@ -77,6 +77,7 @@ import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
@@ -111,6 +112,9 @@ class HealthIndicatorsTest {
     /** The account-id-free logical queue name, the only queue name a detail may publish. */
     private static final String QUEUE_LOGICAL_NAME = "carddemo-report-jobs";
 
+    /** The bare notification topic name. Bare, never an ARN: the probe refuses an ARN outright. */
+    private static final String TOPIC_NAME = "carddemo-notifications";
+
     /**
      * A resolved queue URL of the shape SQS returns, carrying a twelve-digit account segment. Used to
      * assert that the probe consumes it without ever publishing it.
@@ -120,15 +124,29 @@ class HealthIndicatorsTest {
                     + "carddemo-report-jobs.fifo";
 
     /**
-     * Builds the class under test with both clients supplied and all five properties populated.
+     * Builds the class under test with every client supplied and all six properties populated.
      *
      * @param s3Client       the S3 double
      * @param sqsAsyncClient the SQS double
      * @return a fully configured factory
      */
     private static HealthIndicators indicators(S3Client s3Client, SqsAsyncClient sqsAsyncClient) {
-        return new HealthIndicators(s3Client, sqsAsyncClient, mock(DataSource.class), INPUT_BUCKET,
-                OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE_NAME, QUEUE_LOGICAL_NAME);
+        return indicators(s3Client, sqsAsyncClient, mock(SnsClient.class));
+    }
+
+    /**
+     * Builds the class under test with an explicit notification client, for the SNS probe's own cases.
+     *
+     * @param s3Client       the S3 double
+     * @param sqsAsyncClient the SQS double
+     * @param snsClient      the SNS double
+     * @return a fully configured factory
+     */
+    private static HealthIndicators indicators(S3Client s3Client, SqsAsyncClient sqsAsyncClient,
+            SnsClient snsClient) {
+        return new HealthIndicators(s3Client, sqsAsyncClient, snsClient, mock(DataSource.class),
+                INPUT_BUCKET,
+                OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE_NAME, QUEUE_LOGICAL_NAME, TOPIC_NAME);
     }
 
     /**
@@ -895,8 +913,9 @@ class HealthIndicatorsTest {
         void unsetBucketIsRefused() {
             S3Client s3Client = mock(S3Client.class);
             HealthIndicators factory = new HealthIndicators(s3Client, mock(SqsAsyncClient.class),
+                    mock(SnsClient.class),
                     mock(DataSource.class), INPUT_BUCKET, "", STATEMENTS_BUCKET, QUEUE_NAME,
-                    QUEUE_LOGICAL_NAME);
+                    QUEUE_LOGICAL_NAME, TOPIC_NAME);
 
             Health health = factory.s3HealthIndicator().health();
 
@@ -914,8 +933,9 @@ class HealthIndicatorsTest {
             String arn = "arn:aws:sqs:us-east-1:000000000000:carddemo-report-jobs.fifo";
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             HealthIndicators factory = new HealthIndicators(mock(S3Client.class), sqsAsyncClient,
+                    mock(SnsClient.class),
                     mock(DataSource.class), INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, arn,
-                    QUEUE_LOGICAL_NAME);
+                    QUEUE_LOGICAL_NAME, TOPIC_NAME);
 
             Health health = factory.sqsHealthIndicator().health();
 

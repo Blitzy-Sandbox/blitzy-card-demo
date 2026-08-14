@@ -314,6 +314,28 @@
       "tier": "2 - the component is never started",
       "expires": "2027-02-01",
       "evidence": "DigestAuthentication.apply() in Jetty's HTTP CLIENT hashes credentials through ISO-8859-1, which silently substitutes any character above U+00FF and so permits an authentication bypass by character substitution. Reachability requires Jetty's HTTP client performing Digest authentication. Jetty reaches this graph only through maven-site-plugin 3.22.0, and no site goal is invoked anywhere in .github/workflows/build.yml or the Dockerfile - the documentation site is built by MkDocs. No Jetty client is ever constructed and no Digest exchange occurs. Unlike CVE-2026-2332 on jetty-http, this one IS fixed on the 9.4 line, at 9.4.63, but the version is chosen by the AAP-pinned site plugin rather than declared here."
+    },
+    {
+      "coordinate": "org.apache.httpcomponents.core5:httpcore5:5.3.6",
+      "advisory": "GHSA-hf6x-8p5f-cgmf",
+      "aliases": [
+        "CVE-2026-54399"
+      ],
+      "severity": "HIGH",
+      "tier": "2 - the component is never started",
+      "expires": "2027-02-01",
+      "evidence": "Memory-exhaustion denial of service through unbounded header count and length in the HTTP/1.1 message parser; the CVSS vector is AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H, so availability only, and reachability requires this realm to actually parse an inbound HTTP/1.1 message. This artefact reaches the plugin graph only through org.springframework.boot:spring-boot-buildpack-platform 3.5.11, the Docker-registry and buildpack HTTP client used by the build-image and build-image-no-fork goals (dependency:resolve-plugins attributes it at lines 283-297, directly beneath the plugin itself). Neither goal is invoked anywhere in this build: pom.xml declares spring-boot-maven-plugin with no <executions> at all, so it inherits only the parent's repackage binding, and both entry points run the same lifecycle - .github/workflows/build.yml runs 'clean verify' and the Dockerfile builder stage runs 'clean verify'. A repository-wide search finds build-image only in prose. repackage reads and rewrites local jar files and opens no socket, and the one other documented developer goal, spring-boot:run, forks a local JVM rather than issuing HTTP. NOT OVERRIDDEN HERE, UNLIKE THE SCANNER'S OWN REALM, AND DELIBERATELY SO. pom.xml pins the same two coordinates to 5.4.3 inside dependency-check-maven's realm, so the mechanism is available and proven. It is not applied to this plugin because this is the plugin that produces the delivered artefact: repackage builds the executable jar, so altering its classpath risks the deliverable, whereas altering a reporting plugin's classpath does not. Trading a delivery risk for a DoS that cannot occur would be the worse exchange. AAP section 0.6.1 pins spring-boot-starter-parent to 3.5.11 and section 0.8.4 requires pinned versions be honoured as given, so raising the plugin root to obtain 5.4.3 transitively is not available either. Fixed in 5.4.3 on the 5.x line and 5.5-beta2 on the 5.5 line."
+    },
+    {
+      "coordinate": "org.apache.httpcomponents.core5:httpcore5-h2:5.3.6",
+      "advisory": "GHSA-v3jc-474w-2wm6",
+      "aliases": [
+        "CVE-2026-54428"
+      ],
+      "severity": "HIGH",
+      "tier": "2 - the component is never started",
+      "expires": "2027-02-01",
+      "evidence": "HPackDecoder accepts an unlimited header list before the HTTP/2 SETTINGS acknowledgement, the same class of unbounded-input exhaustion as CVE-2026-54399 one layer up the protocol stack; the vector is likewise AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H, and reachability requires this realm to negotiate an HTTP/2 connection. This artefact reaches the plugin graph only through org.springframework.boot:spring-boot-buildpack-platform 3.5.11, the Docker-registry and buildpack HTTP client used by the build-image and build-image-no-fork goals (dependency:resolve-plugins attributes it at lines 283-297, directly beneath the plugin itself). Neither goal is invoked anywhere in this build: pom.xml declares spring-boot-maven-plugin with no <executions> at all, so it inherits only the parent's repackage binding, and both entry points run the same lifecycle - .github/workflows/build.yml runs 'clean verify' and the Dockerfile builder stage runs 'clean verify'. A repository-wide search finds build-image only in prose. repackage reads and rewrites local jar files and opens no socket, and the one other documented developer goal, spring-boot:run, forks a local JVM rather than issuing HTTP. NOT OVERRIDDEN HERE, UNLIKE THE SCANNER'S OWN REALM, AND DELIBERATELY SO. pom.xml pins the same two coordinates to 5.4.3 inside dependency-check-maven's realm, so the mechanism is available and proven. It is not applied to this plugin because this is the plugin that produces the delivered artefact: repackage builds the executable jar, so altering its classpath risks the deliverable, whereas altering a reporting plugin's classpath does not. Trading a delivery risk for a DoS that cannot occur would be the worse exchange. AAP section 0.6.1 pins spring-boot-starter-parent to 3.5.11 and section 0.8.4 requires pinned versions be honoured as given, so raising the plugin root to obtain 5.4.3 transitively is not available either. Fixed in 5.4.3 on the 5.x line and 5.5-beta2 on the 5.5 line."
     }
   ]
 }

@@ -775,6 +775,29 @@ The user list carries the same four messages verbatim
 successful `200` with an empty row array, **not** a `404` — end-of-data is a control
 outcome, never an error (see [§8.2](#82-global-failure-and-status-mapping)).
 
+**A refused page still returns the page. This is the contract, and it is easy to get
+backwards.** The first two rows above are *refusals*: the request asked to navigate somewhere
+that does not exist, and the response declines. A refusal returns the page the caller is
+already on, together with the message — it does **not** return an empty `rows` array. The
+distinction is not cosmetic. An empty array is the answer to "what is on the next page", and
+answering it to "there is no next page" tells the caller its current page vanished.
+
+The behaviour is the source's. Both refusal arms `SET SEND-ERASE-NO TO TRUE` and re-send the
+map with the row fields still at `LOW-VALUES`
+[`app/cbl/COTRN00C.cbl:L250`, `:L272`; `app/cbl/COUSR00C.cbl:L253`, `:L275`]. BMS transmits no
+low-values field, and with no `ERASE` the 3270 leaves the rows it is already displaying
+untouched, so the operator sees the unchanged page beneath the new message. Those rows come
+from the terminal's own buffer, which an HTTP response has no equivalent of, so the outcome is
+reproduced by re-reading the displayed page from its own `firstKey` anchor rather than by
+retaining anything. Echoing rows supplied by the caller was rejected: the request carries only
+a row `rowCount` and never the row contents, so honouring it would mean widening the request to
+accept row data the server would then repeat back as though it had read it.
+
+**Nothing else about a refusal moves.** `pageNumber`, `nextPageAvailable`, `firstKey` and
+`lastKey` are returned exactly as they arrived, because a refused navigation grants no new
+position. The last two rows above are different in kind — they are *outcomes of a read that
+ran* — and they do update the cursors.
+
 ---
 
 ## 8. Error-response envelope
@@ -3812,6 +3835,16 @@ of [§16.2.1](#1621-labelled-deviation-usertype-is-restricted-to-a-and-u):
 | Data refused by a constraint other than the key — `Unable to Add User...` | `409` | `CARDDEMO-CONSTRAINT-REFUSED` |
 | Store unavailable / write failure / abend | `503` / `502` / `500` | per [§8.2](#82-global-failure-and-status-mapping) |
 
+`'Unable to Add User...'` is the caption of the source's whole `WHEN OTHER` arm [`:L270-L271`],
+and it now reaches the `detail` on **every** arm that arm covers — the `409` above, the `400`
+raised when a submitted value cannot be represented in its column at all, and the `502` write
+failure. It previously reached the first two and not the third, because the third's exception is
+built by the shared file-status translator and the translator composed its own diagnostic message
+over the caption; this API publishes a source caption only on an exact match against a closed
+allow-list, so the composed string was replaced by a generic detail. One literal cannot be
+publishable on two arms of one `EVALUATE` and withheld on the third. The status, the file and
+the operation still travel in the exception's structured fields and reach the log line.
+
 ### 16.3 Update user
 
 **Legacy source.** CSD transaction `CU02` [`app/csd/CARDDEMO.CSD:L469`] → program
@@ -3972,8 +4005,19 @@ the target.
 | `Unable to Update User...` | [`:L386`] |
 | `User <id> has been updated ...` | [`:L372-L374`] |
 
-**Failure and status mapping.** Validation `400`; user not found `404`; store unavailable
-`503`; read or write failure `502`; abend `500`.
+Both I/O captions reach the `detail` of the `502` they belong to, byte for byte. That was once
+not true: the shared file-status translator composed its own diagnostic message — naming the
+operation, the logical file and the `FILE STATUS IS: NNNN` rendering — over the caption, and this
+API publishes a source caption only on an exact match against a closed allow-list, so the
+composed string failed the match and a generic detail was published instead. The translator is
+now asked for the exception *type* while the program's caption stays the *message*. The
+diagnostic context is not lost: it travels in the exception's structured fields, reaches the log
+line, and is joined to the response by the `correlationId` the body carries.
+
+**Failure and status mapping.** Validation `400`; user not found `404` with
+`'User ID NOT found...'`; store unavailable `503`; read failure `502` with
+`'Unable to lookup User...'`; write failure `502` with `'Unable to Update User...'`; abend
+`500`.
 
 ### 16.4 Delete user
 
@@ -4001,6 +4045,26 @@ The confirmation replaces the source's `WHEN DFHPF5` arm, which performs `DELETE
 [`app/cbl/COUSR03C.cbl:L121-L122`, the paragraph itself at `:L174`]. Without
 it the source prompts `'Press PF5 key to delete this user ...'` [`:L283`] and **nothing is
 destroyed**.
+
+**Both refusals are `400`, and each carries the source's own caption byte for byte.** The
+substitution is in the mechanism, not in the words:
+
+| `confirmed` | `failureKind` | `detail` | Locator |
+|---|---|---|---|
+| absent or empty | `BLANK` | `Press PF5 key to delete this user ...` | [`:L283`] |
+| present, anything other than the exact token `true` | `INVALID` | `Invalid key pressed. Please see below...` | `CCDA-MSG-INVALID-KEY` [`app/cpy/CSMSG01Y.cpy:L20-L21`], moved at [`:L128`] |
+| exactly `true` | — | the record is destroyed | [`:L121-L122`] |
+
+Not confirming is the state the operator was in while the prompt of [`:L283`] stood on the
+screen, so that prompt is what the refusal says. Sending a token that is *not* a confirmation
+is pressing a key that is not `DFHPF5`, and the source answers every such key from one
+`WHEN OTHER` arm [`:L126-L129`] with one caption. **`confirmed=false` is refused identically to
+`confirmed=yes`** — the source draws no distinction between them, so neither does this
+operation, and the token is matched exactly with no alias, no case fold and no trim.
+
+Two members make each refusal actionable without adding anything to the envelope: `field`
+names `confirmed`, and `failureKind` separates *you did not confirm* from *you sent something
+that is not a confirmation*. Nothing is destroyed on either path.
 
 **Response — `200 OK`.** Exactly five members — and on the **deleted** arm the first four are
 **blank**, leaving the message as the only member naming the user that was removed:
@@ -4064,6 +4128,7 @@ permanent; there is no soft-delete flag in the record layout.
 |---|---|
 | `User ID can NOT be empty...` | [`:L147`], [`:L179`] |
 | `Press PF5 key to delete this user ...` | [`:L283`] |
+| `Invalid key pressed. Please see below...` | `CCDA-MSG-INVALID-KEY` [`app/cpy/CSMSG01Y.cpy:L20-L21`], moved at [`:L128`] |
 | `User ID NOT found...` | [`:L289`], [`:L325`] |
 | `Unable to lookup User...` | [`:L296`] |
 | `Unable to Update User...` — **the delete-failure arm says "Update", not "Delete"** | [`:L332`] |
@@ -4073,9 +4138,23 @@ That last-but-one literal is a source wording quirk: the failure path of the **d
 operation reports `'Unable to Update User...'`. It is relayed as written, because a client
 matching on the text must keep matching on it.
 
+**Every one of these captions reaches the `detail` of the body it belongs to.** That is worth
+stating because it was once not true of the two I/O captions. The `502` arm's exception is
+built by the shared file-status translator, and the translator's own message names the
+operation, the logical file and the four-character `FILE STATUS IS: NNNN` rendering — none of
+which a caller may see. So this API publishes a source caption only on an **exact** match
+against a closed allow-list, and a composed diagnostic string failed that match and was
+replaced by a generic detail. The translator is now asked for the exception *type* while the
+program's own caption is kept as the *message*, so `'Unable to lookup User...'` and
+`'Unable to Update User...'` arrive as themselves. The status, the file and the operation are
+not discarded: they travel in the exception's structured fields, reach the log line, and are
+joined to the response by the `correlationId` every body carries.
+
 **Failure and status mapping.** Blank identifier `400`; confirmation absent `400` with the
-PF5 prompt; user not found `404`; store unavailable `503`; delete failure `502`; abend
-`500`.
+PF5 prompt; confirmation present but not the exact token `400` with the invalid-key caption;
+user not found `404` with `'User ID NOT found...'`; store unavailable `503`; read failure
+`502` with `'Unable to lookup User...'`; delete failure `502` with `'Unable to Update
+User...'`; abend `500`.
 
 ---
 

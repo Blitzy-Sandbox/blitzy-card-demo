@@ -980,9 +980,17 @@ class GateVerificationTest {
      * <p>{@code py} and {@code css} were added when the documentation build gained a build-time hook and a
      * stylesheet. Neither is a likely place for a credential and both are read anyway, precisely because
      * "unlikely" is the argument that produced the omission in the first place.
+     *
+     * <p>{@code js} was added for the same reason and by the same route: the documentation build gained two
+     * authored scripts, {@code docs/javascripts/carddemo-mermaid.js} and
+     * {@code docs/javascripts/carddemo-a11y.js}, and this walk could not read either. That is exactly the
+     * omission the paragraph above describes, arriving a second time - which is the argument for pinning the
+     * set rather than trusting it. One of the two carries a subresource-integrity hash and a third-party URL,
+     * so it is precisely the kind of file a reader would expect a credential scan to have looked at.
      */
     private static final Set<String> CREDENTIAL_WALK_TEXT_EXTENSIONS = Set.of("java", "yml", "yaml", "xml",
-            "sql", "json", "sh", "md", "properties", "example", "cmd", "txt", "html", "conf", "py", "css");
+            "sql", "json", "sh", "md", "properties", "example", "cmd", "txt", "html", "conf", "py", "css",
+            "js");
 
     /** Extensionless authored files the credential walk reads by name. */
     private static final Set<String> CREDENTIAL_WALK_NAMED_FILES = Set.of("Dockerfile", "mvnw");
@@ -4556,16 +4564,18 @@ class GateVerificationTest {
                         documentation build gained a build-time hook and a stylesheet, both of which the walk \
                         had been unable to read.""")
                 .containsExactlyInAnyOrder("java", "yml", "yaml", "xml", "sql", "json", "sh", "md",
-                        "properties", "example", "cmd", "txt", "html", "conf", "py", "css");
+                        "properties", "example", "cmd", "txt", "html", "conf", "py", "css", "js");
 
         assertThat(scanned)
                 .as("""
-                        the two extensions the set gained are asserted through the files that motivated them, \
-                        because pinning the set alone would still pass if the walk's predicate stopped \
-                        consulting it. Both files are authored, both are committed, and neither was readable \
-                        by this gate before.""")
+                        the three extensions the set gained are asserted through the files that motivated \
+                        them, because pinning the set alone would still pass if the walk's predicate stopped \
+                        consulting it. All four files are authored, all four are committed, and none was \
+                        readable by this gate before its extension was added.""")
                 .contains(this.corpus.root().resolve("mkdocs_hooks.py"),
-                        this.corpus.root().resolve("docs/stylesheets/carddemo.css"));
+                        this.corpus.root().resolve("docs/stylesheets/carddemo.css"),
+                        this.corpus.root().resolve("docs/javascripts/carddemo-mermaid.js"),
+                        this.corpus.root().resolve("docs/javascripts/carddemo-a11y.js"));
 
         record("gate6.credentialWalkUnscannedSourceRoots",
                 String.join(",", new TreeSet<>(UNSCANNED_SOURCE_ROOTS)));
@@ -9203,20 +9213,27 @@ class GateVerificationTest {
          *
          * <p>The registry is consulted rather than the configuration file, because a group can name a
          * contributor that does not exist and a configuration read would not notice. The readiness set is the
-         * replacement for the legacy file-availability jobs, so it must reach the database, the object store
-         * and the queue rather than merely the application process.
+         * replacement for the legacy file-availability jobs, so it must reach the database, the object store,
+         * the queue and the notification topic rather than merely the application process.
+         *
+         * <p>{@code sns} joined this assertion in the change that added the notification contributor. Its
+         * absence was a Major defect: notification was the one required cloud dependency readiness said
+         * nothing about, so an instance whose topic had never been provisioned reported itself ready.
          */
         @Test
-        @DisplayName("Gate 8: the live health registry carries the database, object-store and queue probes")
+        @DisplayName("Gate 8: the live health registry carries the database, object-store, queue and "
+                + "notification probes")
         void healthProbesResolveOnALiveContext() {
             final Set<String> contributorNames = new LinkedHashSet<>();
             this.healthContributors.stream()
                     .forEach(contributor -> contributorNames.add(contributor.getName()));
 
             assertThat(contributorNames)
-                    .as("the readiness set covers the three boundaries the legacy file-availability jobs "
-                            + "covered: the relational store, the object store and the queue")
-                    .contains("db", "s3", "sqs");
+                    .as("the readiness set covers every boundary a request or a batch job crosses: the "
+                            + "relational store, the object store, the queue and the notification topic. "
+                            + "The legacy file-availability jobs covered the first; the other three have no "
+                            + "relational analogue and are each probed on their own")
+                    .contains("db", "s3", "sqs", "sns");
 
             assertThat(this.dataSource)
                     .as("a real datasource is bound, so the probes above measure a real connection rather "

@@ -72,6 +72,10 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.ListTopicsRequest;
+import software.amazon.awssdk.services.sns.model.ListTopicsResponse;
+import software.amazon.awssdk.services.sns.model.Topic;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
@@ -81,15 +85,26 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
 
 /**
- * Supplies the object-storage and queue halves of the composite readiness probe that replaces the
- * legacy CICS file-availability jobs.
+ * Supplies every dependency contributor of the composite readiness probe that replaces the legacy
+ * CICS file-availability jobs.
  *
  * <h2>What it does</h2>
  *
- * <p>This class contributes exactly two Spring Boot Actuator {@link HealthIndicator} beans - one for
- * Amazon S3 object storage and one for the SQS FIFO report queue - and nothing else. Together with
- * the framework's own auto-configured {@code db} contributor they form the three-way composite
- * readiness signal the migration requires: <em>database plus object storage plus queue</em>.
+ * <p>This class contributes exactly <strong>four</strong> Spring Boot Actuator {@link HealthIndicator}
+ * beans - one for Amazon S3 object storage, one for the relational store, one for the SQS FIFO report
+ * queue and one for the SNS operator notification topic - and nothing else. Together they form the
+ * complete composite readiness signal the migration requires: <em>database plus object storage plus
+ * queue plus notifications</em>.
+ *
+ * <p><strong>Two corrections are recorded here rather than made silently, because both were
+ * published claims.</strong> This paragraph previously said "exactly two ... and nothing else" and
+ * attributed the {@code db} component to "the framework's own auto-configured contributor". Neither
+ * was true when written: {@link #dbHealthIndicator()} already existed and already replaced the
+ * framework's unbounded probe on that key, so the count was three rather than two and the {@code db}
+ * attribution named the wrong owner. The count is now four because the notification contributor was
+ * added in the same change - it was the one required cloud dependency readiness said nothing about,
+ * so an instance whose topic had never been provisioned reported itself ready and failed only at the
+ * first report submission.
  *
  * <h2>Why it exists: new capability, not a translation</h2>
  *
@@ -121,8 +136,10 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  * </ul>
  *
  * <p>All five are VSAM datasets, so all five migrate to the relational substrate and are covered by
- * the auto-configured {@code db} contributor rather than by anything in this class. That is the
- * reason this class probes object storage and the queue only.
+ * the single {@code db} contributor - which is {@link #dbHealthIndicator()}, this class's bounded
+ * replacement for the framework's unbounded one, rather than the framework's own. That is why the
+ * five CEMT-managed files need no per-dataset probe here: one relational contributor covers all of
+ * them, and the remaining three contributors cover the substrates that have no relational analogue.
  *
  * <p>Those five are a strict <em>subset</em> of the eight files the CICS resource definitions
  * declare - {@code ACCTDAT} at {@code app/csd/CARDDEMO.CSD:L1}, {@code CARDAIX} at {@code :L13},
@@ -147,7 +164,7 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  * <h2>Published bean names and the health component keys they become</h2>
  *
  * <p>Actuator derives a health component key by stripping the {@code HealthIndicator} suffix from
- * the bean name, so the two bean names below fix the two keys that
+ * the bean name, so the four bean names below fix the four keys that
  * {@code management.endpoint.health.group.readiness.include} must list in
  * {@code src/main/resources/application.yml}:
  *
@@ -165,17 +182,31 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *           versioning state, by {@code GetBucketVersioning}</td>
  *     </tr>
  *     <tr>
+ *       <td>{@code dbHealthIndicator}</td>
+ *       <td>{@code db}</td>
+ *       <td>{@link #DB_HEALTH_COMPONENT_NAME}</td>
+ *       <td>Pool acquisition and {@code SELECT 1}, on a bounded probe thread that replaces the
+ *           framework's unbounded contributor on the same key</td>
+ *     </tr>
+ *     <tr>
  *       <td>{@code sqsHealthIndicator}</td>
  *       <td>{@code sqs}</td>
  *       <td>{@link #SQS_HEALTH_COMPONENT_NAME}</td>
  *       <td>The report queue, by {@code GetQueueUrl}; then its {@code FifoQueue} and
  *           {@code ContentBasedDeduplication} attributes, by {@code GetQueueAttributes}</td>
  *     </tr>
+ *     <tr>
+ *       <td>{@code snsHealthIndicator}</td>
+ *       <td>{@code sns}</td>
+ *       <td>{@link #SNS_HEALTH_COMPONENT_NAME}</td>
+ *       <td>The operator notification topic, by a deadline-bounded read-only {@code ListTopics} walk
+ *           matching the configured bare name against each listed identifier's last segment</td>
+ *     </tr>
  *   </tbody>
  * </table>
  *
  * <p>The keys are deliberately lowercase and hyphen-free so a YAML {@code include} list can name
- * them without quoting. <strong>Renaming either bean silently drops that contributor from the readiness
+ * them without quoting. <strong>Renaming any of these beans silently drops that contributor from the readiness
  * group.</strong> That is because
  * {@code management.endpoint.health.validate-group-membership} rejects an unknown name at startup
  * but says nothing about a contributor that is merely no longer referenced. Rename in both places
@@ -190,7 +221,7 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  * membership of a probe is readable in one place. This class only supplies correctly named beans
  * for those lists to reference.
  *
- * <p><strong>Liveness must never include an external dependency, and neither of these beans may be
+ * <p><strong>Liveness must never include an external dependency, and none of these beans may be
  * added to it.</strong> Liveness answers only "is this JVM still able to serve?". A liveness probe
  * that failed because the object-storage emulator was momentarily unreachable would cause an
  * orchestrator to kill an otherwise healthy process, converting a recoverable dependency blip into
@@ -211,7 +242,7 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  * This class upholds that structurally rather than by convention:
  *
  * <ul>
- *   <li>it <strong>constructs no client</strong> - both SDK clients are injected, and their
+ *   <li>it <strong>constructs no client</strong> - all three SDK clients are injected, and their
  *       construction is owned by {@code com.cardemo.config.AwsConfig} together with the Spring
  *       Cloud AWS auto-configuration;</li>
  *   <li>it names <strong>no endpoint</strong>, calls no endpoint-override API and contains no host,
@@ -233,7 +264,7 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *
  * <h2>Report, never throw; and no sensitive diagnostics</h2>
  *
- * <p>Neither indicator ever propagates an exception. Actuator would convert a thrown exception into
+ * <p>No indicator ever propagates an exception. Actuator would convert a thrown exception into
  * {@code DOWN} on its own, but the message it then surfaces is outside this class's control and can
  * carry an endpoint, a request id or a raw SDK payload. Each remote call is therefore wrapped, and
  * every failure is mapped to a status with a curated reason drawn from the closed vocabulary
@@ -281,13 +312,19 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *       resolved queue URL embeds the AWS account id, so surfacing or logging it would disclose that
  *       identifier. Only the account-id-free logical name
  *       {@code carddemo-report-jobs} reaches a detail.</li>
+ *   <li>the SNS probe walks {@code ListTopics} and <strong>discards every identifier it reads</strong>.
+ *       A resolved topic identifier embeds the same account segment a queue URL does, so listed
+ *       identifiers are reduced to their last segment purely for comparison and only the configured
+ *       bare name {@code carddemo-notifications} reaches a detail. Pagination tokens are consumed and
+ *       never published either.</li>
  *   </ul>
  *
  * <p>The details that <em>are</em> emitted are a symbolic component name, a symbolic reason, an
- * elapsed-milliseconds figure, a probed-bucket count, a configuration <em>property key</em> (never
- * its value), S3 bucket or SQS queue <em>names</em>, and three verification tokens that are all
+ * elapsed-milliseconds figure, a probed-bucket count, a listing-page count, a configuration
+ * <em>property key</em> (never its value), S3 bucket, SQS queue or SNS topic <em>names</em>, and three
+ * verification tokens that are all
  * compile-time literals - {@link #DETAIL_ATTRIBUTE}, {@link #DETAIL_VERSIONING} and
- * {@link #DETAIL_FIFO_CONTRACT}. A bucket or queue name is a plain resource
+ * {@link #DETAIL_FIFO_CONTRACT}. A bucket, queue or topic name is a plain resource
  * identifier: AWS constrains it to a short unqualified token, so it can hold no account id, ARN,
  * credential or URL. That is nevertheless not taken on trust - see
  * {@link #REASON_INVALID_NAME}. The verification tokens carry no observed value at all: an attribute
@@ -301,11 +338,14 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  * <p>Every item below is owned elsewhere, and duplicating it here would violate Rule 1 Clause C:
  *
  * <ul>
- *   <li><strong>the database probe.</strong> Spring Boot auto-configures a {@code db} contributor
- *       from the {@code DataSource}. A second one would duplicate the component, and hand-rolling
- *       it would mean issuing a query from a health probe - which must never select a business row
- *       or log a bind parameter. This class provides no {@code DataSource} or JDBC health bean of
- *       any kind;</li>
+ *   <li><strong>a SECOND database probe.</strong> Spring Boot auto-configures a {@code db}
+ *       contributor from the {@code DataSource}, and this class <em>replaces</em> it on the same key
+ *       rather than joining it - {@code management.health.db.enabled: false} switches the framework's
+ *       off, because the framework's has no deadline of its own and a measured readiness probe with the
+ *       database stopped took 30.05 s. Replacement keeps Rule 1 Clause C's no-duplication requirement
+ *       satisfied: there is exactly one {@code db} contributor, and its query is {@code SELECT 1}, so
+ *       no business row is selected and no bind parameter is logged. Adding a second one under any
+ *       other key would be the duplication this bullet forbids;</li>
  *   <li><strong>health-group composition and endpoint exposure</strong> - {@code application.yml};</li>
  *   <li><strong>AWS client construction</strong> - {@code com.cardemo.config.AwsConfig};</li>
  *   <li><strong>tracing configuration and the wiring of this package</strong> -
@@ -334,11 +374,12 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *   <li>{@code carddemo.aws.s3.statements-bucket}</li>
  *   <li>{@code carddemo.aws.sqs.report-queue}</li>
  *   <li>{@code carddemo.aws.sqs.report-queue-logical-name}</li>
+ *   <li>{@code carddemo.aws.sns.notification-topic}</li>
  * </ul>
  *
  * <p>Each is bound with an <em>empty</em> placeholder default. That default is not a fallback for a
- * missing environment variable: {@code application.yml} declares all five keys, and the first four
- * indirect to a variable with no default of their own, so an absent variable still fails
+ * missing environment variable: {@code application.yml} declares all six keys, and all but the
+ * logical queue name indirect to a variable with no default of their own, so an absent variable still fails
  * placeholder resolution at startup exactly as the base profile intends. The empty default covers
  * only the case where the property key is absent from the environment altogether - a pared-down or
  * unit-test context - and in that case the probe reports a deterministic {@code DOWN} carrying
@@ -547,9 +588,21 @@ public class HealthIndicators {
      */
     public static final String SQS_HEALTH_COMPONENT_NAME = "sqs";
 
-    // Detail keys. The complete, closed set of keys either indicator can place in a health body.
+    /**
+     * Bean name of the SNS indicator, and therefore the source of the {@code sns} health component
+     * key. Actuator strips the {@code HealthIndicator} suffix to derive the key.
+     */
+    public static final String SNS_HEALTH_INDICATOR_BEAN_NAME = "snsHealthIndicator";
 
-    /** Detail key carrying the symbolic component name, {@code s3} or {@code sqs}. */
+    /**
+     * Health component key of the SNS indicator, as it appears in a health response and in
+     * {@code management.endpoint.health.group.readiness.include}.
+     */
+    public static final String SNS_HEALTH_COMPONENT_NAME = "sns";
+
+    // Detail keys. The complete, closed set of keys any indicator can place in a health body.
+
+    /** Detail key carrying the symbolic component name, {@code s3}, {@code db}, {@code sqs} or {@code sns}. */
     public static final String DETAIL_COMPONENT = "component";
 
     /**
@@ -567,6 +620,28 @@ public class HealthIndicators {
      * {@code carddemo-report-jobs}. Never a resolved queue URL, which would embed an account id.
      */
     public static final String DETAIL_QUEUE = "queue";
+
+    /**
+     * Detail key carrying the bare, account-id-free name of the operator notification topic, for
+     * example {@code carddemo-notifications}.
+     *
+     * <p><strong>Never a topic ARN.</strong> A resolved topic identifier embeds the twelve-digit AWS
+     * account segment, exactly as a queue URL does, so the probe resolves ARNs in-process to compare
+     * them and publishes only the configured bare name - the same discipline
+     * {@link #DETAIL_QUEUE} applies to the queue.
+     */
+    public static final String DETAIL_TOPIC = "topic";
+
+    /**
+     * Detail key carrying how many pages of the provisioned-topic listing the probe examined before
+     * it reached a verdict.
+     *
+     * <p>Published on both outcomes because it is the only way to tell "the topic is not provisioned"
+     * from "the listing was longer than the probe was allowed to walk", and those have different
+     * remedies: re-run the provisioning script, versus reduce the number of topics in the account or
+     * widen the budget. It is a count, never a page token, so it can carry no identifier.
+     */
+    public static final String DETAIL_TOPIC_PAGES_EXAMINED = "topicPagesExamined";
 
     /**
      * Detail key carrying a symbolic failure reason from the closed vocabulary of
@@ -741,17 +816,34 @@ public class HealthIndicators {
     private static final String PROPERTY_REPORT_QUEUE_LOGICAL_NAME =
             "carddemo.aws.sqs.report-queue-logical-name";
 
+    /**
+     * Property key supplying the operator notification topic. The value is a bare topic name, never an
+     * ARN, and it is the value published in a health detail for exactly that reason.
+     */
+    private static final String PROPERTY_NOTIFICATION_TOPIC = "carddemo.aws.sns.notification-topic";
+
     // Probe budgets. Every remote call either completes inside the budget of the contributor that
     // issued it or is abandoned; no call is unbounded, and no call can borrow time from another
-    // contributor. The three figures below are derived from container evidence, not chosen.
+    // contributor. The four figures below are derived from container evidence, not chosen.
     //
-    // The Dockerfile's single HEALTHCHECK instruction declares `--timeout=5s` on the readiness probe.
-    // Cited by instruction rather than by line number, because the line moves. That 5 second budget must
-    // cover, in one HTTP round trip: the `db` contributor, this class's two contributors, Actuator's
-    // own aggregation and the round trip itself. Allotting 1.5 s to each of the two AWS contributors
-    // caps their combined worst case at 3 s and leaves 2 s for the database probe and transport,
-    // which is the split that keeps a slow-but-alive substrate reporting DOWN inside the container
-    // deadline instead of being killed as unresponsive.
+    // The Dockerfile's single HEALTHCHECK instruction declares `--timeout=7s` on the readiness probe.
+    // Cited by instruction rather than by line number, because the line moves. That 7 second budget must
+    // cover, in one HTTP round trip: this class's four contributors, Actuator's own aggregation and the
+    // round trip itself. Actuator evaluates the members of a health group SEQUENTIALLY, so the
+    // contributors' budgets ADD - which is what makes the arithmetic below load bearing rather than
+    // decorative. Four contributors at 1.5 s cap the aggregate worst case at 6 s and leave 1 s for
+    // aggregation and transport, which is the split that keeps a slow-but-alive substrate reporting
+    // DOWN inside the container deadline instead of being killed as unresponsive.
+    //
+    // The container deadline was 5 s while this class contributed three probes, and was raised to 7 s
+    // in the same change that added the fourth. It is recorded rather than adjusted silently because
+    // the alternative was considered and rejected: shrinking all four budgets to 1 s would have kept
+    // the aggregate at 4 s under a 5 s deadline, but 1 s leaves the relational probe no room for pool
+    // acquisition plus its validation query on a memory-pressured host, and a probe that reports DOWN
+    // because it was rushed is a false negative that removes a healthy instance from rotation. Raising
+    // the deadline costs at most two additional seconds before a genuinely wedged instance is failed,
+    // and `--retries=4` at `--interval=15s` means detection latency is dominated by the retry budget
+    // rather than by the per-attempt timeout, so the cost is close to nil.
     //
     // A budget is a *total* per contributor, not a per-call allowance: each call is issued with the
     // budget that remains at the moment it is issued, so adding a verification call can never extend
@@ -771,6 +863,19 @@ public class HealthIndicators {
     private static final long SQS_PROBE_BUDGET_MILLIS = 1_500L;
 
     /**
+     * Total budget for one invocation of the notification contributor, in milliseconds, shared across
+     * every page of the {@code ListTopics} walk it performs.
+     *
+     * <p>Identical to the other three so that no contributor is privileged, and a total rather than a
+     * per-page allowance: each page request is issued with whatever remains at that moment, so a
+     * long topic listing consumes slack and can never extend this contributor's worst case. Exhausting
+     * the budget mid-walk reports {@link #REASON_TIMEOUT}, which is deliberately distinguishable from
+     * {@link #REASON_MISSING} - the first means the listing outran the probe, the second means the
+     * topic is genuinely not provisioned, and the remedies differ.
+     */
+    private static final long SNS_PROBE_BUDGET_MILLIS = 1_500L;
+
+    /**
      * Total budget for one invocation of the relational-store contributor, in milliseconds, covering
      * pool acquisition <em>and</em> the validation query together.
      *
@@ -779,17 +884,19 @@ public class HealthIndicators {
      * connection and therefore inherits {@code spring.datasource.hikari.connection-timeout}, which is
      * 30 000 ms. With the database stopped, {@code /actuator/health/readiness} measured 30.05 s and
      * the application logged {@code Health contributor ... DataSourceHealthIndicator (db) took
-     * 30009ms} - twenty times the budget this class already applied to its own two contributors, and
-     * six times the {@code --timeout=5s} the container health check declares. Under any orchestrator
+     * 30009ms} - twenty times the budget this class already applied to its own AWS contributors, and
+     * four times the {@code --timeout=7s} the container health check declares. Under any orchestrator
      * that treats a readiness timeout as a failure, a brief database blip therefore became a restart
      * loop. Lowering the pool's {@code connection-timeout} was rejected as the remedy: that value
      * governs the data path for every request, its untuned state is a recorded decision, and pool
      * tuning is explicitly out of scope for this migration.
      *
-     * <p>1 500 ms rather than the 2 000 ms the budget note above allots to "the database probe and
-     * transport", so that all three contributors share one deadline: three contributors at 1.5 s cap
-     * the aggregate worst case at 4.5 s and leave 500 ms of the container's 5 s for Actuator's
-     * aggregation and the round trip.
+     * <p>1 500 ms so that every contributor shares one deadline rather than one being privileged:
+     * four contributors at 1.5 s cap the aggregate worst case at 6 s and leave 1 s of the container's
+     * 7 s for Actuator's aggregation and the round trip. The container deadline was 5 s while this class
+     * contributed three probes and was raised to 7 s in the change that added the fourth; the reasoning,
+     * including the shrink-the-budgets alternative that was rejected, is recorded on the budget note
+     * above this constant.
      */
     private static final long DB_PROBE_BUDGET_MILLIS = 1_500L;
 
@@ -843,6 +950,38 @@ public class HealthIndicators {
      * learn nothing.
      */
     private static final long MINIMUM_CALL_BUDGET_MILLIS = 50L;
+
+    /**
+     * Maximum number of {@code ListTopics} pages the notification probe walks before it reports the
+     * topic absent, {@value}.
+     *
+     * <p><strong>This value must equal the page ceiling in
+     * {@code com.cardemo.config.AwsConfig.ProvisionedTopicArnResolver}, and a unit test asserts that it
+     * does.</strong> The two walks answer the same question - "is this bare topic name among the
+     * provisioned topics?" - and a readiness probe that searched fewer pages than the publish path
+     * would report {@code DOWN} for a topic the publish path resolves perfectly well, taking a healthy
+     * instance out of rotation on the strength of its own shorter search. Tying the ceilings is what
+     * makes the probe's verdict and the send path's verdict the same verdict.
+     *
+     * <p>The value is declared here rather than read from that class because a health probe importing
+     * configuration internals would invert the dependency the package layering establishes, and
+     * reflecting into a private constant from production code would be worse than either. The tie is
+     * therefore asserted by a test, which is how this repository already binds literals that must agree
+     * across files.
+     *
+     * <p>In practice the ceiling is never approached: this application provisions exactly one topic, so
+     * the first page settles it. {@link #SNS_PROBE_BUDGET_MILLIS} is the bound that actually applies on
+     * a slow substrate, and it reports {@link #REASON_TIMEOUT} rather than {@link #REASON_MISSING} when
+     * it is what stopped the walk.
+     */
+    private static final int TOPIC_PAGE_LIMIT_COUNT = 50;
+
+    /**
+     * Separator between the segments of a resolved topic identifier. The bare topic name is everything
+     * after the last one, which is how the probe compares a configured name against a listing entry
+     * without ever publishing or logging the identifier that carries the account segment.
+     */
+    private static final char TOPIC_ARN_SEPARATOR = ':';
 
     /**
      * The two queue attributes this probe reads, in the order they are examined. Immutable, so this
@@ -934,6 +1073,24 @@ public class HealthIndicators {
     private final DataSource dataSource;
 
     /**
+     * The injected synchronous notification client. Never constructed here, for the same reason as the
+     * other two: construction is owned by {@code com.cardemo.config.AwsConfig}, which is the single
+     * place an endpoint or a credential may be named.
+     *
+     * <p>Synchronous rather than asynchronous because that is the client the publish path itself uses -
+     * {@code AwsConfig} builds its {@code SnsTemplate} and its {@code TopicArnResolver} over an
+     * {@code SnsClient} - so the probe exercises the same client, the same interceptors and the same
+     * endpoint override that a real notification would.
+     */
+    private final SnsClient snsClient;
+
+    /**
+     * The bare notification topic name, normalised. Bare rather than an ARN, which is what makes it
+     * publishable in a health detail.
+     */
+    private final String notificationTopic;
+
+    /**
      * Creates the indicator factory from injected collaborators and bound configuration.
      *
      * <p>Constructor injection only: this class declares no field or setter injection, no service
@@ -953,6 +1110,8 @@ public class HealthIndicators {
      *                               {@code null}
      * @param sqsAsyncClient         the auto-configured asynchronous SQS client; must not be
      *                               {@code null}
+     * @param snsClient              the auto-configured synchronous SNS client, the same one the
+     *                               publish path resolves topics through; must not be {@code null}
      * @param dataSource             the auto-configured application datasource, whose pool the
      *                               relational-store probe borrows a connection from; must not be
      *                               {@code null}
@@ -967,7 +1126,9 @@ public class HealthIndicators {
      * @param reportQueueLogicalName value of {@code carddemo.aws.sqs.report-queue-logical-name},
      *                               the account-id-free name published in a health detail; empty
      *                               when the key is absent
-     * @throws NullPointerException if either injected client is {@code null}, which can only happen
+     * @param notificationTopic      value of {@code carddemo.aws.sns.notification-topic}, the bare
+     *                               operator notification topic name; empty when the key is absent
+     * @throws NullPointerException if any injected client is {@code null}, which can only happen
      *                              in a hand-built context and is a programming error rather than a
      *                              runtime condition, so it is signalled at construction instead of
      *                              being deferred into a probe
@@ -975,15 +1136,18 @@ public class HealthIndicators {
     public HealthIndicators(
             S3Client s3Client,
             SqsAsyncClient sqsAsyncClient,
+            SnsClient snsClient,
             DataSource dataSource,
             @Value("${" + PROPERTY_BATCH_INPUT_BUCKET + ":}") String batchInputBucket,
             @Value("${" + PROPERTY_BATCH_OUTPUT_BUCKET + ":}") String batchOutputBucket,
             @Value("${" + PROPERTY_STATEMENTS_BUCKET + ":}") String statementsBucket,
             @Value("${" + PROPERTY_REPORT_QUEUE + ":}") String reportQueue,
-            @Value("${" + PROPERTY_REPORT_QUEUE_LOGICAL_NAME + ":}") String reportQueueLogicalName) {
+            @Value("${" + PROPERTY_REPORT_QUEUE_LOGICAL_NAME + ":}") String reportQueueLogicalName,
+            @Value("${" + PROPERTY_NOTIFICATION_TOPIC + ":}") String notificationTopic) {
 
         this.s3Client = Objects.requireNonNull(s3Client, "s3Client must not be null");
         this.sqsAsyncClient = Objects.requireNonNull(sqsAsyncClient, "sqsAsyncClient must not be null");
+        this.snsClient = Objects.requireNonNull(snsClient, "snsClient must not be null");
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource must not be null");
 
         Map<String, String> buckets = new LinkedHashMap<>();
@@ -994,6 +1158,7 @@ public class HealthIndicators {
 
         this.reportQueueName = normalise(reportQueue);
         this.reportQueueLogicalName = normalise(reportQueueLogicalName);
+        this.notificationTopic = normalise(notificationTopic);
     }
 
     /**
@@ -1085,7 +1250,7 @@ public class HealthIndicators {
      * <p><strong>Why it replaces rather than joins.</strong> Boot's {@code DataSourceHealthIndicator}
      * asks the pool for a connection with no deadline of its own, so it inherits
      * {@code spring.datasource.hikari.connection-timeout} - 30 000 ms - and a measured readiness probe
-     * with the database stopped took 30.05 s while this class's own two contributors answered inside
+     * with the database stopped took 30.05 s while this class's own AWS contributors answered inside
      * 1 500 ms each. {@code management.health.db.enabled: false} in {@code application.yml} switches
      * the framework contributor off and this bean takes the same {@code db} key, so the readiness
      * group, the container health check and every published gate reading keep the spelling they had
@@ -1213,6 +1378,87 @@ public class HealthIndicators {
                 this.sqsAsyncClient, this.reportQueueName, this.reportQueueLogicalName);
     }
 
+    /**
+     * Registers the notification readiness contributor under the health component key
+     * {@link #SNS_HEALTH_COMPONENT_NAME}.
+     *
+     * <p><strong>Purpose, and the finding it closes.</strong> Confirms that the operator notification
+     * topic named by {@code carddemo.aws.sns.notification-topic} is actually provisioned, so the report
+     * path is not admitted before the destination it notifies exists.
+     *
+     * <p>Before this contributor existed, notification was the one required cloud dependency that
+     * readiness said nothing about. Object storage and the queue were each probed; the topic was not.
+     * An instance configured with a topic name that had never been provisioned - a renamed variable, a
+     * provisioning script that had not run, a typo - started cleanly, answered
+     * {@code GET /actuator/health/readiness} with {@code 200 {"status":"UP"}}, passed the container
+     * health check and took traffic. The failure surfaced only when a report was submitted, as an
+     * {@code IllegalStateException} out of the topic resolver on the request thread. That is a
+     * <strong>Major</strong> defect of exactly the kind readiness exists to prevent: an instance that
+     * cannot perform one of its functions was reported ready to perform all of them.
+     *
+     * <p><strong>Operation, and why it is this call.</strong> A read-only {@code ListTopics} walk,
+     * comparing the configured bare name against the last segment of each listed identifier - the same
+     * resolution {@code com.cardemo.config.AwsConfig.ProvisionedTopicArnResolver} performs on the
+     * publish path, so readiness asserts precisely what a send needs and nothing more. There is no
+     * "get topic by name" operation in the notification API: {@code GetTopicAttributes} requires an
+     * ARN, and constructing one would require the account identifier this class must never handle.
+     * {@code CreateTopic} is idempotent and would return the ARN directly, and is <strong>excluded
+     * absolutely</strong> - a probe must not provision, and topic creation belongs to
+     * {@code localstack-init/init-aws.sh}, which is where the resolver deliberately leaves it.
+     *
+     * <p><strong>Why not simply call the resolver bean.</strong> Delegating to
+     * {@code TopicArnResolver} would guarantee agreement with the publish path by construction, and was
+     * rejected for one reason: that walk issues its requests with no deadline, so it inherits the shared
+     * client's timeouts, which are sized for publishing rather than for probing. A readiness probe that
+     * can block for the client's full timeout breaks the boundedness constraint every contributor in
+     * this class upholds. The walk is therefore reimplemented here with a request-level deadline drawn
+     * from {@link #SNS_PROBE_BUDGET_MILLIS}, and the one value the two implementations must share - the
+     * page ceiling - is tied by {@link #TOPIC_PAGE_LIMIT_COUNT} and asserted by test.
+     *
+     * <p><strong>What this probe must never do.</strong> It publishes nothing, subscribes to nothing,
+     * creates nothing and deletes nothing. Publishing from a health check would inject a spurious
+     * operator notification on every readiness poll - once every fifteen seconds under the container
+     * health check - which is worse than having no probe at all.
+     *
+     * <p><strong>No identifier ever leaves this probe.</strong> A resolved topic ARN embeds the
+     * twelve-digit AWS account segment, exactly as a queue URL does. Listed identifiers are compared
+     * in-process and discarded; the only name that reaches a detail or a log line is the configured bare
+     * name, and the only other published value is a page count. Pagination tokens are consumed and never
+     * published.
+     *
+     * <p><strong>Boundedness.</strong> {@link #SNS_PROBE_BUDGET_MILLIS} is the total for the whole walk,
+     * not an allowance per page. Each page request carries an {@code apiCallTimeout} equal to what
+     * remains at that moment plus an {@code apiCallAttemptTimeout} of
+     * {@link #PROBE_ATTEMPT_TIMEOUT_MILLIS}, applied as a request-level override so the shared client's
+     * own deadlines are untouched. Once the remainder falls below {@link #MINIMUM_CALL_BUDGET_MILLIS}
+     * the probe reports {@link #REASON_TIMEOUT} without calling. The client is synchronous, so there is
+     * no future to abandon and nothing to cancel - the SDK's own call deadline is the cancellation
+     * mechanism, which is the same arrangement {@link S3BucketHealthIndicator} uses.
+     *
+     * <p><strong>Side effects.</strong> None beyond the read-only listing calls and, on failure, a
+     * single {@code WARN} carrying a symbolic reason, the bare topic name and a curated exception
+     * descriptor - never the throwable itself.
+     *
+     * <p><strong>Failure modes.</strong> An empty topic name yields {@link #REASON_NOT_CONFIGURED}; an
+     * ARN or URL supplied in place of a bare name yields {@link #REASON_INVALID_NAME} without echoing
+     * the value; a topic absent from the whole listing yields {@link #REASON_MISSING}; an unreachable
+     * endpoint or service error yields {@link #REASON_UNREACHABLE}; exhausting the budget or the SDK
+     * deadline yields {@link #REASON_TIMEOUT}; anything else yields {@link #REASON_ERROR}. All are
+     * returned as {@code DOWN} - the indicator never throws.
+     *
+     * <p><strong>Troubleshooting.</strong> {@link #REASON_MISSING} with the emulator plainly up means
+     * {@code localstack-init/init-aws.sh} has not created {@code carddemo-notifications}, or the topic
+     * variable has been renamed on one side only. The script is idempotent, so re-running it is safe.
+     * Unlike the report queue the topic name carries no suffix, so a name that "looks right" and still
+     * reports missing is usually a spelling difference rather than a suffix that was dropped.
+     *
+     * @return the notification health contributor; never {@code null}
+     */
+    @Bean(SNS_HEALTH_INDICATOR_BEAN_NAME)
+    public HealthIndicator snsHealthIndicator() {
+        return new SnsTopicHealthIndicator(this.snsClient, this.notificationTopic);
+    }
+
     // Shared private static helpers. Static so that neither the constructor nor a nested indicator
     // can invoke an overridable instance method, which keeps the class free of any `this` escape and
     // keeps every helper a pure function of its arguments.
@@ -1324,7 +1570,7 @@ public class HealthIndicators {
     /**
      * Reduces a failure to the curated descriptor that is safe to log.
      *
-     * <p>This is the whole of what either indicator ever tells the log about a throwable. The
+     * <p>This is the whole of what any indicator ever tells the log about a throwable. The
      * exception's message, its suppressed exceptions and its stack trace are all excluded by
      * construction, because an SDK message routinely carries the resolved endpoint and a queue URL
      * with its twelve-digit account segment, and a rendered stack frame carries the same values as
@@ -1680,7 +1926,7 @@ public class HealthIndicators {
 
         /**
          * Logger for this probe, named for this class so an operator can raise its level without
-         * raising the other two contributors' - each indicator owns its own, as the sibling classes do.
+         * raising the other three contributors' - each indicator owns its own, as the sibling classes do.
          */
         private static final Logger LOG =
                 LoggerFactory.getLogger(BoundedDataSourceHealthIndicator.class);
@@ -2113,6 +2359,214 @@ public class HealthIndicators {
             return Health.down()
                     .withDetail(DETAIL_COMPONENT, SQS_HEALTH_COMPONENT_NAME)
                     .withDetail(DETAIL_QUEUE, publishedName)
+                    .withDetail(DETAIL_REASON, reason)
+                    .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
+                    .build();
+        }
+    }
+
+    /**
+     * Reports whether the operator notification topic that {@code app/cbl/CORPT00C.cbl} and the report
+     * path depend on is actually provisioned.
+     *
+     * <p>Nested and private for the same reasons as the other three indicators: it holds no state beyond
+     * its injected client and one bound name, it is reachable only through
+     * {@link HealthIndicators#snsHealthIndicator()}, and keeping it package-private-invisible means no
+     * caller can construct one with an endpoint or a credential of its own choosing.
+     *
+     * <p>The walk mirrors {@code com.cardemo.config.AwsConfig.ProvisionedTopicArnResolver} so that
+     * readiness and the publish path reach the same verdict, with one deliberate difference: every
+     * request here carries a deadline drawn from the contributor's remaining budget, because a readiness
+     * probe may not block for the shared client's publish-sized timeouts.
+     */
+    private static final class SnsTopicHealthIndicator implements HealthIndicator {
+
+        /** Structured logger, named for the nested indicator rather than the enclosing class. */
+        private static final Logger LOG = LoggerFactory.getLogger(SnsTopicHealthIndicator.class);
+
+        /** The client each probe issues its read-only listing calls through. */
+        private final SnsClient snsClient;
+
+        /**
+         * The bare notification topic name. Bare rather than an ARN, which is both what the publish path
+         * configures and what makes the value publishable in a health detail.
+         */
+        private final String topicName;
+
+        /**
+         * Binds the probe to its client and to the topic name it reports against.
+         *
+         * @param snsClient the client the provisioned-topic listing is read through
+         * @param topicName the bare topic name, already normalised
+         */
+        private SnsTopicHealthIndicator(SnsClient snsClient, String topicName) {
+            this.snsClient = snsClient;
+            this.topicName = topicName;
+        }
+
+        /**
+         * Probes the notification topic with a read-only, deadline-bounded {@code ListTopics} walk and
+         * reports the outcome.
+         *
+         * <p>Configuration is validated before any request is issued, so an unset or ARN-shaped name is
+         * a deterministic {@code DOWN} rather than a request that could not have succeeded. Listed
+         * identifiers are compared in-process and discarded: none is published or logged, because each
+         * embeds the AWS account segment. Nothing is published to the topic at any point.
+         *
+         * @return {@code UP} with the bare topic name, the number of listing pages examined and elapsed
+         *         milliseconds when the topic is among the provisioned topics, otherwise {@code DOWN}
+         *         with a symbolic reason and no diagnostic payload; never {@code null} and never thrown
+         *         out of
+         */
+        @Override
+        public Health health() {
+            long startedAtNanos = System.nanoTime();
+
+            if (this.topicName.isEmpty()) {
+                return misconfigured(PROPERTY_NOTIFICATION_TOPIC, REASON_NOT_CONFIGURED, startedAtNanos);
+            }
+            if (isUnsafeResourceName(this.topicName)) {
+                // An ARN or a URL in this property is a configuration mistake, not a usable name: the
+                // publish path resolves a bare name by listing, and an ARN-shaped value here would also
+                // put an account identifier into a health detail. Refused without echoing the value.
+                return misconfigured(PROPERTY_NOTIFICATION_TOPIC, REASON_INVALID_NAME, startedAtNanos);
+            }
+
+            int pagesExamined = 0;
+            String nextToken = null;
+            for (int page = 0; page < TOPIC_PAGE_LIMIT_COUNT; page++) {
+                long remainingMillis = remainingBudgetMillis(startedAtNanos, SNS_PROBE_BUDGET_MILLIS);
+                if (!hasCallBudget(remainingMillis)) {
+                    // Report without calling, for the same reason the other probes do: the SDK rejects a
+                    // non-positive deadline, and a call issued with a few milliseconds left could only
+                    // expire in flight. TIMEOUT rather than MISSING, because the walk was cut short
+                    // rather than completed - the topic may well exist on a page never reached.
+                    return unreachable(REASON_TIMEOUT, pagesExamined, startedAtNanos, null);
+                }
+
+                ListTopicsResponse response;
+                try {
+                    // Read-only, and the only operation issued. The response's identifiers are consumed
+                    // in-process below and never retained, published or logged.
+                    response = this.snsClient.listTopics(ListTopicsRequest.builder()
+                            .nextToken(nextToken)
+                            .overrideConfiguration(callDeadline(remainingMillis))
+                            .build());
+                } catch (ApiCallTimeoutException | ApiCallAttemptTimeoutException deadlineExceeded) {
+                    return unreachable(REASON_TIMEOUT, pagesExamined, startedAtNanos, deadlineExceeded);
+                } catch (SdkException sdkFailure) {
+                    return unreachable(REASON_UNREACHABLE, pagesExamined, startedAtNanos, sdkFailure);
+                } catch (RuntimeException unexpected) {
+                    return unreachable(REASON_ERROR, pagesExamined, startedAtNanos, unexpected);
+                }
+                pagesExamined++;
+
+                for (Topic listed : response.topics()) {
+                    if (this.topicName.equals(bareName(listed.topicArn()))) {
+                        return Health.up()
+                                .withDetail(DETAIL_COMPONENT, SNS_HEALTH_COMPONENT_NAME)
+                                .withDetail(DETAIL_TOPIC, this.topicName)
+                                .withDetail(DETAIL_TOPIC_PAGES_EXAMINED, pagesExamined)
+                                .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
+                                .build();
+                    }
+                }
+
+                nextToken = response.nextToken();
+                if (nextToken == null || nextToken.isBlank()) {
+                    break;
+                }
+            }
+
+            // The listing was walked to its end, or to the shared page ceiling, without the configured
+            // name appearing. MISSING rather than UNREACHABLE: the service answered every call, so the
+            // remedy is to provision the topic rather than to fix connectivity.
+            return missing(pagesExamined, startedAtNanos);
+        }
+
+        /**
+         * Reads the bare topic name out of a resolved identifier: everything after the last separator.
+         *
+         * <p>Identical to the reduction {@code ProvisionedTopicArnResolver} performs, and the reason both
+         * exist is that the listing reports identifiers while configuration holds names. The result is
+         * used only for comparison; the identifier it came from is discarded, because it carries the
+         * account segment.
+         *
+         * @param topicArn the resolved identifier reported by the service; never {@code null}
+         * @return the bare name
+         */
+        private static String bareName(String topicArn) {
+            return topicArn.substring(topicArn.lastIndexOf(TOPIC_ARN_SEPARATOR) + 1);
+        }
+
+        /**
+         * Builds the {@code DOWN} result for a configuration fault, naming the offending property key
+         * and never its value.
+         *
+         * <p>Logged at {@code WARN} without a throwable, because there is none: a misconfiguration is a
+         * state rather than an exception.
+         *
+         * @param propertyKey    the configuration key at fault
+         * @param reason         {@link HealthIndicators#REASON_NOT_CONFIGURED} or
+         *                       {@link HealthIndicators#REASON_INVALID_NAME}
+         * @param startedAtNanos the probe start reading
+         * @return the curated {@code DOWN} result
+         */
+        private static Health misconfigured(String propertyKey, String reason, long startedAtNanos) {
+            LOG.warn("SNS readiness probe refused: property={} reason={}", propertyKey, reason);
+            return Health.down()
+                    .withDetail(DETAIL_COMPONENT, SNS_HEALTH_COMPONENT_NAME)
+                    .withDetail(DETAIL_PROPERTY, propertyKey)
+                    .withDetail(DETAIL_REASON, reason)
+                    .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
+                    .build();
+        }
+
+        /**
+         * Builds the {@code DOWN} result for a topic the service does not list.
+         *
+         * <p>Logged without a throwable because there is none: every call succeeded and the answer was
+         * simply that no provisioned topic carries the configured name. The page count is published so
+         * the reader can tell a complete search from a ceiling-limited one.
+         *
+         * @param pagesExamined  how many listing pages were examined
+         * @param startedAtNanos the probe start reading
+         * @return the curated {@code DOWN} result
+         */
+        private Health missing(int pagesExamined, long startedAtNanos) {
+            LOG.warn("SNS readiness probe refused: topic={} pagesExamined={} reason={}", this.topicName,
+                    pagesExamined, REASON_MISSING);
+            return Health.down()
+                    .withDetail(DETAIL_COMPONENT, SNS_HEALTH_COMPONENT_NAME)
+                    .withDetail(DETAIL_TOPIC, this.topicName)
+                    .withDetail(DETAIL_TOPIC_PAGES_EXAMINED, pagesExamined)
+                    .withDetail(DETAIL_REASON, REASON_MISSING)
+                    .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
+                    .build();
+        }
+
+        /**
+         * Builds the {@code DOWN} result for a failed remote call.
+         *
+         * <p>Same classification-not-rendering contract as the other three indicators: the throwable is
+         * never handed to the logger, and both channels receive the symbolic reason plus - on the log
+         * only - the curated descriptor from {@link HealthIndicators#describeFailure(Throwable)}.
+         *
+         * @param reason         the symbolic reason from the closed vocabulary
+         * @param pagesExamined  how many listing pages were examined before the failure
+         * @param startedAtNanos the probe start reading
+         * @param failure        the cause to classify, or {@code null} when the budget was exhausted
+         *                       before the call could be issued
+         * @return the curated {@code DOWN} result
+         */
+        private Health unreachable(String reason, int pagesExamined, long startedAtNanos,
+                Throwable failure) {
+            LOG.warn("SNS readiness probe failed: topic={} pagesExamined={} reason={} exception={}",
+                    this.topicName, pagesExamined, reason, describeFailure(failure));
+            return Health.down()
+                    .withDetail(DETAIL_COMPONENT, SNS_HEALTH_COMPONENT_NAME)
+                    .withDetail(DETAIL_TOPIC, this.topicName)
+                    .withDetail(DETAIL_TOPIC_PAGES_EXAMINED, pagesExamined)
                     .withDetail(DETAIL_REASON, reason)
                     .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
                     .build();

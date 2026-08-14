@@ -86,6 +86,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.DuplicateRecordException;
+import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.UserCreateRequest;
 import com.cardemo.model.dto.UserSecurityDto;
@@ -1768,8 +1769,8 @@ class UserAddServiceTest {
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
             doThrow(cause).when(entityManager).persist(any(UserSecurity.class));
-            when(capturingMapper.toException(anyString(), anyString(), anyString(), any()))
-                    .thenReturn(Optional.of(translated));
+            when(capturingMapper.toExceptionWithLegacyMessage(anyString(), anyString(), anyString(), any(),
+                    anyString())).thenReturn(Optional.of(translated));
 
             final UserAddService withCapture =
                     new UserAddService(repository, encoder, capturingMapper, entityManager, FIXED_CLOCK);
@@ -1782,8 +1783,9 @@ class UserAddServiceTest {
             final ArgumentCaptor<String> logicalFile = ArgumentCaptor.forClass(String.class);
             final ArgumentCaptor<String> operation = ArgumentCaptor.forClass(String.class);
             final ArgumentCaptor<Throwable> rootCause = ArgumentCaptor.forClass(Throwable.class);
-            verify(capturingMapper).toException(status.capture(), logicalFile.capture(),
-                    operation.capture(), rootCause.capture());
+            final ArgumentCaptor<String> caption = ArgumentCaptor.forClass(String.class);
+            verify(capturingMapper).toExceptionWithLegacyMessage(status.capture(), logicalFile.capture(),
+                    operation.capture(), rootCause.capture(), caption.capture());
 
             assertThat(status.getValue())
                     .as("the condition code the source's commented-out diagnostic would have shown")
@@ -1794,6 +1796,10 @@ class UserAddServiceTest {
             assertThat(rootCause.getValue())
                     .as("the root cause survives, which is the whole point of the deviation")
                     .isSameAs(cause);
+            assertThat(caption.getValue())
+                    .as("the translation is asked for the SUBTYPE and is handed the MESSAGE, so the literal "
+                            + "of :270-271 is what the failure carries rather than a composed diagnostic")
+                    .isEqualTo(UNABLE_TO_ADD);
         }
 
         @Test
@@ -1806,10 +1812,20 @@ class UserAddServiceTest {
 
             final Throwable thrown = catchHardFailure(service);
 
+            // The three pieces of context are read from the STRUCTURED fields, which is where they belong
+            // and where a diagnostic consumer should read them. They are deliberately not composed into the
+            // message: this assertion previously demanded that they were, and that demand is what let the
+            // composed string displace the literal of :270-271 - a literal the exact-match publication rule
+            // in com.cardemo.controller.AdminController then refused (finding P4-04, Major).
+            final FileAccessException failure = (FileAccessException) thrown;
+            assertThat(failure.getOperation()).isEqualTo("WRITE");
+            assertThat(failure.getLogicalFileName()).isEqualTo(USRSEC_LOGICAL_FILE);
+            assertThat(failure.getExpandedStatus())
+                    .as("the four-character IO-STATUS-04 rendering survives on its own accessor")
+                    .isNotBlank();
             assertThat(thrown.getMessage())
-                    .contains("WRITE")
-                    .contains(USRSEC_LOGICAL_FILE)
-                    .contains("FILE STATUS");
+                    .as("the message is the source caption, byte for byte")
+                    .isEqualTo(UNABLE_TO_ADD);
             assertThat(thrown.getCause()).isSameAs(cause);
         }
 
@@ -1822,8 +1838,8 @@ class UserAddServiceTest {
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
             doThrow(cause).when(entityManager).persist(any(UserSecurity.class));
-            when(decliningMapper.toException(anyString(), anyString(), anyString(), any()))
-                    .thenReturn(Optional.empty());
+            when(decliningMapper.toExceptionWithLegacyMessage(anyString(), anyString(), anyString(), any(),
+                    anyString())).thenReturn(Optional.empty());
 
             final UserAddService withDecline =
                     new UserAddService(repository, encoder, decliningMapper, entityManager, FIXED_CLOCK);

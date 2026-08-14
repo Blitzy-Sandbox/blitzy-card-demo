@@ -104,13 +104,21 @@ import software.amazon.awssdk.services.s3.S3Client;
  *
  * <h2>Purpose, inputs, outputs and side effects</h2>
  *
- * <p>The job has exactly three steps in {@code app/proc/TRANREPT.prc} order. STEP01R at {@code :L21}
+ * <p>The job has <strong>exactly four steps</strong>: the three of {@code app/proc/TRANREPT.prc}, in
+ * procedure order, followed by the one {@code app/jcl/PRTCATBL.jcl} contributes. STEP01R at {@code :L21}
  * copies the transaction relation to one 350-byte {@code TRANSACT.BKUP(+1)} object. STEP05R at
  * {@code :L35-L53} reads that exact key, applies the inclusive character date predicate at
  * {@code :L45-L46}, sorts on the card-number character image at {@code :L44}, and writes one 350-byte
  * {@code TRANSACT.DALY(+1)} object. STEP10R at {@code :L57-L78} reads that exact daily key, delegates
  * report state and formatting to {@link TransactionReportProcessor}, and writes one undelimited stream of
- * 133-byte {@code TRANREPT(+1)} records.
+ * 133-byte {@code TRANREPT(+1)} records. The fourth step unloads and prints the transaction-category-balance
+ * cluster for {@code app/jcl/PRTCATBL.jcl}; it is a separate member printing a different cluster, so it
+ * follows the report rather than gating it - only a completed report reaches it.
+ *
+ * <p>Earlier revisions of this documentation, and the start-of-job log line, both said three. The fourth step
+ * has been wired into {@link #transactionReportFlow(Step, Step, Step, Step)} since that step was added, so the
+ * count published to an operator was one short of the topology actually executed (finding P7-11). The count is
+ * now derived from {@link #ORDERED_STEP_COUNT} in both places rather than written out twice.
  *
  * <h2>Collaborator ownership - this class is the single owner</h2>
  * <b>This class constructs {@link TransactionBackupReader} and {@link TransactionReportProcessor} directly,
@@ -575,6 +583,29 @@ public class TransactionReportJob {
 
     /** Wildcard transition. */
     private static final String EXIT_CODE_ANY = "*";
+
+    /**
+     * The number of ordered steps this job wires, {@value}.
+     *
+     * <p>Three from {@code app/proc/TRANREPT.prc} - STEP01R, STEP05R and STEP10R - plus the one
+     * {@code app/jcl/PRTCATBL.jcl} contributes. Declared once and read by both the class documentation and the
+     * start-of-job log line, because publishing the figure twice is how the two came to disagree with the flow
+     * (finding P7-11): the fourth step was added to
+     * {@link #transactionReportFlow(Step, Step, Step, Step)} and the two hand-written threes were left behind.
+     */
+    private static final int ORDERED_STEP_COUNT = 4;
+
+    /**
+     * The job-level exit status published whenever an abend is among the recorded failures.
+     *
+     * <p>{@link ExitStatus} is immutable in Spring Batch 5 - {@link ExitStatus#addExitDescription(String)}
+     * returns a new instance rather than mutating - so a shared constant carries no aliasing hazard and is not
+     * mutable static state. The wording matches the four sibling jobs, so one grep over a log stream finds an
+     * abend in any of the five.
+     */
+    private static final ExitStatus ABEND_EXIT_STATUS = new ExitStatus(EXIT_CODE_ABEND,
+            "Abend " + FatalProcessingException.BATCH_ABEND_CODE + " raised by " + ABEND_CULPRIT
+                    + "; process return code " + FatalProcessingException.BATCH_RETURN_CODE + ".");
 
     /** Numeric legacy return code for normal completion. */
     private static final int RETURN_CODE_COMPLETED = 0;
@@ -2946,7 +2977,8 @@ public class TransactionReportJob {
             CorrelationIdFilter.enterBatchScope(instanceId, mintedCorrelationId(jobExecution));
 
             LOG.info("START OF EXECUTION OF JOB {}: {} ordered steps; retention={} documented only",
-                    jobName, Integer.valueOf(3), Integer.valueOf(reportRetentionGenerations));
+                    jobName, Integer.valueOf(ORDERED_STEP_COUNT),
+                    Integer.valueOf(reportRetentionGenerations));
             LOG.info("Procedure authority is app/proc/TRANREPT.prc; topology evidence entries={}",
                     Integer.valueOf(LEGACY_TOPOLOGY.size()));
             LOG.warn("High legacy finding: app/jcl/TRANREPT.jcl:L23 and :L37 duplicate STEP05R, while "
@@ -2958,13 +2990,19 @@ public class TransactionReportJob {
         }
 
         /**
-         * Logs the final outcome and restores the displaced diagnostic context in a {@code finally} block.
+         * Publishes the abend exit status when one is warranted, logs the final outcome, and restores the
+         * displaced diagnostic context in a {@code finally} block.
+         *
+         * <p>The promotion runs <strong>before</strong> the log line, so the status the line reports is the one
+         * that will be persisted rather than the one the flow left behind. See
+         * {@link #applyAbendExitStatus(JobExecution)} for why the flow's own transition cannot do it.
          *
          * @param jobExecution the finishing execution
          */
         @Override
         public void afterJob(final JobExecution jobExecution) {
             try {
+                applyAbendExitStatus(jobExecution);
                 final ExecutionContext context = jobExecution.getExecutionContext();
                 LOG.info("END OF EXECUTION OF JOB {}: status={} exit={} backup={} daily={} reportLines={}",
                         jobName,
@@ -2986,6 +3024,47 @@ public class TransactionReportJob {
          */
         private String mintedCorrelationId(final JobExecution jobExecution) {
             return CORRELATION_ID_PREFIX + jobExecution.getId();
+        }
+    }
+
+    /**
+     * Publishes the abend exit status when an abend is among the recorded failures, so that return code
+     * {@value FatalProcessingException#BATCH_RETURN_CODE} is reported wherever the abend was raised.
+     *
+     * <p><strong>Why the flow transition is not enough (finding P5-02, Major).</strong>
+     * {@link TransactionReportReturnCodeDecider} correctly returns {@value #EXIT_CODE_ABEND}, and
+     * {@link #transactionReportFlow(Step, Step, Step, Step)} routes that outcome to
+     * {@code fail()}. But the framework's failed end state sets the job's exit status to
+     * {@link ExitStatus#FAILED} as part of failing it, so the decider's {@code ABEND} was overwritten on its
+     * way out and the execution persisted as {@code FAILED/FAILED} - byte-for-byte indistinguishable from an
+     * ordinary return code 8. An operator inspecting the metastore could not tell a return code 12 abend from a
+     * return code 8 failure, which is precisely the distinction {@code app/cbl/CBTRN03C.cbl}'s
+     * {@code CALL 'CEE3ABD'} path exists to make. Re-asserting the status here restores it, and this is where
+     * the four sibling jobs already do the same thing - {@code DailyTransactionPostingJob},
+     * {@code InterestCalculationJob}, {@code CombineTransactionsJob} and {@code StatementGenerationJob} - so
+     * all five now agree.
+     *
+     * <p>The batch <em>status</em> is deliberately left as the framework set it. An abend is a failure and must
+     * stay unsuccessful; what the abend adds is the exit code, which is the part a caller reads to tell 12 from
+     * 8. Restart semantics are therefore unchanged.
+     *
+     * <p>It is safe to set the status here because Spring Batch persists the execution <em>after</em>
+     * {@link JobExecutionListener#afterJob(JobExecution)} returns. It also catches this hook's own outcome
+     * rather than failing the job with it, which is the second reason the promotion belongs here: an abend
+     * raised outside the flow - in a close path that runs after the last transition - would otherwise never
+     * reach the decider at all.
+     *
+     * <p>Detection is by type rather than by class name or message, so a rename cannot silently turn every
+     * abend back into a plain failure.
+     *
+     * @param jobExecution the finishing execution; must not be {@code null}
+     */
+    private static void applyAbendExitStatus(final JobExecution jobExecution) {
+        for (final Throwable failure : jobExecution.getAllFailureExceptions()) {
+            if (failure instanceof FatalProcessingException) {
+                jobExecution.setExitStatus(ABEND_EXIT_STATUS);
+                return;
+            }
         }
     }
 

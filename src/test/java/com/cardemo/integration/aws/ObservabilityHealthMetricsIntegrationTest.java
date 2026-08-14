@@ -2153,12 +2153,13 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         @DisplayName("an unconfigured substrate reports down with a safe reason, never a null dereference")
         void anUnconfiguredSubstrateReportsDownWithASafeReason() {
             final HealthIndicators unconfigured = new HealthIndicators(
-                    s3Client(), sqsAsyncClient(), dataSource, "", "", "", "", "");
+                    s3Client(), sqsAsyncClient(), snsClient(), dataSource, "", "", "", "", "", "");
 
             final Health objectStore = unconfigured.s3HealthIndicator().health();
             final Health queue = unconfigured.sqsHealthIndicator().health();
+            final Health notifications = unconfigured.snsHealthIndicator().health();
 
-            for (final Health health : List.of(objectStore, queue)) {
+            for (final Health health : List.of(objectStore, queue, notifications)) {
                 assertThat(health.getStatus())
                         .as("a blank or unset resource name is a CONFIGURATION fault and must surface as a "
                                 + "deterministic down with a reason a reader can act on - never a null "
@@ -2180,13 +2181,15 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         void anAbsentSubstrateReportsDownRatherThanThrowing() {
             final String absent = scopedResourceName("absent-substrate");
             final HealthIndicators pointingAtNothing = new HealthIndicators(
-                    s3Client(), sqsAsyncClient(), dataSource, absent, absent, absent,
-                    absent + ".fifo", absent);
+                    s3Client(), sqsAsyncClient(), snsClient(), dataSource, absent, absent, absent,
+                    absent + ".fifo", absent, absent);
 
             final Throwable fromObjectStore =
                     catchThrowable(() -> pointingAtNothing.s3HealthIndicator().health());
             final Throwable fromQueue =
                     catchThrowable(() -> pointingAtNothing.sqsHealthIndicator().health());
+            final Throwable fromNotifications =
+                    catchThrowable(() -> pointingAtNothing.snsHealthIndicator().health());
 
             assertThat(fromObjectStore)
                     .as("a contributor REPORTS, it never rethrows. This is deliberate catching, not "
@@ -2198,6 +2201,7 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                             + "component that failed")
                     .isNull();
             assertThat(fromQueue).isNull();
+            assertThat(fromNotifications).isNull();
 
             assertThat(pointingAtNothing.s3HealthIndicator().health().getStatus())
                     .as("an absent object store is a genuine not-ready condition. Note that this scenario "
@@ -2212,6 +2216,48 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     .as("and the reason must distinguish 'absent' from 'unreachable' and from "
                             + "'misconfigured', because the three have different fixes")
                     .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_MISSING);
+
+            // The notification topic is the fourth substrate, and it reaches the same verdict by the
+            // same rule: the service answered every ListTopics call and no provisioned topic carries
+            // the name, so this is MISSING - provision it - rather than UNREACHABLE.
+            assertThat(pointingAtNothing.snsHealthIndicator().health().getStatus())
+                    .as("an unprovisioned notification topic is a genuine not-ready condition. It was "
+                            + "NOT reported before this contributor existed: readiness answered UP and the "
+                            + "failure surfaced only at the first report submission")
+                    .isEqualTo(Status.DOWN);
+            assertThat(pointingAtNothing.snsHealthIndicator().health().getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_MISSING)
+                    .containsKey(HealthIndicators.DETAIL_TOPIC_PAGES_EXAMINED);
+        }
+
+        @Test
+        @DisplayName("the provisioned notification topic is reported up, and its identifier never leaves "
+                + "the probe")
+        void theProvisionedNotificationTopicIsReportedUp() {
+            final HealthIndicators configured = new HealthIndicators(
+                    s3Client(), sqsAsyncClient(), snsClient(), dataSource, batchInputBucket(),
+                    batchOutputBucket(), statementsBucket(), reportQueueName(),
+                    reportQueueLogicalName(), notificationTopic());
+
+            final Health health = configured.snsHealthIndicator().health();
+
+            assertThat(health.getStatus())
+                    .as("the topic IS provisioned by this test class's own LocalStack setup, so readiness "
+                            + "must report it up - a probe that could only ever say DOWN would be no "
+                            + "signal at all")
+                    .isEqualTo(Status.UP);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_COMPONENT,
+                            HealthIndicators.SNS_HEALTH_COMPONENT_NAME)
+                    .containsEntry(HealthIndicators.DETAIL_TOPIC, notificationTopic())
+                    .containsKey(HealthIndicators.DETAIL_TOPIC_PAGES_EXAMINED)
+                    .containsKey(HealthIndicators.DETAIL_ELAPSED_MILLIS);
+            assertThat(health.getDetails().toString())
+                    .as("a resolved topic identifier embeds the twelve-digit account segment, exactly as a "
+                            + "queue URL does, so the probe compares identifiers in-process and publishes "
+                            + "only the configured bare name")
+                    .doesNotContain("arn:")
+                    .doesNotContain("000000000000");
         }
 
         @Test
@@ -2219,8 +2265,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         void aResourceNameThatIsAnIdentifierIsRefusedWithoutEchoing() {
             final String qualifiedName = "arn:aws:s3:::" + batchInputBucket();
             final HealthIndicators misconfigured = new HealthIndicators(
-                    s3Client(), sqsAsyncClient(), dataSource, qualifiedName, qualifiedName,
-                    qualifiedName, reportQueueName(), reportQueueLogicalName());
+                    s3Client(), sqsAsyncClient(), snsClient(), dataSource, qualifiedName, qualifiedName,
+                    qualifiedName, reportQueueName(), reportQueueLogicalName(), notificationTopic());
 
             final Health health = misconfigured.s3HealthIndicator().health();
 

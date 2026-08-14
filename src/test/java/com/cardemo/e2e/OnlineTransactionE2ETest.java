@@ -2408,7 +2408,7 @@ public class OnlineTransactionE2ETest {
         assertThat(this.environment.getProperty("management.endpoint.health.group.liveness.include"))
                 .isEqualTo("livenessState");
         assertThat(this.environment.getProperty("management.endpoint.health.group.readiness.include"))
-                .isEqualTo("readinessState,db,s3,sqs");
+                .isEqualTo("readinessState,db,s3,sqs,sns");
 
         assertThat(request(HttpMethod.GET, "/actuator/health", null, null).getStatusCode())
                 .isEqualTo(HttpStatus.OK);

@@ -60,6 +60,7 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
@@ -106,11 +107,12 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *
  * <h2>Key configuration and defaults</h2>
  *
- * <p>Five keys participate, all defaulting to the empty string:
+ * <p>Six keys participate, all defaulting to the empty string:
  * {@code carddemo.aws.s3.batch-input-bucket}, {@code carddemo.aws.s3.batch-output-bucket},
- * {@code carddemo.aws.s3.statements-bucket}, {@code carddemo.aws.sqs.report-queue} and
- * {@code carddemo.aws.sqs.report-queue-logical-name}. The last is optional - when blank the physical queue
- * name is published instead - and that fallback is asserted.
+ * {@code carddemo.aws.s3.statements-bucket}, {@code carddemo.aws.sqs.report-queue},
+ * {@code carddemo.aws.sqs.report-queue-logical-name} and
+ * {@code carddemo.aws.sns.notification-topic}. The logical queue name is optional - when blank the physical
+ * queue name is published instead - and that fallback is asserted.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -132,17 +134,20 @@ class HealthIndicatorsTest {
     private static final String OUTPUT_BUCKET = "carddemo-batch-output";
     private static final String STATEMENTS_BUCKET = "carddemo-statements";
     private static final String QUEUE = "carddemo-report-jobs.fifo";
+    private static final String TOPIC = "carddemo-notifications";
 
     @Mock private S3Client s3Client;
     @Mock private SqsAsyncClient sqsAsyncClient;
+    @Mock private SnsClient snsClient;
     @Mock private DataSource dataSource;
 
     /** Builds the configuration holder with the supplied bucket and queue names. */
     private HealthIndicators indicators(final String inputBucket, final String outputBucket,
                                         final String statementsBucket, final String queue,
                                         final String logicalQueueName) {
-        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, this.dataSource, inputBucket,
-                outputBucket, statementsBucket, queue, logicalQueueName);
+        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, this.snsClient,
+                this.dataSource, inputBucket,
+                outputBucket, statementsBucket, queue, logicalQueueName, TOPIC);
     }
 
     /** The fully configured holder, which every happy-path test starts from. */
@@ -459,8 +464,9 @@ class HealthIndicatorsTest {
         @DisplayName("the holder refuses to be built without an S3 client")
         void theHolderRefusesToBeBuiltWithoutAnS3Client() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, dataSource,
-                            INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, ""))
+                    .isThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, snsClient,
+                            dataSource,
+                            INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, "", TOPIC))
                     .withMessageContaining("s3Client");
         }
 
@@ -468,9 +474,19 @@ class HealthIndicatorsTest {
         @DisplayName("the holder refuses to be built without an SQS client")
         void theHolderRefusesToBeBuiltWithoutAnSqsClient() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new HealthIndicators(s3Client, null, dataSource, INPUT_BUCKET,
-                            OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, ""))
+                    .isThrownBy(() -> new HealthIndicators(s3Client, null, snsClient, dataSource,
+                            INPUT_BUCKET,
+                            OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, "", TOPIC))
                     .withMessageContaining("sqsAsyncClient");
+        }
+
+        @Test
+        @DisplayName("the holder refuses to be built without an SNS client")
+        void theHolderRefusesToBeBuiltWithoutAnSnsClient() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new HealthIndicators(s3Client, sqsAsyncClient, null, dataSource,
+                            INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, "", TOPIC))
+                    .withMessageContaining("snsClient");
         }
 
         @Test

@@ -847,6 +847,20 @@ public class BatchPipelineOrchestrator {
     /** Execution-context infix for stage 4's report branch. */
     private static final String INFIX_TRANREPT = "tranrept";
 
+    /**
+     * All five stage infixes, in stream order.
+     *
+     * <p>The set every gate scans when it reconstructs what this instance has already done, which is what makes
+     * a halt survive a restart even though the launcher step that recorded it is skipped on the second
+     * execution. Declared once so a sixth stage cannot be added to the flow and forgotten here: a stage whose
+     * infix is absent from this list is a stage whose halt a gate cannot see.
+     *
+     * <p>Immutable, and the declaration order is the stream order rather than alphabetical, so reading it
+     * alongside {@link #batchPipelineFlow(Step, Step, Step, Flow)} shows the same sequence twice.
+     */
+    private static final List<String> STAGE_INFIXES = List.of(
+            INFIX_POSTTRAN, INFIX_INTCALC, INFIX_COMBTRAN, INFIX_CREASTMT, INFIX_TRANREPT);
+
     /** Locator of the step stage 1 replaces, {@value}. */
     private static final String LOCATOR_POSTTRAN = "app/jcl/POSTTRAN.jcl:L23";
 
@@ -2320,6 +2334,48 @@ public class BatchPipelineOrchestrator {
     }
 
     /**
+     * The worst return code any stage of this pipeline has ever recorded for itself, across every execution of
+     * the instance.
+     *
+     * <p><strong>Why this exists: the restart that walked through a halt (finding P5-01, Critical).</strong> A
+     * pipeline that halted at {@code POSTTRAN} with return code 8, or abended at {@code INTCALC} with 12, ends
+     * in a failed flow state. Restarting the same instance produces a fresh {@link JobExecution} whose
+     * execution context the job repository copies forward from the previous one - so the halt is on the new
+     * execution from the outset - and two things then conspired to erase it. The listener seeded the aggregate
+     * unconditionally, overwriting the carried value with zero; and the launcher step that had already
+     * completed was skipped by the framework, so {@link #recordStage(JobExecution, String, int, JobExecution)}
+     * never ran again and never re-derived it. Both gate inputs therefore read a clean run, the first gate said
+     * {@value #GATE_PROCEED}, and every downstream stage launched over data that had already been posted. The
+     * observed damage was interest applied a second time and a set of duplicate transaction identifiers.
+     *
+     * <p><strong>Why the per-stage entries are the durable record.</strong> They are written by the same
+     * synchronised block that maintains the aggregate and are never rewritten by the listener, so they survive
+     * a restart intact even where the aggregate does not. Reading them makes a gate's decision a function of
+     * <em>what every stage of this instance actually did</em> rather than of what the current execution
+     * happened to re-run. A completed stage's own outcome cannot be lost by its step being skipped, which is
+     * exactly the hole the finding fell through.
+     *
+     * <p>A missing entry contributes nothing - it means that stage has not run yet on any execution, which is a
+     * clean run so far and not an unknown one. A non-integer entry contributes nothing here either, and is left
+     * to {@link #readAggregateReturnCode(ExecutionContext)} to abend on, so a corrupt context produces one
+     * report rather than two.
+     *
+     * @param context the pipeline execution context, read under the caller's hold on its monitor; must not be
+     *     {@code null}
+     * @return the highest per-stage return code present, {@value #RETURN_CODE_COMPLETED} when none is
+     */
+    private static int recordedStageReturnCode(final ExecutionContext context) {
+        int worst = RETURN_CODE_COMPLETED;
+        for (final String infix : STAGE_INFIXES) {
+            final Object recorded = context.get(CONTEXT_PREFIX + infix + RETURN_CODE_SUFFIX);
+            if (recorded instanceof Integer stageCode) {
+                worst = Math.max(worst, stageCode.intValue());
+            }
+        }
+        return worst;
+    }
+
+    /**
      * Maps a return code onto the gate outcome the flow transitions on.
      *
      * <p><b>The mapping is a monotone severity band, not a lookup of four values, and that is deliberate.</b>
@@ -2687,17 +2743,30 @@ public class BatchPipelineOrchestrator {
             synchronized (context) {
                 final int recorded = readAggregateReturnCode(context);
                 final int implied = failedStepReturnCode(jobExecution);
-                aggregate = Math.max(recorded, implied);
+                // The third input, and the one that makes a halt survive a restart. A stage that completed on
+                // an earlier execution of this instance has its own recorded return code in the carried-forward
+                // context, but its launcher step is skipped on the restart so neither of the two inputs above
+                // can see it: the aggregate is only as good as whatever last wrote it, and the step scan only
+                // sees the current execution's steps. Folding the durable per-stage entries in is what closes
+                // finding P5-01 - see recordedStageReturnCode for the damage that hole caused.
+                final int persisted = recordedStageReturnCode(context);
+                aggregate = Math.max(Math.max(recorded, implied), persisted);
                 if (aggregate > recorded) {
-                    // A launcher step that died before it could record its stage - an unusable transaction
-                    // manager, an interrupted thread, an error thrown outside the stage runner - would
-                    // otherwise leave the recorded aggregate untouched and this gate would read a clean run
-                    // and proceed. Raising it here means no gate can ever say PROCEED over a failed step.
+                    // Two ways to get here, and the sentence names which.
+                    //  - A launcher step that died before it could record its stage - an unusable transaction
+                    //    manager, an interrupted thread, an error thrown outside the stage runner - leaves the
+                    //    recorded aggregate untouched, so without this a gate would read a clean run and
+                    //    proceed over a failed step.
+                    //  - A restart of an instance that had already halted, where the durable stage entries are
+                    //    worse than whatever the aggregate now holds.
+                    // Either way the raised value is written back, so every later gate and the closing listener
+                    // read the same figure rather than each rediscovering it.
                     context.putInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, aggregate);
                     context.putString(PIPELINE_OUTCOME_CONTEXT_ENTRY, outcomeFor(aggregate));
-                    LOG.error("Pipeline gate after {} ({}) found a failed launcher step that recorded no"
-                            + " stage outcome; raising the aggregate return code from {} to {}",
-                            afterStage, locator, Integer.valueOf(recorded), Integer.valueOf(aggregate));
+                    LOG.error("Pipeline gate after {} ({}) raised the aggregate return code from {} to {}:"
+                            + " worst failed launcher step {}, worst persisted stage outcome {}",
+                            afterStage, locator, Integer.valueOf(recorded), Integer.valueOf(aggregate),
+                            Integer.valueOf(implied), Integer.valueOf(persisted));
                 }
                 stageReturnCodes = renderStageReturnCodes(context);
             }
@@ -2797,6 +2866,25 @@ public class BatchPipelineOrchestrator {
          * puts the pipeline's own in their place, then seeds the aggregate return code so the first gate reads
          * a value rather than a default.
          *
+         * <p><strong>The seed is written only when the entry is absent (finding P5-01, Critical).</strong> It
+         * used to be written unconditionally, and on a first execution that is indistinguishable - the entry is
+         * absent, so seeding it with {@value #RETURN_CODE_COMPLETED} is exactly right. On a
+         * <em>restart</em> it was not: the job repository copies the previous execution's context forward, so
+         * the halt this instance had already recorded was present on the new execution from the outset, and
+         * overwriting it with zero told the first gate the run was clean. Combined with the framework skipping
+         * the launcher step that had recorded the halt, that let every downstream stage launch over data that
+         * had already been posted - interest applied twice and a set of duplicate transaction identifiers.
+         *
+         * <p>So the persisted aggregate is authoritative and this method never lowers it. A halted instance
+         * that is restarted now re-reads its own halt at the first gate and stops there without launching
+         * anything, which is the correct outcome: nothing downstream ran the first time and nothing downstream
+         * runs now. Recovering from a halt means fixing the data and submitting a <em>new</em> instance, and
+         * because {@link #batchPipelineJob(Flow)} deliberately declares no incrementer, doing that is an
+         * explicit act with a different parameter set rather than a silent re-run of the same one.
+         *
+         * <p>The outcome label is seeded on the same condition and for the same reason. Writing a clean label
+         * over a carried halt would leave the two entries disagreeing, and the closing log line reads the label.
+         *
          * <p>The correlation identifier is minted <b>only</b> when no outer scope owns one, which is what
          * makes a queue-driven run share one identifier with the message that triggered it. Every stage
          * inherits it for the same reason: each sibling listener opens a scope of its own, and a scope mints
@@ -2810,12 +2898,32 @@ public class BatchPipelineOrchestrator {
                     instanceIdOf(jobExecution), pipelineCorrelationId(jobExecution));
 
             final ExecutionContext context = jobExecution.getExecutionContext();
-            context.putInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, RETURN_CODE_COMPLETED);
-            context.putString(PIPELINE_OUTCOME_CONTEXT_ENTRY, EXIT_CODE_COMPLETED);
+            final boolean restarted;
+            final int carried;
+            // Guarded on the same monitor every stage and gate uses, so a seed decision cannot interleave with
+            // a stage recording its outcome.
+            synchronized (context) {
+                restarted = context.containsKey(PIPELINE_RETURN_CODE_CONTEXT_ENTRY);
+                if (restarted) {
+                    // Read through the shared policy, so a context carrying a non-integer abends here with the
+                    // key named rather than surfacing as a bare ClassCastException from inside a gate.
+                    carried = readAggregateReturnCode(context);
+                } else {
+                    carried = RETURN_CODE_COMPLETED;
+                    context.putInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, RETURN_CODE_COMPLETED);
+                    context.putString(PIPELINE_OUTCOME_CONTEXT_ENTRY, EXIT_CODE_COMPLETED);
+                }
+            }
             LOG.info("START OF EXECUTION OF THE CARDDEMO BATCH PIPELINE {} - five stages replacing"
                     + " app/jcl/POSTTRAN.jcl, app/jcl/INTCALC.jcl, app/jcl/COMBTRAN.jcl,"
                     + " app/jcl/CREASTMT.JCL and app/proc/TRANREPT.prc, submitted on the legacy side"
                     + " through {}", jobName, TDQ_DEFINITION);
+            if (restarted) {
+                LOG.warn("Pipeline {} is a RESTART of an existing instance: the aggregate return code {}"
+                        + " recorded by an earlier execution is authoritative and is NOT reset. A stage whose"
+                        + " gate already halted will halt again without launching anything",
+                        jobName, Integer.valueOf(carried));
+            }
         }
 
         /**

@@ -1219,24 +1219,27 @@ management:
         # relational substrate and are covered by the db contributor.
         # the Dockerfile HEALTHCHECK issues GET /actuator/health/readiness and greps for
         # UP, so this group must exist and resolve.
-        # Object-storage and queue contributors now exist and are named below.
-        # com.cardemo.observability.HealthIndicators declares all THREE
-        # contributors this group names - dbHealthIndicator, s3HealthIndicator and
-        # sqsHealthIndicator; Actuator strips the HealthIndicator suffix, so the
-        # component keys are `db`, `s3` and `sqs`. `db` is this application's own
+        # Object-storage, queue and notification contributors now exist and are
+        # named below.
+        # com.cardemo.observability.HealthIndicators declares all FOUR
+        # contributors this group names - dbHealthIndicator, s3HealthIndicator,
+        # sqsHealthIndicator and snsHealthIndicator; Actuator strips the
+        # HealthIndicator suffix, so the component keys are `db`, `s3`, `sqs` and
+        # `sns`. `db` is this application's own
         # bounded probe rather than the framework's, which management.health.db
         # switches off below and which explains why: the framework contributor
         # inherited the pool's 30 s connection-timeout and measured 30009 ms with
         # the database stopped, while these probes answer inside 1500 ms. The
-        # object-storage and queue keys were appended here in the same change
-        # that introduced their beans,
+        # object-storage, queue and notification keys were each appended here in
+        # the same change that introduced their beans,
         # which is what management.endpoint.health.validate-group-membership
         # (true, just above) requires: naming a contributor that does not exist
-        # fails startup. Renaming either bean without renaming the key here
+        # fails startup. Renaming any bean without renaming the key here
         # silently drops that dependency from readiness - HIGH severity - so the
         # two spellings must always move together. The published constants are
-        # HealthIndicators.S3_HEALTH_COMPONENT_NAME and
-        # .SQS_HEALTH_COMPONENT_NAME; cite those rather than retyping a literal.
+        # HealthIndicators.S3_HEALTH_COMPONENT_NAME,
+        # .SQS_HEALTH_COMPONENT_NAME and .SNS_HEALTH_COMPONENT_NAME; cite those
+        # rather than retyping a literal.
         #
         # `s3` probes the three configured buckets with a metadata-only
         # HeadBucket, then verifies with GetBucketVersioning that the
@@ -1253,13 +1256,29 @@ management:
         # it but cannot meaningfully insist on it. Existence alone is therefore
         # still NOT sufficient for UP: a queue that answers but is not FIFO
         # reports DOWN.
-        # All four calls are read-only, all four are bounded inside a
+        # `sns` confirms the operator notification topic is actually provisioned,
+        # by the same read-only ListTopics walk the publish path's TopicArnResolver
+        # performs, with a request deadline added. It was ABSENT from this list
+        # until the change that added it, and its absence was a MAJOR defect:
+        # notification was the one required cloud dependency readiness said
+        # nothing about, so an instance whose topic had never been provisioned
+        # answered this endpoint 200 UP, passed the container health check, took
+        # traffic, and failed only at the first report submission - reported there
+        # as an application error rather than as the configuration fault it was.
+        # The probe publishes NOTHING to the topic: a health check that published
+        # would emit a spurious operator notification every 15 s under the
+        # container health check, which is worse than having no probe.
+        # Every call is read-only, every contributor is bounded inside its own
         # per-contributor budget, and none may be added to the
         # liveness group above: an emulator blip must not restart a healthy JVM.
-        # Readiness therefore covers database + object storage + queue, which is
-        # the three-way composite the migration requires.
+        # Readiness therefore covers database + object storage + queue +
+        # notifications, which is the complete composite the migration requires.
+        # Actuator evaluates a group's members SEQUENTIALLY, so four contributors
+        # at 1500 ms cap the aggregate at 6 s; the Dockerfile HEALTHCHECK timeout
+        # was raised from 5s to 7s in the same change to keep 1 s of headroom for
+        # aggregation and transport.
         readiness:
-          include: readinessState,db,s3,sqs
+          include: readinessState,db,s3,sqs,sns
   health:
     # Every contributor states its own participation rather than inheriting a
     # blanket enable.

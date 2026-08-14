@@ -728,6 +728,191 @@ final class BatchPipelineOrchestratorTest {
         }
     }
 
+    /**
+     * What a restart of a halted instance does, which is nothing.
+     *
+     * <p><strong>Finding P5-01, severity Critical.</strong> A pipeline that halted at return code 8 or abended
+     * at 12 could be restarted straight through its own halt. Two mechanisms had to line up for that, and both
+     * are reproduced faithfully here rather than simulated:
+     *
+     * <ul>
+     *   <li>{@code SimpleJobRepository.createJobExecution} copies the previous execution's execution context
+     *       onto the new one, so the halt is present from the outset. The harness repository does the same, in
+     *       {@code createJobExecution}.</li>
+     *   <li>{@code SimpleStepHandler.shouldStart} skips a step whose last execution completed, so the launcher
+     *       step that recorded the halt does not run again and the stage runner never re-records it. The
+     *       harness answers {@code getLastStepExecution}, which is what makes the skip happen.</li>
+     * </ul>
+     *
+     * <p>The listener then zeroed the carried aggregate and both gate inputs read a clean run, so the first
+     * gate said {@code PROCEED} and every downstream stage launched over data that had already been posted.
+     * These tests assert the two properties that matter to a caller: <em>no downstream stage is launched</em>,
+     * and the halt is still the reported outcome.
+     */
+    @Nested
+    @DisplayName("a restart of a halted instance launches nothing (P5-01)")
+    class RestartOfAHaltedInstance {
+
+        @Test
+        @DisplayName("the harness really does reproduce a restart: context carried forward, completed step "
+                + "skipped")
+        void theHarnessReproducesARestart() {
+            // Asserted first and on its own, because every other test in this group is worthless if the
+            // harness quietly fails to restart - they would all pass by never reaching the second execution.
+            final JobExecution first = run();
+            assertThat(first.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(invocations.stream().map(Invocation::stage).toList()).hasSize(5);
+
+            final int before = invocations.size();
+            final JobExecution second = run();
+
+            assertThat(second.getId())
+                    .as("a restart is a new execution of the SAME instance")
+                    .isNotEqualTo(first.getId());
+            assertThat(second.getJobInstance().getInstanceId())
+                    .isEqualTo(first.getJobInstance().getInstanceId());
+            assertThat(second.getExecutionContext().containsKey(PIPELINE_RETURN_CODE_ENTRY))
+                    .as("the job repository copies the previous context forward, so the entry is present "
+                            + "before the first listener callback runs")
+                    .isTrue();
+            assertThat(invocations.size() - before)
+                    .as("all five launcher steps completed on the first execution, so all five are skipped "
+                            + "on the restart and no child job is launched a second time")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("a POSTTRAN return code 8 halt survives the restart, and INTCALC never launches")
+        void aReturnCodeEightHaltSurvivesTheRestart() {
+            postTran.onExecute(execution -> {
+                execution.setStatus(BatchStatus.FAILED);
+                execution.setExitStatus(ExitStatus.FAILED);
+            });
+
+            final JobExecution first = run();
+            assertThat(first.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1)).isEqualTo(8);
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .as("the first run halts at the gate after stage 1")
+                    .containsExactly("POSTTRAN");
+
+            final JobExecution restarted = run();
+
+            assertThat(restarted.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1))
+                    .as("the persisted halt is authoritative and is NOT reset to zero by the listener")
+                    .isEqualTo(8);
+            assertThat(restarted.getStatus())
+                    .as("the restart re-reads the halt at the first gate and fails there")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(restarted.getExecutionContext().getString(PIPELINE_OUTCOME_ENTRY, ""))
+                    .isEqualTo("FAILED");
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .as("THE FINDING: INTCALC, COMBTRAN, CREASTMT and TRANREPT must not launch. Restarting "
+                            + "through the halt reapplied interest and produced duplicate transaction "
+                            + "identifiers")
+                    .containsExactly("POSTTRAN");
+        }
+
+        @Test
+        @DisplayName("an INTCALC abend at return code 12 survives the restart, and COMBTRAN never launches")
+        void anAbendSurvivesTheRestart() {
+            final FatalProcessingException abend = new FatalProcessingException("0999", "CBACT04C",
+                    "UNEXPECTED FILE STATUS", "ABENDING PROGRAM");
+            intCalc.onExecute(execution -> {
+                execution.addFailureException(abend);
+                execution.setStatus(BatchStatus.FAILED);
+                execution.setExitStatus(ExitStatus.FAILED);
+            });
+
+            final JobExecution first = run();
+            assertThat(first.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1)).isEqualTo(12);
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .containsExactly("POSTTRAN", "INTCALC");
+
+            final JobExecution restarted = run();
+
+            assertThat(restarted.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1))
+                    .as("an abend is carried forward exactly as a halt is")
+                    .isEqualTo(12);
+            assertThat(restarted.getExitStatus().getExitCode())
+                    .as("and it is still reported as an abend rather than decaying into a plain failure")
+                    .isEqualTo("ABEND");
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .as("THE FINDING: COMBTRAN must not launch. Restarting through the abend ran the combine "
+                            + "stage without the pinned generation stage 2 never published")
+                    .containsExactly("POSTTRAN", "INTCALC");
+        }
+
+        @Test
+        @DisplayName("a stage's own recorded outcome halts the restart even if the aggregate is wiped")
+        void aPersistedStageOutcomeHaltsTheRestartOnItsOwn() {
+            postTran.onExecute(execution -> {
+                execution.setStatus(BatchStatus.FAILED);
+                execution.setExitStatus(ExitStatus.FAILED);
+            });
+            run();
+
+            // The second, independent guard. The carried aggregate alone would be enough, but it is a single
+            // entry that one stray writer - or one future listener - could lower, and the cost of getting this
+            // wrong is data damage rather than a wrong number. So the gate also reads the per-stage entries,
+            // which the stage runner writes and nothing else rewrites. Wiping the aggregate here proves that
+            // second path carries the halt by itself.
+            harnessRepository.onFirstStep(execution ->
+                    execution.getExecutionContext().remove(PIPELINE_RETURN_CODE_ENTRY));
+
+            final JobExecution restarted = run();
+
+            assertThat(restarted.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1))
+                    .as("the gate rebuilds the aggregate from carddemo.pipeline.posttran.returnCode")
+                    .isEqualTo(8);
+            assertThat(restarted.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .as("still nothing downstream")
+                    .containsExactly("POSTTRAN");
+        }
+
+        @Test
+        @DisplayName("a clean run is not turned into a failure by being restarted")
+        void aCleanRunIsNotTurnedIntoAFailureByARestart() {
+            // The inverse assertion, and the one that would catch an over-broad fix. Making the persisted
+            // aggregate authoritative must not make a restart pessimistic: a first run that completed cleanly
+            // carries a zero forward, and a zero is a zero.
+            final JobExecution first = run();
+            assertThat(first.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+            final JobExecution restarted = run();
+
+            assertThat(restarted.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1))
+                    .as("nothing to carry but a clean run")
+                    .isZero();
+            assertThat(restarted.getStatus())
+                    .as("every step already completed, so the restart walks the gates and ends cleanly")
+                    .isEqualTo(BatchStatus.COMPLETED);
+            assertThat(restarted.getExitStatus().getExitCode())
+                    .as("the framework's own label for a restart in which every step was skipped:"
+                            + " AbstractJob.execute publishes NOOP when the new execution registered no step"
+                            + " of its own. Worth pinning rather than smoothing over, because it is the"
+                            + " clearest possible signal that a restart of a completed instance re-ran"
+                            + " nothing - which is the whole point of the finding")
+                    .isEqualTo(ExitStatus.NOOP.getExitCode());
+            assertThat(restarted.getExitStatus().getExitDescription())
+                    .contains("All steps already completed");
+        }
+
+        @Test
+        @DisplayName("the first execution of an instance still seeds a zero, so the first gate reads a value")
+        void aFirstExecutionStillSeedsTheAggregate() {
+            // The seed is now conditional, so the condition is asserted from both sides. On a first execution
+            // the entry is absent and must be written, or the gate after stage 1 would read a default rather
+            // than a recorded value on a pipeline whose stage 1 somehow recorded nothing.
+            final JobExecution execution = run();
+
+            assertThat(execution.getExecutionContext().containsKey(PIPELINE_RETURN_CODE_ENTRY)).isTrue();
+            assertThat(execution.getExecutionContext().getString(PIPELINE_OUTCOME_ENTRY, ""))
+                    .as("the outcome label is seeded on the same condition, so the two entries agree")
+                    .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+        }
+    }
+
     /** The precondition stage 3 imposes on the input substrate. */
     @Nested
     @DisplayName("the combine stage refuses the relational substrate (M-01)")
@@ -1854,17 +2039,32 @@ final class BatchPipelineOrchestratorTest {
         private final Map<String, JobExecution> executions = new LinkedHashMap<>();
 
         /**
+         * The most recent step execution per instance identifier and step name.
+         *
+         * <p>Held so that {@link #getLastStepExecution(JobInstance, String)} can answer, which is what makes a
+         * <strong>restart</strong> reachable in this tier at all. Without it every step looks brand new on a
+         * second execution and {@code SimpleStepHandler} re-runs all five, which is the opposite of the
+         * production behaviour the restart tests exist to pin: a completed launcher step is skipped, so the
+         * stage runner never runs again and never re-records the stage's return code.
+         */
+        private final Map<String, StepExecution> lastStepExecutions = new LinkedHashMap<>();
+
+        /**
          * Applied once, to the pipeline execution, as its first step execution is registered.
          *
          * <p>The seam exists for one reason and its position is exact. A test that needs the aggregate
-         * return-code entry pre-populated cannot seed it before the run: the pipeline's own outcome listener
-         * zeroes that entry in {@code beforeJob}, which is correct - a fresh run starts clean - so anything
-         * written earlier is discarded. Nor can it seed from a stage stub, which is handed the child execution
-         * and never the pipeline's. Registering a step execution is the first point after {@code beforeJob}
-         * at which the pipeline execution is reachable, and it happens before the stage runner reads the
-         * entry. Composing a job around the flow with an extra listener would also work and was rejected: it
-         * drops the pipeline's own outcome listener, so the test would assert against a topology production
-         * does not build.
+         * return-code entry pre-populated has no execution object to write to before the run - the launcher
+         * creates it - and cannot seed from a stage stub, which is handed the child execution and never the
+         * pipeline's. Registering a step execution is the first point at which the pipeline execution is
+         * reachable, and it happens before the stage runner reads the entry. Composing a job around the flow
+         * with an extra listener would also work and was rejected: it drops the pipeline's own outcome
+         * listener, so the test would assert against a topology production does not build.
+         *
+         * <p>Note that the seam no longer <em>has</em> to sit after {@code beforeJob} to survive it. That
+         * listener used to zero the entry unconditionally, so anything written earlier was discarded; it now
+         * seeds only when the entry is absent, because on a restart the carried-forward value is the
+         * authoritative one (finding P5-01). The position is unchanged all the same, since it is also the
+         * earliest reachable point.
          */
         private Consumer<JobExecution> onFirstStep = execution -> { };
 
@@ -1914,11 +2114,20 @@ final class BatchPipelineOrchestratorTest {
                 final JobParameters jobParameters) {
 
             final String key = keyOf(jobName, jobParameters);
+            final JobExecution previous = executions.get(key);
             final JobInstance instance = instances.containsKey(key)
                     ? instances.get(key)
                     : createJobInstance(jobName, jobParameters);
             final JobExecution execution = new JobExecution(
                     instance, Long.valueOf(identifiers.incrementAndGet()), jobParameters);
+            if (previous != null) {
+                // What SimpleJobRepository.createJobExecution does on a restart, and the fact the whole of
+                // finding P5-01 turns on: the previous execution's context is copied onto the new one, so
+                // everything the earlier run recorded - including the halt - is present before the first
+                // listener callback fires. Copied rather than shared, exactly as the framework copies it, so
+                // the two executions cannot alias one context.
+                execution.setExecutionContext(new ExecutionContext(previous.getExecutionContext()));
+            }
             executions.put(key, execution);
             return execution;
         }
@@ -1931,10 +2140,23 @@ final class BatchPipelineOrchestratorTest {
         @Override
         public synchronized void add(final StepExecution stepExecution) {
             stepExecution.setId(Long.valueOf(identifiers.incrementAndGet()));
+            lastStepExecutions.put(stepKeyOf(stepExecution.getJobExecution().getJobInstance(),
+                    stepExecution.getStepName()), stepExecution);
             if (!firstStepSeen) {
                 firstStepSeen = true;
                 onFirstStep.accept(stepExecution.getJobExecution());
             }
+        }
+
+        /**
+         * The key one step of one instance is remembered under.
+         *
+         * @param jobInstance the instance the step belongs to
+         * @param stepName the step name
+         * @return the key
+         */
+        private static String stepKeyOf(final JobInstance jobInstance, final String stepName) {
+            return (jobInstance == null ? "0" : Long.toString(jobInstance.getInstanceId())) + '|' + stepName;
         }
 
         @Override
@@ -1963,13 +2185,17 @@ final class BatchPipelineOrchestratorTest {
         public synchronized StepExecution getLastStepExecution(final JobInstance jobInstance,
                 final String stepName) {
 
-            return null;
+            return lastStepExecutions.get(stepKeyOf(jobInstance, stepName));
         }
 
         @Override
         public synchronized long getStepExecutionCount(final JobInstance jobInstance,
                 final String stepName) {
 
+            // Kept at zero deliberately. SimpleStepHandler.shouldStart compares this against the step's start
+            // limit and raises StartLimitExceededException when the count has reached it, and no test here is
+            // about the start limit. Answering zero means the limit never interferes with the restart tests
+            // while getLastStepExecution above supplies the completed-step skip they do depend on.
             return 0L;
         }
 

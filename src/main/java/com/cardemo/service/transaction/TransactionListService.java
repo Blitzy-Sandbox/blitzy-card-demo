@@ -821,8 +821,19 @@ public class TransactionListService {
      * the backward path reads that flag at {@code :L361} to decide whether to adjust the page
      * number, so making it conditional would change the page arithmetic.
      *
-     * <p>{@code SET SEND-ERASE-NO} at {@code :L250} is a genuine state transition with no REST
-     * counterpart — it governs terminal repainting only — so it is recorded and not modelled.
+     * <p>{@code SET SEND-ERASE-NO} at {@code :L250} <strong>is</strong> modelled, and an earlier
+     * revision of this comment was wrong to say it was not. It asserted that the flag "governs
+     * terminal repainting only" and so needed no REST counterpart; that reading looks at the flag
+     * and not at what the flag causes. {@code SEND-TRNLST-SCREEN} re-sends {@code COTRN0A} with the
+     * row fields still at low values, and BMS does not transmit a low-values field, so with no
+     * {@code ERASE} the 3270 leaves the rows it is already displaying untouched. The observable
+     * outcome of a refused page is therefore the current page <em>plus</em> the message — never a
+     * cleared list. Returning no rows here reported an empty result set to the caller, which is a
+     * different answer to a different question.
+     *
+     * <p>The retained rows are reproduced by {@link #redisplayCurrentPage(ScreenWorkArea)}, which
+     * re-reads the page this screen is already showing. See that method for why re-reading is the
+     * faithful substitution for a terminal buffer.
      *
      * @param work the per-invocation work area
      */
@@ -844,6 +855,7 @@ public class TransactionListService {
             processPageBackward(work);
         } else {
             work.message = MSG_ALREADY_AT_TOP;
+            redisplayCurrentPage(work);
             sendTrnlstScreen(work);
         }
     }
@@ -861,6 +873,10 @@ public class TransactionListService {
      * The blank-anchor branch is unreachable in practice — the next-page flag is only set when a
      * page filled completely, which is exactly when the last-key anchor was written — but the branch
      * is preserved because the source has it.
+     *
+     * <p>The refusal arm at {@code :L272-L273} sets {@code SEND-ERASE-NO} exactly as the PF7 refusal
+     * does, so it retains the displayed rows for the same reason and through the same
+     * {@link #redisplayCurrentPage(ScreenWorkArea)} call.
      *
      * @param work the per-invocation work area
      */
@@ -880,6 +896,7 @@ public class TransactionListService {
             processPageForward(work);
         } else {
             work.message = MSG_ALREADY_AT_BOTTOM;
+            redisplayCurrentPage(work);
             sendTrnlstScreen(work);
         }
     }
@@ -1036,6 +1053,92 @@ public class TransactionListService {
             work.pageNumDisplay = renderPageNumber(work.pageNum);
             sendTrnlstScreen(work);
         }
+    }
+
+    /**
+     * Refills the row slots with the page this screen is already displaying, for the two refusals
+     * that decline to page — {@code PROCESS-PF7-KEY} at {@code app/cbl/COTRN00C.cbl:L245-L252} and
+     * {@code PROCESS-PF8-KEY} at {@code :L267-L274}.
+     *
+     * <p><strong>Why this exists, and why it is a re-read rather than an echo.</strong> Both refusals
+     * set {@code SEND-ERASE-NO} and re-send the map with the row fields at low values. BMS does not
+     * transmit a low-values field and there is no {@code ERASE}, so the 3270 keeps displaying the
+     * rows already in its buffer and the reader sees the unchanged page beneath the new message. The
+     * rows in that outcome come from state the <em>terminal</em> holds, and a stateless HTTP response
+     * has no such buffer to inherit from, so the outcome has to be produced rather than retained.
+     *
+     * <p>Two substitutions were available and the other was rejected on a contract ground rather
+     * than on effort. Echoing rows submitted by the caller is the closer analogue of a terminal
+     * buffer, but the request carries only a row <em>count</em> — {@code rowCount} — and never the
+     * row contents, so there is nothing to echo without widening the request contract to accept
+     * fifty-nine row fields the caller would then be trusted to have told the truth about. A caller
+     * could name rows that were never displayed and the server would repeat them back as though it
+     * had read them. Re-reading the page from its own anchor produces the identical observable
+     * outcome and asserts only what the database actually holds.
+     *
+     * <p><strong>The anchor is the first key of the displayed page</strong>, {@code CDEMO-CT00-TRNID-FIRST},
+     * read inclusively — which is by construction the window the caller is looking at. Low values
+     * stands in when that anchor is blank, matching the same substitution {@code :L236-L240} makes.
+     *
+     * <p><strong>This method changes no pagination state, and that is enforced rather than
+     * intended.</strong> A refused page must leave the page number, the next-page flag, both key
+     * anchors and the message exactly as the refusal set them, or the caller's next request would
+     * navigate from a position the refusal never granted. {@link #populateTranData(ScreenWorkArea)}
+     * is reused because it is the single authority for the amount mask and the date projection, and
+     * duplicating either here would create two projections free to drift apart — but it also writes
+     * {@code trnIdFirst} at slot one and {@code trnIdLast} at slot ten, so both anchors, the slot
+     * index and the current record are snapshotted and restored around the fill. Re-reading the same
+     * page would in fact restore the same two anchor values, but that holds only while the page is
+     * full: on a partial final page slot ten is never reached, which is the preserved stale-anchor
+     * defect documented on {@code populateTranData}. Restoring explicitly means this method cannot
+     * perturb the anchors under any page shape rather than merely happening not to under most.
+     *
+     * <p>A failed read is <em>not</em> swallowed to keep the refusal looking clean. It surfaces as
+     * the same typed exception every other browse failure raises, because a refusal that silently
+     * reported zero rows after an I/O error is the defect this method exists to remove, only quieter.
+     * An empty result is different and is not a failure: it means the page genuinely holds no rows.
+     *
+     * @param work the per-invocation work area, whose row slots are refilled in place
+     */
+    private void redisplayCurrentPage(final ScreenWorkArea work) {
+
+        final String anchor = isBlankOrUnset(work.trnIdFirst) ? LOW_VALUES_KEY : work.trnIdFirst;
+
+        final List<Transaction> displayed;
+        try {
+            displayed =
+                    this.transactionRepository
+                            .findByTransactionIdGreaterThanEqualOrderByTransactionIdAsc(
+                                    anchor, PageRequest.of(0, this.pageSize))
+                            .getContent();
+        } catch (final DataAccessException failure) {
+            throw browseFailure("STARTBR", failure);
+        }
+
+        final String retainedFirst = work.trnIdFirst;
+        final String retainedLast = work.trnIdLast;
+        final int retainedIdx = work.idx;
+        final Transaction retainedRecord = work.tranRecord;
+
+        for (work.idx = 1; work.idx <= TransactionDto.PAGE_SIZE; work.idx++) {
+            initializeTranData(work);
+        }
+
+        int slot = 1;
+        for (final Transaction record : displayed) {
+            if (slot > TransactionDto.PAGE_SIZE) {
+                break;
+            }
+            work.tranRecord = record;
+            work.idx = slot;
+            populateTranData(work);
+            slot = slot + 1;
+        }
+
+        work.trnIdFirst = retainedFirst;
+        work.trnIdLast = retainedLast;
+        work.idx = retainedIdx;
+        work.tranRecord = retainedRecord;
     }
 
     /**

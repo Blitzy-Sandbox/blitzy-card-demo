@@ -125,6 +125,34 @@ theme:
 extra_css:
   - stylesheets/carddemo.css
 
+# extra_javascript carries ONLY the corrections that are safe to run after the
+# theme bundle. The split matters and is not stylistic:
+#
+#   - docs/javascripts/carddemo-a11y.js supplies keyboard behaviour the theme's
+#     CSS-only toggles do not have (Space activation on a <label>, Escape to
+#     close, focus moved into a panel and returned to its opener) and names the
+#     rendered diagram containers. All of it is event- and observer-driven, so
+#     running after the bundle is correct.
+#   - docs/javascripts/carddemo-mermaid.js is deliberately NOT listed here. It
+#     pins the diagram renderer to an exact version with an integrity hash, and
+#     it only works if it executes BEFORE the theme bundle - Material's loader
+#     short-circuits when `window.mermaid` is already defined, and that is the
+#     one hook by which the floating `mermaid@11` tag can be prevented rather
+#     than merely mitigated. MkDocs emits extra_javascript AFTER the bundle, so
+#     this file would be too late here and the CDN would already have been
+#     contacted. mkdocs_hooks.py injects it immediately before the bundle's own
+#     script tag instead. Moving it into this list would silently restore the
+#     unpinned fetch while appearing to change nothing.
+#
+# Verify the ordering survived a build, because nothing else will catch it:
+#   S=/tmp/carddemo-site
+#   grep -o 'carddemo-mermaid\.js\|bundle\.[0-9a-f]*\.min\.js\|carddemo-a11y\.js' \
+#     $S/index.html
+# which must print carddemo-mermaid.js, then bundle..., then carddemo-a11y.js,
+# in that order.
+extra_javascript:
+  - javascripts/carddemo-a11y.js
+
 # Enabling search below was a net improvement, but it brought a latent theme
 # defect into existence: Material renders its search block only when a search
 # plugin is active, and that block's outermost element is

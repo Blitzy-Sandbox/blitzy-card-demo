@@ -95,6 +95,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.UserSecurityDto;
@@ -1897,10 +1898,20 @@ class UserUpdateServiceTest {
                         assertThat(typeOf(failure))
                                 .as("the '9x' family maps to the file-access type, :346-352")
                                 .isEqualTo(FILE_ACCESS_TYPE);
+                        // The message is the CAPTION of :349, byte for byte, and the dataset of :323 and the
+                        // verb of :322 travel in the structured fields below rather than being composed into
+                        // it. This assertion previously demanded the opposite, which is what allowed the
+                        // composed diagnostic to displace the caption and made
+                        // com.cardemo.controller.AdminController refuse to publish it (finding P4-04, Major).
                         assertThat(failure.getMessage())
-                                .as("the dataset of :323 and the verb of :322 both reach the message")
-                                .contains(USRSEC_FILE)
-                                .contains("READ");
+                                .as("the caption :349 latches, with nothing composed onto either end of it")
+                                .isEqualTo(UNABLE_TO_LOOKUP_MESSAGE);
+                        assertThat(((FileAccessException) failure).getLogicalFileName())
+                                .as("the dataset of :323 is not lost, it moves to the structured field")
+                                .isEqualTo(USRSEC_FILE);
+                        assertThat(((FileAccessException) failure).getOperation())
+                                .as("nor is the verb of :322")
+                                .isEqualTo("READ");
                         assertThat(failure.getCause())
                                 .as("the provider's failure is carried, never swallowed")
                                 .isSameAs(timedOut);
@@ -1923,9 +1934,14 @@ class UserUpdateServiceTest {
                     .satisfies(failure -> {
                         assertThat(typeOf(failure)).isEqualTo(FILE_ACCESS_TYPE);
                         assertThat(failure.getMessage())
-                                .as("the dataset of :361 and the verb of :360 both reach the message")
-                                .contains(USRSEC_FILE)
-                                .contains("REWRITE");
+                                .as("the caption :386 latches, byte for byte")
+                                .isEqualTo(UNABLE_TO_UPDATE_MESSAGE);
+                        assertThat(((FileAccessException) failure).getLogicalFileName())
+                                .as("the dataset of :361 travels in the structured field")
+                                .isEqualTo(USRSEC_FILE);
+                        assertThat(((FileAccessException) failure).getOperation())
+                                .as("as does the verb of :360")
+                                .isEqualTo("REWRITE");
                         assertThat(failure.getCause()).isSameAs(timedOut);
                     });
         }
@@ -1967,8 +1983,8 @@ class UserUpdateServiceTest {
         @DisplayName("an unclassifiable read status falls back to the literal of :349, byte exactly")
         void anUnclassifiableReadStatusFallsBackToTheReadLiteral() {
             final FileStatusMapper silent = mock(FileStatusMapper.class);
-            when(silent.toException(anyString(), anyString(), anyString(), any()))
-                    .thenReturn(Optional.empty());
+            when(silent.toExceptionWithLegacyMessage(anyString(), anyString(), anyString(), any(),
+                    anyString())).thenReturn(Optional.empty());
             final UserUpdateService withSilentMapper = new UserUpdateService(userSecurityRepository,
                     passwordEncoder, silent, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
             final QueryTimeoutException timedOut = new QueryTimeoutException("timed out");
@@ -1990,8 +2006,8 @@ class UserUpdateServiceTest {
         @DisplayName("an unclassifiable rewrite status falls back to the literal of :386, byte exactly")
         void anUnclassifiableRewriteStatusFallsBackToTheUpdateLiteral() {
             final FileStatusMapper silent = mock(FileStatusMapper.class);
-            when(silent.toException(anyString(), anyString(), anyString(), any()))
-                    .thenReturn(Optional.empty());
+            when(silent.toExceptionWithLegacyMessage(anyString(), anyString(), anyString(), any(),
+                    anyString())).thenReturn(Optional.empty());
             final UserUpdateService withSilentMapper = new UserUpdateService(userSecurityRepository,
                     passwordEncoder, silent, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
             final QueryTimeoutException timedOut = new QueryTimeoutException("timed out");
@@ -2237,7 +2253,11 @@ class UserUpdateServiceTest {
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> watchedService.updateUser(unchangedRequest(), null));
 
-            verify(watched).toException(anyString(), eq(USRSEC_FILE), eq("READ"), any());
+            // The translation is asked for the SUBTYPE while the caption is supplied to it, so the source
+            // literal is what the exception carries as its message. The file name and the verb still cross
+            // this boundary, which is the point of the assertion.
+            verify(watched).toExceptionWithLegacyMessage(anyString(), eq(USRSEC_FILE), eq("READ"), any(),
+                    eq(UNABLE_TO_LOOKUP_MESSAGE));
         }
     }
 

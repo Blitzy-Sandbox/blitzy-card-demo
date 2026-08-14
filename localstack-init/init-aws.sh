@@ -631,6 +631,22 @@ readonly QUEUE_MAX_RECEIVE_COUNT='4'
 
 # Input validation. Inputs are untrusted and are checked BEFORE any AWS call, so
 # a misconfiguration can never leave a half-provisioned stack behind.
+#
+# THE APPLICATION ENFORCES THE SAME CONTRACT, AND THE TWO MUST AGREE EXACTLY.
+# com.cardemo.config.AwsConfig#requireResourceName transcribes every pattern,
+# every length bound and every hint below, and its constructor applies them to
+# the same six values before any client is built; the derived-DLQ ceiling
+# further down is mirrored by #requireDeadLetterNameDerivable. Two guards over
+# one variable have to agree or the pair is worse than either alone - a value one
+# accepts and the other refuses is a stack that provisions and will not start, or
+# starts and cannot publish - so a change to any pattern, bound or hint here must
+# be made in both places in the same commit. That guard exists because this one
+# only runs WHEN PROVISIONING RUNS: an application pointed at an
+# already-provisioned emulator, or a profile resolving these variables from
+# outside the compose environment, never executes this file, and before the Java
+# half existed such a deployment accepted a name like 'invalid/name', started
+# cleanly, reported itself ready and failed at the first object write.
+#
 # require_value <var-name> <resolved-value> <regex> <min-len> <max-len> <hint>
 require_value() {
   local var_name="$1" value="$2" pattern="$3" min_len="$4" max_len="$5" hint="$6"

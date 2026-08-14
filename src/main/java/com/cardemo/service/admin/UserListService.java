@@ -980,6 +980,10 @@ public class UserListService {
         } else {
             work.message = ALREADY_AT_TOP_MESSAGE;                  // :250-252
             work.sendEraseYes = false;                              // :253 SET SEND-ERASE-NO TO TRUE
+            // :253 SEND-ERASE-NO is why the rows survive: SEND-USRLST-SCREEN re-sends COUSR0A with the row
+            // fields at LOW-VALUES, BMS transmits no low-values field, and without ERASE the 3270 keeps
+            // displaying the page it already holds. Refusing to page must not empty the list.
+            redisplayCurrentPage(work);
             sendUsrlstScreen(work);                                 // :254
         }
     }
@@ -1025,6 +1029,8 @@ public class UserListService {
         } else {
             work.message = ALREADY_AT_BOTTOM_MESSAGE;               // :272-274
             work.sendEraseYes = false;                              // :275 SET SEND-ERASE-NO TO TRUE
+            // :275 SEND-ERASE-NO, same retention as the PF7 refusal at :253.
+            redisplayCurrentPage(work);
             sendUsrlstScreen(work);                                 // :276
         }
     }
@@ -1189,6 +1195,92 @@ public class UserListService {
             work.pageNumberDisplay = renderZeroPadded(work.pageNum);    // :377
             sendUsrlstScreen(work);                                 // :378
         }
+    }
+
+    /**
+     * Refills the row slots with the page this screen is already displaying, for the two refusals that
+     * decline to page - {@code app/cbl/COUSR00C.cbl:248-254 PROCESS-PF7-KEY} and {@code :270-276
+     * PROCESS-PF8-KEY}.
+     *
+     * <p><strong>What the source does, and why it needs reproducing.</strong> Both refusals
+     * {@code SET SEND-ERASE-NO TO TRUE} and then re-send the map. {@code SEND-USRLST-SCREEN} sends
+     * {@code COUSR0A} with the row fields still at {@code LOW-VALUES}; BMS transmits no low-values field, and
+     * with no {@code ERASE} the terminal leaves the rows it is already displaying in place. A reader who
+     * presses PF7 on page one sees page one and the message, not an empty list. This class already modelled
+     * {@code sendEraseYes} faithfully - the flag was set, carried and even echoed - but nothing acted on it,
+     * so the one observable consequence of the flag was the one thing missing.
+     *
+     * <p><strong>Re-read rather than echo, and why the alternative was rejected.</strong> Those rows live in
+     * the terminal's buffer, and an HTTP response inherits no buffer. Echoing rows the caller submitted is the
+     * closer analogue, and {@code receiveUsrlstScreen} does store submitted rows - but the request carries
+     * only a row {@code rowCount}, so {@code com.cardemo.controller.AdminController} can synthesise nothing
+     * but blank placeholders from it. Widening the request to accept every row field would make the response
+     * a repetition of the caller's own claim rather than a statement about stored data. Re-reading from the
+     * page's own anchor gives the identical observable outcome and asserts only what {@code USRSEC} holds.
+     *
+     * <p><strong>The anchor is {@code CDEMO-CU00-USRID-FIRST}</strong>, the head of the displayed page, read
+     * inclusively so the window returned is exactly the one on screen. A blank anchor reads from the start of
+     * the key sequence, the same substitution {@code :240} makes with {@code LOW-VALUES}.
+     *
+     * <p><strong>No pagination state moves, and that is enforced rather than hoped for.</strong> A refusal
+     * must leave the page number, the next-page flag, both keyset cursors and the message exactly as it set
+     * them. {@link #populateUserData(ScreenWorkArea)} is reused deliberately - it is the single authority for
+     * the four projected fields and for {@code renderUserType}, and a second copy here could drift from it -
+     * but it also writes {@code usridFirst} at slot one and {@code usridLast} at the last slot, so both
+     * cursors, the row index and the current record are snapshotted and restored around the fill. Re-reading
+     * the same page happens to reproduce the same cursor values while the page is full; restoring explicitly
+     * means a partial final page cannot move them either.
+     *
+     * <p>A read failure is not swallowed to keep the refusal looking tidy: it is classified and retained
+     * exactly as every other I/O site in this class does, so {@code mainPara} rethrows it once the screen is
+     * assembled. An empty result is not a failure - it means the page holds no rows.
+     *
+     * @param work the per-invocation work area, whose row slots are refilled in place
+     */
+    private void redisplayCurrentPage(final ScreenWorkArea work) {
+        final String anchor = isBlankOrUnset(work.usridFirst) ? null : work.usridFirst.trim();
+        final int slots = work.rowUserIds.length;
+
+        final List<UserSecurity> displayed;
+        try {
+            final Slice<UserSecurity> window = anchor == null
+                    ? this.userSecurityRepository
+                            .findAllByOrderBySecUsrIdAsc(PageRequest.of(0, slots))
+                    : this.userSecurityRepository
+                            .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                                    anchor, PageRequest.of(0, slots));
+            displayed = window.getContent();
+        } catch (final DataAccessException failure) {
+            work.ioFailureCause = failure;
+            classify(work, IO_STATUS_IO_ERROR, STARTBR_OPERATION)
+                    .ifPresent(mapped -> retainFailure(work, mapped));
+            return;
+        }
+
+        final String retainedFirst = work.usridFirst;
+        final String retainedLast = work.usridLast;
+        final int retainedIdx = work.idx;
+        final UserSecurity retainedRecord = work.currentRecord;
+
+        for (work.idx = 1; work.idx <= slots; work.idx++) {
+            initializeUserData(work);
+        }
+
+        int slot = 1;
+        for (final UserSecurity record : displayed) {
+            if (slot > slots) {
+                break;
+            }
+            work.currentRecord = record;
+            work.idx = slot;
+            populateUserData(work);
+            slot = slot + 1;
+        }
+
+        work.usridFirst = retainedFirst;
+        work.usridLast = retainedLast;
+        work.idx = retainedIdx;
+        work.currentRecord = retainedRecord;
     }
 
     /**

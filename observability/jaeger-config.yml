@@ -114,7 +114,19 @@ service:
       exporters: [jaeger_storage_exporter]
   telemetry:
     resource:
-      service.name: jaeger
+      # ARRAY-OF-MAPS, NOT THE INLINE MAP THE SHIPPED EXAMPLE USES.
+      #
+      # `resource: {service.name: jaeger}` is the legacy spelling and 2.20.0
+      # accepts it while logging `Using legacy service.telemetry.resource inline
+      # map format; prefer service.telemetry.resource.attributes`. That
+      # deprecation notice had been in this container's log all along and nobody
+      # could see it, because the 4317 self-export failure below it was
+      # generating 77% of the output - which is precisely the cost of tolerating
+      # log noise, and the reason it is fixed in the same change rather than
+      # left for the release that turns the notice into an error.
+      attributes:
+        - name: service.name
+          value: jaeger
     metrics:
       # `basic` rather than the default `detailed`. Nothing scrapes this
       # endpoint - observability/prometheus.yml declares exactly one job, the
@@ -129,6 +141,42 @@ service:
                 port: 8888
     logs:
       level: info
+    traces:
+      # OFF, AND THE ABSENCE OF THIS KEY WAS A DEFECT RATHER THAN A DEFAULT.
+      #
+      # This block configures the collector's own INTERNAL telemetry - the
+      # spans, metrics and logs the collector emits ABOUT ITSELF. It is not the
+      # trace pipeline above, which carries the application's spans and is
+      # unaffected by anything here.
+      #
+      # With no `traces` key the collector falls back to its built-in internal
+      # trace exporter, which is OTLP over gRPC to localhost:4317. The
+      # `receivers` section below removes the OTLP/gRPC receiver on purpose and
+      # with reasons stated, so nothing in this container listens on 4317 - and
+      # the collector therefore spent its whole life failing to export its own
+      # spans to itself. MEASURED: 71 of the 92 lines this container had logged
+      # were `dial tcp 127.0.0.1:4317: connect: connection refused` and its IPv6
+      # twin, one pair every few seconds, forever. That is 77% of the log
+      # channel filled with a self-inflicted failure, which is worse than merely
+      # untidy: it is where a real fault goes unnoticed, and it makes the log
+      # useless as the first place an operator looks.
+      #
+      # `level: none` rather than opening 4317. Enabling the receiver would
+      # silence the warning by giving the collector somewhere to send spans
+      # about itself, and would do it by opening an unauthenticated span-ingest
+      # port on the compose network that no client uses - trading a log-noise
+      # defect for a least-privilege one, against Rule 1 Clause D and against
+      # the reasoning the `receivers` section sets out at length. Nothing in
+      # this project reads collector self-traces: prometheus.yml declares one
+      # job and it is the application, and the internal METRICS above are
+      # already `basic` on the same ground.
+      #
+      # `level: none` rather than `processors: []`. Both are accepted by
+      # `jaeger validate` against 2.20.0 - both spellings were checked before
+      # this one was chosen - but the empty-processor form reads as an
+      # oversight, while `none` states the intent and is the key the collector's
+      # own internal-telemetry documentation defines for it.
+      level: none
 
 extensions:
   jaeger_query:

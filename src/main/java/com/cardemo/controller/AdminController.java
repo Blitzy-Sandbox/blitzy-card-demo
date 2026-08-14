@@ -583,7 +583,7 @@ public class AdminController {
      * of them is replaced by the fixed detail. Adding a caption here is therefore a deliberate, reviewable act
      * rather than a consequence of how some other file happened to phrase an error.
      *
-     * <p>The three captions are, with their source locations:</p>
+     * <p>The four captions are, with their source locations:</p>
      *
      * <ul>
      *   <li>{@code 'User ID NOT found...'} - {@code app/cbl/COUSR02C.cbl:L342} and {@code :L379},
@@ -592,12 +592,62 @@ public class AdminController {
      *   <li>{@code 'Unable to Update User...'} - {@code app/cbl/COUSR02C.cbl:L386} and
      *       {@code app/cbl/COUSR03C.cbl:L332}. The verb is wrong on the delete path in the source and is
      *       preserved, not corrected.</li>
+     *   <li>{@code 'Unable to Add User...'} - {@code app/cbl/COUSR01C.cbl:L270-L271}, the {@code WHEN OTHER}
+     *       arm of the write. Present because the add path reaches this class by three routes that had
+     *       disagreed with one another: the constraint-refused and invalid-data arms of
+     *       {@code UserAddService.writeFailure} raise types whose handlers relay a message verbatim, so the
+     *       caption already reached a caller there, while the status-translated arm reached the
+     *       {@code 502} handler and was replaced. One literal cannot be publishable on two arms of one
+     *       {@code EVALUATE} and withheld on the third.</li>
      * </ul>
+     *
+     * <p><strong>What made the set necessary is now upstream of it.</strong> The three user-administration
+     * services once let {@code FileStatusMapper} compose the message over the source's caption, so a caption
+     * that this set would have admitted never arrived as one - it arrived as a diagnostic string naming the
+     * dataset and the status, failed the exact match, and was replaced by a fixed detail. That is fixed at the
+     * source, in each service's {@code classify}, which now asks the mapper for the subtype while keeping the
+     * program's own literal as the message. This set continues to do the job it was written for: it stops a
+     * message composed anywhere else from reaching a caller.</p>
      */
     private static final Set<String> RETURNABLE_SOURCE_CAPTIONS = Set.of(
             "User ID NOT found...",
             "Unable to lookup User...",
-            "Unable to Update User...");
+            "Unable to Update User...",
+            "Unable to Add User...");
+
+    /**
+     * {@code app/cbl/COUSR03C.cbl:L283-L284}, the {@code DFHRESP(NORMAL)} arm of {@code READ-USER-SEC-FILE}.
+     *
+     * <p><strong>The source's confirmation gate, and what an unconfirmed delete answers with.</strong> The
+     * program read the record, painted it, and moved this literal into {@code WS-MESSAGE}; it is the only text
+     * that told the operator a second and different key press was needed before anything was destroyed. A
+     * caller that has not asserted the confirmation is in exactly that state, so this is what the {@code 400}
+     * on {@link #deleteUser} publishes.</p>
+     *
+     * <p>Transcribed here rather than referenced from the service for the same reason
+     * {@link #RETURNABLE_SOURCE_CAPTIONS} transcribes its four: a caption this class puts on the wire is this
+     * class's own published contract, and it is verified against the frozen program itself rather than against
+     * another Java file, which is the stronger check of the two. Note the <strong>space before the three
+     * periods</strong> - the two not-found captions of the same program do not have one.</p>
+     */
+    private static final String UNCONFIRMED_DELETE_DETAIL = "Press PF5 key to delete this user ...";
+
+    /**
+     * {@code CCDA-MSG-INVALID-KEY} from {@code app/cpy/CSMSG01Y.cpy:L20-L21}, moved into {@code WS-MESSAGE} on
+     * the {@code WHEN OTHER} arm of {@code app/cbl/COUSR03C.cbl:L126-L129}.
+     *
+     * <p><strong>What an unrecognised confirmation token answers with.</strong> Sending something that is not
+     * a confirmation is, in the source's terms, pressing a key that is neither {@code DFHENTER}, {@code PF3},
+     * {@code PF4}, {@code PF5} nor {@code PF12}, and the program answers every one of those with this literal
+     * and repaints. Nothing is destroyed on that arm either.</p>
+     *
+     * <p>The copybook declares it {@code PIC X(50)}, so the value it holds carries nine trailing spaces of
+     * padding to fill the picture. {@code WS-MESSAGE} is itself {@code PIC X(80)}, so the padding is an
+     * artefact of the fixed-width field rather than part of the text the operator read, and it is not
+     * reproduced. The three periods are text and are.</p>
+     */
+    private static final String UNRECOGNISED_CONFIRMATION_DETAIL =
+            "Invalid key pressed. Please see below...";
 
     /**
      * The fixed detail returned for every 500. It names no cause, which is the same posture as
@@ -1318,6 +1368,18 @@ public class AdminController {
      * with a {@code 400} naming the {@value #CONFIRMED_PARAMETER} field, so a missing confirmation is
      * reported as the client-side omission it is rather than reaching the service and surfacing as a server
      * failure. Nothing is destroyed on that path.
+     *
+     * <p><strong>Both refusals carry the source's own caption.</strong> The substitution is in the mechanism,
+     * not in the words: an absent confirmation is the state the operator was in while the prompt of
+     * {@code app/cbl/COUSR03C.cbl:L283} stood on the screen, so the {@code 400} publishes that prompt -
+     * {@code 'Press PF5 key to delete this user ...'} - and a token that is present but is not a confirmation
+     * is a key that is not {@code DFHPF5}, which the source answers from its {@code WHEN OTHER} arm at
+     * {@code :L127-L129} with {@code CCDA-MSG-INVALID-KEY}, {@code 'Invalid key pressed. Please see below...'}.
+     * Both are relayed byte for byte and both are held once, on
+     * {@code com.cardemo.service.admin.UserDeleteService}. The stateless explanation those two bodies used to
+     * carry instead is documented here and in {@code docs/api-contracts.md}, and the machine-readable half of
+     * it survives on the body: the {@code field} property names {@value #CONFIRMED_PARAMETER} and the
+     * {@code failureKind} property separates the absent case from the invalid one.
      *
      * <p><strong>Outputs.</strong> {@code 200} with the assembled screen, whose four detail fields are blank -
      * exactly as {@code INITIALIZE-ALL-FIELDS} leaves them at {@code app/cbl/COUSR03C.cbl:L315} - and whose
@@ -2304,22 +2366,50 @@ public class AdminController {
      * assertion is refused as the blank state and a present-but-wrong one as the invalid state, which keeps
      * "you did not confirm" distinguishable from "you sent something that is not a confirmation".</p>
      *
+     * <p><strong>Both refusals publish the source's own caption, and each arm has one.</strong> Earlier
+     * revisions published newly authored prose here, which lost two literals that are observable contract.
+     * Not confirming is the state the operator is in while the prompt of {@code :L283} is on the screen, so
+     * that prompt - {@code 'Press PF5 key to delete this user ...'} - is what the refusal says. Sending a
+     * token that is not a confirmation is pressing a key that is not {@code DFHPF5}, which the source answers
+     * at {@code :L127-L129} from its {@code WHEN OTHER} arm with {@code CCDA-MSG-INVALID-KEY} -
+     * {@code 'Invalid key pressed. Please see below...'}. Neither caption is invented and neither arm is left
+     * to a paraphrase; both are held on this class as {@link #UNCONFIRMED_DELETE_DETAIL} and
+     * {@link #UNRECOGNISED_CONFIRMATION_DETAIL}, each verified against the frozen source it was transcribed
+     * from.</p>
+     *
+     * <p>The explanation the prose used to carry has not been thrown away, it has moved to where a developer
+     * reads it: this comment and the delete-endpoint section of {@code docs/api-contracts.md}. It is
+     * deliberately not added to the body as an extra member - the failure envelope is uniform across all
+     * seventeen operations, and the two members that make a refusal actionable are already there. The
+     * {@code field} property names {@code confirmed} and the {@code failureKind} property separates the
+     * absent case from the invalid one, which is the machine-readable form of the same information.</p>
+     *
+     * <p><strong>Why this no longer delegates to {@link #requireBooleanToken}.</strong> That helper is shared
+     * with the paging token, where the accepted set is genuinely two spellings and where its own message is the
+     * right one. It answers three ways - {@code 'true'}, {@code 'false'}, and a refusal for everything else -
+     * and delegating therefore split the source's single {@code WHEN OTHER} arm across two different bodies:
+     * {@code confirmed=false} got the caption while {@code confirmed=yes} got the helper's prose. The source
+     * makes no such distinction. Every key that is not {@code DFHPF5} lands on one arm, and the acceptance
+     * test here is correspondingly one comparison against one token, with every other spelling - including
+     * {@code 'false'} - refused identically. The two accepted spellings of the paging token are unaffected
+     * because that path still goes through the helper.</p>
+     *
      * @param token the confirmation token as received, or null when the parameter was absent.
      * @return true, always, since every other outcome is refused
-     * @throws ValidationException if the token is absent, empty, malformed, or explicitly false
+     * @throws ValidationException if the token is absent, empty, or anything other than the exact affirmative
+     * spelling - {@code 'false'} and every alias included
      */
     private static boolean requireConfirmation(final String token) {
 
         if (token == null || token.isEmpty()) {
-            throw ValidationException.missingField(CONFIRMED_PARAMETER,
-                    CONFIRMED_PARAMETER + " must be supplied as '" + TRUE_TOKEN + "' to delete a user,"
-                            + " which is the stateless equivalent of the confirmation the delete screen"
-                            + " required before it destroyed a record; nothing was deleted");
+            // :L283 - the prompt that stands on the screen until PF5 is pressed. Nothing was deleted.
+            throw ValidationException.missingField(CONFIRMED_PARAMETER, UNCONFIRMED_DELETE_DETAIL);
         }
-        if (!requireBooleanToken(token, CONFIRMED_PARAMETER)) {
-            throw ValidationException.invalidField(CONFIRMED_PARAMETER,
-                    CONFIRMED_PARAMETER + " must be '" + TRUE_TOKEN + "' to delete a user; nothing was"
-                            + " deleted");
+        if (!TRUE_TOKEN.equals(token)) {
+            // :L126-L129 WHEN OTHER - any key that is not PF5, which is one arm and one caption. Matched
+            // exactly: no alias, no case fold, and no trim, so 'TRUE', 'yes', '1', 'on', ' true' and 'false'
+            // are all the same refusal. Nothing was deleted.
+            throw ValidationException.invalidField(CONFIRMED_PARAMETER, UNRECOGNISED_CONFIRMATION_DETAIL);
         }
         return true;
     }

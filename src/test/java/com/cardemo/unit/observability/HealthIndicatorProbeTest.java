@@ -60,6 +60,10 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.ListTopicsRequest;
+import software.amazon.awssdk.services.sns.model.ListTopicsResponse;
+import software.amazon.awssdk.services.sns.model.Topic;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
@@ -129,11 +133,17 @@ class HealthIndicatorProbeTest {
     /** The logical queue name the health detail publishes in preference to the physical one. */
     private static final String QUEUE_LOGICAL = "carddemo-report-jobs";
 
+    /** The bare notification topic name, which carries no suffix of any kind. */
+    private static final String TOPIC = "carddemo-notifications";
+
     /** Stubbed object-storage client; no test lets it reach an endpoint. */
     private S3Client s3Client;
 
     /** Stubbed queue client; no test lets it reach an endpoint. */
     private SqsAsyncClient sqsAsyncClient;
+
+    /** Stubbed notification client; no test lets it reach an endpoint. */
+    private SnsClient snsClient;
 
     /** Mocked application datasource, so the bounded relational probe can be built and driven. */
     private DataSource dataSource;
@@ -143,6 +153,7 @@ class HealthIndicatorProbeTest {
         this.s3Client = Mockito.mock(S3Client.class);
         this.dataSource = Mockito.mock(DataSource.class);
         this.sqsAsyncClient = Mockito.mock(SqsAsyncClient.class);
+        this.snsClient = Mockito.mock(SnsClient.class);
     }
 
     /**
@@ -157,8 +168,26 @@ class HealthIndicatorProbeTest {
      */
     private HealthIndicators indicators(final String inputBucket, final String outputBucket,
             final String statementsBucket, final String queue, final String queueLogical) {
-        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, this.dataSource,
-                inputBucket, outputBucket, statementsBucket, queue, queueLogical);
+        return indicators(inputBucket, outputBucket, statementsBucket, queue, queueLogical, TOPIC);
+    }
+
+    /**
+     * Builds the holder with an explicit notification topic name, for the notification probe's own cases.
+     *
+     * @param inputBucket      the batch input bucket name, possibly empty
+     * @param outputBucket     the batch output bucket name, possibly empty
+     * @param statementsBucket the statements bucket name, possibly empty
+     * @param queue            the physical queue name, possibly empty
+     * @param queueLogical     the logical queue name, possibly empty
+     * @param topic            the bare notification topic name, possibly empty
+     * @return the holder, never {@code null}
+     */
+    private HealthIndicators indicators(final String inputBucket, final String outputBucket,
+            final String statementsBucket, final String queue, final String queueLogical,
+            final String topic) {
+        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, this.snsClient,
+                this.dataSource,
+                inputBucket, outputBucket, statementsBucket, queue, queueLogical, topic);
     }
 
     /** Builds the holder with every resource name well formed. */
@@ -450,6 +479,269 @@ class HealthIndicatorProbeTest {
         }
     }
 
+    /**
+     * The notification contributor, which did not exist before the change that added it.
+     *
+     * <p><strong>The finding.</strong> Notification was the one required cloud dependency readiness said
+     * nothing about. An instance whose topic had never been provisioned - a renamed variable, a provisioning
+     * script that had not run, a typo - started cleanly, answered {@code /actuator/health/readiness} with
+     * {@code 200 UP}, passed the container health check and took traffic; the fault surfaced only at the
+     * first report submission, on a request thread, as an exception out of the topic resolver. Every arm
+     * below distinguishes one verdict from the others, because a probe whose only reachable answer is DOWN
+     * would be no signal at all and one whose only answer is UP would be worse than none.
+     */
+    @Nested
+    @DisplayName("SNS readiness: the operator notification topic, resolved the way the publish path "
+            + "resolves it")
+    class SnsReadiness {
+
+        /** Builds a one-page listing answer holding the given bare topic names. */
+        private ListTopicsResponse page(final String... bareNames) {
+            return ListTopicsResponse.builder()
+                    .topics(java.util.Arrays.stream(bareNames)
+                            .map(name -> Topic.builder()
+                                    .topicArn("arn:aws:sns:us-east-1:000000000000:" + name)
+                                    .build())
+                            .toList())
+                    .build();
+        }
+
+        @Test
+        @DisplayName("a provisioned topic reports UP and publishes the bare name, never the identifier")
+        void aProvisionedTopicReportsUp() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(page("some-other-topic", TOPIC));
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_COMPONENT,
+                            HealthIndicators.SNS_HEALTH_COMPONENT_NAME)
+                    .containsEntry(HealthIndicators.DETAIL_TOPIC, TOPIC)
+                    .containsEntry(HealthIndicators.DETAIL_TOPIC_PAGES_EXAMINED, 1)
+                    .containsKey(HealthIndicators.DETAIL_ELAPSED_MILLIS);
+            assertThat(health.getDetails().toString())
+                    .as("a resolved topic identifier embeds the twelve-digit account segment, so it is "
+                            + "compared in-process and discarded - only the configured bare name is "
+                            + "published")
+                    .doesNotContain("arn:")
+                    .doesNotContain("000000000000");
+        }
+
+        @Test
+        @DisplayName("an absent topic reports DOWN with missing, having walked the whole listing")
+        void anAbsentTopicReportsMissing() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(page("some-other-topic"));
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .as("MISSING rather than UNREACHABLE: every call succeeded, so the remedy is to "
+                            + "provision the topic and not to fix connectivity")
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_MISSING)
+                    .containsEntry(HealthIndicators.DETAIL_TOPIC_PAGES_EXAMINED, 1);
+        }
+
+        @Test
+        @DisplayName("an unconfigured topic reports DOWN with not-configured and calls nothing")
+        void anUnconfiguredTopicReportsNotConfigured() {
+            Health health =
+                    indicators(INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL, "")
+                            .snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON,
+                            HealthIndicators.REASON_NOT_CONFIGURED)
+                    .containsEntry(HealthIndicators.DETAIL_PROPERTY,
+                            "carddemo.aws.sns.notification-topic");
+            Mockito.verify(snsClient, Mockito.never()).listTopics(Mockito.any(ListTopicsRequest.class));
+        }
+
+        @Test
+        @DisplayName("a topic ARN where a bare name belongs is refused without echoing the value")
+        void anArnTopicNameIsRefusedWithoutEchoing() {
+            String arn = "arn:aws:sns:us-east-1:000000000000:carddemo-notifications";
+
+            Health health = indicators(INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE,
+                    QUEUE_LOGICAL, arn).snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON,
+                            HealthIndicators.REASON_INVALID_NAME);
+            assertThat(health.getDetails().toString())
+                    .doesNotContain("arn:")
+                    .doesNotContain("000000000000");
+            Mockito.verify(snsClient, Mockito.never()).listTopics(Mockito.any(ListTopicsRequest.class));
+        }
+
+        @Test
+        @DisplayName("a transport failure reports DOWN with unreachable, not missing")
+        void aTransportFailureReportsUnreachable() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenThrow(SdkClientException.create("connection refused"));
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .as("UNREACHABLE rather than MISSING: the service never answered, so nothing has been "
+                            + "learned about whether the topic exists")
+                    .containsEntry(HealthIndicators.DETAIL_REASON,
+                            HealthIndicators.REASON_UNREACHABLE);
+        }
+
+        @Test
+        @DisplayName("an unexpected runtime failure reports DOWN with error rather than propagating")
+        void anUnexpectedFailureReportsError() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenThrow(new IllegalStateException("unexpected"));
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_ERROR);
+        }
+
+        @Test
+        @DisplayName("every listing call carries a deadline drawn from the contributor's budget")
+        void everyListingCallCarriesADeadline() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(page(TOPIC));
+
+            fullyConfigured().snsHealthIndicator().health();
+
+            org.mockito.ArgumentCaptor<ListTopicsRequest> captor =
+                    org.mockito.ArgumentCaptor.forClass(ListTopicsRequest.class);
+            Mockito.verify(snsClient).listTopics(captor.capture());
+            software.amazon.awssdk.awscore.AwsRequestOverrideConfiguration override =
+                    captor.getValue().overrideConfiguration().orElseThrow();
+            assertThat(override.apiCallTimeout()).isPresent();
+            assertThat(override.apiCallTimeout().orElseThrow())
+                    .as("the shared client's timeouts are sized for publishing, so the probe must impose "
+                            + "its own or it could block for far longer than the container health check "
+                            + "allows")
+                    .isGreaterThan(java.time.Duration.ZERO)
+                    .isLessThanOrEqualTo(java.time.Duration.ofMillis(1_500L));
+            assertThat(override.apiCallAttemptTimeout()).isPresent();
+        }
+
+        @Test
+        @DisplayName("the walk follows the pagination token and stops at the page that answers")
+        void theWalkFollowsPaginationAndStopsWhenItAnswers() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(ListTopicsResponse.builder()
+                            .topics(page("first-page-topic").topics())
+                            .nextToken("page-2")
+                            .build())
+                    .thenReturn(page(TOPIC));
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+            assertThat(health.getDetails())
+                    .as("the page count is published so a reader can tell a complete search from a "
+                            + "ceiling-limited one")
+                    .containsEntry(HealthIndicators.DETAIL_TOPIC_PAGES_EXAMINED, 2);
+            Mockito.verify(snsClient, Mockito.times(2))
+                    .listTopics(Mockito.any(ListTopicsRequest.class));
+            assertThat(health.getDetails().toString()).doesNotContain("page-2");
+        }
+
+        @Test
+        @DisplayName("a blank pagination token ends the walk rather than repeating the first page")
+        void aBlankPaginationTokenEndsTheWalk() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(ListTopicsResponse.builder()
+                            .topics(page("other").topics())
+                            .nextToken("   ")
+                            .build());
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_MISSING);
+            Mockito.verify(snsClient, Mockito.times(1))
+                    .listTopics(Mockito.any(ListTopicsRequest.class));
+        }
+
+        @Test
+        @DisplayName("the walk is bounded by a page ceiling even when the service keeps handing out tokens")
+        void theWalkIsBoundedByThePageCeiling() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(ListTopicsResponse.builder()
+                            .topics(page("never-the-one-we-want").topics())
+                            .nextToken("always-another")
+                            .build());
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat((Integer) health.getDetails()
+                    .get(HealthIndicators.DETAIL_TOPIC_PAGES_EXAMINED))
+                    .as("an unbounded walk over an endlessly-paginating service would hang the readiness "
+                            + "endpoint; the ceiling and the time budget both bound it")
+                    .isLessThanOrEqualTo(50);
+        }
+
+        @Test
+        @DisplayName("the probe publishes NOTHING to the topic - not one message, ever")
+        void theProbePublishesNothing() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(page(TOPIC));
+
+            fullyConfigured().snsHealthIndicator().health();
+
+            // A health check that published would emit a spurious operator notification every 15 s under
+            // the container health check, which is worse than having no probe at all.
+            Mockito.verify(snsClient, Mockito.never())
+                    .publish(Mockito.any(software.amazon.awssdk.services.sns.model.PublishRequest.class));
+            Mockito.verify(snsClient, Mockito.never())
+                    .createTopic(
+                            Mockito.any(software.amazon.awssdk.services.sns.model.CreateTopicRequest.class));
+        }
+
+        @Test
+        @DisplayName("the page ceiling agrees with the publish path's, so the two reach the same verdict")
+        void thePageCeilingAgreesWithThePublishPath() throws Exception {
+            java.lang.reflect.Field probeCeiling =
+                    HealthIndicators.class.getDeclaredField("TOPIC_PAGE_LIMIT_COUNT");
+            probeCeiling.setAccessible(true);
+            java.lang.reflect.Field publishCeiling =
+                    com.cardemo.config.AwsConfig.class.getDeclaredField("TOPIC_PAGE_LIMIT_COUNT");
+            publishCeiling.setAccessible(true);
+
+            assertThat(probeCeiling.getInt(null))
+                    .as("a readiness probe that searched FEWER pages than the publish path would report "
+                            + "DOWN for a topic the publish path resolves perfectly well, taking a healthy "
+                            + "instance out of rotation on the strength of its own shorter search. The two "
+                            + "constants are declared separately - a health probe must not import "
+                            + "configuration internals - so this assertion is what binds them")
+                    .isEqualTo(publishCeiling.getInt(null));
+        }
+
+        @Test
+        @DisplayName("a non-empty list containing only near-miss names is still missing")
+        void nearMissNamesDoNotSatisfyTheProbe() {
+            Mockito.when(snsClient.listTopics(Mockito.any(ListTopicsRequest.class)))
+                    .thenReturn(page(TOPIC + "-inbox", "x" + TOPIC, TOPIC.toUpperCase(java.util.Locale.ROOT)));
+
+            Health health = fullyConfigured().snsHealthIndicator().health();
+
+            assertThat(health.getStatus())
+                    .as("the comparison is exact, as the publish path's is. The derived '-inbox' queue "
+                            + "subscription target shares a prefix with the topic and must not satisfy it")
+                    .isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_MISSING);
+        }
+    }
+
     /** Construction-time guarantees and the published detail-key contract. */
     @Nested
     @DisplayName("Construction and published names")
@@ -458,32 +750,42 @@ class HealthIndicatorProbeTest {
         @Test
         @DisplayName("a null object-storage client is refused at construction")
         void nullS3ClientIsRefused() {
-            assertThatThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, dataSource,
-                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL))
+            assertThatThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, snsClient,
+                    dataSource,
+                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL, TOPIC))
                     .isInstanceOf(NullPointerException.class);
         }
 
         @Test
         @DisplayName("a null datasource is refused at construction")
         void nullDataSourceIsRefused() {
-            assertThatThrownBy(() -> new HealthIndicators(s3Client, sqsAsyncClient, null,
-                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL))
+            assertThatThrownBy(() -> new HealthIndicators(s3Client, sqsAsyncClient, snsClient, null,
+                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL, TOPIC))
                     .isInstanceOf(NullPointerException.class);
         }
 
         @Test
         @DisplayName("a null queue client is refused at construction")
         void nullSqsClientIsRefused() {
-            assertThatThrownBy(() -> new HealthIndicators(s3Client, null, dataSource,
-                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL))
+            assertThatThrownBy(() -> new HealthIndicators(s3Client, null, snsClient, dataSource,
+                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL, TOPIC))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("a null notification client is refused at construction")
+        void nullSnsClientIsRefused() {
+            assertThatThrownBy(() -> new HealthIndicators(s3Client, sqsAsyncClient, null, dataSource,
+                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL, TOPIC))
                     .isInstanceOf(NullPointerException.class);
         }
 
         @Test
         @DisplayName("null resource names are normalised to empty rather than throwing")
         void nullResourceNamesAreNormalised() {
-            HealthIndicator indicator = new HealthIndicators(s3Client, sqsAsyncClient, dataSource,
-                    null, null, null, null, null).s3HealthIndicator();
+            HealthIndicator indicator = new HealthIndicators(s3Client, sqsAsyncClient, snsClient,
+                    dataSource,
+                    null, null, null, null, null, null).s3HealthIndicator();
 
             Health health = indicator.health();
 

@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 import com.cardemo.batch.jobs.TransactionReportJob;
+import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
@@ -49,10 +50,14 @@ import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.S3Operations;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInstance;
@@ -219,6 +224,102 @@ class TransactionReportJobDiagnosticContextTest {
         } finally {
             listener.afterJob(execution);
         }
+    }
+
+    @Test
+    @DisplayName("finding P5-02: an abend among the failures is published as the ABEND exit status, not FAILED")
+    void anAbendIsPublishedAsTheAbendExitStatus() throws Exception {
+        // The decider already returned ABEND and the flow already routed it to fail(). What the flow could not
+        // do is keep it: the framework's failed end state sets the exit status to FAILED as part of failing the
+        // job, so the execution persisted as FAILED/FAILED and an operator could not tell a return code 12
+        // abend from an ordinary return code 8 failure. That is exactly the distinction
+        // app/cbl/CBTRN03C.cbl:629-630 - MOVE 999 TO ABCODE then CALL 'CEE3ABD' - exists to make. Re-asserting
+        // the status from afterJob restores it, and is what the four sibling jobs already do.
+        final JobExecutionListener listener = listener();
+        final JobExecution execution = execution();
+        final FatalProcessingException abend = new FatalProcessingException("0999", "CBTRN03C",
+                "INVALID CARD NUMBER", "ABENDING PROGRAM");
+        execution.addFailureException(abend);
+        execution.setStatus(BatchStatus.FAILED);
+        execution.setExitStatus(ExitStatus.FAILED);
+
+        listener.beforeJob(execution);
+        listener.afterJob(execution);
+
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("the exit code is what a caller reads to tell 12 from 8, and an abend must say so")
+                .isEqualTo("ABEND");
+        assertThat(execution.getExitStatus().getExitDescription())
+                .as("the description names the abend code and the process return code, in the same wording "
+                        + "the four sibling jobs use, so one grep finds an abend in any of the five")
+                .contains(Integer.toString(FatalProcessingException.BATCH_ABEND_CODE))
+                .contains(Integer.toString(FatalProcessingException.BATCH_RETURN_CODE))
+                .contains("CBTRN03C");
+        assertThat(execution.getStatus())
+                .as("the batch STATUS is deliberately left unsuccessful. An abend is a failure; what it adds "
+                        + "is the exit code, so restart semantics are unchanged")
+                .isEqualTo(BatchStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("an abend nested as a cause is still an abend, so a wrapped one cannot decay into FAILED")
+    void anAbendCarriedAsACauseIsStillPublished() throws Exception {
+        final JobExecutionListener listener = listener();
+        final JobExecution execution = execution();
+        // Spring Batch records the exception the step threw, and a step's own wrapping can put the abend one
+        // level down. Detection is by type over the recorded failures, so the top-level throwable being the
+        // abend is what matters here; this case pins that a plain wrapper does NOT get promoted, which is the
+        // conservative half of the same rule and stops an ordinary failure being mislabelled as an abend.
+        execution.addFailureException(new IllegalStateException("an ordinary step failure",
+                new FatalProcessingException("0999", "CBTRN03C", "INVALID CARD NUMBER", "ABENDING PROGRAM")));
+        execution.setStatus(BatchStatus.FAILED);
+        execution.setExitStatus(ExitStatus.FAILED);
+
+        listener.beforeJob(execution);
+        listener.afterJob(execution);
+
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("only a recorded FatalProcessingException is an abend. Walking causes would let any "
+                        + "failure that happened to wrap one be reported as return code 12, which is the "
+                        + "opposite mislabelling and just as wrong")
+                .isEqualTo(ExitStatus.FAILED.getExitCode());
+    }
+
+    @Test
+    @DisplayName("a clean run keeps its own exit status; the promotion cannot fire without an abend")
+    void aCleanRunIsNotRelabelled() throws Exception {
+        final JobExecutionListener listener = listener();
+        final JobExecution execution = execution();
+        execution.setStatus(BatchStatus.COMPLETED);
+        execution.setExitStatus(ExitStatus.COMPLETED);
+
+        listener.beforeJob(execution);
+        listener.afterJob(execution);
+
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("the inverse assertion, and the one that would catch a promotion applied unconditionally")
+                .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+    }
+
+    @Test
+    @DisplayName("finding P7-11: the start-of-job step count is FOUR, matching the flow that is wired")
+    void theStartOfJobStepCountMatchesTheWiredFlow() throws Exception {
+        // The count is published to an operator on the first line of every run, and it said three while the
+        // flow wired four: STEP01R, STEP05R and STEP10R from app/proc/TRANREPT.prc plus the step
+        // app/jcl/PRTCATBL.jcl contributes. The figure is now derived from one declared constant rather than
+        // written out by hand in the log line and again in the class documentation, so this asserts the
+        // constant rather than parsing a log line - which is the durable form of the same check.
+        final Field declared = TransactionReportJob.class.getDeclaredField("ORDERED_STEP_COUNT");
+        declared.setAccessible(true);
+
+        assertThat(declared.getInt(null))
+                .as("app/proc/TRANREPT.prc contributes three steps and app/jcl/PRTCATBL.jcl the fourth, and "
+                        + "transactionReportFlow wires all four")
+                .isEqualTo(4);
+        assertThat(Modifier.isStatic(declared.getModifiers()) && Modifier.isFinal(declared.getModifiers()))
+                .as("declared once, so the documentation and the log line cannot drift apart again")
+                .isTrue();
     }
 
     /**

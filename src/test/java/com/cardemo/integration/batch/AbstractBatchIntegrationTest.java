@@ -120,6 +120,7 @@ import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.VersioningConfiguration;
+import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
@@ -471,15 +472,22 @@ public abstract class AbstractBatchIntegrationTest {
             .withEnv("POSTGRES_INITDB_ARGS", "--encoding=UTF8 --locale=C");
 
     /**
-     * The cloud substrate: one LocalStack container exposing the object store and the queue, started once per
-     * JVM alongside the database container and shared by every subclass.
+     * The cloud substrate: one LocalStack container exposing the object store, the queue and the notification
+     * service, started once per JVM alongside the database container and shared by every subclass.
      *
-     * <p>Only the two services this tier actually uses are requested. The object store receives the
-     * fixed-width batch outputs that replace the generation data groups of {@code app/jcl/DEFGDGB.jcl}, and
-     * the queue is the FIFO replacement for {@code DEFINE TDQUEUE(JOBS)} at
-     * {@code app/csd/CARDDEMO.CSD:499-505}. The notification service is not requested, because no test in
-     * this tier publishes a notification; its topic <em>name</em> is still supplied as a property so that
-     * property resolution succeeds, which is a different thing from starting the service.
+     * <p>The object store receives the fixed-width batch outputs that replace the generation data groups of
+     * {@code app/jcl/DEFGDGB.jcl}, and the queue is the FIFO replacement for {@code DEFINE TDQUEUE(JOBS)} at
+     * {@code app/csd/CARDDEMO.CSD:499-505}.
+     *
+     * <p><strong>The notification service used to be omitted, and the omission became a defect the moment
+     * readiness began probing the topic.</strong> The reasoning for leaving it out was that no test in this
+     * tier publishes a notification, and that supplying the topic <em>name</em> as a property was enough for
+     * property resolution to succeed - which was true, and is a different thing from the substrate being
+     * usable. When the notification readiness contributor was added, the composite health assertion in
+     * {@code BatchPipelineOrchestratorTest} began failing with {@code Service 'sns' is not enabled} behind a
+     * 501: the probe was reporting, correctly, that a required substrate was unreachable. Requesting the
+     * service and provisioning the topic is the fix; narrowing the health assertion to the three services
+     * that happened to be running would have been a test that could no longer fail for the reason it exists.
      *
      * <p>All interaction is with this container. No live endpoint and no live credential appears anywhere in
      * this tier, and there is no code path from here that could reach one.
@@ -488,7 +496,7 @@ public abstract class AbstractBatchIntegrationTest {
      */
     static final LocalStackContainer LOCALSTACK =
             new LocalStackContainer(DockerImageName.parse("localstack/localstack:4.14.0"))
-                    .withServices("s3", "sqs");
+                    .withServices("s3", "sqs", "sns");
 
     /*
      * ONE CONTAINER LIFECYCLE PER JVM, NOT ONE PER TEST CLASS.
@@ -550,7 +558,10 @@ public abstract class AbstractBatchIntegrationTest {
      * context refresh before any test ran.
      *
      * <p><strong>Side effects, and why they live here.</strong> This method also creates the three buckets,
-     * enables versioning on the output bucket and creates the FIFO queue. That provisioning has to happen
+     * enables versioning on the output bucket, creates the FIFO queue and creates the notification topic.
+     * The topic joined that list when the notification readiness contributor was added: the property naming
+     * it was already registered here, but nothing created it, so the composite health surface correctly
+     * reported the substrate absent. That provisioning has to happen
      * <em>before</em> the context refreshes rather than in a per-test hook, because the queue-not-found
      * strategy is to fail: any queue-backed listener would abort startup against a queue that did not yet
      * exist. This method is the only hook that runs after the containers are up and before the context is
@@ -581,9 +592,10 @@ public abstract class AbstractBatchIntegrationTest {
         final String outputBucket = "carddemo-batch-output";
         final String statementsBucket = "carddemo-statements";
         final String reportQueue = "carddemo-report-jobs.fifo";
+        final String notificationTopic = "carddemo-notifications";
 
         provisionCloudResources(endpoint, region, accessKey, secretKey,
-                inputBucket, outputBucket, statementsBucket, reportQueue);
+                inputBucket, outputBucket, statementsBucket, reportQueue, notificationTopic);
 
         registry.add("spring.cloud.aws.region.static", () -> region);
         registry.add("spring.cloud.aws.credentials.access-key", () -> accessKey);
@@ -596,7 +608,7 @@ public abstract class AbstractBatchIntegrationTest {
         registry.add("carddemo.aws.s3.batch-output-bucket", () -> outputBucket);
         registry.add("carddemo.aws.s3.statements-bucket", () -> statementsBucket);
         registry.add("carddemo.aws.sqs.report-queue", () -> reportQueue);
-        registry.add("carddemo.aws.sns.notification-topic", () -> "carddemo-notifications");
+        registry.add("carddemo.aws.sns.notification-topic", () -> notificationTopic);
 
         // Generated fresh for this context from a cryptographically secure source, held only in this local,
         // and never written to a file, a log line or an assertion message. The production property resolves
@@ -652,10 +664,12 @@ public abstract class AbstractBatchIntegrationTest {
      * @param outputBucket     logical name of the batch output bucket, the only versioned one
      * @param statementsBucket logical name of the statements bucket
      * @param reportQueue      physical name of the report FIFO queue, whose suffix the queue service requires
+     * @param notificationTopic bare name of the operator notification topic the readiness probe resolves
      */
     private static void provisionCloudResources(final URI endpoint, final String region,
             final String accessKey, final String secretKey, final String inputBucket,
-            final String outputBucket, final String statementsBucket, final String reportQueue) {
+            final String outputBucket, final String statementsBucket, final String reportQueue,
+            final String notificationTopic) {
 
         final StaticCredentialsProvider credentials =
                 StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey));
@@ -700,6 +714,33 @@ public abstract class AbstractBatchIntegrationTest {
                 // service raises this only when the existing attributes differ from the requested ones, so the
                 // response is verified rather than assumed.
                 confirmFifoQueuePresent(sqs, reportQueue, alreadyProvisioned);
+            }
+        }
+
+        try (SnsClient sns = SnsClient.builder()
+                .endpointOverride(endpoint)
+                .region(Region.of(region))
+                .credentialsProvider(credentials)
+                .build()) {
+            // CreateTopic is idempotent by specification: creating a topic that already exists returns the
+            // existing one rather than failing, so no already-exists arm is needed here and none is invented.
+            // The returned identifier is deliberately DISCARDED - it embeds the account segment, and the
+            // application resolves the topic from its bare name by listing, exactly as the readiness probe
+            // does.
+            sns.createTopic(request -> request.name(notificationTopic));
+
+            // Read back rather than assumed, matching the queue check above and the read-back self-checks in
+            // localstack-init/init-aws.sh: a create that returned without provisioning would otherwise leave
+            // the readiness probe reporting the substrate absent, which is the failure this provisioning
+            // exists to prevent.
+            final boolean present = sns.listTopics().topics().stream()
+                    .anyMatch(topic -> topic.topicArn()
+                            .endsWith(":" + notificationTopic));
+            if (!present) {
+                throw new IllegalStateException("Notification topic '" + notificationTopic
+                        + "' was created without error yet does not appear in the topic listing, so "
+                        + "provisioning has not converged. The readiness probe resolves this topic by the "
+                        + "same listing, so it would report the substrate absent.");
             }
         }
     }

@@ -57,7 +57,11 @@ import com.cardemo.service.admin.UserAddService;
 import com.cardemo.service.admin.UserDeleteService;
 import com.cardemo.service.admin.UserListService;
 import com.cardemo.service.admin.UserUpdateService;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -117,6 +121,26 @@ class AdminControllerTest {
 
     /** The request parameter carrying the delete confirmation. */
     private static final String CONFIRMED_PARAMETER = "confirmed";
+
+    /**
+     * {@code app/cbl/COUSR03C.cbl:283-284} - the prompt the {@code DFHRESP(NORMAL)} arm of the read paints,
+     * and the caption an unconfirmed delete is answered with. Note the space before the three periods.
+     */
+    private static final String UNCONFIRMED_DELETE_CAPTION = "Press PF5 key to delete this user ...";
+
+    /**
+     * {@code CCDA-MSG-INVALID-KEY} from {@code app/cpy/CSMSG01Y.cpy:20-21}, the caption
+     * {@code app/cbl/COUSR03C.cbl:126-129} answers a key that is not one of the five it recognises with, and
+     * therefore the caption a present-but-unrecognised confirmation token is answered with. The copybook pads
+     * the value to {@code PIC X(50)}; the padding is the field's, not the message's.
+     */
+    private static final String UNRECOGNISED_CONFIRMATION_CAPTION = "Invalid key pressed. Please see below...";
+
+    /** The frozen delete program, read so that the two published captions are verified against the oracle. */
+    private static final Path DELETE_PROGRAM_SOURCE = Path.of("app", "cbl", "COUSR03C.cbl");
+
+    /** The frozen shared-message copybook that declares {@code CCDA-MSG-INVALID-KEY}. */
+    private static final Path SHARED_MESSAGES_SOURCE = Path.of("app", "cpy", "CSMSG01Y.cpy");
 
     /** One of the ten identifiers seeded by {@code app/jcl/DUSRSECJ.jcl}. */
     private static final String USER_ID = "USER0001";
@@ -338,6 +362,16 @@ class AdminControllerTest {
                         assertThat(rejection.getFieldName()).isEqualTo(CONFIRMED_PARAMETER);
                         assertThat(rejection.getFailureKind())
                                 .isEqualTo(ValidationException.FailureKind.BLANK);
+                        // Finding P4-03, Major. The refusal used to publish newly authored prose about
+                        // stateless equivalence, so the one caption that told an operator a second key press
+                        // was needed never reached a caller at all. The explanation now lives in the
+                        // Javadoc and in docs/api-contracts.md, where a developer reads it, and the body
+                        // carries the source's own text.
+                        assertThat(rejection.getMessage())
+                                .as("app/cbl/COUSR03C.cbl:283 is the prompt that stands on the screen until "
+                                        + "PF5 is pressed, and this is the state a caller that has not "
+                                        + "confirmed is in")
+                                .isEqualTo(UNCONFIRMED_DELETE_CAPTION);
                     });
             assertNothingWasReached();
         }
@@ -351,8 +385,55 @@ class AdminControllerTest {
                     .as("only the one exact affirmative token deletes. Everything else - including the "
                             + "capitalised spelling and the six tokens a lenient boolean converter would "
                             + "accept - is refused. Token was '%s'", token)
-                    .isThrownBy(() -> controller().deleteUser(USER_ID, token));
+                    .isThrownBy(() -> controller().deleteUser(USER_ID, token))
+                    .satisfies(rejection -> {
+                        assertThat(rejection.getFieldName()).isEqualTo(CONFIRMED_PARAMETER);
+                        assertThat(rejection.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.INVALID);
+                        assertThat(rejection.getMessage())
+                                .as("sending a token that is not a confirmation is pressing a key that is "
+                                        + "not PF5, which app/cbl/COUSR03C.cbl:126-129 answers with "
+                                        + "CCDA-MSG-INVALID-KEY")
+                                .isEqualTo(UNRECOGNISED_CONFIRMATION_CAPTION);
+                    });
             assertNothingWasReached();
+        }
+
+        @Test
+        @DisplayName("the two refusals carry DIFFERENT captions, so the two states stay distinguishable")
+        void theTwoRefusalsCarryDifferentCaptions() {
+            final String omitted = assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> controller().deleteUser(USER_ID, null))
+                    .actual()
+                    .getMessage();
+            final String inexact = assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> controller().deleteUser(USER_ID, "maybe"))
+                    .actual()
+                    .getMessage();
+
+            assertThat(omitted)
+                    .as("collapsing the two would erase the distinction the three-state field model exists "
+                            + "to preserve, and each state has its own literal in the source")
+                    .isNotEqualTo(inexact);
+            assertNothingWasReached();
+        }
+
+        @Test
+        @DisplayName("both published captions are verified against the frozen source, not against each other")
+        void bothPublishedCaptionsComeFromTheFrozenSource() throws IOException {
+            // The captions this class puts on the wire are its own published contract, so they are checked
+            // against the oracle rather than against another Java file. A transcription that drifted by one
+            // character would be invisible to a cross-reference between two Java constants and is caught here.
+            assertThat(Files.readString(DELETE_PROGRAM_SOURCE, StandardCharsets.UTF_8))
+                    .as("the prompt of :283 must exist in app/cbl/COUSR03C.cbl exactly as it is published")
+                    .contains("'" + UNCONFIRMED_DELETE_CAPTION + "'");
+            assertThat(Files.readString(SHARED_MESSAGES_SOURCE, StandardCharsets.UTF_8))
+                    .as("CCDA-MSG-INVALID-KEY declares the invalid-key caption, padded to PIC X(50)")
+                    .contains(UNRECOGNISED_CONFIRMATION_CAPTION);
+            assertThat(Files.readString(DELETE_PROGRAM_SOURCE, StandardCharsets.UTF_8))
+                    .as("and :128 is the arm that moves it into WS-MESSAGE, which is why this program is the "
+                            + "one that publishes it")
+                    .contains("CCDA-MSG-INVALID-KEY");
         }
 
         @Test

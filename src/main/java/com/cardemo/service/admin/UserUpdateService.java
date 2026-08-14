@@ -1932,8 +1932,13 @@ public class UserUpdateService {
             final String fallbackMessage) {
         final Throwable cause = work.ioFailureCause;
         work.ioFailureCause = null;
-        final Optional<CardDemoException> mapped =
-                this.fileStatusMapper.toException(work.ioStatus, USRSEC_FILE, operation, cause);
+        // The mapper owns the SUBTYPE; the source owns the MESSAGE. The composed diagnostic message names
+        // the operation, the file and the expanded status, and it is not the caption the program latches on
+        // its failure arms - which is compared byte for byte as observable contract. The status, the file and
+        // the operation still travel in the exception's structured fields; only the message changes. The same
+        // correction is applied on the delete and add paths, which shared this defect.
+        final Optional<CardDemoException> mapped = this.fileStatusMapper.toExceptionWithLegacyMessage(
+                work.ioStatus, USRSEC_FILE, operation, cause, fallbackMessage);
         if (mapped.isPresent()) {
             return mapped.get();
         }

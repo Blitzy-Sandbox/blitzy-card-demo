@@ -921,14 +921,29 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError --s
 # The probe is the Java analogue of the CEMT SET FIL(...) OPE and CLO
 # steps of app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl, which made the
 # VSAM datasets available to the online region. It asks the readiness
-# group declared in application.yml, which includes readinessState and
-# db, and treats only "status":"UP" as healthy - a 401, a 404 or an
-# OUT_OF_SERVICE body all correctly read as not ready. The port follows
-# SERVER_PORT so the probe cannot drift from the listener.
+# group declared in application.yml, which includes readinessState, db,
+# s3, sqs and sns, and treats only "status":"UP" as healthy - a 401, a
+# 404 or an OUT_OF_SERVICE body all correctly read as not ready. The
+# port follows SERVER_PORT so the probe cannot drift from the listener.
 #
 # start-period covers Flyway applying V1, V2 and V3 on a cold database;
 # failures inside it are not counted against the retry budget.
-HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=4 \
+#
+# --timeout=7s is DERIVED, not chosen, and was 5s until the notification
+# contributor was added. Actuator evaluates the members of a health group
+# SEQUENTIALLY, so the four dependency contributors declared by
+# com.cardemo.observability.HealthIndicators add rather than overlap:
+# four at their 1500 ms budget each caps the aggregate at 6 s, and 7 s
+# leaves 1 s for Actuator's aggregation and this round trip. The
+# alternative - shrinking all four budgets to 1000 ms to stay under 5 s -
+# was rejected because 1000 ms leaves the relational probe no room for
+# pool acquisition plus its validation query on a memory-pressured host,
+# and a probe that reports DOWN because it was rushed takes a HEALTHY
+# instance out of rotation. With --retries=4 at --interval=15s, detection
+# latency for a genuinely wedged instance is dominated by the retry
+# budget rather than by this timeout, so the two extra seconds cost
+# essentially nothing.
+HEALTHCHECK --interval=15s --timeout=7s --start-period=90s --retries=4 \
   CMD ["/usr/bin/bash", "-c", "set -eu; exec 3<>/dev/tcp/127.0.0.1/${SERVER_PORT:-8080}; printf 'GET /actuator/health/readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3"]
 
 # Exec form, so the JVM is pid 1 and receives SIGTERM directly. That is

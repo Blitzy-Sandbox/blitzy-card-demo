@@ -1577,8 +1577,19 @@ public class UserDeleteService {
 
         final Throwable cause = work.ioFailureCause;
         work.ioFailureCause = null;
-        final Optional<CardDemoException> mapped =
-                this.fileStatusMapper.toException(work.ioStatus, USRSEC_FILE, operation, cause);
+        // THE MAPPER OWNS THE SUBTYPE; THE SOURCE OWNS THE MESSAGE.
+        //
+        // The plain toException composes its message from the operation, the file and the expanded status,
+        // which is what a diagnostic reader wants and is NOT what :296 and :332 latch onto the screen. When
+        // that composed text became the message, the source caption was gone by the time
+        // com.cardemo.controller.AdminController decided what it may publish - that decision is an equality
+        // test against a set of source captions - so the caller received a generic detail instead of the
+        // literal the program displays. The caption is the observable contract here, compared byte for byte.
+        //
+        // The status, the file and the operation are not discarded: they travel in the exception's own
+        // structured fields, which is where a consumer should read them from. Only the message changes.
+        final Optional<CardDemoException> mapped = this.fileStatusMapper.toExceptionWithLegacyMessage(
+                work.ioStatus, USRSEC_FILE, operation, cause, fallbackMessage);
         if (mapped.isPresent()) {
             return mapped.get();
         }

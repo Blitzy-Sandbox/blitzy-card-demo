@@ -230,7 +230,7 @@
 #   app/jcl/OPENFIL.jcl           CEMT SET FIL(TRANSACT|CCXREF|ACCTDAT|
 #   app/jcl/CLOSEFIL.jcl          CXACAIX|USRSEC) OPE / CLO
 #                                 -> health-conditioned depends_on plus the
-#                                    readiness group readinessState,db,s3,sqs
+#                                    readiness group readinessState,db,s3,sqs,sns
 #                                    in src/main/resources/application.yml
 #   app/csd/CARDDEMO.CSD          DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
 #                                 DDNAME(INREADER) RECORDSIZE(80)
@@ -582,7 +582,8 @@ services:
       # configured port, requests /actuator/health/readiness and requires
       # "status":"UP" - which, per the readiness group in
       # src/main/resources/application.yml, means readinessState AND db AND s3
-      # AND sqs. The liveness group is separate and holds livenessState only.
+      # AND sqs AND sns. The liveness group is separate and holds livenessState
+      # only.
       # Only the timings are overridden, for a local stack that boots against
       # an empty volume and must run all three Flyway migrations first. The
       # arithmetic is deliberate: failures inside start_period do not count, so
@@ -592,8 +593,21 @@ services:
       # readiness in 17s, and the probe is what makes readiness observable,
       # since a stopped dependency turns /actuator/health/readiness 503 while
       # /actuator/health/liveness stays 200.
+      #
+      # TIMEOUT: 7s, AND THIS OVERRIDE IS THE ONE THAT ACTUALLY APPLIES.
+      # The Dockerfile also declares --timeout=7s, but a `timeout` key here
+      # REPLACES it for this stack - which is why raising the Dockerfile alone
+      # left the running container on 5s and this line has to move with it.
+      # The value is derived, not chosen: Actuator evaluates a health group's
+      # members SEQUENTIALLY, so the four dependency contributors declared by
+      # com.cardemo.observability.HealthIndicators ADD rather than overlap, and
+      # four at their 1500 ms budget each caps the aggregate at 6s. 7s leaves
+      # 1s for Actuator's aggregation and the loopback round trip. It was 5s
+      # while there were three contributors; the `sns` contributor added the
+      # fourth, and 5s would have made a slow-but-alive emulator fail the probe
+      # and restart a healthy JVM.
       interval: 10s
-      timeout: 5s
+      timeout: 7s
       retries: 6
       start_period: 90s
     # A boot-time misconfiguration must be readable, not looped over: three

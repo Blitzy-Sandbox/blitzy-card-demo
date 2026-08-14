@@ -1570,8 +1570,13 @@ public class UserAddService {
             final String operation) {
         final Throwable cause = work.ioFailureCause;
         work.ioFailureCause = null;
-        final Optional<CardDemoException> mapped =
-                this.fileStatusMapper.toException(ioStatus, USRSEC_FILE, operation, cause);
+        // The mapper owns the SUBTYPE; the source owns the MESSAGE. A duplicate identifier and an I/O fault
+        // reach different subtypes here - DuplicateRecordException for '22', FileAccessException for the '9x'
+        // family - and both must still carry the caption the program displays rather than a composed
+        // diagnostic string, because that caption is compared byte for byte. The status, the file and the
+        // operation still travel in the exception's structured fields.
+        final Optional<CardDemoException> mapped = this.fileStatusMapper.toExceptionWithLegacyMessage(
+                ioStatus, USRSEC_FILE, operation, cause, UNABLE_TO_ADD_MESSAGE);
         if (mapped.isPresent()) {
             return mapped.get();
         }

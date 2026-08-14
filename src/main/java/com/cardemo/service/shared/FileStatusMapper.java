@@ -624,6 +624,43 @@ public class FileStatusMapper {
     }
 
     /**
+     * Translates a status into its typed failure exactly as {@link #toException(String, String, String,
+     * Throwable)} does, but carrying a caller-supplied legacy caption as the message instead of a composed
+     * diagnostic one.
+     *
+     * <p><strong>What this is for.</strong> The online programs latch a fixed caption on their failure arms and
+     * paint it on the screen - {@code 'Unable to Update User...'} at {@code app/cbl/COUSR03C.cbl}:332,
+     * {@code 'Unable to lookup User...'} at {@code :296}, {@code 'Unable to Add User...'} on the add path - and
+     * those strings are observable contract, compared byte for byte rather than by substring. A caller that
+     * needs the caption published cannot get it from {@link #toException}, whose message names the operation,
+     * the file and the expanded status; nor from prefixing, which still yields a different string. This method
+     * gives the caller the caption and the correct subtype at once.
+     *
+     * <p><strong>Nothing is lost by using it.</strong> The status, the logical file and the operation are still
+     * carried in the returned exception's own accessors, which is where a diagnostic consumer should read them
+     * from rather than from prose. The status is still what selects the subtype, and the expanded
+     * {@code IO-STATUS-04} rendering is still owned solely by {@code com.cardemo.model.enums.FileStatus}.
+     *
+     * <p>An empty return means the same thing it means on {@link #toException}: this status is not a failure,
+     * so there is nothing to translate. The caller decides what that means at its own site.
+     *
+     * @param ioStatus        the two-character file status the operation recorded
+     * @param logicalFileName the logical file or DD name the operation names
+     * @param operation       the operation attempted, for the exception's context
+     * @param cause           the underlying throwable, or {@code null} when there is none
+     * @param legacyMessage   the source caption to carry as the message; a {@code null} composes as usual
+     * @return the typed failure carrying that caption, or empty when the status is not a failure
+     */
+    public Optional<CardDemoException> toExceptionWithLegacyMessage(String ioStatus, String logicalFileName,
+            String operation, Throwable cause, String legacyMessage) {
+        if (applResultForSequentialRead(ioStatus) != APPL_FAILURE) {
+            return Optional.empty();
+        }
+        return Optional.of(failureFor(ioStatus, logicalFileName, operation, null, ABEND_CULPRIT_UNSET, cause,
+                legacyMessage));
+    }
+
+    /**
      * Applies the two way guard of {@code app/cbl/CBTRN02C.cbl:L236-L252 0000-DALYTRAN-OPEN}: returns when the
      * status is {@code '00'} and throws otherwise.
      *
@@ -786,7 +823,40 @@ public class FileStatusMapper {
      */
     private CardDemoException failureFor(String ioStatus, String logicalFileName, String operation,
             String legacyFailureText, String abendCulprit, Throwable cause) {
-        String message = failureMessage(ioStatus, logicalFileName, operation, legacyFailureText);
+        return failureFor(ioStatus, logicalFileName, operation, legacyFailureText, abendCulprit, cause, null);
+    }
+
+    /**
+     * As above, with the composed diagnostic message optionally replaced by a caller-supplied one.
+     *
+     * <p><strong>Why an override exists at all.</strong> The composed message names the operation, the logical
+     * file and the expanded status, which is what a diagnostic reader needs. It is not what an online screen
+     * displayed. Several online programs latch a fixed caption on their {@code WHEN OTHER} arm - for instance
+     * {@code 'Unable to Update User...'} at {@code app/cbl/COUSR03C.cbl}:332 - and that caption is part of the
+     * observable contract, compared byte for byte. Composing over it replaced a published literal with
+     * generated prose; prefixing it, as {@code legacyFailureText} does, still changes the string and so still
+     * fails an equality check against the source. The override lets the caption be the message while every
+     * piece of the diagnostic context survives in the exception's own structured fields, which is where a
+     * consumer that wants the status should read it from.
+     *
+     * <p>The override changes only the message. The <strong>subtype</strong> is still chosen here from the
+     * status, which is the decision this class owns and the reason callers delegate to it rather than
+     * constructing failures themselves.
+     *
+     * @param ioStatus          the two-character file status
+     * @param logicalFileName   the logical file or DD name the operation names
+     * @param operation         the operation attempted
+     * @param legacyFailureText the source failure text to prefix onto a composed message, or {@code null}
+     * @param abendCulprit      the program named on an abend
+     * @param cause             the underlying throwable, or {@code null}
+     * @param messageOverride   the exact message to carry, or {@code null} to compose one as usual
+     * @return the typed failure for that status, never {@code null}
+     */
+    private CardDemoException failureFor(String ioStatus, String logicalFileName, String operation,
+            String legacyFailureText, String abendCulprit, Throwable cause, String messageOverride) {
+        String message = messageOverride != null
+                ? messageOverride
+                : failureMessage(ioStatus, logicalFileName, operation, legacyFailureText);
         Optional<FileStatus> classified = FileStatus.tryClassify(ioStatus);
         if (classified.isEmpty()) {
             return fatalFor(ioStatus, logicalFileName, operation, legacyFailureText, abendCulprit, cause);

@@ -140,3 +140,167 @@
    space and is invisible at rest while remaining fully functional.
    That is a browser rendering mode, not a site defect.
    ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------
+   3. Code-token contrast.
+
+   Material renders five highlight classes - comment, punctuation,
+   operator, generic and variable - from --md-default-fg-color--light,
+   plus the line-number gutter, which this build resolves to #0000008a:
+   black at alpha 0.541. Composited over
+   --md-code-bg-color (#f5f5f5) the compositor writes #717171, and that
+   measures 4.4768:1 against the 4.5:1 minimum for normal text. The
+   tokens are 13.6px at weight 400, so the large-text exemption does
+   not apply. A fail by 0.02, which is exactly the kind that survives
+   review: the text looks perfectly legible to anyone who can read it.
+
+   Two things about this defect are worth recording, because both cost
+   time to establish and both will mislead a re-test.
+
+   First, WHERE it is provable. On validation-gates.md the only tokens
+   in this colour are single characters - eight `:` and six `=` - and
+   axe's colour-contrast rule skips nodes whose text is punctuation
+   only, so that page audits at 100 with the defect fully present.
+   project-guide.md is the page that proves it by machine: 16 `.c1`
+   comments and 9 `.nv` variable names carry real words, and Lighthouse
+   reports 25 failing elements at 4.47 with an accessibility score of
+   96. Cite that page, not this one, and do not read a score of 100 as
+   an absence of failures.
+
+   Second, the ratio has three published spellings and they are one
+   number, not three readings. The un-rounded sub-pixel composite is
+   4.4963; the integer-quantised composite the compositor actually
+   writes is 4.4768; axe displays 4.47 and this project has elsewhere
+   written 4.48. All four describe the same pixels.
+
+   #606060 is chosen rather than a value that just clears the line:
+   5.77:1 on the code background and 6.29:1 on the page background, so
+   a later change to either token cannot quietly push it back under,
+   and it stays lighter than the #36464e body-code colour so comments
+   remain visibly de-emphasised. Measured anti-aliasing makes the
+   experienced contrast of a thin glyph worse than nominal - the `:`
+   stem never reaches full coverage and painted out at 3.78:1 under the
+   old colour - which is the other reason for taking margin here.
+
+   Third - and this is the part a first pass got wrong - the set of
+   variables to override has to be derived from the theme's stylesheet
+   rather than from the token classes visible on the page. Overriding
+   comment, punctuation, operator and generic left `.nv`
+   (Pygments Name.Variable) still failing at 4.4963:1, because `.nv`
+   resolves through a FIFTH variable, --md-code-hl-variable-color, that
+   defaults to the same --md-default-fg-color--light. Nine `.nv` nodes
+   on project-guide.md - JAVA_HOME, LOCALSTACK_AUTH_TOKEN and the other
+   shell variable names - therefore kept the original #717171 and axe
+   kept reporting them, with the element count falling 25 -> 9 rather
+   than to zero. The authoritative enumeration is a grep of the built
+   theme CSS for the variables that resolve to that colour:
+
+     grep -o '--md-code-hl-[a-z]*-color:var(--md-default-fg-color--light)' \
+       site/assets/stylesheets/main.*.min.css | sort -u
+
+   which returns exactly five. All five are overridden below.
+
+   The line-number gutter is the same colour arriving by a different
+   route: it is not a --md-code-hl-* variable at all but a direct
+   `.highlighttable .linenodiv pre { color: var(--md-default-fg-color
+   --light) }` rule, inherited by the 46 `span.normal` line numbers on
+   project-guide.md. axe reports those as `incomplete` rather than as a
+   violation, and only because its shortTextContent heuristic declines
+   to judge one- and two-digit strings - so they are a hard fail that
+   escapes on a technicality. They are corrected here too, by the same
+   value, so the whole code block clears the threshold rather than the
+   parts an automated checker happens to be willing to score.
+   ------------------------------------------------------------------ */
+:root{
+  --md-code-hl-comment-color:     #606060;
+  --md-code-hl-punctuation-color: #606060;
+  --md-code-hl-operator-color:    #606060;
+  --md-code-hl-generic-color:     #606060;
+  --md-code-hl-variable-color:    #606060;
+}
+
+/* The gutter, which reaches the same colour without a variable. */
+.md-typeset .highlighttable .linenodiv pre{
+  color: #606060;
+}
+
+/* ------------------------------------------------------------------
+   4. The closed mobile drawer must not hold focus stops.
+
+   Below the theme's navigation breakpoint the primary sidebar is
+   parked off-canvas with `position:fixed; left:-242px`, and it is
+   revealed by translating it back rather than by being taken out of
+   flow. Off-canvas is not the same thing as out of the tab order:
+   every link inside it stays focusable, so measured at 375px the tab
+   order ran to 15 stops of which NINE were the closed drawer's
+   contents, sitting at x in [-242, 0]. A keyboard reader tabs nine
+   times through a region that paints no focus indicator anywhere on
+   screen, because the focused element is genuinely outside the
+   viewport. Sixty per cent of the order was invisible.
+
+   `visibility: hidden` is the one property that removes an element
+   from sequential focus navigation without moving it, changing its
+   box, or interfering with the transform Material animates. It
+   inherits, so it covers every descendant link without enumerating
+   them, and `visibility: visible` on the open state restores the
+   whole subtree. Neither `display:none` nor `content-visibility` can
+   be used here: the first would break the slide-in transition the
+   theme animates, and the second does not affect focusability.
+
+   The selector matches the theme's own mechanism rather than
+   duplicating its breakpoint logic by hand: `input#__drawer` is a
+   direct child of `<body>`, before `.md-container`, so the checked
+   state is reachable with a sibling combinator exactly as Material
+   reaches it. The media query is Material's own navigation
+   breakpoint, 76.1875em; above it the sidebar is a static column that
+   is always on screen and must never be hidden.
+   ------------------------------------------------------------------ */
+@media screen and (max-width: 76.1875em){
+  .md-sidebar--primary{
+    visibility: hidden;
+  }
+  #__drawer:checked ~ .md-container .md-sidebar--primary{
+    visibility: visible;
+  }
+}
+
+/* ------------------------------------------------------------------
+   5. Rendered Mermaid diagrams need a scroll container, and the
+      reason this rule is not the whole fix is the point of it.
+
+   Measured at 375px, node labels in the rendered diagrams come out
+   between 1.59px and 4.77px, median 2.29px - against 16px body text
+   on the same page. The cause is not clipping. Mermaid emits its SVG
+   as `width:100%` with `max-width` set to the viewBox width, and the
+   viewBoxes here run from 1,150 to 3,441 user units, so inside a
+   343px host the entire coordinate system - glyphs included - is
+   scaled by between 0.0997 and 0.2983. Nothing clamps a minimum.
+
+   The trap this rule exists alongside: `overflow-x: auto` on its own
+   changes NOTHING, because nothing overflows. The SVG shrinks to fit,
+   so clientWidth equals scrollWidth, no scrollbar is generated, and
+   setting scrollLeft returns 0. That is the same mistake the
+   withdrawn rule above made, and it is why the accompanying script
+   (docs/javascripts/carddemo-mermaid.js) is the load-bearing half:
+   it configures the renderer with useMaxWidth disabled, so the SVG
+   keeps its intrinsic width and there is finally something for this
+   container to scroll.
+
+   The two halves are therefore a pair. This rule is inert without
+   that script, and that script would produce a diagram clipped at the
+   host's edge without this rule.
+   ------------------------------------------------------------------ */
+.md-typeset div.mermaid{
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  /* A focusable scroll container needs a visible focus ring, and it is
+     given a name and role by the accompanying script so it is not one
+     more unnamed stop of the kind rule 4 removes. */
+  scroll-snap-type: none;
+}
+
+.md-typeset div.mermaid:focus-visible{
+  outline: 2px solid var(--md-accent-fg-color, #526cfe);
+  outline-offset: 2px;
+}

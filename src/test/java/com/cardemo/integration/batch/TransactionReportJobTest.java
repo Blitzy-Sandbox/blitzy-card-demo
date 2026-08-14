@@ -6,7 +6,7 @@
  * Function    : Launches the transaction report job against a real
  *               PostgreSQL 16 instance and a real LocalStack endpoint and
  *               asserts the job level contract of the legacy report: the
- *               three steps in procedure order, the inclusive date filter
+ *               four steps in declared order, the inclusive date filter
  *               applied twice, twenty lines per page, 133 byte records,
  *               the control break on card number under an Account Total
  *               label, the concrete generation carried forward between
@@ -94,9 +94,10 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *
  * <h2>What it does</h2>
  *
- * <p>Launches the assembled job and asserts what only a real launch can reach: the three steps of
- * {@code app/proc/TRANREPT.prc} in the order that member declares them ({@code :21-22} STEP01R,
- * {@code :35} STEP05R, {@code :57} STEP10R, closed by {@code :79 // PEND}); the concrete generation the
+ * <p>Launches the assembled job and asserts what only a real launch can reach: the four steps in the order
+ * their members declare them - {@code app/proc/TRANREPT.prc} contributing three ({@code :21-22} STEP01R,
+ * {@code :35} STEP05R, {@code :57} STEP10R, closed by {@code :79 // PEND}) and
+ * {@code app/jcl/PRTCATBL.jcl} the fourth; the concrete generation the
  * backup step publishes being the one the sort step consumes; the geometry of the emitted report against
  * the {@code TRANREPT DD DCB=(LRECL=133,RECFM=FB,BLKSIZE=0)} of {@code :76}, independently corroborated by
  * {@code WS-BLANK-LINE PIC X(133)} at {@code app/cbl/CBTRN03C.cbl:133}; and the read loop of
@@ -543,7 +544,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     /** The generation ordinal the synthetic daily object is written under. */
     private final long syntheticGenerationOrdinal = 1L;
 
-    // The three steps, and the geometry of what they emit.
+    // The four steps, and the geometry of what they emit.
 
     /** The procedure's step topology and the record geometry of the report it produces. */
     @Nested
@@ -551,17 +552,22 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     class FlowTopologyAndReportGeometry {
 
         /**
-         * The three steps of {@code app/proc/TRANREPT.prc} run, once each, in the order the member declares them.
+         * All four steps run, once each, in the order the members declare them: the three of
+         * {@code app/proc/TRANREPT.prc} followed by the one {@code app/jcl/PRTCATBL.jcl} contributes.
          *
          * <p>Purpose: pin the sequence itself. A pipeline that sorted before it backed up, or that ran a step twice,
          * would still produce a report - a plausible one - so the order has to be asserted rather than inferred from
          * the report's contents.
+         *
+         * <p>The assertion has always named four steps; only the surrounding prose and this method's name said
+         * three, which is the half of finding P7-11 that lived in the test tier. The job's own documentation and its
+         * start-of-job log line said three as well, and both are now derived from one declared count.
          */
         @Test
-        @DisplayName("the three steps run once each in the order app/proc/TRANREPT.prc declares: STEP01R :21, "
-                + "STEP05R :35, STEP10R :57")
+        @DisplayName("the four steps run once each in the order the members declare: STEP01R :21, STEP05R :35, "
+                + "STEP10R :57, then app/jcl/PRTCATBL.jcl")
         @Transactional(propagation = Propagation.NOT_SUPPORTED)
-        void threeStepsRunOnceEachInProcedureOrder() {
+        void fourStepsRunOnceEachInProcedureOrder() {
             seedInWindowTransactionsOnDistinctCards(2);
 
             final JobExecution execution = launchTransactionReport();
@@ -1345,6 +1351,73 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
                             + "empty or fragmentary TRANREPT can never be catalogued - and a 0-byte one is "
                             + "indistinguishable from a legitimately empty report")
                     .isEmpty();
+        }
+
+        /**
+         * An abend of the assembled job is reported as the {@code ABEND} exit status, not as {@code FAILED}.
+         *
+         * <p><strong>Finding P5-02, severity Major.</strong> The sibling cases above launch the generate step
+         * inside a probe job, which is the right scope for asserting <em>that</em> a lookup miss abends but the
+         * wrong one for asserting <em>how the outcome is reported</em>: a probe job carries the harness's own
+         * listener rather than this job's. This case launches the assembled job, so the reporting path is the
+         * production one.
+         *
+         * <p>The decider already returned {@code ABEND} and the flow already routed it to {@code fail()}. What
+         * the flow could not do was keep it: the framework's failed end state sets the job's exit status to
+         * {@code FAILED} as part of failing it, so the execution persisted as {@code FAILED/FAILED} - byte for
+         * byte indistinguishable from an ordinary return code 8. An operator reading the batch metastore could
+         * not tell a return code 12 abend from a plain failure, and those demand different responses. That is
+         * precisely the distinction {@code app/cbl/CBTRN03C.cbl:629-630} exists to make: {@code MOVE 999 TO
+         * ABCODE} followed by {@code CALL 'CEE3ABD'} is a language-environment abend, not a return code the
+         * program sets.
+         *
+         * <p>Inputs: one in-window transaction on a card whose cross-reference row is removed, so the account
+         * lookup of {@code 1500-A-LOOKUP-XREF} misses. Outputs: none. Side effects: the removed row, restored
+         * in the {@code finally} block, and whatever generations the earlier steps wrote before the abend.
+         *
+         * <p>Error modes: a run that completes fails the precondition rather than passing silently; a run whose
+         * exit code is {@code FAILED} is the finding itself, unfixed.
+         */
+        @Test
+        @DisplayName("the assembled job publishes ABEND rather than FAILED, so return code 12 stays "
+                + "distinguishable from 8 (P5-02)")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void theAssembledJobPublishesTheAbendExitStatus() {
+            final String cardNumber = firstSeededCardNumber();
+            final CardCrossReference removed = cardCrossReferenceRepository.findById(cardNumber).orElseThrow();
+            seedTransaction(probeTransactionId(1), cardNumber, new BigDecimal("10.00"),
+                    fixedClockProcessingTimestamp());
+            cardCrossReferenceRepository.deleteById(cardNumber);
+            try {
+                assertThat(cardCrossReferenceRepository.findById(cardNumber))
+                        .as("the removal has to be READ BACK as absent, or the abend this case needs would "
+                                + "never be reached and every assertion below would pass vacuously")
+                        .isEmpty();
+
+                final JobExecution execution = launchTransactionReport();
+
+                assertThat(execution.getStatus())
+                        .as("an abend is unsuccessful, exactly as an ordinary failure is - and the batch "
+                                + "STATUS is deliberately left that way, so restart semantics are unchanged")
+                        .isEqualTo(BatchStatus.FAILED);
+                assertFailureChainCarries(execution, "FatalProcessingException", "INVALID CARD NUMBER",
+                        "the abend has to be the recorded cause, or the exit status below would be asserting "
+                                + "a relabelling of some unrelated failure");
+                assertThat(execution.getExitStatus().getExitCode())
+                        .as("THE FINDING: this used to persist as FAILED, which is what an ordinary return "
+                                + "code 8 also persists as. The exit code is the only thing that separates "
+                                + "12 from 8")
+                        .isEqualTo("ABEND")
+                        .isNotEqualTo(ExitStatus.FAILED.getExitCode());
+                assertThat(execution.getExitStatus().getExitDescription())
+                        .as("and it names the abend code and the process return code, in the same wording the "
+                                + "four sibling jobs use, so one grep finds an abend in any of the five")
+                        .contains("999")
+                        .contains("12")
+                        .contains("CBTRN03C");
+            } finally {
+                cardCrossReferenceRepository.save(removed);
+            }
         }
 
         /**

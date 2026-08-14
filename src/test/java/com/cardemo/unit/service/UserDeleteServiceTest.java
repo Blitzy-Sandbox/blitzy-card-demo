@@ -676,7 +676,8 @@ class UserDeleteServiceTest {
      */
     private static FileStatusMapper silentMapper() {
         final FileStatusMapper silent = mock(FileStatusMapper.class);
-        when(silent.toException(anyString(), anyString(), anyString(), any())).thenReturn(Optional.empty());
+        when(silent.toExceptionWithLegacyMessage(anyString(), anyString(), anyString(), any(), anyString()))
+                .thenReturn(Optional.empty());
         return silent;
     }
 
@@ -1613,7 +1614,19 @@ class UserDeleteServiceTest {
             assertThat(typeOf(failure)).isEqualTo("FileAccessException");
             assertThat(accessorValue(failure, "getLogicalFileName")).isEqualTo(USRSEC_FILE);
             assertThat(accessorValue(failure, "getOperation")).isEqualTo(READ_OPERATION);
-            assertThat(failure.getMessage()).contains(USRSEC_FILE).contains(READ_OPERATION);
+            // The dataset and the verb travel in the STRUCTURED fields above, which is where a diagnostic
+            // consumer reads them. They are deliberately NOT in the message: this assertion previously
+            // demanded that they were, and demanding it is what let a composed diagnostic string displace
+            // the literal :296 paints - a string the exact-match publication rule in
+            // com.cardemo.controller.AdminController then refused, so the caller lost the caption entirely
+            // (finding P4-04, Major). The message is the source's, byte for byte.
+            assertThat(failure.getMessage())
+                    .as(":296 moves this literal into WS-MESSAGE on the read's WHEN OTHER arm")
+                    .isEqualTo(UNABLE_TO_LOOKUP_MESSAGE);
+            assertThat(failure.getMessage())
+                    .as("no part of the diagnostic context may be composed into the published caption")
+                    .doesNotContain(USRSEC_FILE)
+                    .doesNotContain(READ_OPERATION);
             assertThat(failure.getCause()).isSameAs(timedOut);
         }
 
@@ -1651,8 +1664,9 @@ class UserDeleteServiceTest {
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> serviceOver(watched).lookupUser(USER_ID));
 
-            verify(watched).toException(status.capture(), file.capture(), operation.capture(),
-                    cause.capture());
+            final ArgumentCaptor<String> caption = ArgumentCaptor.forClass(String.class);
+            verify(watched).toExceptionWithLegacyMessage(status.capture(), file.capture(), operation.capture(),
+                    cause.capture(), caption.capture());
             assertThat(status.getValue())
                     .as("the DISPLAY at :294 is LIVE in this program, unlike the commented one at "
                             + "app/cbl/COUSR01C.cbl:268, so the diagnostic must not be lost: the '9x' "
@@ -1661,6 +1675,10 @@ class UserDeleteServiceTest {
             assertThat(file.getValue()).isEqualTo(USRSEC_FILE);
             assertThat(operation.getValue()).isEqualTo(READ_OPERATION);
             assertThat(cause.getValue()).isSameAs(timedOut);
+            assertThat(caption.getValue())
+                    .as("the translation asks for the SUBTYPE and supplies the MESSAGE, so the caption of "
+                            + ":296 reaches the mapper rather than being replaced by it")
+                    .isEqualTo(UNABLE_TO_LOOKUP_MESSAGE);
         }
 
         @ParameterizedTest(name = "the {0} arm of the read records response {1} and status {2}")
@@ -1821,10 +1839,50 @@ class UserDeleteServiceTest {
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> serviceOver(watched).deleteUser(USER_ID, true));
 
-            verify(watched).toException(status.capture(), anyString(), operation.capture(), cause.capture());
+            final ArgumentCaptor<String> caption = ArgumentCaptor.forClass(String.class);
+            verify(watched).toExceptionWithLegacyMessage(status.capture(), anyString(), operation.capture(),
+                    cause.capture(), caption.capture());
             assertThat(status.getValue()).isEqualTo(IO_STATUS_IO_ERROR);
             assertThat(operation.getValue()).isEqualTo(DELETE_OPERATION);
             assertThat(cause.getValue()).isSameAs(timedOut);
+            assertThat(caption.getValue())
+                    .as("the wrong-verb literal of :332 is handed TO the translator, so the subtype comes "
+                            + "from the status while the published message stays the source's")
+                    .isEqualTo(UNABLE_TO_UPDATE_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("the wrong-verb literal survives the REAL translator, which is where it was being lost")
+        void theWrongVerbLiteralSurvivesTheRealTranslator() throws ReflectiveOperationException {
+            final UserSecurity row = standardUserRow();
+            final QueryTimeoutException timedOut = new QueryTimeoutException("the delete did not answer");
+            arrangeStoredRow(row);
+            doThrow(timedOut).when(userSecurityRepository).delete(row);
+
+            // The regression guard for finding P4-04, Major. The sibling assertions above reach the FALLBACK
+            // branch by injecting a mapper that declines, and that branch always carried the literal. The
+            // defect was on the branch that is actually taken in production: the real mapper classified '90'
+            // into a FileAccessException and composed its own diagnostic message over the caption, so
+            // com.cardemo.controller.AdminController's exact-match publication rule refused it and the caller
+            // received a generic detail. This test runs the REAL mapper.
+            final CardDemoException failure = assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.deleteUser(USER_ID, true))
+                    .actual();
+
+            assertThat(typeOf(failure))
+                    .as("the mapper still owns the subtype; only the message is the source's")
+                    .isEqualTo("FileAccessException");
+            assertThat(failure.getMessage())
+                    .as("byte for byte the literal of app/cbl/COUSR03C.cbl:332, wrong verb and all, with "
+                            + "nothing composed onto either end of it")
+                    .isEqualTo(UNABLE_TO_UPDATE_MESSAGE);
+            assertThat(accessorValue(failure, "getLogicalFileName"))
+                    .as("the dataset is not lost, it moves to the structured field")
+                    .isEqualTo(USRSEC_FILE);
+            assertThat(accessorValue(failure, "getOperation"))
+                    .as("nor is the verb")
+                    .isEqualTo(DELETE_OPERATION);
+            assertThat(failure.getCause()).isSameAs(timedOut);
         }
 
         @Test

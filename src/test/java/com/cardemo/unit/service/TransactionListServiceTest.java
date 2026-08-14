@@ -1128,25 +1128,46 @@ final class TransactionListServiceTest {
         }
 
         @Test
-        @DisplayName(":L248 - PF7 on the first page reports 'already at the top'")
+        @DisplayName(":L248 - PF7 on the first page reports 'already at the top' and keeps the page")
         void alreadyAtTheTop() {
+            stubInclusive(ascending(PAGE_SIZE));
+
             final TransactionListScreen screen = pageBackward(new TransactionListState(id(1),
                     id(PAGE_SIZE), PageResponse.FIRST_PAGE_NUMBER, false));
 
             assertThat(screen.list().errorMessage()).isEqualTo(MSG_ALREADY_TOP_L248);
             assertThat(screen.errorFlagOn()).isFalse();
-            verifyNoInteractions(repository);
+            assertThat(rowIds(screen))
+                    .as(":L250 SET SEND-ERASE-NO re-sends COTRN0A with the row fields at LOW-VALUES, "
+                            + "which BMS does not transmit, so with no ERASE the terminal keeps "
+                            + "displaying the page. A refused page reports the boundary; it does not "
+                            + "empty the list")
+                    .isEqualTo(displayedIds());
+            assertThat(capturedInclusiveKey())
+                    .as("the retained page is re-read from its own head, CDEMO-CT00-TRNID-FIRST")
+                    .isEqualTo(id(1));
         }
 
         @Test
-        @DisplayName(":L270 - PF8 with no further page reports 'already at the bottom'")
+        @DisplayName(":L270 - PF8 with no further page reports 'already at the bottom' and keeps the page")
         void alreadyAtTheBottom() {
+            stubInclusive(ascending(PAGE_SIZE));
+
             final TransactionListScreen screen = pageForward(new TransactionListState(id(1),
                     id(PAGE_SIZE), 3, false));
 
             assertThat(screen.list().errorMessage()).isEqualTo(MSG_ALREADY_BOTTOM_L270);
             assertThat(screen.errorFlagOn()).isFalse();
-            verifyNoInteractions(repository);
+            assertThat(rowIds(screen))
+                    .as(":L272 SET SEND-ERASE-NO retains the displayed rows for the same reason the "
+                            + "PF7 refusal does")
+                    .isEqualTo(displayedIds());
+            assertThat(screen.page().getPageNumber())
+                    .as("a refusal grants no navigation, so the page counter is untouched")
+                    .isEqualTo(3);
+            assertThat(screen.state().nextPageAvailable())
+                    .as("and neither is the has-next sentinel")
+                    .isFalse();
         }
 
         @Test
@@ -1163,9 +1184,9 @@ final class TransactionListServiceTest {
         @Test
         @DisplayName(":L248 and :L608 are distinct literals reached from distinct paths")
         void alreadyAtTopAndAtTopAreDistinct() {
+            stubInclusive(ascending(PAGE_SIZE));
             final TransactionListScreen fromPf7 = pageBackward(new TransactionListState(id(1),
                     id(PAGE_SIZE), PageResponse.FIRST_PAGE_NUMBER, false));
-            verifyNoInteractions(repository);
 
             stubInclusive(List.of());
             final TransactionListScreen fromStartbr = service.openList();
@@ -1451,6 +1472,8 @@ final class TransactionListServiceTest {
         @Test
         @DisplayName("PF7 sets the has-next sentinel unconditionally, even at the very top")
         void pf7AtTopStillSetsNextPageYes() {
+            stubInclusive(ascending(PAGE_SIZE));
+
             final TransactionListScreen screen = pageBackward(
                     new TransactionListState(id(1), id(PAGE_SIZE), PageResponse.FIRST_PAGE_NUMBER,
                             false));
@@ -1459,7 +1482,10 @@ final class TransactionListServiceTest {
                     .as(":L238 sets NEXT-PAGE-YES before the page test; preserved, not corrected")
                     .isTrue();
             assertThat(screen.list().errorMessage()).isEqualTo(MSG_ALREADY_TOP_L248);
-            verifyNoInteractions(repository);
+            assertThat(rowIds(screen))
+                    .as("the refusal redisplays the page, so the unconditional sentinel is observed "
+                            + "alongside retained rows rather than an empty list")
+                    .isNotEmpty();
         }
 
         @Test
@@ -1741,6 +1767,8 @@ final class TransactionListServiceTest {
         @Test
         @DisplayName("a negative carried page number is clamped in the response metadata")
         void negativeCarriedPageNumberIsClamped() {
+            stubInclusive(ascending(PAGE_SIZE));
+
             final TransactionListScreen screen = pageBackward(
                     new TransactionListState(id(1), id(PAGE_SIZE), -5, false));
 
@@ -1751,18 +1779,18 @@ final class TransactionListServiceTest {
                     .as("the response metadata never publishes a page below the first")
                     .isEqualTo(PageResponse.FIRST_PAGE_NUMBER);
             assertThat(screen.list().errorMessage()).isEqualTo(MSG_ALREADY_TOP_L248);
-            verifyNoInteractions(repository);
         }
 
         @Test
         @DisplayName("page zero is treated as the top of the browse, not as a page")
         void pageZeroIsTheTop() {
+            stubInclusive(ascending(PAGE_SIZE));
+
             final TransactionListScreen screen = pageBackward(
                     new TransactionListState(id(1), id(PAGE_SIZE), 0, false));
 
             assertThat(screen.list().errorMessage()).isEqualTo(MSG_ALREADY_TOP_L248);
             assertThat(screen.page().getPageNumber()).isEqualTo(PageResponse.FIRST_PAGE_NUMBER);
-            verifyNoInteractions(repository);
         }
     }
 

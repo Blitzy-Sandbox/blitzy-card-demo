@@ -929,6 +929,97 @@ public class AwsConfig {
     private static final String FIFO_SUFFIX = ".fifo";
 
     /**
+     * Accepted shape of an S3 bucket name: lowercase letters, digits, dots and hyphens, beginning and ending
+     * alphanumeric. Transcribed from {@code BUCKET_PATTERN} in {@code localstack-init/init-aws.sh}.
+     *
+     * <p>The two guards must agree character for character. When only the script enforced a shape, an invalid
+     * bucket name reached a running application and surfaced as an SDK rejection on the first object write -
+     * that is, inside a batch job, long after the configuration mistake that caused it, and reported as a
+     * storage fault rather than as a configuration fault.
+     */
+    private static final Pattern BUCKET_NAME_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9.-]*[a-z0-9]$");
+
+    /** Remedy text for a rejected bucket name, transcribed from {@code BUCKET_HINT} in the provisioner. */
+    private static final String BUCKET_NAME_HINT =
+            "lowercase letters, digits, dots and hyphens, starting and ending alphanumeric";
+
+    /** Shortest bucket name AWS accepts, {@value}. */
+    private static final int BUCKET_NAME_MIN_LENGTH = 3;
+
+    /** Longest bucket name AWS accepts, {@value}. */
+    private static final int BUCKET_NAME_MAX_LENGTH = 63;
+
+    /**
+     * Accepted shape of an SQS queue or SNS topic name: letters, digits, hyphens and underscores only.
+     * Transcribed from {@code NAME_PATTERN} in {@code localstack-init/init-aws.sh}.
+     *
+     * <p>Deliberately excludes the dot, which is why the queue is validated on its <em>logical</em> name: the
+     * mandatory {@link #FIFO_SUFFIX} of the physical name carries one, and admitting the dot generally would
+     * also admit {@code carddemo.report.jobs}, a name the provisioner refuses. The same pattern serves the
+     * topic because AWS applies the identical character class to both services.
+     */
+    private static final Pattern RESOURCE_NAME_PATTERN = Pattern.compile("^[A-Za-z0-9_-]+$");
+
+    /** Remedy text for a rejected queue or topic name, transcribed from {@code NAME_HINT} in the provisioner. */
+    private static final String RESOURCE_NAME_HINT = "letters, digits, hyphens and underscores only";
+
+    /** Longest queue name AWS accepts, {@value}, before any suffix is appended. */
+    private static final int QUEUE_PHYSICAL_NAME_MAX_LENGTH = 80;
+
+    /**
+     * Longest accepted <em>logical</em> report-queue name, <strong>75</strong>: the
+     * {@value #QUEUE_PHYSICAL_NAME_MAX_LENGTH} characters AWS allows a queue name, less the five of
+     * {@link #FIFO_SUFFIX} that the physical name must carry.
+     *
+     * <p>Derived from the two values it depends on rather than written as a literal, so it cannot drift from
+     * either. That is also why the figure appears in this sentence as prose: {@code {@value}} renders only a
+     * compile-time constant, and a length taken from a string is a method call rather than one. A unit test
+     * pins the derived value against the 75 stated here, so the prose cannot drift either.
+     */
+    private static final int QUEUE_LOGICAL_NAME_MAX_LENGTH =
+            QUEUE_PHYSICAL_NAME_MAX_LENGTH - FIFO_SUFFIX.length();
+
+    /**
+     * Suffix the provisioner appends to the logical report-queue name to derive its dead-letter companion,
+     * {@code -dlq.fifo}. Composed from {@link #FIFO_SUFFIX} rather than written out, so the two spellings
+     * cannot drift.
+     */
+    private static final String DEAD_LETTER_QUEUE_SUFFIX = "-dlq" + FIFO_SUFFIX;
+
+    /**
+     * Longest accepted logical report-queue name once the derived dead-letter companion is accounted for,
+     * <strong>71</strong>: {@value #QUEUE_PHYSICAL_NAME_MAX_LENGTH} less the nine characters of
+     * {@link #DEAD_LETTER_QUEUE_SUFFIX}. Tighter than {@link #QUEUE_LOGICAL_NAME_MAX_LENGTH}, and checked
+     * separately because the two ceilings fail for different reasons and need different remedies.
+     *
+     * <p>Derived rather than written out, and stated as prose here for the same reason as the constant above.
+     * A unit test pins it against the 71 stated here.
+     */
+    private static final int QUEUE_LOGICAL_NAME_DLQ_SAFE_MAX_LENGTH =
+            QUEUE_PHYSICAL_NAME_MAX_LENGTH - DEAD_LETTER_QUEUE_SUFFIX.length();
+
+    /** Shortest queue or topic name AWS accepts, {@value}. */
+    private static final int RESOURCE_NAME_MIN_LENGTH = 1;
+
+    /** Longest topic name AWS accepts, {@value}. */
+    private static final int TOPIC_NAME_MAX_LENGTH = 256;
+
+    /**
+     * Accepted shape of a region code: lowercase letters, digits and hyphens, as every AWS region code is.
+     * Transcribed from {@code REGION_PATTERN} in {@code localstack-init/init-aws.sh}.
+     */
+    private static final Pattern REGION_CODE_PATTERN = Pattern.compile("^[a-z0-9-]+$");
+
+    /** Remedy text for a rejected region code, transcribed from {@code REGION_HINT} in the provisioner. */
+    private static final String REGION_CODE_HINT = "lowercase letters, digits and hyphens";
+
+    /** Shortest region code accepted, {@value}. */
+    private static final int REGION_CODE_MIN_LENGTH = 2;
+
+    /** Longest region code accepted, {@value}. */
+    private static final int REGION_CODE_MAX_LENGTH = 32;
+
+    /**
      * Prefixes AWS assigns to real access-key identifiers: {@code AKIA} for a long-term key and {@code ASIA}
      * for a temporary one.
      *
@@ -1061,13 +1152,15 @@ public class AwsConfig {
      *                                access-key prefix
      * @param secretKey               static secret key, from {@value #KEY_SECRET_KEY}; must be present. Its
      *                                value is never logged, echoed, digested or reported
-     * @throws IllegalStateException if any name is blank, if the three buckets are not distinct, if the
-     *                               physical and logical queue names disagree, if the strategy resolves to no
-     *                               value, if any service endpoint is absent or is not an emulator endpoint, if
-     *                               the global override is set to a non-emulator endpoint, or if either
-     *                               credential is absent or looks live. Startup is aborted in every case;
-     *                               nothing is defaulted quietly and nothing is allowed to fall back to live
-     *                               routing
+     * @throws IllegalStateException if any name is blank, if any name is outside the length range or does not
+     *                               match the character class the addressed AWS service accepts, if the derived
+     *                               dead-letter queue name would exceed the AWS ceiling, if the three buckets
+     *                               are not distinct, if the physical and logical queue names disagree, if the
+     *                               strategy resolves to no value, if any service endpoint is absent or is not
+     *                               an emulator endpoint, if the global override is set to a non-emulator
+     *                               endpoint, or if either credential is absent or looks live. Startup is
+     *                               aborted in every case; nothing is defaulted quietly and nothing is allowed
+     *                               to fall back to live routing
      */
     public AwsConfig(
             @Value("${" + KEY_REGION + "}") final String region,
@@ -1094,18 +1187,37 @@ public class AwsConfig {
         final Map<String, URI> verifiedEndpoints =
                 requireEmulatorEndpoints(s3Endpoint, sqsEndpoint, snsEndpoint, globalEndpoint);
 
-        final String verifiedRegion = requireConfigured(KEY_REGION, region);
-        final String verifiedInputBucket = requireConfigured(KEY_INPUT_BUCKET, batchInputBucket);
-        final String verifiedOutputBucket = requireConfigured(KEY_OUTPUT_BUCKET, batchOutputBucket);
-        final String verifiedStatementsBucket = requireConfigured(KEY_STATEMENTS_BUCKET, statementsBucket);
+        // Every resource name is proved USABLE, not merely supplied: present, within the length range AWS
+        // permits for its service, and matching the character class that service accepts. The patterns, bounds
+        // and hints are transcribed from localstack-init/init-aws.sh so the two guards over the same six
+        // variables cannot disagree. Before this, a name such as 'invalid/name' bound cleanly, every client was
+        // built and readiness reported UP, and the failure arrived at the first object write or report
+        // submission as a storage or messaging fault rather than as the configuration fault it is.
+        final String verifiedRegion = requireResourceName(KEY_REGION, region, REGION_CODE_PATTERN,
+                REGION_CODE_MIN_LENGTH, REGION_CODE_MAX_LENGTH, REGION_CODE_HINT);
+        final String verifiedInputBucket = requireResourceName(KEY_INPUT_BUCKET, batchInputBucket,
+                BUCKET_NAME_PATTERN, BUCKET_NAME_MIN_LENGTH, BUCKET_NAME_MAX_LENGTH, BUCKET_NAME_HINT);
+        final String verifiedOutputBucket = requireResourceName(KEY_OUTPUT_BUCKET, batchOutputBucket,
+                BUCKET_NAME_PATTERN, BUCKET_NAME_MIN_LENGTH, BUCKET_NAME_MAX_LENGTH, BUCKET_NAME_HINT);
+        final String verifiedStatementsBucket = requireResourceName(KEY_STATEMENTS_BUCKET, statementsBucket,
+                BUCKET_NAME_PATTERN, BUCKET_NAME_MIN_LENGTH, BUCKET_NAME_MAX_LENGTH, BUCKET_NAME_HINT);
         requireDistinctBuckets(verifiedInputBucket, verifiedOutputBucket, verifiedStatementsBucket);
 
-        final String verifiedLogicalName =
-                requireConfigured(KEY_REPORT_QUEUE_LOGICAL_NAME, reportQueueLogicalName);
+        // The queue is validated on its LOGICAL name, exactly as the provisioner is: the accepted character
+        // class excludes the dot, and the physical name is required to carry one as part of the mandatory FIFO
+        // suffix. requireQueueNamesAligned then ties the physical name to the validated logical one, so
+        // validating the logical half constrains both without needing a second, laxer pattern for the physical
+        // half. The dead-letter ceiling is checked on top, because that name is derived rather than configured
+        // and so can breach the ceiling even when the name it derives from passed.
+        final String verifiedLogicalName = requireResourceName(KEY_REPORT_QUEUE_LOGICAL_NAME,
+                reportQueueLogicalName, RESOURCE_NAME_PATTERN, RESOURCE_NAME_MIN_LENGTH,
+                QUEUE_LOGICAL_NAME_MAX_LENGTH, RESOURCE_NAME_HINT);
+        requireDeadLetterNameDerivable(verifiedLogicalName);
         this.reportQueueName = requireConfigured(KEY_REPORT_QUEUE, reportQueueName);
         requireQueueNamesAligned(this.reportQueueName, verifiedLogicalName);
 
-        final String verifiedNotificationTopic = requireConfigured(KEY_NOTIFICATION_TOPIC, notificationTopic);
+        final String verifiedNotificationTopic = requireResourceName(KEY_NOTIFICATION_TOPIC, notificationTopic,
+                RESOURCE_NAME_PATTERN, RESOURCE_NAME_MIN_LENGTH, TOPIC_NAME_MAX_LENGTH, RESOURCE_NAME_HINT);
         this.queueNotFoundStrategy = requireStrategy(queueNotFoundStrategy);
 
         // The credential half of the local-only guard. Both halves run before any template bean method on
@@ -2299,6 +2411,119 @@ public class AwsConfig {
                             + "for developer defaults. Do not add a default to the base profile.", key));
         }
         return rawValue.strip();
+    }
+
+    /**
+     * Returns the value of a required cloud resource property, having additionally proved it is a name the
+     * service it addresses will actually accept.
+     *
+     * <p><strong>What it closes.</strong> {@link #requireConfigured(String, String)} proves a name was
+     * <em>supplied</em>. Nothing in this class proved a name was <em>usable</em>, so a value such as
+     * {@code invalid/name} or {@code Carddemo_Batch_Input} bound cleanly, every client was built, the context
+     * refreshed and the application reported itself healthy. The failure then arrived at the first call that
+     * used the name - an object write inside a batch job, or a report submission - as an SDK rejection reported
+     * as a storage or messaging fault. That is a <strong>Major</strong> configuration defect on two counts: the
+     * diagnostic points at the wrong subsystem, and a deployment that cannot possibly work is allowed to pass
+     * readiness and take traffic.
+     *
+     * <p><strong>Why it belongs here and not only in the provisioner.</strong>
+     * {@code localstack-init/init-aws.sh} already validates the same six values against the same patterns and
+     * the same lengths, and that guard is real - but it only runs when provisioning runs. An application
+     * pointed at an already-provisioned emulator, a stack whose initialisation container has been replaced, or
+     * any profile that resolves these properties from somewhere other than the compose environment never
+     * executes it. Two guards over the same variable have to agree exactly or the pair is worse than either
+     * alone, which is why every pattern, bound and hint in this method is transcribed from that script rather
+     * than restated: {@link #BUCKET_NAME_PATTERN}, {@link #RESOURCE_NAME_PATTERN} and
+     * {@link #REGION_CODE_PATTERN} carry the script's own regular expressions verbatim.
+     *
+     * <p><strong>Order of the three checks.</strong> Emptiness, then length, then shape - the same order as
+     * {@code require_value} in the script, because a value that fails on length gets a length remedy rather
+     * than a pattern remedy, and the more specific diagnostic is the more useful one. Emptiness is checked by
+     * delegating to {@link #requireConfigured(String, String)}, so the "resolved to no value" message has
+     * exactly one author.
+     *
+     * <p><strong>Disclosure.</strong> The length branch names the property key and the measured length but not
+     * the value. The shape branch is the one exception in this class: it quotes the rejected value, exactly as
+     * the provisioner does, because the whole difficulty of an invalid resource name is seeing which character
+     * is wrong, and because these names are not secrets - they are published in the startup line, in the
+     * compose file and in every queue listing. Credentials and endpoints remain unquoted throughout.
+     *
+     * @param key         the property key, quoted in every failure message
+     * @param rawValue    the resolved value, possibly {@code null} or blank
+     * @param pattern     the accepted shape, transcribed from the provisioner
+     * @param minLength   the shortest length the service accepts, inclusive
+     * @param maxLength   the longest length the service accepts, inclusive
+     * @param shapeHint   remedy text naming the accepted character class, transcribed from the provisioner
+     * @return the stripped, validated value; never {@code null}, never blank
+     * @throws IllegalStateException if the value is absent, is outside the accepted length range, or does not
+     *                               match the accepted shape. Startup is aborted in every case
+     */
+    private static String requireResourceName(final String key, final String rawValue, final Pattern pattern,
+            final int minLength, final int maxLength, final String shapeHint) {
+
+        final String value = requireConfigured(key, rawValue);
+
+        if (value.length() < minLength || value.length() > maxLength) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "Required CardDemo cloud property '%s' holds a name of %d characters, which is outside the "
+                            + "%d-%d characters AWS permits for this resource. localstack-init/init-aws.sh "
+                            + "refuses the same value with exit code 4, so the name could not have been "
+                            + "provisioned either. Set '%s' to a name of %d-%d characters. The value is not "
+                            + "quoted here because its length, not its content, is what is wrong.",
+                    key, value.length(), minLength, maxLength, key, minLength, maxLength));
+        }
+
+        if (!pattern.matcher(value).matches()) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "Required CardDemo cloud property '%s' holds '%s', which is not a valid name for this AWS "
+                            + "resource. localstack-init/init-aws.sh refuses the same value with exit code 4 "
+                            + "against the same expression, so the name could not have been provisioned either, "
+                            + "and accepting it here would defer the failure to the first object write or report "
+                            + "submission and report it as a storage fault rather than a configuration one. Set "
+                            + "'%s' to a name matching: %s.",
+                    key, value, key, shapeHint));
+        }
+
+        return value;
+    }
+
+    /**
+     * Proves the logical report-queue name is short enough that its derived dead-letter companion also fits
+     * inside the {@value #QUEUE_PHYSICAL_NAME_MAX_LENGTH}-character ceiling AWS places on a queue name.
+     *
+     * <p>The dead-letter target's name is <em>derived</em> rather than configured -
+     * {@code localstack-init/init-aws.sh} composes {@code "${QUEUE_LOGICAL}-dlq.fifo"} - so it can exceed the
+     * ceiling even when the name it derives from passed every check. Nine characters are added
+     * ({@link #DEAD_LETTER_QUEUE_SUFFIX}), so a logical name above
+     * {@link #QUEUE_LOGICAL_NAME_DLQ_SAFE_MAX_LENGTH} - seventy-one - characters provisions the main queue and
+     * then fails to
+     * provision its quarantine target, leaving a half-provisioned stack: a working queue with no dead-letter
+     * destination, which means a permanently unprocessable submission blocks its message group indefinitely
+     * instead of being quarantined.
+     *
+     * <p>Checked separately from {@link #QUEUE_LOGICAL_NAME_MAX_LENGTH} rather than folded into it because the
+     * two ceilings fail for different reasons and need different remedies, and because stating the arithmetic
+     * is what makes the tighter bound comprehensible rather than arbitrary. The provisioner draws the same
+     * distinction in the same order.
+     *
+     * @param logicalName the validated logical report-queue name
+     * @throws IllegalStateException if the derived dead-letter name would exceed the AWS ceiling, aborting
+     *                               startup
+     */
+    private static void requireDeadLetterNameDerivable(final String logicalName) {
+        final String deadLetterName = logicalName + DEAD_LETTER_QUEUE_SUFFIX;
+        if (deadLetterName.length() > QUEUE_PHYSICAL_NAME_MAX_LENGTH) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "Required CardDemo cloud property '%s' holds a name of %d characters, so the dead-letter "
+                            + "companion localstack-init/init-aws.sh derives from it, '%s', is %d characters - "
+                            + "over the %d AWS allows a queue name. Provisioning would create the report queue "
+                            + "and then fail to create its quarantine target, so an unprocessable submission "
+                            + "would block its message group instead of being quarantined. Use a report-queue "
+                            + "name of at most %d characters, so the derived '%s' companion fits.",
+                    KEY_REPORT_QUEUE_LOGICAL_NAME, logicalName.length(), deadLetterName,
+                    deadLetterName.length(), QUEUE_PHYSICAL_NAME_MAX_LENGTH,
+                    QUEUE_LOGICAL_NAME_DLQ_SAFE_MAX_LENGTH, DEAD_LETTER_QUEUE_SUFFIX));
+        }
     }
 
     /**

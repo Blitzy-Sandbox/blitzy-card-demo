@@ -36,6 +36,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -1259,7 +1260,8 @@ public class CardUpdateService {
         switch (context.writeOutcome) {
             case COULD_NOT_LOCK_FOR_UPDATE -> throw new ConcurrentUpdateException(
                     ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_ACCOUNT,
-                    MSG_COULD_NOT_LOCK_FOR_UPDATE, context.maskedCardNumber(), null);
+                    MSG_COULD_NOT_LOCK_FOR_UPDATE, context.maskedCardNumber(),
+                    context.lockFailureCause);
             case DATA_WAS_CHANGED_BEFORE_UPDATE -> throw new ConcurrentUpdateException(
                     ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE,
                     MSG_DATA_WAS_CHANGED_BEFORE_UPDATE, context.maskedCardNumber(), null);
@@ -3351,6 +3353,26 @@ public class CardUpdateService {
             //            locking first and checking ownership afterwards would still have held a lock on
             //            another account's row, and checking ownership first would have read it unlocked.
             locked = readCardForAccountForUpdate(recordIdentifier, context.receivedAccountId);
+        } catch (final PessimisticLockingFailureException lockFailure) {
+            // THE LOCK WAS REFUSED, WHICH IS :1441's ELSE - NOT AN I/O FAULT.
+            //
+            // :1441-1449 treats every non-normal RESP on the READ UPDATE as "could not lock", and a
+            // refused lock is the most literal instance of that: CICS returned no record because the
+            // record was held. Reporting it as a file-access failure was a divergence in both
+            // directions - it lost the source's outcome, and it told the caller through a 502 that the
+            // server had a fault when what actually happened is that another transaction holds the row.
+            // A 502 says "stop, something is broken"; this condition says "the row is busy, retry".
+            //
+            // PessimisticLockingFailureException is the whole family Spring translates a failed lock
+            // acquisition into - CannotAcquireLockException for PostgreSQL's lock_not_available
+            // (SQLSTATE 55P03, which is what the bounded lock_timeout on the datasource produces), plus
+            // the deadlock and serialisation members. It is caught BEFORE DataAccessException because it
+            // is a subtype; a lost connection, a syntax fault or a constraint still falls through to the
+            // clause below, so no genuine I/O failure is relabelled as contention. This mirrors
+            // lockAware in com.cardemo.service.account.AccountUpdateService, which draws the same line
+            // on the same family for the same reason.
+            abandonWriteCouldNotLock(context, lockFailure);
+            return;
         } catch (final DataAccessException accessFailure) {
             context.inputError = true;
             context.returnMessage = fileErrorMessage(OPERATION_READ);
@@ -3360,17 +3382,7 @@ public class CardUpdateService {
         // :1441-1449 IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) CONTINUE ELSE ... - anything other than a
         //            normal response is treated as "could not lock", including a missing row.
         if (locked.isEmpty()) {
-            // :1444 SET INPUT-ERROR TO TRUE
-            context.inputError = true;
-            // :1445-1447 IF WS-RETURN-MSG-OFF SET COULD-NOT-LOCK-FOR-UPDATE TO TRUE
-            if (context.returnMessage.isEmpty()) {
-                context.returnMessage = MSG_COULD_NOT_LOCK_FOR_UPDATE;
-            }
-            context.writeOutcome = WriteOutcome.COULD_NOT_LOCK_FOR_UPDATE;
-            LOG.warn("CCUP could not lock card {} for update; write abandoned at :1446",
-                    context.maskedCardNumber());
-            // :1448 GO TO 9200-WRITE-PROCESSING-EXIT
-            writeProcessingExit9200();
+            abandonWriteCouldNotLock(context, null);
             return;
         }
         final Card card = locked.get();
@@ -3475,6 +3487,50 @@ public class CardUpdateService {
      */
     private void writeProcessingExit9200() {
         // :1495 EXIT
+    }
+
+    /**
+     * Abandons the write with {@code :1446}'s could-not-lock outcome, for both ways the locking read can
+     * fail to hand back a row it can rewrite.
+     *
+     * <p>Source: {@code app/cbl/COCRDUPC.cbl} {@code :1441-1449}, the {@code ELSE} of the
+     * {@code IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)} that follows the {@code READ ... UPDATE}. The source
+     * has one branch here because CICS has one signal: any non-normal {@code RESP} means the read did not
+     * yield a lockable record, and the paragraph does not ask why.</p>
+     *
+     * <p><strong>A relational store splits that one signal in two, and both belong here.</strong> The read
+     * can return an empty result - the row is not there - or it can raise a lock-acquisition failure - the
+     * row is there and another transaction holds it. Neither produced a lockable record, so both are
+     * {@code :1441}'s {@code ELSE} and both must reach the same outcome, the same latched literal and the
+     * same exit. Only one of them did before, which is what put a refused lock on a {@code 502} path
+     * intended for I/O faults.</p>
+     *
+     * <p>This exists as one method rather than two blocks precisely because they must not drift: the
+     * {@code IF WS-RETURN-MSG-OFF} guard at {@code :1445}, the outcome at {@code :1446} and the
+     * {@code GO TO} at {@code :1448} are the paragraph's behaviour, and duplicating them would let a later
+     * change fix one arm and leave the other reporting something else.</p>
+     *
+     * <p>The cause is retained rather than discarded so the conflict the caller receives can be traced back
+     * to the {@code SQLSTATE} that produced it. It is attached to the exception and is not put in the
+     * response.</p>
+     *
+     * @param context   the per-request state
+     * @param lockCause the lock-acquisition failure, or {@code null} when the read simply found no row
+     */
+    private void abandonWriteCouldNotLock(final UpdateContext context, final Throwable lockCause) {
+        // :1444 SET INPUT-ERROR TO TRUE
+        context.inputError = true;
+        // :1445-1447 IF WS-RETURN-MSG-OFF SET COULD-NOT-LOCK-FOR-UPDATE TO TRUE
+        if (context.returnMessage.isEmpty()) {
+            context.returnMessage = MSG_COULD_NOT_LOCK_FOR_UPDATE;
+        }
+        context.writeOutcome = WriteOutcome.COULD_NOT_LOCK_FOR_UPDATE;
+        context.lockFailureCause = lockCause;
+        LOG.warn("CCUP could not lock card {} for update; write abandoned at :1446 ({})",
+                context.maskedCardNumber(),
+                lockCause == null ? "no row returned" : "lock acquisition refused");
+        // :1448 GO TO 9200-WRITE-PROCESSING-EXIT
+        writeProcessingExit9200();
     }
 
     /**
@@ -5054,6 +5110,18 @@ public class CardUpdateService {
 
         /** The outcome of {@code 9200}, switched on at {@code :992-1001}. */
         private WriteOutcome writeOutcome = WriteOutcome.NOT_ATTEMPTED;
+
+        /**
+         * The lock-acquisition failure behind a {@code COULD_NOT_LOCK_FOR_UPDATE} outcome, or {@code null}
+         * when the locking read simply returned no row.
+         *
+         * <p>No counterpart in {@code app/cbl/COCRDUPC.cbl}, which has nothing to carry: CICS reported a
+         * {@code RESP} code and the paragraph acted on it in place. Here the outcome is raised later, by
+         * {@code raiseTerminalOutcome}, so without this field the conflict the caller receives would arrive
+         * with no cause attached and the {@code SQLSTATE} that produced it would be unrecoverable from the
+         * exception. It is attached to the exception and never placed in the response body.</p>
+         */
+        private Throwable lockFailureCause;
 
         /**
          * A typed failure raised deep in the paragraph chain and rethrown by the public entry points, so

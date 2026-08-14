@@ -743,6 +743,240 @@ class AwsConfigTest {
                 .hasMessageContaining("three distinct buckets");
     }
 
+    /**
+     * Service-specific resource-name validation, mirroring {@code localstack-init/init-aws.sh} check for
+     * check.
+     *
+     * <p><strong>The finding these cover.</strong> The constructor previously proved only that each name was
+     * non-blank. A name such as {@code invalid/name}, {@code Carddemo_Batch_Input} or {@code ab} therefore
+     * bound cleanly, every client was built, the context refreshed and readiness answered
+     * {@code 200 UP} - and the failure arrived at the first object write or report submission as an SDK
+     * rejection reported as a storage or messaging fault rather than as the configuration fault it was.
+     * The provisioning script refused the same values with exit code 4, so the two guards disagreed and the
+     * pair was worse than either alone.
+     *
+     * <p>Each case below is an <em>independently rejected shape</em>, not a variation on one. A single
+     * "obviously bad name" case would pass against a guard that only checked, say, the leading character.
+     */
+    @Nested
+    @DisplayName("resource-name shape validation")
+    class ResourceNameShapeValidation {
+
+        /** Builds the configuration with one bucket name replaced, every other value well formed. */
+        private AwsConfig withInputBucket(final String inputBucket) {
+            return new AwsConfig("us-east-1", inputBucket, "carddemo-batch-output",
+                    "carddemo-statements", PHYSICAL_QUEUE, LOGICAL_QUEUE, "carddemo-notifications",
+                    QueueNotFoundStrategy.FAIL, LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT,
+                    NO_GLOBAL_ENDPOINT, "test", "test");
+        }
+
+        /** Builds the configuration with the logical and physical queue names derived from one logical name. */
+        private AwsConfig withLogicalQueue(final String logicalQueue) {
+            return new AwsConfig("us-east-1", "carddemo-batch-input", "carddemo-batch-output",
+                    "carddemo-statements", logicalQueue + ".fifo", logicalQueue, "carddemo-notifications",
+                    QueueNotFoundStrategy.FAIL, LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT,
+                    NO_GLOBAL_ENDPOINT, "test", "test");
+        }
+
+        /** Builds the configuration with one topic name replaced, every other value well formed. */
+        private AwsConfig withTopic(final String topic) {
+            return new AwsConfig("us-east-1", "carddemo-batch-input", "carddemo-batch-output",
+                    "carddemo-statements", PHYSICAL_QUEUE, LOGICAL_QUEUE, topic,
+                    QueueNotFoundStrategy.FAIL, LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT,
+                    NO_GLOBAL_ENDPOINT, "test", "test");
+        }
+
+        /** Builds the configuration with one region replaced, every other value well formed. */
+        private AwsConfig withRegion(final String region) {
+            return new AwsConfig(region, "carddemo-batch-input", "carddemo-batch-output",
+                    "carddemo-statements", PHYSICAL_QUEUE, LOGICAL_QUEUE, "carddemo-notifications",
+                    QueueNotFoundStrategy.FAIL, LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT,
+                    NO_GLOBAL_ENDPOINT, "test", "test");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+            "invalid/name",
+            "Carddemo-Batch-Input",
+            "carddemo_batch_input",
+            "-carddemo-batch-input",
+            "carddemo-batch-input-",
+            ".carddemo-batch-input",
+            "carddemo batch input",
+            "carddemo-batch-input:1",
+            "ab",
+        })
+        @DisplayName("refuses every bucket name the provisioner refuses, naming the property not the value")
+        void refusesInvalidBucketNames(final String bucketName) {
+            assertThatThrownBy(() -> withInputBucket(bucketName))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("carddemo.aws.s3.batch-input-bucket");
+        }
+
+        @Test
+        @DisplayName("refuses a bucket name over the 63-character AWS ceiling without quoting it")
+        void refusesAnOverlongBucketName() {
+            final String overlong = "a".repeat(64);
+
+            assertThatThrownBy(() -> withInputBucket(overlong))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("carddemo.aws.s3.batch-input-bucket")
+                    .hasMessageContaining("3-63")
+                    // The length branch reports the measured length and deliberately does NOT echo the
+                    // value: its length is what is wrong, not its content.
+                    .hasMessageNotContaining(overlong);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+            "carddemo-batch-input",
+            "carddemo.batch.input",
+            "abc",
+            "a1b",
+            "1carddemo-input2",
+        })
+        @DisplayName("accepts every bucket name the provisioner accepts")
+        void acceptsValidBucketNames(final String bucketName) {
+            assertThat(withInputBucket(bucketName)).isNotNull();
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+            "carddemo.report.jobs",
+            "carddemo report jobs",
+            "carddemo/report-jobs",
+            "carddemo:report-jobs",
+        })
+        @DisplayName("refuses a queue logical name outside the character class SQS accepts")
+        void refusesInvalidQueueNames(final String logicalQueue) {
+            assertThatThrownBy(() -> withLogicalQueue(logicalQueue))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("carddemo.aws.sqs.report-queue-logical-name");
+        }
+
+        @Test
+        @DisplayName("accepts the underscore and mixed case the queue character class permits")
+        void acceptsPermittedQueueNameCharacters() {
+            assertThat(withLogicalQueue("CardDemo_report-JOBS_1")).isNotNull();
+        }
+
+        @Test
+        @DisplayName("refuses a logical queue name whose DERIVED dead-letter companion breaches the ceiling")
+        void refusesALogicalQueueNameThatBreaksTheDeadLetterCeiling() {
+            // 72 characters: inside the 75 the main queue's own ceiling allows once '.fifo' is appended,
+            // and outside the 71 the derived '-dlq.fifo' companion allows. Exactly the gap in which the
+            // provisioner creates the report queue and then fails to create its quarantine target,
+            // leaving a working queue with nowhere to quarantine an unprocessable submission.
+            final String tooLongForItsDlq = "q".repeat(72);
+
+            assertThatThrownBy(() -> withLogicalQueue(tooLongForItsDlq))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("carddemo.aws.sqs.report-queue-logical-name")
+                    .hasMessageContaining("-dlq.fifo")
+                    .hasMessageContaining("at most 71");
+        }
+
+        @Test
+        @DisplayName("accepts a logical queue name at exactly the 71-character dead-letter ceiling")
+        void acceptsALogicalQueueNameAtTheDeadLetterCeiling() {
+            assertThat(withLogicalQueue("q".repeat(71))).isNotNull();
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+            "carddemo.notifications",
+            "carddemo notifications",
+            "arn:aws:sns:us-east-1:000000000000:carddemo-notifications",
+        })
+        @DisplayName("refuses a topic name outside the character class SNS accepts, including an ARN")
+        void refusesInvalidTopicNames(final String topic) {
+            assertThatThrownBy(() -> withTopic(topic))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("carddemo.aws.sns.notification-topic");
+        }
+
+        @Test
+        @DisplayName("accepts a topic name at the 256-character SNS ceiling and refuses one beyond it")
+        void enforcesTheTopicNameCeiling() {
+            assertThat(withTopic("t".repeat(256))).isNotNull();
+
+            assertThatThrownBy(() -> withTopic("t".repeat(257)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("1-256");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"US-EAST-1", "us_east_1", "us east 1", "u"})
+        @DisplayName("refuses a region code outside the shape every AWS region code has")
+        void refusesInvalidRegions(final String region) {
+            assertThatThrownBy(() -> withRegion(region))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("spring.cloud.aws.region.static");
+        }
+
+        @Test
+        @DisplayName("accepts the region codes the profiles actually use")
+        void acceptsValidRegions() {
+            assertThat(withRegion("us-east-1")).isNotNull();
+            assertThat(withRegion("eu-west-2")).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the name guard runs BEFORE the distinctness guard, so the more specific fault is "
+                + "reported")
+        void theShapeGuardPrecedesTheDistinctnessGuard() {
+            // Two invalid names that are also identical. Reporting 'not distinct' here would send a reader
+            // to rename one of them when in fact neither is a legal bucket name at all.
+            assertThatThrownBy(() -> new AwsConfig("us-east-1", "Shared/Bucket", "Shared/Bucket",
+                    "carddemo-statements", PHYSICAL_QUEUE, LOGICAL_QUEUE, "carddemo-notifications",
+                    QueueNotFoundStrategy.FAIL, LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT,
+                    NO_GLOBAL_ENDPOINT, "test", "test"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("is not a valid name")
+                    .hasMessageNotContaining("three distinct buckets");
+        }
+
+        @Test
+        @DisplayName("the two derived queue ceilings are the 75 and 71 the documentation states")
+        void theDerivedQueueCeilingsMatchTheDocumentedFigures() throws Exception {
+            // Both constants are DERIVED - 80 less the FIFO suffix, and 80 less the derived dead-letter
+            // suffix - so they cannot drift from the strings they depend on. That is also why their Javadoc
+            // states the figures as prose rather than through {@value}: a length taken from a string is a
+            // method call, not a compile-time constant, and doclint renders only the latter. This assertion
+            // is what stops the PROSE drifting instead, which is the failure mode the derivation created.
+            final java.lang.reflect.Field mainCeiling =
+                    AwsConfig.class.getDeclaredField("QUEUE_LOGICAL_NAME_MAX_LENGTH");
+            mainCeiling.setAccessible(true);
+            final java.lang.reflect.Field dlqCeiling =
+                    AwsConfig.class.getDeclaredField("QUEUE_LOGICAL_NAME_DLQ_SAFE_MAX_LENGTH");
+            dlqCeiling.setAccessible(true);
+
+            assertThat(mainCeiling.getInt(null))
+                    .as("80 characters AWS allows a queue name, less the five of '.fifo' the physical name "
+                            + "must carry. localstack-init/init-aws.sh validates the logical name against "
+                            + "the same 1-75 range")
+                    .isEqualTo(75);
+            assertThat(dlqCeiling.getInt(null))
+                    .as("80 less the nine of the derived '-dlq.fifo' companion. The provisioner states the "
+                            + "same arithmetic and refuses a report-queue name above 71")
+                    .isEqualTo(71);
+        }
+
+        @Test
+        @DisplayName("the endpoint allow-list still runs first, so a live endpoint is refused even when a "
+                + "name is also invalid")
+        void theEndpointGuardStillRunsFirst() {
+            assertThatThrownBy(() -> new AwsConfig("us-east-1", "Invalid/Bucket", "carddemo-batch-output",
+                    "carddemo-statements", PHYSICAL_QUEUE, LOGICAL_QUEUE, "carddemo-notifications",
+                    QueueNotFoundStrategy.FAIL, "https://s3.amazonaws.com", LOCAL_ENDPOINT,
+                    LOCAL_ENDPOINT, NO_GLOBAL_ENDPOINT, "test", "test"))
+                    .isInstanceOf(IllegalStateException.class)
+                    // The no-live-AWS guarantee is the strongest constraint in this class and must not be
+                    // displaced by a name check added later.
+                    .hasMessageNotContaining("is not a valid name");
+        }
+    }
+
     /** The missing-queue strategy guard, which keeps an absent queue from being created on first send. */
     @Test
     @DisplayName("refuses an unresolved missing-queue strategy")

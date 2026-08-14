@@ -2059,13 +2059,41 @@
           exactly as it is, because a plugin-realm pin cannot remediate a version
           relocated into someone else's jar; that file now carries the pointer back
           to here so neither reads as the only disposition. The third occurrence is
-          httpcore5 5.3.6 in the realm of spring-boot-maven-plugin, which is left
-          alone deliberately: that plugin runs only repackage in this build and
-          opens no connection, so its transport is never exercised. All three are
-          enumerated in .github/plugin-graph/dispositions.json. The standing
-          invariant that a forward pin and a suppression are never both in place for
-          one record is therefore not breached: these are three artefacts, and
-          remediability is what separates them.
+          httpcore5 5.3.6 - and httpcore5-h2 5.3.6 with it - in the realm of
+          spring-boot-maven-plugin, which is not pinned here deliberately: that
+          plugin runs only repackage in this build and opens no connection, so its
+          transport is never exercised, and it is the plugin that produces the
+          delivered artefact, so altering its classpath carries a delivery risk that
+          altering a reporting plugin's does not.
+
+          A CORRECTION, RECORDED RATHER THAN QUIETLY MADE. An earlier revision of
+          this comment ended the paragraph above with "All three are enumerated in
+          .github/plugin-graph/dispositions.json." That was not true when it was
+          written. The scanner's own evidence proves it: with 19 dispositions on
+          file it exited 1 with "expected: none undispositioned | actual: 2", and
+          the two it named were exactly this third occurrence's pair, both
+          attributed to spring-boot-maven-plugin:3.5.11. The sentence asserted the
+          disposition that would have made the argument complete while the file
+          carried no such entry, so the gate was red for precisely as long as the
+          prose claimed it should be green - and the prose is what a reviewer reads.
+          The two entries now exist, carrying the reachability evidence this
+          paragraph states, and the scanner exits 0 with 21 dispositions and
+          unresolvedSeriousFindings = 0. The claim is now true; it is left visible
+          that it once was not, because a reader comparing this file against the
+          dispositions file needs to know which way the disagreement was resolved.
+
+          Note also what this fix deliberately is NOT. The scanner offers three
+          remedies - raise the plugin, add a plugin-scoped override as done above
+          for the scanner's own transport, or disposition with evidence and an
+          expiry. Raising is barred by the AAP pin. Overriding was available and
+          proven, and was still declined for the delivery-risk reason given above;
+          because no override was added, no second plugin-realm capture is needed in
+          .github/workflows/build.yml, and the inventory from
+          dependency:resolve-plugins is sufficient evidence on its own.
+
+          The standing invariant that a forward pin and a suppression are never both
+          in place for one record is therefore not breached: these are three
+          artefacts, and remediability is what separates them.
 
           THE AAP PIN IS PRESERVED. AAP section 0.6.1.1 pins
           org.owasp:dependency-check-maven to 12.1.0 and section 0.8.4 requires

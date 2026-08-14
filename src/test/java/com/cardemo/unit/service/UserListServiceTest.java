@@ -1976,6 +1976,8 @@ class UserListServiceTest {
         @Test
         @DisplayName(":251 - PF7 at the first page refuses navigation with the 'already' wording")
         void pf7AtTheFirstPageRefusesWithTheAlreadyWording() {
+            stubStore(store(20));
+
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF7,
                     request(1, true, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
 
@@ -1985,12 +1987,27 @@ class UserListServiceTest {
             assertThat(screen.errorFlagOn()).isFalse();
             // :253 SET SEND-ERASE-NO TO TRUE - the refusal repaints without erasing.
             assertThat(screen.eraseRequested()).isFalse();
-            verifyNoInteractions(repository);
+            // ...and repainting without erasing is precisely why the rows survive: COUSR0A is re-sent
+            // with the row fields at LOW-VALUES, BMS transmits no low-values field, so the terminal
+            // keeps the page it already shows. The flag was always modelled; nothing acted on it.
+            assertThat(keysOf(screen))
+                    .as("a refused page reports the boundary; it does not empty the list")
+                    .containsExactly("USR00001", "USR00002", "USR00003", "USR00004", "USR00005",
+                            "USR00006", "USR00007", "USR00008", "USR00009", "USR00010");
+            assertThat(screen.page().getPageNumber())
+                    .as("a refusal grants no navigation, so the page counter is untouched")
+                    .isEqualTo(1);
+            assertThat(screen.page().getFirstKey())
+                    .as("and neither keyset cursor moves")
+                    .isEqualTo("USR00001");
+            assertThat(screen.page().getLastKey()).isEqualTo("USR00010");
         }
 
         @Test
         @DisplayName(":273 - PF8 at the last page refuses navigation with the 'already' wording")
         void pf8AtTheLastPageRefusesWithTheAlreadyWording() {
+            stubStore(store(20));
+
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF8,
                     request(1, false, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
 
@@ -1999,7 +2016,14 @@ class UserListServiceTest {
                     .isEqualTo("You are already at the bottom of the page...");
             assertThat(screen.errorFlagOn()).isFalse();
             assertThat(screen.eraseRequested()).isFalse();
-            verifyNoInteractions(repository);
+            assertThat(keysOf(screen))
+                    .as(":275 SET SEND-ERASE-NO retains the displayed rows exactly as the PF7 refusal "
+                            + "at :253 does")
+                    .containsExactly("USR00001", "USR00002", "USR00003", "USR00004", "USR00005",
+                            "USR00006", "USR00007", "USR00008", "USR00009", "USR00010");
+            assertThat(screen.page().isNextPageAvailable())
+                    .as("the has-next sentinel the refusal read is not disturbed by the redisplay")
+                    .isFalse();
         }
 
         @Test

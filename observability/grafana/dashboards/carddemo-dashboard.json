@@ -232,7 +232,8 @@
       "options": {
         "legend": {
           "calcs": [
-            "lastNotNull"
+            "lastNotNull",
+            "max"
           ],
           "displayMode": "table",
           "placement": "bottom",
@@ -296,7 +297,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Cumulative rejections by reject code, from carddemo_batch_records_rejected_total, split on the reject_code label (Micrometer tag reject.code; plain unpadded integers). Unit: records. Each series is selected by an exact matcher and legended with the verbatim legacy description from app/cbl/CBTRN02C.cbl: 100 INVALID CARD NUMBER FOUND (:L385-L386), 101 ACCOUNT RECORD NOT FOUND (:L397-L398), 102 OVERLIMIT TRANSACTION (:L410-L411), 103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION (:L417-L418) and 109 ACCOUNT RECORD NOT FOUND (:L556-L557). The dimension is closed at five because RejectCode declares five constants.\n\n102 and 103 must not be added together. At :L407-L420 the over-limit and expiry tests are sequential and unguarded - the 102 block's END-IF at :L413 is followed directly by the 103 IF at :L414, with no ELSE and no early exit - so a record failing both is written once, bearing 103. 102 therefore undercounts over-limit failures by exactly the number of records that had also expired. Preserved legacy behaviour.\n\n109 reads a flat zero by design. It is assigned on the REWRITE INVALID KEY path at :L554-L557, inside the posting routine that :L211-L212 enter only when the reason code is already zero, and :L208 clears it on the next iteration, so no reject record is written. The series exists rather than being missing because MetricsConfig registers one counter per enum constant eagerly at start-up.",
+      "description": "Cumulative rejections by reject code, from carddemo_batch_records_rejected_total, split on the reject_code label (Micrometer tag reject.code; plain unpadded integers). Unit: records. Each series is selected by an exact matcher and legended with the verbatim legacy description from app/cbl/CBTRN02C.cbl: 100 INVALID CARD NUMBER FOUND (:L385-L386), 101 ACCOUNT RECORD NOT FOUND (:L397-L398), 102 OVERLIMIT TRANSACTION (:L410-L411), 103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION (:L417-L418) and 109 ACCOUNT RECORD NOT FOUND (:L556-L557). The dimension is closed at five because RejectCode declares five constants.\n\n102 and 103 must not be added together. At :L407-L420 the over-limit and expiry tests are sequential and unguarded - the 102 block's END-IF at :L413 is followed directly by the 103 IF at :L414, with no ELSE and no early exit - so a record failing both is written once, bearing 103. 102 therefore undercounts over-limit failures by exactly the number of records that had also expired. Preserved legacy behaviour.\n\n109 reads a flat zero by design. It is assigned on the REWRITE INVALID KEY path at :L554-L557, inside the posting routine that :L211-L212 enter only when the reason code is already zero, and :L208 clears it on the next iteration, so no reject record is written. The series exists rather than being missing because MetricsConfig registers one counter per enum constant eagerly at start-up.\n\nNarrow viewports: options.text.titleSize is pinned to 11 px so that all five labels render complete at a 375 px width, where the name box is 325 px. Left to Grafana's automatic sizing the title font is 25.56 px and every one of the five is ellipsis-truncated - the forty-six characters of 103 lose 370 px, and 101 and 109 become indistinguishable because they share a description and differ only in the numeric prefix. Measured at 11 px the longest label renders 302.97 px against 325 px available, a 22.03 px margin; at 12 px it renders 329.89 px and still truncates, so 11 is the largest integer that fits. The pin costs desktop type prominence - Grafana's auto-sizer keys off bar row height rather than panel width, so it would render 25.56 px at 1920 px too - and that cost is accepted because this panel is the place the reject-code panel to the right sends a reader to when its own legend clips. All five values stay fully visible at both widths. See DECISION_LOG.md DL-RM-15.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -340,7 +341,10 @@
         },
         "showUnfilled": true,
         "sizing": "auto",
-        "valueMode": "text"
+        "valueMode": "text",
+        "text": {
+          "titleSize": 11
+        }
       },
       "pluginVersion": "11.3.1",
       "targets": [
@@ -413,7 +417,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Rejections per second over a five-minute window, broken out by the same five exact reject codes as the panel to the left, so a burst can be attributed to a specific validation failure while a run is still in progress.\n\nSame source, same labels and the same two caveats as that panel: 103 shadows 102 whenever both conditions fail, because the checks at app/cbl/CBTRN02C.cbl:L407-L420 are sequential and unguarded; and 109 is expected to remain flat at zero because it is assigned only on the already-validated path at :L554-L557 and is never consumed as a reject.\n\nUNIT. The panel unit is cps (counts/sec), a pinned-Grafana Throughput unit, so the y-axis and the tooltip read in the same per-second terms the rate() query returns. It was previously the unitless short, which rendered a per-second value as a bare count and invited a reader to take it for a cumulative total.\n\nNarrow viewports: at a 375 px width this legend's longest label, the forty-six characters of 103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION, exceeds the 325 px legend box and is clipped without an ellipsis, and that one row's per-second value is reachable only by scrolling the legend sideways. The label is NOT shortened, because it is byte-identical to the legacy description at app/cbl/CBTRN02C.cbl:L419 and that fidelity is deliberate. Read the full five labels with their values from the cumulative bar gauge to the left, which truncates with a proper ellipsis and keeps every value visible at that width. See DECISION_LOG.md DL-RM-15.",
+      "description": "Rejections per second over a five-minute window, broken out by the same five exact reject codes as the panel to the left, so a burst can be attributed to a specific validation failure while a run is still in progress.\n\nSame source, same labels and the same two caveats as that panel: 103 shadows 102 whenever both conditions fail, because the checks at app/cbl/CBTRN02C.cbl:L407-L420 are sequential and unguarded; and 109 is expected to remain flat at zero because it is assigned only on the already-validated path at :L554-L557 and is never consumed as a reject.\n\nUNIT. The panel unit is cps (counts/sec), a pinned-Grafana Throughput unit, so the y-axis and the tooltip read in the same per-second terms the rate() query returns. It was previously the unitless short, which rendered a per-second value as a bare count and invited a reader to take it for a cumulative total.\n\nNarrow viewports: at a 375 px width this legend's longest label, the forty-six characters of 103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION, exceeds the 325 px legend box and is clipped without an ellipsis, and that one row's per-second value is reachable only by scrolling the legend sideways. The label is NOT shortened, because it is byte-identical to the legacy description at app/cbl/CBTRN02C.cbl:L419 and that fidelity is deliberate. The cause is arithmetic rather than configuration and no legend option can repair it: at the 12 px legend font the label renders 328.91 px wide, so it exceeds the whole 325 px box by 3.91 px before any colour swatch or value column is placed. Five legend permutations were measured at 375 px and at 1920 px and every one clipped it; list mode is kept because it is the only one that still shows four of the five per-second values, where table mode shows none. Read all five labels in full, with their values, from the cumulative bar gauge to the left: its title font is pinned to 11 px precisely so that every one of the five renders complete at this width. See DECISION_LOG.md DL-RM-15.\n\nACCESSIBILITY. This legend's per-series toggles are 18.8 px tall against the 24 px WCAG 2.5.8 minimum, and the two longest rows also fall short on spacing at 22.8 px. The row height is fixed in Grafana and is not settable from this file. calcs is deliberately left at lastNotNull alone here, unlike panels 4, 9 and 13, because a second column would push still more of this panel's values out of the 325 px box.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -637,7 +641,8 @@
       "options": {
         "legend": {
           "calcs": [
-            "lastNotNull"
+            "lastNotNull",
+            "max"
           ],
           "displayMode": "list",
           "placement": "bottom",
@@ -949,7 +954,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "15s",
+  "refresh": "1m",
   "schemaVersion": 39,
   "tags": [
     "carddemo",

@@ -61,6 +61,7 @@ import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.explore.JobExplorer;
@@ -84,8 +85,10 @@ import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
 import com.cardemo.e2e.PostingParityOracle;
@@ -381,6 +384,21 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    /**
+     * The transaction boundary the harness's own statements need in order to be durable.
+     *
+     * <p><strong>Not optional, and the reason is in the profile.</strong>
+     * {@code application.yml} sets {@code spring.datasource.hikari.auto-commit: false}, so a statement issued
+     * through {@link #jdbcTemplate} outside a transaction is never committed - the connection is returned to
+     * the pool and the work is rolled back, silently and without an error. A fault this harness injects before
+     * a launch would therefore appear to have been applied and would have no effect at all, which is the most
+     * misleading possible outcome: the assertions that depend on the fault would fail for a reason that has
+     * nothing to do with the code under test. Every harness statement that must outlive its own call therefore
+     * goes through this template.
+     */
+    @Autowired
+    private PlatformTransactionManager platformTransactionManager;
+
     /** Reads back the fixed-width objects the stages emit, so their geometry can be measured. */
     @Autowired
     private S3Client s3Client;
@@ -523,6 +541,16 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
 
     /** Return code 8 - an unsuccessful stage, which halts the stream. */
     private final int returnCodeFailed = 8;
+
+    /**
+     * Return code 12 - an abend, which halts the stream and is reported distinctly from code 8.
+     *
+     * <p>{@code app/cpy/CSMSG02Y.cpy} carries the abend work areas and {@code CALL 'CEE3ABD'} is what raises
+     * one; the figure itself is {@code FatalProcessingException.BATCH_RETURN_CODE}. Restated here as a literal
+     * rather than read from the production constant, because a test that took the value from the code under
+     * test could not detect the value changing.
+     */
+    private final int returnCodeAbend = 12;
 
     /** The 300 records of {@code app/data/ASCII/dailytran.txt}, consumed by classpath resource name. */
     private final String dailyTransactionFixture = "dailytran.txt";
@@ -1524,8 +1552,8 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     }
 
     /**
-     * The composite health surface reports up over the database, the object store and the queue, with
-     * separate liveness and readiness groups.
+     * The composite health surface reports up over the database, the object store, the queue and the
+     * notification topic, with separate liveness and readiness groups.
      *
      * <p>Purpose: assert the observability surface the legacy stream had no analogue for, and assert it as the
      * replacement for the two job-control members it supersedes. Inputs: the two running containers. Output:
@@ -1539,9 +1567,15 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * endpoint is invented for either member, and none for {@code app/jcl/CBADMCDJ.jcl:27} either.
      *
      * <p>The surface is resolved through the context rather than over HTTP, so no address, port or path
-     * literal appears here. The readiness group carries the three downstream dependencies and the liveness
+     * literal appears here. The readiness group carries the four downstream dependencies and the liveness
      * group carries none of them, which is the distinction that stops an orchestrator killing a healthy
      * process because an emulator blipped.
+     *
+     * <p>The notification topic is the fourth member and joined this assertion with the contributor that
+     * probes it. That contributor's arrival made this test fail honestly rather than spuriously: the harness
+     * registered the topic property but never created the topic, so readiness was correctly reporting a
+     * substrate the harness had not provisioned. The remedy was to provision it in
+     * {@code AbstractBatchIntegrationTest}, not to narrow this assertion.
      *
      * <p>A short bounded retry tolerates emulator warm-up. It is a retry on a reading, not an assertion about
      * elapsed time: nothing here asserts a duration.
@@ -1550,16 +1584,18 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * bare status, or a genuinely unreachable substrate all fail with the resolved membership named.
      */
     @Test
-    @DisplayName("11. the composite health surface is up over database, object store and queue")
+    @DisplayName("11. the composite health surface is up over database, object store, queue and "
+            + "notification topic")
     void theCompositeHealthSurfaceIsUpOverDatabaseObjectStoreAndQueue() {
         final String databaseComponent = "db";
         final List<String> readinessMembers = List.of(databaseComponent,
-                HealthIndicators.S3_HEALTH_COMPONENT_NAME, HealthIndicators.SQS_HEALTH_COMPONENT_NAME);
+                HealthIndicators.S3_HEALTH_COMPONENT_NAME, HealthIndicators.SQS_HEALTH_COMPONENT_NAME,
+                HealthIndicators.SNS_HEALTH_COMPONENT_NAME);
 
         final TreeSet<String> registered = new TreeSet<>();
         healthContributorRegistry.forEach(contributor -> registered.add(contributor.getName()));
         assertThat(registered)
-                .as("the three substrates the stream depends on are all contributors. Resolved: %s",
+                .as("the four substrates the stream depends on are all contributors. Resolved: %s",
                         registered)
                 .containsAll(readinessMembers);
 
@@ -1571,7 +1607,7 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
         assertThat(readiness.getComponents().keySet())
                 .as("readiness answers whether the stream can do work, so it carries the relational "
                         + "substrate that replaces the five CEMT SET FIL targets of app/jcl/OPENFIL.jcl:26-30, "
-                        + "plus the object store and the queue. Resolved: %s",
+                        + "plus the object store, the queue and the notification topic. Resolved: %s",
                         readiness.getComponents().keySet())
                 .containsAll(readinessMembers);
         for (final String member : readinessMembers) {
@@ -1774,6 +1810,114 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                     .as("%s must not build a variant of it either - the repaired form that drops the stray "
                             + "marker is the specific parity diff this catches", simpleName)
                     .doesNotContain(repaired);
+        }
+    }
+
+    /**
+     * A restart of an instance that has already halted launches nothing and changes nothing.
+     *
+     * <p><strong>Finding P5-01, severity Critical, verified on the real substrate.</strong> The unit tier pins
+     * the same property over a synchronous harness; this pins it over a real PostgreSQL 16 job repository, real
+     * object storage and the framework's own launcher - which is where the two mechanisms the finding depends on
+     * actually live, rather than being reproduced. {@code SimpleJobRepository.createJobExecution} copies the
+     * previous execution's execution context onto the restart, so the halt is present before the first listener
+     * callback; and {@code SimpleStepHandler.shouldStart} skips a launcher step whose last execution completed,
+     * so the stage runner never re-derives the code it recorded. The listener then zeroed the carried aggregate
+     * and both gate inputs read a clean run, so the first gate said {@value #gateProceed}.
+     *
+     * <p><strong>How the halt is produced.</strong> A {@code BEFORE INSERT} trigger on the transaction relation
+     * raises, so stage 1's child job cannot write the row {@code 2900-WRITE-TRANSACTION-FILE} commits and the
+     * child fails. The fault is at the store rather than in the stream, which is the point: it is a real
+     * database failure of the kind return code 8 exists to report, it is deterministic, and it is undone in the
+     * {@code finally} block so no later test sees it.
+     *
+     * <p><strong>Why the launcher step nonetheless completes, which is what the finding turns on.</strong>
+     * {@code runStage} always returns {@code RepeatStatus.FINISHED} and reports the stage's outcome by setting
+     * the step contribution's exit status to the gate name. So the launcher step's {@code BatchStatus} is
+     * {@code COMPLETED} while its exit code is {@value #gateHalt} - and a completed step is the one the
+     * framework skips on a restart.
+     *
+     * <p>Inputs: the Flyway-seeded fixtures. Outputs: none. Side effects: one trigger created and dropped, and
+     * two committed pipeline executions of one instance which the class's own teardown undoes.
+     *
+     * <p>Error modes: a first launch that does not halt at the gate after stage 1 fails the precondition rather
+     * than passing silently; a restart that launches any later stage fails the launch assertion; a restart that
+     * changes the transaction population or any account balance fails the row assertions.
+     */
+    @Test
+    @DisplayName("14. a restart of a halted instance launches no further stage and changes no row (P5-01)")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void aRestartOfAHaltedInstanceLaunchesNothingAndChangesNothing() {
+        seedBackupGeneration();
+        refuseTransactionInserts();
+        try {
+            final JobParameters parameters = runIdParameters(pipelineParameters());
+            final JobExecution first = launchJob(batchPipelineJob, parameters);
+
+            // The precondition, asserted rather than assumed. Every assertion below is about what a restart of
+            // a HALTED instance does, so a first launch that completed would make the whole method vacuous.
+            assertThat(first.getStatus())
+                    .as("stage 1 cannot write a transaction, so its child job fails and the gate after it "
+                            + "stops the stream")
+                    .isEqualTo(BatchStatus.FAILED);
+            final int haltedReturnCode = contextInt(first, aggregateReturnCodeEntry);
+            assertThat(haltedReturnCode)
+                    .as("the halt is recorded in the band that stops the stream, which is 8 or worse")
+                    .isGreaterThanOrEqualTo(returnCodeFailed);
+            assertThat(stepNames(first))
+                    .as("no stage after the first may have launched on the first execution either; the gate "
+                            + "after stage 1 is what stops them")
+                    .containsExactly(postTranStepBeanName);
+            assertThat(stepNamed(first, postTranStepBeanName).getStatus())
+                    .as("THE MECHANISM: the launcher step that recorded the halt COMPLETED, because runStage "
+                            + "reports the outcome through the step's exit status rather than by failing. That "
+                            + "is what makes the framework skip it on the restart, so nothing re-derives the "
+                            + "code")
+                    .isEqualTo(BatchStatus.COMPLETED);
+
+            final long transactionsAfterFirst = countRows("SELECT COUNT(*) FROM transaction");
+            final long distinctIdsAfterFirst = countRows("SELECT COUNT(DISTINCT tran_id) FROM transaction");
+            final long accountBalanceCentsAfterFirst = accountBalanceCents();
+
+            final JobExecution restarted = launchJob(batchPipelineJob, parameters);
+
+            assertThat(restarted.getId())
+                    .as("a restart is a new execution of the SAME instance, which is the only reading of it "
+                            + "that makes the carried context relevant")
+                    .isNotEqualTo(first.getId());
+            assertThat(restarted.getJobInstance().getInstanceId())
+                    .isEqualTo(first.getJobInstance().getInstanceId());
+            assertThat(contextInt(restarted, aggregateReturnCodeEntry))
+                    .as("the persisted halt is authoritative: the listener seeds the aggregate only when the "
+                            + "entry is absent, so a carried halt is never lowered to zero")
+                    .isEqualTo(haltedReturnCode);
+            assertThat(restarted.getStatus())
+                    .as("the restart re-reads its own halt at the first gate and fails there")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(contextString(restarted, aggregateOutcomeEntry))
+                    .as("the outcome label agrees with the return code rather than reporting a clean run")
+                    .isEqualTo(contextString(first, aggregateOutcomeEntry));
+
+            assertThat(stepNames(restarted))
+                    .as("THE FINDING: not one of INTCALC, COMBTRAN, CREASTMT or TRANREPT may launch. Walking "
+                            + "through the halt is what produced the reported damage - interest applied over "
+                            + "data that had already been posted, and a set of duplicate transaction "
+                            + "identifiers")
+                    .doesNotContain(intCalcStepBeanName, combTranStepBeanName, creaStmtStepBeanName,
+                            tranReptStepBeanName);
+            assertThat(countRows("SELECT COUNT(*) FROM transaction"))
+                    .as("no row is added by the restart")
+                    .isEqualTo(transactionsAfterFirst);
+            assertThat(countRows("SELECT COUNT(DISTINCT tran_id) FROM transaction"))
+                    .as("and no identifier is duplicated by it: the distinct count still equals the row count")
+                    .isEqualTo(distinctIdsAfterFirst)
+                    .isEqualTo(transactionsAfterFirst);
+            assertThat(accountBalanceCents())
+                    .as("and no interest is applied a second time: the summed account balance is unchanged to "
+                            + "the cent, compared as an exact integral value rather than a floating point one")
+                    .isEqualTo(accountBalanceCentsAfterFirst);
+        } finally {
+            allowTransactionInserts();
         }
     }
 
@@ -2133,6 +2277,84 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * Makes every insert into the transaction relation fail at the store.
+     *
+     * <p>A {@code BEFORE INSERT} trigger that raises, which is a real database failure of the kind return code
+     * 8 exists to report rather than a stubbed one. Chosen over revoking a privilege because it needs no second
+     * role, and over an added constraint because it cannot be satisfied by any row shape and so cannot make the
+     * outcome depend on which record the stage reached first.
+     *
+     * <p>Idempotent: the function is replaced and the trigger dropped before it is created, so a previous run
+     * that was interrupted between the two cannot leave this unable to run.
+     */
+    private void refuseTransactionInserts() {
+        commitStatements(
+                "CREATE OR REPLACE FUNCTION carddemo_test_refuse_insert() RETURNS trigger AS $fn$"
+                        + " BEGIN RAISE EXCEPTION 'transaction insert refused by the integration harness';"
+                        + " END; $fn$ LANGUAGE plpgsql",
+                "DROP TRIGGER IF EXISTS carddemo_test_refuse_insert_trg ON \"transaction\"",
+                "CREATE TRIGGER carddemo_test_refuse_insert_trg BEFORE INSERT ON \"transaction\""
+                        + " FOR EACH ROW EXECUTE FUNCTION carddemo_test_refuse_insert()");
+        assertThat(countRows("SELECT COUNT(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid"
+                + " WHERE c.relname = 'transaction' AND t.tgname = 'carddemo_test_refuse_insert_trg'"))
+                .as("the fault has to be READ BACK as present. An injected fault that silently did not commit "
+                        + "would make every assertion in the restart test fail for a reason unrelated to the "
+                        + "code under test")
+                .isEqualTo(1L);
+    }
+
+    /**
+     * Removes the refusal, so no later test in this tier inherits it.
+     *
+     * <p>Called from a {@code finally} block rather than a teardown callback, because the class's data teardown
+     * truncates rows and would leave a trigger in place. Both statements tolerate absence, so this is safe to
+     * call whether or not the trigger was ever created.
+     */
+    private void allowTransactionInserts() {
+        commitStatements(
+                "DROP TRIGGER IF EXISTS carddemo_test_refuse_insert_trg ON \"transaction\"",
+                "DROP FUNCTION IF EXISTS carddemo_test_refuse_insert()");
+    }
+
+    /**
+     * Executes statements inside one committed transaction.
+     *
+     * <p>See {@link #platformTransactionManager} for why a bare {@link JdbcTemplate#execute(String)} is not
+     * enough on this profile. Every statement passed here is a compile-time constant with nothing interpolated
+     * into it.
+     *
+     * @param statements the statements to execute in order, must not be {@code null} and must not be empty
+     */
+    private void commitStatements(final String... statements) {
+        assertThat(statements)
+                .as("a transaction with nothing in it would report success while doing nothing")
+                .isNotEmpty();
+        new TransactionTemplate(platformTransactionManager).executeWithoutResult(status -> {
+            for (final String statement : statements) {
+                jdbcTemplate.execute(statement);
+            }
+        });
+    }
+
+    /**
+     * The summed current balance of every account, in whole cents.
+     *
+     * <p>Summed in the database as an exact numeric and returned as a {@code long} of cents, so the comparison
+     * that proves interest was not applied twice is an integral equality rather than a floating point one. The
+     * statement is a compile-time constant with nothing interpolated into it.
+     *
+     * @return the summed balance in cents, zero when the relation holds no account
+     */
+    private long accountBalanceCents() {
+        final Long cents = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(acct_curr_bal * 100), 0)::bigint FROM account", Long.class);
+        assertThat(cents)
+                .as("a coalesced aggregate always returns a row")
+                .isNotNull();
+        return cents.longValue();
     }
 
     /**

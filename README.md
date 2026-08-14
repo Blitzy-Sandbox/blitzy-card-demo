@@ -500,7 +500,7 @@ a tag and a digest so a build is reproducible rather than dependent on when it r
 **Current environment observation — Friday, August 7, 2026.** This is the operative reading. On
 the host where the results in [Validation gates](#validation-gates) were produced:
 
-- **JDK 25.0.3 (Temurin-25.0.3+9, Eclipse Adoptium) and Apache Maven 3.9.11 are present and
+- **JDK 25.0.3 and Apache Maven 3.9.11 are present and
   working.** `./mvnw -B -ntp -Ddependency-check.skip=true clean verify` completes with exit code 0.
 - **Docker Engine 29.7.0 and `docker compose` are present and working.**
   `docker compose up -d --build --wait` brings all seven services up healthy.
@@ -530,15 +530,29 @@ missing-JDK condition is closed.** Measured by invoking each tool:
 
 | Component | Reading |
 |-----------|---------|
-| `java` / `javac` | Eclipse Temurin OpenJDK **25.0.3+9** (2026-04-21 LTS) |
+| `java` / `javac` | Eclipse Temurin OpenJDK **25.0.3+9** (2026-04-21 LTS) on the host of that date — **re-measured Friday, 14 August 2026 on the current host as build `25.0.3+9-2-25.10.2-Ubuntu`, vendor Ubuntu** |
 | `./mvnw` | Apache Maven **3.9.11** — the wrapper resolves it, so no host `mvn` is needed |
 | `docker` | Engine **29.7.0**, `docker compose` **v5.3.1**, daemon reachable |
 | `localstack` / `aws` | LocalStack CLI **4.14.0**, aws-cli **1.46.0** — neither required by any workflow here |
 | `mkdocs` | **1.6.1** with `techdocs-core` and `mermaid2`; `mkdocs build --strict` exits 0 with zero warnings |
 
+**Re-measured Friday, 14 August 2026, and only one cell moved.** Every reading in the table above
+reproduces on the current host — Maven 3.9.11 through `./mvnw`, Docker Engine 29.7.0 with
+`docker compose` v5.3.1, LocalStack CLI 4.14.0, aws-cli 1.46.0, MkDocs 1.6.1 building `--strict`
+with zero warnings — except the JVM vendor string: this host reports `java.vendor = Ubuntu` and
+`java.runtime.version = 25.0.3+9-2-25.10.2-Ubuntu` from the distribution package
+`openjdk-25-jdk 25.0.3+9-2~25.10.2`, not a Temurin build. **The earlier Temurin readings are not
+withdrawn as mismeasurements — they were taken on a different host** — but they are no longer
+current, which is why they are dated above. Nothing in the build depends on the difference: the
+enforcer rule is a *version* floor of `[25,)`, not a vendor pin, the same `clean verify` passes on
+this host, and the three container stages `Dockerfile` pins genuinely are Temurin
+(`eclipse-temurin:25.0.3_9-jdk-noble`, `maven:3.9.11-eclipse-temurin-25` and
+`eclipse-temurin:25.0.3_9-jre-noble`, each by digest), so the container readings recorded elsewhere
+in this repository are unaffected by this one.
+
 The consequence is worth stating plainly: **the containerised build path is a convenience rather than
 a remediation**, and the full gate runs directly on the host with `./mvnw clean verify`. That command
-was executed on the host at this commit and exited **0**, with **15,098 unit test cases** and **919
+was executed on the host at this commit and exited **0**, with **15,162 unit test cases** and **922
 integration and end-to-end test cases** passing and **0 compiler warnings**, against the 0.80 coverage
 floor. **That warning figure is stated as compiler warnings deliberately, because the two available
 readings differ and the looser one was published here before 9 August 2026.** `[WARNING]` lines in the
@@ -548,11 +562,12 @@ its no-NVD-API-key advisory appears only when the plugin attempts a feed refresh
 belongs to the scan plugin rather than to the build. Compiler warnings are **0** either way and cannot be otherwise, because
 `maven-compiler-plugin` runs `-Xlint:all -Werror` with `failOnWarning`, so a compiler warning fails the
 build instead of appearing in it. The earlier wording attributed "0 `[WARNING]` lines" to the full
-`clean verify`, which is the one command for which it is not true. The Failsafe total decomposes as **804** integration plus **115** end-to-end, of which the gate
+`clean verify`, which is the one command for which it is not true. The Failsafe total decomposes as **807** integration plus **115** end-to-end, of which the gate
 harness is **64** — and it decomposes exactly, which the figures published here before 9 August 2026
 did not: they were 14,914 and 906, both understated, against a ledger table that itself published
-799 + 107 = 907. The unit figure then moved five times more inside this one checkpoint —
-**14,917 → 14,925 → 14,929 → 14,931 → 14,932 → 15,092 → 15,098** — and every move has the same cause: a claim that had been
+799 + 107 = 907. The unit figure then moved seven times more inside this one checkpoint —
+**14,917 → 14,925 → 14,929 → 14,931 → 14,932 → 15,092 → 15,098 → 15,162** — count the arrows rather than trusting the
+word, and every move up to the last has the same cause: a claim that had been
 maintained by hand was converted into one a build measures. The eight at 14,925 hold the published
 batch-launch command against the job names the code registers; the four at 14,929 hold this
 documentation set's published structural counts against the files they describe; the two at 14,931
@@ -561,9 +576,13 @@ hold every published page against a Markdown defect that renders as literal aste
 pipe characters; the 160 at 15,092 are the field-width unit contract, the two batch span-naming
 suites and the assertions added to suites that already existed; and the six at 15,098 hold the security
 headers on a boundary refusal, being three cases added to `RequestBoundaryHardeningTest` and one
-`@ParameterizedTest` over three request targets added to `ProblemJsonErrorBoundaryTest` - the only
-move in the series that closes a runtime gap rather than a documentation one, and the only one a
-full `verify` had to catch, since no documentation gate can see a test case appear. None of those four documentation defect classes is reported by a strict build, because in every case
+`@ParameterizedTest` over three request targets added to `ProblemJsonErrorBoundaryTest`; and the
+sixty-four at 15,162 are this revision's QA-remediation guards — list-boundary redisplay, the
+card-update lock translation, the byte-exact user-administration literals, the batch restart-halt
+authority and abend exit status, and the AWS resource-name validation with its readiness
+contributor. **Those last two moves are the only ones in the series that close runtime gaps rather
+than documentation ones, and the only ones a full `verify` had to catch**, since no documentation
+gate can see a test case appear. None of those four documentation defect classes is reported by a strict build, because in every case
 the Markdown is valid. Expect this figure to keep moving for that reason, and read it as the count
 belonging to the run named here rather than as a constant. All of them are restamped from one green
 run, and
@@ -662,9 +681,54 @@ That container already carries Maven 3.9.11 on JDK 25, so `mvn` is invoked direc
 first `-v` mounts your working tree **read-write**, so the build writes `target/` back onto the
 host, and anything running in the container can modify your sources.
 
-The Testcontainers-backed tiers additionally need a reachable Docker daemon from *inside* the
-container, which is normally arranged by adding `-v
-/var/run/docker.sock:/var/run/docker.sock`. **Read the warning below before you do.**
+The command above runs the unit tier. **It is not sufficient for a full `verify`, and the incomplete
+form fails in a way that looks like an application defect and is not** — so the complete form is given
+here, and both were executed to establish which is which.
+
+The Testcontainers-backed tiers need a reachable Docker daemon from *inside* the container, which is
+normally arranged by adding `-v /var/run/docker.sock:/var/run/docker.sock`. **Read the warning below
+before you do.** That mount alone is still not enough. With only the socket mounted, Testcontainers
+advertises the container's default bridge gateway, `172.17.0.1`, as the address at which the emulator
+it just started can be reached; the application refuses that address at startup and every
+Testcontainers-backed test errors out:
+
+```text
+java.lang.IllegalStateException: Property 'spring.cloud.aws.s3.endpoint' names host '172.17.0.1',
+which is not one of the emulator addresses this application is permitted to reach:
+127.0.0.1, ::1, localhost, localhost.localstack.cloud, localstack
+```
+
+**That refusal is correct and is not to be worked around by widening the allow-list.** It is the
+least-privilege guard in `AwsConfig`, held element-for-element identical to the host list in
+`localstack-init/init-aws.sh` so the provisioner and the application cannot disagree, and
+`172.17.0.1` is deliberately absent: it is a route to *anything* listening on the developer's host,
+not to the emulator specifically. The fix belongs in the invocation, which must both put the container
+in the host's network namespace and tell Testcontainers to advertise a name the allow-list contains:
+
+```shell
+docker run --rm \
+  --network host \
+  -e TESTCONTAINERS_HOST_OVERRIDE=localhost \
+  -v "$PWD":/workspace -w /workspace \
+  -v "$HOME/.m2":/root/.m2 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  maven:3.9.11-eclipse-temurin-25@sha256:407c4423cec0cf2981055bc2c6c0dc211d9605b6669279b95997f2d1c7e91e2c \
+  mvn -B -ntp clean verify
+```
+
+**Both flags are required and neither is sufficient alone.** `TESTCONTAINERS_HOST_OVERRIDE=localhost`
+makes Testcontainers advertise a permitted name, but without `--network host` that name resolves to
+the container's own loopback where nothing is listening. `--network host` makes the mapped ports
+reachable, but without the override Testcontainers still advertises the bridge gateway. Note also that
+`--network host` shares the host's ports, so stop anything already bound to the ports the compose
+topology uses before running it.
+
+**Measured, not asserted.** Both forms were executed against this tree with the pinned image above,
+selecting one LocalStack-backed integration test. The socket-only form: **12 tests, 12 errors, BUILD
+FAILURE**, every error the `IllegalStateException` quoted above. The complete form: **12 tests, 0
+failures, 0 errors, BUILD SUCCESS**. Substitute a full `clean verify` for a complete run; the
+single-test selection was used only to keep the comparison quick, and the failure it demonstrates is
+at application startup, so it affects every Testcontainers-backed test equally.
 
 > **Mounting the Docker socket grants host-root-equivalent privilege. Treat it as such.**
 > The Docker API is not a sandbox boundary — it is a control interface for the daemon, and the
@@ -1078,11 +1142,11 @@ whose image build could not exit 0, and that build stage now exits 0.
 | Gate | What it asserts | Evidence artifact | Status |
 | ---: | :-------------- | :---------------- | :----- |
 | 1 | End-to-end boundary parity: the 300-record `app/data/ASCII/dailytran.txt` fixture driven through `POSTTRAN`, compared field by field against the legacy baseline | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the run matches **two independent expectations** on every field and every byte: the frozen program's own captured output under `src/test/resources/parity/gate1` (38 rejects, 262 postings, 50 account images, 100 category balances, return code 4), derived by compiling `app/cbl/CBTRN02C.cbl` unmodified with GnuCOBOL and executing it against the frozen fixtures; and a source-derived expectation under `src/test/resources/expected/posttran` (300 processed, 262 posted, 38 rejected, return code 4). A captured **z/OS** run remains `Not available` and would corroborate rather than replace either |
-| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting nothing at or above CVSS 7 — the range CVSS labels High and Critical | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — exit code **0**, **0** compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, line coverage **0.9181** against the enforced 0.80 floor, and a scan that **ran rather than being skipped**, reporting **0** findings at or above CVSS 7 |
+| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting nothing at or above CVSS 7 — the range CVSS labels High and Critical | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — exit code **0**, **0** compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, line coverage **0.914882** against the enforced 0.80 floor, and a scan that **ran rather than being skipped**, reporting **0** findings at or above CVSS 7 |
 | 3 | Performance **baseline**: throughput in records per second, per-endpoint p95 latency, and peak heap | [`docs/validation-gates.md`](docs/validation-gates.md) | **Baselines measured and published** — **1,538** records/second, per-endpoint p95 from **21.5 ms** to **105.1 ms**, peak heap **252 MB** as a JVM-wide envelope. **No threshold is applied to any of them**: the corpus publishes no service-level objective, so none may be invented |
 | 4 | Named fixture validation: all nine ASCII fixtures loaded through `V3__seed_data.sql` and driven through the pipeline, including zoned-decimal overpunch decode assertions and the ten seeded users | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — 300 daily-transaction rows seeded, **50** of them carrying negative overpunch amounts, 50 account rows compared field by field, and all **10** inline user records present as BCrypt digests |
 | 5 | API contract verification: every one of the **17** operations exercised by integration tests against a real application context | [`docs/api-contracts.md`](docs/api-contracts.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **17** mapped operations across the **8** named controllers, exercised over real HTTP against a running container, with role enforcement, statelessness and failure mapping asserted |
-| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 83 candidates authenticating, **0** committed secrets, and a scan over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7** |
+| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 83 candidates authenticating, **0** committed secrets, and a scan over **168** dependencies with **two** active sub-threshold findings, ceiling CVSS 6.7, and **zero at or above 7** (re-measured `2026-08-14T14:48:43Z`; the active count moves with the advisory feed, the zero-at-or-above-threshold clause is what the gate turns on) |
 | 7 | Scope coverage: all **28** COBOL programs mapped, with the traceability matrix demonstrating complete paragraph coverage | [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Assertions hold** — **59** gate assertions, exit code **0**; 528 procedure paragraphs mapped across all **28** programs, with **537** matrix rows each naming a Java target method and an executable test method |
 | 8 | Integration sign-off: the full compose stack up with health reporting `UP`, and all three Flyway migrations applying cleanly | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the application stood up against a real containerised PostgreSQL 16 and LocalStack with all **three** Flyway migrations applied, **11** domain tables, **3** alternate-key indexes and **8** health contributors reporting; **and** the **seven**-service compose topology was brought up as a unit in this working tree — `docker compose up -d --build --wait`, exit code 0, all **seven** containers `healthy` — with a second `up` converging in about a second |
 
@@ -1301,6 +1365,56 @@ the repository, which every documentation build in this project does for the rea
 ```bash
 mkdocs build --strict --site-dir /tmp/carddemo-site
 ```
+
+**That bare `mkdocs` assumes the launcher is on `PATH`, and on a host where it is not the command
+exits `127` with no indication that the tool is simply absent rather than the build broken.** MkDocs is
+not a build dependency of this project - nothing in `pom.xml` requires it and no gate runs it, as
+[docs/onboarding-guide.md](docs/onboarding-guide.md) records - so it will not be present just because
+the Maven build works. Establish which situation you are in before diagnosing anything else:
+
+```bash
+command -v mkdocs || echo 'no launcher on PATH'
+python3 -c 'import mkdocs; print(mkdocs.__version__)' || echo 'not importable either'
+```
+
+**If it is importable, address the module rather than the launcher.** This form needs no `PATH` entry and
+is the one to reach for first:
+
+```bash
+python3 -m mkdocs build --strict --site-dir /tmp/carddemo-site
+```
+
+It is the common case after a `--user` or `--break-system-packages` install, which is how this project's
+own environment has it: Ubuntu 24.04 and later ship a PEP 668 *externally managed* system Python, so a
+plain `pip install` into it is refused and `--break-system-packages` is the usual response - and that
+install does not always link a launcher.
+
+**If it is neither, install it in an isolated environment.** The three plugin pins are not optional:
+`mkdocs.yml` declares `techdocs-core`, `material/search` and `mermaid2`, and `--strict` turns a missing
+plugin into a failure rather than a warning, so a bare `mkdocs` install reports a configuration error
+that reads like a fault in `mkdocs.yml`:
+
+```bash
+python3 -m venv /tmp/carddemo-docs-venv
+/tmp/carddemo-docs-venv/bin/pip install --quiet \
+  'mkdocs==1.6.1' 'mkdocs-techdocs-core==1.7.0' 'mkdocs-mermaid2-plugin==1.2.3'
+/tmp/carddemo-docs-venv/bin/mkdocs build --strict --site-dir /tmp/carddemo-site
+```
+
+> **The venv form is the standard advice and it is the one form here that was NOT verified on this
+> project's own host, because on that host it fails at creation.** `python3 -m venv` ends with
+> `Error: Command '[... '-m', 'ensurepip', ...]' returned non-zero exit status 1`, even though
+> `python3.13-venv` is installed and `python3 -m ensurepip --version` reports pip 25.2 outside a venv.
+> The cause is the image rather than the recipe: its pip was bootstrapped from `get-pip.py` and the
+> apt-shipped pip packages were then removed, so the wheels `ensurepip` seeds a new environment from are
+> gone. `python3 -m venv --without-pip` succeeds there, which locates the failure precisely. On such a
+> host use the `python3 -m mkdocs` form above, which is verified working, and do not read the venv error
+> as a fault in this documentation or in `mkdocs.yml`.
+
+**Verified on this project's host:** `command -v mkdocs` resolves to `/usr/local/bin/mkdocs`;
+`python3 -m mkdocs --version` reports `1.6.1 from /usr/local/lib/python3.13/dist-packages/mkdocs`; and
+`mkdocs build --strict --site-dir` outside the repository exits 0 with zero warnings. The venv form is
+documented for hosts that need isolation, with its one known failure mode stated above.
 
 `mkdocs.yml` sets no `site_dir`, so a bare `mkdocs build` writes `./site/` into the working tree.
 That output contains the *rendered* form of `docs/project-guide.md`, whose sign-on example carries

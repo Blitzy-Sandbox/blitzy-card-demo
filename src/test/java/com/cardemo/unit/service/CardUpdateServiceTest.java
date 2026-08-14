@@ -79,6 +79,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.transaction.annotation.Propagation;
@@ -3561,7 +3562,81 @@ final class CardUpdateServiceTest {
                     .isInstanceOf(CardDemoException.class)
                     .hasCause(storeFailure)
                     .hasMessageContaining("CARDDAT");
+            assertThatThrownBy(() -> confirmSave(request))
+                    .as("a constraint fault is not contention, so it must NOT be relabelled as a conflict")
+                    .isNotInstanceOf(ConcurrentUpdateException.class);
             verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * A refused lock on the read for update is {@code :1441}'s could-not-lock outcome, not a file-access
+         * failure.
+         *
+         * <p>{@code COCRDUPC.cbl:1441-1449} treats every non-normal {@code RESP} on the
+         * {@code READ ... UPDATE} as "could not lock", and a lock the store refused to grant is the most
+         * literal instance of it: the record exists and is held. Reporting it as an I/O failure lost the
+         * outcome and told the caller through a {@code 502} that the server was faulty, when the row was
+         * merely busy and the request is worth retrying.</p>
+         *
+         * <p>{@code CannotAcquireLockException} is what Spring translates PostgreSQL's
+         * {@code lock_not_available} ({@code SQLSTATE 55P03}) into, which is what the bounded
+         * {@code lock_timeout} on the datasource produces.</p>
+         */
+        @Test
+        @DisplayName("a refused lock on the read for update is the :1441 could-not-lock conflict, not a 502")
+        void lockAcquisitionFailureOnReadIsTheCouldNotLockConflict() {
+            final CannotAcquireLockException lockRefused = new CannotAcquireLockException(
+                    "could not obtain lock on row in relation \"card\"");
+            when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
+                    .thenThrow(lockRefused);
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
+
+            assertThat(failure)
+                    .as("the refused lock reaches the authored concurrency outcome, so CardController "
+                            + "answers 409 rather than the 502 a FileAccessException would have produced")
+                    .isNotNull();
+            assertThat(failure).hasMessage(MSG_COULD_NOT_LOCK);
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_ACCOUNT);
+            assertThat(failure.getCause())
+                    .as("the SQLSTATE that refused the lock is retained on the exception so the conflict "
+                            + "is traceable; it is not put in the response")
+                    .isSameAs(lockRefused);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The refused lock and the absent row reach the same outcome and the same literal, because
+         * {@code :1441-1449} has one branch for both and they must not drift apart.
+         */
+        @Test
+        @DisplayName("a refused lock and an absent row report the identical outcome and literal")
+        void refusedLockAndAbsentRowAgree() {
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            // Consecutive stubbing rather than a reset: the first read is refused a lock, the second finds
+            // no row, and both are driven through the same service instance so the comparison is of two
+            // outcomes of one code path.
+            when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
+                    .thenThrow(new CannotAcquireLockException("held"))
+                    .thenReturn(Optional.empty());
+
+            final ConcurrentUpdateException refused = catchThrowableOfType(
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
+            final ConcurrentUpdateException absent = catchThrowableOfType(
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
+
+            assertThat(refused.getOutcome())
+                    .as(":1441-1449 asks only whether a lockable record came back, never why not")
+                    .isEqualTo(absent.getOutcome());
+            assertThat(refused.getMessage()).isEqualTo(absent.getMessage());
+            assertThat(absent).hasNoCause();
+            assertThat(refused.getCause())
+                    .as("only the refused lock has a cause to carry")
+                    .isNotNull();
         }
     }
 
