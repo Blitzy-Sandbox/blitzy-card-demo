@@ -1,0 +1,311 @@
+# ******************************************************************
+# Program     : .dockerignore
+# Application : CardDemo
+# Type        : Docker build context exclusion rules
+# Function    : Keeps the context `docker build` uploads small and
+#               deterministic, without dropping any source, frozen
+#               contract, fixture, migration or evidence artefact the
+#               Maven build and the validation gates depend on.
+# Source      : samples/jcl/{BATCMP,CICCMP,BMSCMP}.jcl,
+#               samples/proc/{BUILDBAT,BUILDBMS,BUILDONL}.prc and
+#               samples/m2/** (z/OS build tooling and binary emulator
+#               runtime archives, superseded by pom.xml)
+#               @ 7756d89, plus app/data/EBCDIC/** (twelve .PS datasets
+#               kept as codepage reference, never parsed by any stage).
+#               Those two trees are the whole of what is excluded here.
+#               A previous revision of this header said the EBCDIC
+#               exclusion had been withdrawn. It had not: the exclusion
+#               stands, and the in-image unit tier is reconciled with it
+#               by a directory-keyed rule in the two suites that resolve
+#               app/... paths - see the note above that rule below, and
+#               src/test/java/com/cardemo/unit/infrastructure/PrunableCorpusSubtree.java
+# ******************************************************************
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ******************************************************************
+#
+# `docker build` uploads a whole context to the daemon before the first
+# instruction runs, and .git history plus Maven output dominate that
+# tree while no image layer can use either. Excluding them is not only
+# faster but DETERMINISTIC: a context carrying target/ makes the result
+# depend on whatever a previous local `mvn` run left behind.
+#
+# The rules here are deliberately NOT copied from .gitignore, because
+# the two syntaxes look identical and behave differently. Every pattern
+# is ANCHORED AT THE CONTEXT ROOT: a bare `*.log` matches ./x.log and
+# nothing else, and depth-independent matching needs an explicit `**/`
+# prefix. That is why the metadata, editor and credential rules below
+# all carry one and the build-output rules deliberately do not - `target`
+# unprefixed reaches ONLY the root build directory, leaving any path
+# component of that name under src/test/resources in the context, where
+# parity baselines may live. `**/target` would silently strip protected
+# fixture space. pom.xml declares no <modules>, so the anchored form is
+# complete as well as safe; a multi-module build would need one anchored
+# rule per module rather than a `**/` prefix. Docker also always sends
+# Dockerfile and .dockerignore themselves, so neither has a rule.
+#
+# The LAST matching pattern wins, so a `!` negation must follow the rule
+# it re-includes. There is exactly one negation here and it is live:
+# `.env.*` genuinely matches .env.example, which holds variable names
+# and empty placeholders only and must stay available.
+#
+# No glob below matches a content format this repository ships: there is
+# deliberately no *.txt, *.md, *.json, *.sql, *.yml, *.html or *.zip
+# rule, and no bare `app`, `build` or `data` rule either, because the
+# fixed-width parity fixtures and the VSAM catalogue listing are .txt,
+# application and dashboard resources are .json, and `data` is a
+# real path component of app/data. A broad rule that looks harmless today
+# hides the next deliverable on the day it arrives, silently and with no
+# error. The extension globs that do appear cover only build output,
+# runtime files, private key material and editor state.
+#
+# Four things are deliberately NOT excluded. diagrams/, .github/,
+# .gitignore and .gitattributes, because all four are tracked shared
+# content rather than local artefacts, and .gitattributes in particular
+# records which corpus members are CRLF-terminated, which a fixed-width
+# parity check may need. Build reports, because pom.xml pins the JaCoCo
+# and OWASP output under ${project.build.directory} and Surefire and
+# Failsafe default there, so `target` already covers them. And a wrapper
+# jar, because .mvn/wrapper/maven-wrapper.properties sets
+# distributionType only-script and none is ever fetched.
+#
+# HOW TO VERIFY A CHANGE TO THIS FILE
+#   Ask Docker rather than reasoning about the patterns; the anchoring
+#   differences above are too easy to get wrong by eye.
+#
+#     printf 'FROM alpine:3.17\nCOPY . /ctx\nRUN find /ctx -type f\n' \
+#       > /tmp/ctx.Dockerfile
+#     DOCKER_BUILDKIT=0 docker build --no-cache -f /tmp/ctx.Dockerfile .
+#
+#   The listing it prints IS the context. app/ in full - EBCDIC
+#   included - src/, pom.xml, mvnw, mvnw.cmd, .mvn/, Dockerfile,
+#   docker-compose.yml, localstack-init/, observability/, docs/,
+#   mkdocs.yml, README.md and .env.example must all appear; .git, target
+#   and samples must not. The last two earn their place the same way the
+#   rest do: the builder stage COPYs both because the unit tier reads
+#   them - the nav assertions in DocumentationConsistencyTest read
+#   mkdocs.yml, and InventoryCountGateTest reads README.md - so a glob
+#   that swept either would break the in-image suite while the host suite
+#   stayed green. Then confirm the real build still resolves every COPY:
+#
+#     docker build --no-cache -t carddemo:verify .
+#
+# Never add a glob for a format this repository ships, never add a bare
+# `app`, and never convert an anchored build-output rule to a `**/` form.
+# Each failure is SILENT - docker build prints nothing, the file simply
+# is not in the context, and the first symptom is a fixture-not-found
+# test failure or a gate that cannot be evidenced, attributed to the
+# test rather than to this file. The context listing above is the only
+# check that catches this class of mistake.
+
+# Packfiles no image layer can use. Safe to drop because no plugin in
+# this build reads git metadata: there is no git-commit-id or buildnumber
+# plugin deriving a version or build stamp.
+.git
+
+# Maven build output. Anchored on purpose, for the reason given above,
+# and dropping it also keeps a stale local jar from masking a fresh
+# in-image build.
+target
+
+# IntelliJ IDEA's own output, written to the project root when the IDE
+# builds in place instead of delegating to Maven.
+out
+
+# A stray class file left beside a source by an ad-hoc `javac`. It lands
+# outside target/, so the rule above does not cover it, and it can land
+# at any depth in the source tree.
+**/*.class
+
+# JVM fatal-error, replay and heap-dump files. The working directory of a
+# forked Surefire JVM is not necessarily the project root, so these are
+# depth-independent.
+**/hs_err_pid*
+**/replay_pid*
+**/*.hprof
+
+# Local runtime output from a developer's own run. The application logs
+# to stdout in a container, so anything matching here is host-local. The
+# logs directory is anchored: a nested one belongs to whatever produced
+# it and the wildcard rules cover it instead.
+logs
+**/*.log
+**/*.pid
+**/*.tmp
+
+# Local environment overrides. `.env.*` also matches the template
+# .env.example, so the negation that follows is required rather than
+# defensive - it is the only negation in this file. The JWT signing key
+# is environment-indirected with no committed default, so real values
+# live only in .env and must never reach the daemon or a layer.
+.env
+.env.*
+!.env.example
+
+# Private key material and credential stores. These are preventive
+# controls: nothing matches one today, and that is the point - the value
+# is firing before the accident. Public certificate formats are
+# deliberately absent, so a public test certificate added later stays
+# available; id_rsa and id_ed25519 are matched exactly, not as id_rsa*,
+# so a .pub half is not caught too. All are depth-independent, because a
+# leaked credential is a hazard wherever it lands and no deliverable
+# carries any of these names.
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_ed25519
+**/.aws
+**/credentials
+**/secrets
+
+# IDE and editor state, all of it user-local. Unlike .gitignore, which
+# keeps the three shareable .vscode team files, the whole directory goes
+# here: none of them is a build input, so there is nothing to rescue.
+**/.idea
+**/*.iml
+**/*.ipr
+**/*.iws
+**/.vscode
+**/.classpath
+**/.project
+**/.settings
+**/.factorypath
+**/.apt_generated
+
+# Editor swap and backup files, and the residue `git merge` and
+# `git apply` leave on a conflict: a .orig or .rej would otherwise be
+# copied into a layer beside the file it shadows.
+**/*.swp
+**/*.swo
+**/*~
+**/*.bak
+**/*.orig
+**/*.rej
+
+# Operating-system metadata, macOS then Windows. Also preventive: a file
+# browser creates these, not this project, and they appear at arbitrary
+# depth when they appear at all.
+**/.DS_Store
+**/._*
+**/.Spotlight-V100
+**/.Trashes
+**/Thumbs.db
+**/desktop.ini
+
+# Platform scratch: screenshots and recordings, and the ad-hoc validation
+# scripts that must never reach a commit, let alone an image layer.
+blitzy
+**/blitzy_adhoc_test_*
+
+# The two content trees below are the single point where this file
+# diverges from .gitignore, which keeps both. The two answer different
+# questions: .gitignore decides what reaches a CLONE, where these must
+# survive byte-for-byte as the reference of record, while this file
+# decides what reaches the BUILD DAEMON, and the Java build never parses
+# either of them. Directory form is used rather than a trailing `/**` so
+# the daemon prunes each subtree without descending into it.
+
+# z/OS build tooling: three compile templates, three build procedures and
+# two binary emulator runtime archives under samples/m2 that account for
+# nearly the whole tree. Nothing here has a Java analogue; pom.xml
+# supersedes the set. Excluding the directory is also what makes a
+# `*.zip` rule unnecessary - and such a rule is exactly the kind that
+# would later hide those archives from a clone if copied across.
+samples
+
+# The EBCDIC datasets: 204 KB of fixed-width .PS files kept as byte-level
+# codepage reference, never transcoded and never read by any build step.
+# The AAP puts them out of scope, so they are pruned here.
+#
+# WHY ADMITTING THE DATA IS THE WRONG LEVER, recorded because the wrong fix
+# looks like the right one. Dropping this exclusion buys a green image build:
+# SourceCitationResolutionTest resolves every
+# `app/...` path cited anywhere in the tree against disk, thirteen
+# committed citations name app/data/EBCDIC - AwsConfig.java,
+# DailyTransactionReader.java, RejectWriter.java, TransactionWriter.java,
+# TransactionBackupReader.java, CombinedTransactionReader.java, three
+# package-info files, application-test.yml, UserSecurityTest.java and
+# BatchPipelineE2ETest.java - and the Dockerfile runs the unit tier inside
+# the builder stage, where a pruned subtree turns each of them into "cited
+# but does not resolve". Admitting the data is still the wrong lever: it fixes a
+# build-context artefact by widening what the daemon receives, and leaves
+# out-of-scope material in the context permanently.
+#
+# The right lever is the test, and it is narrowed rather than weakened.
+# Its exemption is keyed on the DIRECTORY being absent, not on a file being
+# absent, so with app/data/EBCDIC present - in a clone, in CI, in any
+# developer build - every one of those citations is still resolved
+# strictly and a mistyped dataset name still fails. Only a context that
+# carries none of these files passes them over.
+#
+# THAT RULE APPLIES TO EVERY SUITE THAT RESOLVES AN app/... PATH, AND FOR A
+# WHILE IT ONLY APPLIED TO ONE. SourceCitationResolutionTest carried it and
+# passed inside the pruned context; InventoryCountGateTest resolves the same
+# kind of path - every app/... path DECISION_LOG.md cites - carried nothing,
+# and failed there, which failed the image build and the two workflow jobs
+# that build the image. Copying the rule into the second suite would have
+# fixed the build and left the same trap open for a third. The rule is
+# therefore held in ONE place that both read:
+#   src/test/java/com/cardemo/unit/infrastructure/PrunableCorpusSubtree.java
+# with its narrowness asserted in whichever context it runs, by
+# SourceCitationResolutionTest.theEbcdicExemptionIsNarrowAndSelfLimiting and
+# InventoryCountGateTest.PrunableSubtreeExemption. Neither is skipped in
+# either context: where the subtree exists they assert the rule is INERT.
+#
+# TWO GATES READ THIS PRUNED TREE, NOT ONE. The citation gate above was the
+# first to meet the collision; InventoryCountGateTest met the same one
+# later, from a different direction, and it is worth recording because the
+# first fix looked complete and was not. Row V-1 of DECISION_LOG.md section
+# 12.1 counts the distinct `app/...` paths the register itself cites and
+# claims none is missing; the exclusions row of that same section names
+# `app/data/EBCDIC/**` as out of scope, which makes the pruned subtree one
+# of the sixty-one paths V-1 must resolve. In a pruned context that single
+# path failed - `Expecting empty but was: ["app/data/EBCDIC/"]`, one failure
+# out of fifty-five - and `docker compose up -d --wait` exited 1 on it.
+#
+# The register is carried into the context, so the COUNT is unaffected and
+# only RESOLUTION varies. That gate therefore carries the same
+# directory-keyed exemption, in the same shape and with the same
+# self-limiting companion assertion, because giving two gates two different
+# rules for one pruned subtree is how a divergence starts.
+# See InventoryCountGateTest.PRUNABLE_TREE and
+# thePrunableSubtreeExemptionIsNarrowAndSelfLimiting.
+#
+# Nothing from app/ crosses into the runtime stage, so the shipped image is
+# byte-identical either way; what changes is what the daemon receives. The
+# ASCII fixtures under app/data/ASCII remain the authoritative seed and
+# test input and are NOT pruned.
+app/data/EBCDIC
+
+# Everything else is protected by OMISSION, not by negation: app/, src/,
+# docs/, diagrams/, observability/,
+# localstack-init/, .github/, .mvn/, pom.xml, mvnw, mvnw.cmd, Dockerfile,
+# docker-compose.yml, mkdocs.yml, README.md and the evidence artefacts all
+# stay in the context because no rule above reaches them. A line such as `!app/**` would read
+# as protection while doing nothing at all, since a negation only takes
+# effect against an earlier pattern that matches. The guarantee is
+# asserted by the context listing above instead.
+#
+# One case is worth stating because a wildcard makes it easy to lose:
+# app/jcl holds 29 members, 28 ending in a lowercase .jcl and
+# CREASTMT.JCL - the sole source for statement generation - ending in an
+# uppercase .JCL. Docker matches case-sensitively, so any pattern written
+# as app/jcl/*.jcl would treat the two differently. No rule here touches
+# app/jcl at all, which is the only form of that guarantee that cannot be
+# got wrong.

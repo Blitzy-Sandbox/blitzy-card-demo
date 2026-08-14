@@ -1,1240 +1,2866 @@
+<!--
+  ******************************************************************
+  * Program     : technical-specifications.md
+  * Application : CardDemo
+  * Type        : Documentation - Agent Action Plan and technical
+  *               specification of record
+  * Function    : Publishes the interpretation layer between the
+  *               modernisation request and the generated code: the scope
+  *               boundaries, the target design, the transformation mapping,
+  *               the dependency inventory, the special analyses of the six
+  *               programs whose obvious translation is wrong, the eight
+  *               validation gates and the single user-specified rule.
+  * Source      : app/cbl/**, app/cpy/**, app/cpy-bms/**, app/bms/**,
+  *               app/jcl/** (case-insensitively, or CREASTMT.JCL is
+  *               dropped), app/proc/**, app/ctl/REPROCT.ctl,
+  *               app/csd/CARDDEMO.CSD, app/catlg/LISTCAT.txt,
+  *               app/data/ASCII/**, diagrams/**, CONTRIBUTING.md,
+  *               catalog-info.yaml, mkdocs.yml @ 7756d89
+  ******************************************************************
+  * Copyright Amazon.com, Inc. or its affiliates.
+  * All Rights Reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License").
+  * You may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  *    http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing,
+  * software distributed under the License is distributed on an
+  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  * either express or implied. See the License for the specific
+  * language governing permissions and limitations under the License
+  ******************************************************************
+-->
+
 # Technical Specification
 
-# 0. Agent Action Plan
+## 0. Agent Action Plan
 
 ## 0.1 Intent Clarification
 
+This Agent Action Plan is the definitive interpretation layer between the modernisation request and the code the Blitzy platform generates for this repository. It restates the request in precise technical language, surfaces every requirement the request implies but does not state, and maps each requirement onto concrete files, packages and artefacts.
+
+Every claim made here about the existing system carries an inline citation of the form `[<path>:<locator>]` pointing at the primary source that proves it. **The COBOL corpus under `app/` — not prose, and not the earlier generation of this document — is the authority throughout.** Where the two disagreed, the source won and the discrepancy is recorded in [§0.2.2.1](#0221-corrections-to-the-prior-specification). Every figure below was established by direct inspection of the checkout at the traceability anchor commit.
+
 ### 0.1.1 Core Refactoring Objective
 
-Based on the prompt, the Blitzy platform understands that the refactoring objective is to **migrate the AWS CardDemo mainframe COBOL application — all 28 programs, 28 copybooks, 17 BMS mapsets, 17 symbolic map copybooks, 29 JCL jobs, and 9 data fixture files — to a fully operational Java 25 LTS + Spring Boot 3.x application with 100% behavioral parity**.
+**The refactoring objective is to** replace the execution substrate of the AWS CardDemo credit-card management application — presently **19,254 lines** of IBM Enterprise COBOL executing under CICS, VSAM, JCL and BMS on z/OS `[app/cbl/**]` — with an equivalent, fully operational **Java 25** and **Spring Boot 3.5.11** implementation that reproduces every one of the twenty-two catalogued features (F-001 through F-022) at 100% behavioural parity, while leaving the COBOL corpus in `app/` byte-for-byte untouched as the frozen reference of record.
 
-- **Refactoring Type:** Tech stack migration — mainframe-to-cloud modernization (COBOL/CICS/VSAM/JCL/BMS → Java/Spring Boot/JPA/Batch/PostgreSQL/AWS)
-- **Target Repository:** New repository — the migrated Java application is a standalone greenfield project. COBOL source files are NOT copied into the target repository; traceability references the original COBOL repository by commit SHA.
-- **Processing Modes:** The migration spans two execution paradigms: 18 interactive CICS online programs (pseudo-conversational 3270 terminal screens) and 10 batch programs (JES-scheduled jobs), both converging on a shared VSAM data persistence layer comprising 11 primary datasets.
+The migration is therefore **purely additive to this repository**. Nothing in `app/` is edited, moved, renamed, reformatted or deleted. The legacy tree simultaneously serves three roles that make it inviolable:
 
-**Refactoring Goals (Enhanced Clarity):**
+1. It is the **parity oracle** against which Gate 1 compares output — literally so as of 7 August 2026, since `app/cbl/CBTRN02C.cbl` is compiled unmodified and executed to produce the expected images Gate 1 diffs against.
+2. It is the **field-contract source** from which entity and DTO shapes are derived.
+3. It is the **traceability anchor** that `TRACEABILITY_MATRIX.md` cites by commit SHA. That file is present at the repository root and carries the paragraph-level mapping across all 28 programs.
 
-- Translate all 28 COBOL programs (19,254 lines) to idiomatic Java 25 service components with Spring Boot 3.x orchestration, preserving every control flow semantic including PERFORM THRU, GO TO fall-through, and EVALUATE nesting
-- Convert all 28 shared COBOL copybooks into Java POJOs, DTOs, and shared modules with BigDecimal precision for all COMP-3/COMP/PIC S9(n)V99 fields — zero floating-point substitution
-- Map all 10 VSAM KSDS datasets, 2 AIX/PATH alternate indexes, and 1 sequential PS staging file to PostgreSQL 16+ relational tables with Spring Data JPA repositories, preserving primary key semantics, composite keys, and alternate index access patterns
-- Convert all 29 JCL jobs to Spring Batch jobs with step sequencing, condition code logic, and dataset allocation equivalence — including the 5-stage batch pipeline (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT)
-- Replace BMS 3270 terminal screen I/O with REST API endpoints that preserve the same field contracts and validation rules
-- Integrate AWS S3 for batch file staging (replacing sequential PS datasets and GDG generations) and SQS/SNS for message queue integration (replacing CICS TDQ)
-- Deliver a fully observable application with structured logging, distributed tracing, metrics endpoints, and health checks from initial deployment
-- Produce an executive reveal.js presentation, decision log, and bidirectional traceability matrix with 100% COBOL paragraph coverage
+It loses all three roles the moment it is edited.
 
-**Implicit Requirements Surfaced:**
+#### 0.1.1.1 Refactoring Type Classification
 
-- All COBOL `FILE STATUS` codes must map to Java exception handling plus status enums — every code path for every I/O operation
-- The CICS pseudo-conversational model (RETURN TRANSID COMMAREA) translates to stateless REST endpoints with session or token-based state management
-- The sole online-to-batch bridge (CORPT00C → CICS TDQ JOBS queue → JES submission) must be preserved as an SQS-triggered Spring Batch job
-- SYNCPOINT ROLLBACK in COACTUPC (the only explicit multi-dataset transactional integrity mechanism) must map to Spring `@Transactional` with rollback semantics
-- Optimistic concurrency control in COACTUPC and COCRDUPC must be preserved via JPA `@Version` or equivalent snapshot comparison
-- The DFSORT/IDCAMS REPRO operations in COMBTRAN (pure utility, no COBOL program) must be implemented as Spring Batch steps with Java Comparators
-- All validation logic — NANPA area codes, US state/ZIP combinations, FICO score ranges, date validation via LE CEEDAYS — must be ported to Java validation services
-- Plaintext password storage (constraint C-003) must be upgraded to BCrypt or equivalent hashing in the Java target (security improvement within scope)
-- The 9 ASCII fixture files and 13 EBCDIC data files serve as canonical test data for the validation gates
+| Dimension | Classification | Evidence and Reasoning |
+|-----------|---------------|------------------------|
+| **Primary type** | **Tech stack migration** | Every layer changes substrate: COBOL to Java, CICS to Spring MVC, VSAM to PostgreSQL, JCL to Spring Batch, BMS to REST/JSON, GDG to S3, TDQ to SQS. This is the most invasive of the five refactoring categories. |
+| Secondary type | Code structure | Paragraphs and sections decompose into private methods one-for-one — a 4,236-line program `[app/cbl/COACTUPC.cbl]` becomes a cohesive service plus DTOs plus validators. |
+| Secondary type | Design pattern | Repository, service layer, dependency injection, strategy, template method, decider and filter-chain patterns replace VSAM verbs, `EXEC CICS XCTL` dispatch, `ALTER ... TO PROCEED TO` self-modification and JCL `COND` gating. |
+| Secondary type | Modularity | Nineteen thousand lines of monolithic programs resolve into 14 packages under a single `com.cardemo` root. |
+| **Not** | Performance refactor | No throughput or latency objective is asserted for the legacy system. Gate 3 records a **measured baseline**, not an improvement target. The COBOL publishes no service-level objective and none may be invented. |
+| **Not** | Behaviour change | Parity is the contract. Known legacy quirks are preserved and documented, never corrected. |
+
+#### 0.1.1.2 Target Repository Determination
+
+- **Same repository, in place.** The Java tree is created at the repository root as `src/`, following Maven standard layout, **directly alongside the frozen `app/` tree**. New root-level artefacts (`pom.xml`, `Dockerfile`, `docker-compose.yml`, `localstack-init/`, `observability/`, `.mvn/`, `.github/`, `DECISION_LOG.md`, `TRACEABILITY_MATRIX.md`) are to sit beside the existing `app/`, `docs/`, `diagrams/` and `samples/` directories; the two evidence artefacts named last are the only two of that list still absent as of 1 August 2026.
+- **No COBOL file is copied into `src/`.** The corpus stays in `app/` and is referenced by commit SHA.
+- **Package root is `com.cardemo`** — one spelling, used uniformly across main sources, test sources, configuration and documentation.
+- **Deployment shape is a single deployable JAR: a modular monolith, explicitly not microservices.** The decisive constraint is atomicity, developed in [§0.7.1](#071-account-update-dual-dataset-write-asymmetric-rollback-and-the-stateless-snapshot-contract) and [§0.7.2](#072-daily-transaction-posting-file-status-taxonomy-and-the-reject-code-strategy).
+- **Traceability anchor is `7756d895ffeb65f7ea72aaa609e356d9899afcec`** (short `7756d89`). Every paragraph citation in `../TRACEABILITY_MATRIX.md` is to be keyed to this commit.
+
+#### 0.1.1.3 Refactoring Goals
+
+| ID | Goal | Concrete Realisation |
+|----|------|---------------------|
+| G1 | Produce an executable Java target | `src/main/java/com/cardemo/**` compiled by a Maven build against Java 25, packaged as a single Spring Boot JAR |
+| G2 | Replace the data substrate | 11 JPA entities and 3 Flyway migrations replacing 10 VSAM KSDS clusters, 3 alternate indexes with 3 paths, and the sequential and generation-group datasets `[app/catlg/LISTCAT.txt]` |
+| G3 | Replace the online presentation layer | 17 REST operations across 8 `@RestController` classes backed by 21 service beans, replacing 17 CICS screen programs and their BMS conversations |
+| G4 | Replace the batch stream | A 5-job Spring Batch pipeline (POSTTRAN, INTCALC, COMBTRAN, CREASTMT, TRANREPT) plus an orchestrator, replacing the JCL job stream and its DFSORT and IDCAMS utility steps |
+| G5 | Replace mainframe integration constructs | S3, SQS FIFO and SNS via Spring Cloud AWS against LocalStack, replacing generation-data-group generations, the `JOBS` transient data queue and operator notification — **with zero live AWS credentials** |
+| G6 | Add an observability layer the source entirely lacks | Structured JSON logging, distributed tracing, Prometheus metrics and composite health, shipped **with** the initial implementation rather than as follow-up work |
+| G7 | Establish a regression net | A test pyramid with a JaCoCo line-coverage floor, including Testcontainers PostgreSQL and LocalStack integration tiers |
+| G8 | Produce evidence artefacts | `../DECISION_LOG.md`, `../TRACEABILITY_MATRIX.md`, `validation-gates.md`, `api-contracts.md`, `onboarding-guide.md`, `architecture-before-after.md`, `executive-presentation.html` |
+| G9 | Deliver a runnable topology | `Dockerfile` plus `docker-compose.yml` bringing up PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana, with `localstack-init/init-aws.sh` provisioning three buckets, one FIFO queue and **exactly one** notification topic |
+
+#### 0.1.1.4 Implicit Requirements Surfaced
+
+The following are necessary for the stated objective to be achievable, but are not spelled out in the request. Each is treated as binding.
+
+- **`app/` is read-only.** No COBOL program, copybook, JCL member, BMS mapset or data file may be modified. Migration is additive only.
+- **Field-contract preservation is bidirectional.** DTO field names, types and lengths derive from the BMS symbolic maps `[app/cpy-bms/**]`; entity column widths derive from the record-layout copybooks `[app/cpy/**]`. Silent truncation or widening breaks parity in a way no test catches unless the contract is asserted.
+- **`mkdocs.yml` must be UPDATED, not merely accompanied.** Its `nav` block has exactly three entries `[mkdocs.yml]` and `catalog-info.yaml` sets `backstage.io/techdocs-ref: dir:.` `[catalog-info.yaml:L22]`, so documentation absent from that nav never publishes. The `mermaid2` plugin `[mkdocs.yml]` additionally confirms Mermaid as the sanctioned diagram format for new documents.
+- **`README.md` must be updated, not replaced.** It is the authoritative legacy transaction, program and JCL inventory; Java build and run instructions are appended and the legacy tables preserved verbatim.
+- **Observability provisioning files are prerequisites for the integration gate.** A compose file that references Prometheus and Grafana is inert without `observability/prometheus.yml`, a Grafana datasource provisioning file and a dashboard definition.
+- **The JWT signing key must be environment-variable indirected** with fail-fast on absence and no committed default. The prior implementation attempt left it hardcoded, a High-severity open defect `[docs/project-guide.md:L52]`.
+- **A production Spring profile is required.** The prior attempt shipped none `[docs/project-guide.md:L51]`. `application-prod.yml` closes that gap under the least-privilege standard. **All four profile files are present.**
+- **A CI workflow is required.** The prior attempt shipped no `.github/workflows` `[docs/project-guide.md:L49]`. The repeatable zero-warning build gate needs a deterministic harness pinned to JDK 25 and Maven 3.9.11.
+- **Batch reject codes are business outcomes, not exceptions.** They must be modelled as an enum and drive `ExitStatus`, never thrown.
+- **`CBTRN01C` has no distinct target job.** It is read-only — a verb inventory of `OPEN`, `READ`, `CLOSE` and `DISPLAY` only, with no `WRITE`, `REWRITE` or `DELETE` anywhere `[app/cbl/CBTRN01C.cbl]`. It contributes pre-flight validation and diagnostic logic to `DailyTransactionPostingJob` and must still appear in `../TRACEABILITY_MATRIX.md`.
+- **`COMBTRAN.jcl` has no COBOL program.** Its logic is entirely DFSORT and IDCAMS control cards `[app/jcl/COMBTRAN.jcl:L22-L48]`, so the JCL itself is the Java source of truth.
+- **Two copybooks require explicit disposition.** `app/cpy/UNUSED1Y.cpy` has zero `COPY` references anywhere in the live corpus, and `app/cpy/COSTM01.CPY` is the statement record consumed by `CBSTM03A`. Both must be accounted for so the scope-coverage gate reaches 100%.
+- **Case-insensitive matching is mandatory on both `app/cbl` and `app/jcl`.** See [§0.5.3](#053-wildcard-pattern-policy); a case-sensitive glob silently drops 1,154 lines of COBOL and the sole source for statement generation.
 
 ### 0.1.2 Technical Interpretation
 
-This refactoring translates to the following technical transformation strategy:
+Each legacy runtime construct is replaced by a specific, named Java or Spring mechanism. The mapping is deterministic: there is exactly one target mechanism per source construct, and the choice is justified by the source semantics rather than by convention.
 
-**Current Architecture → Target Architecture:**
+#### 0.1.2.1 Current Architecture
+
+- **Presentation** — 3270 terminals driving a CICS region in pseudo-conversational mode. Screen state lives in the COMMAREA. Navigation is `EXEC CICS XCTL PROGRAM(...)` `[app/cbl/COMEN01C.cbl:L153]`, and screen layout comes from 17 BMS mapsets with 17 generated symbolic maps.
+- **Application** — 28 COBOL programs: 17 online transaction programs, 10 batch programs, and one statically-called date utility. Program identity and transaction routing are catalogued in the CICS CSD `[app/csd/CARDDEMO.CSD]`.
+- **Data** — 10 VSAM KSDS clusters, 3 alternate indexes each with a path, plus physical sequential datasets and 7 generation data groups `[app/catlg/LISTCAT.txt:L3937-L3951]`. Record layouts are fixed-width with `COMP-3` and zoned-decimal signed numerics.
+- **Batch orchestration** — JES2 executing 29 JCL members with DFSORT, IDCAMS, IEBGENER and IEFBR14 utility steps, gated by `COND=(0,NE)` return-code tests `[app/jcl/CREASTMT.JCL:L56]`.
+- **Cross-cutting** — Language Environment date validation via `CALL 'CSUTLDTC'`; the extrapartition transient data queue `JOBS` as the online-to-batch bridge `[app/csd/CARDDEMO.CSD:L499-L505]`; `CALL 'CEE3ABD'` for abend termination `[app/cbl/CBTRN02C.cbl:L707-L711]`.
+- **Observability** — none. The only instrumentation in the entire corpus is `DISPLAY` to SYSOUT and the `9910-DISPLAY-IO-STATUS` status renderer `[app/cbl/CBTRN02C.cbl:L714-L727]`.
+
+#### 0.1.2.2 Target Architecture
+
+- **Presentation** — HTTP/1.1 with JSON payloads. A `CorrelationIdFilter` then a `JwtAuthenticationFilter` precede role-based authorisation in the Spring Security chain, feeding the `DispatcherServlet` and 8 `@RestController` classes exposing 17 operations.
+- **Application** — 21 service beans, one per online program plus four shared services, each private method corresponding one-to-one to a source paragraph and carrying a Javadoc citation to it.
+- **Data** — 11 Spring Data JPA repositories over Hibernate against PostgreSQL 16, schema established by three Flyway migrations. The three alternate indexes become three derived finder methods backed by B-tree indexes.
+- **Batch orchestration** — Spring Batch `Job`, `Step` and `Flow` definitions; `JobExecutionDecider` replaces `COND` gating and `FlowBuilder.split()` models the independent statement-and-report branches; DFSORT specifications become `java.util.Comparator` instances and IDCAMS `REPRO` becomes `JdbcTemplate.batchUpdate`.
+- **Integration** — Spring Cloud AWS S3, SQS and SNS clients pointed at a LocalStack endpoint. Generation-group generations become S3 keys with a timestamp or job-instance prefix over a versioned bucket; the `JOBS` queue becomes an SQS FIFO queue.
+- **Cross-cutting** — `java.time` plus a dedicated date validation service; a typed exception hierarchy on every I/O path; declarative transaction boundaries.
+- **Observability** — Logback JSON encoding with MDC-carried trace, span and correlation identifiers; Micrometer tracing bridged to OpenTelemetry and exported to Jaeger; a Prometheus scrape endpoint; a composite health endpoint.
+
+**Figure 1 — CardDemo substrate replacement: the frozen z/OS corpus (left) and the Java 25 target (right).** The title is carried as a Markdown caption rather than as Mermaid front matter, because front-matter titles require Mermaid 9.4 or later and the `mermaid2` plugin pins its own bundled version; a caption renders identically in every renderer and cannot fail the diagram.
 
 ```mermaid
 graph LR
-    subgraph COBOL_Source["Source: z/OS Mainframe"]
-        A1["3270 Terminal<br/>BMS Maps"]
-        A2["COBOL Programs<br/>CICS Online (18)"]
-        A3["COBOL Programs<br/>Batch (10)"]
-        A4["VSAM KSDS<br/>10 Datasets + AIX"]
-        A5["JCL Jobs (29)<br/>JES Scheduling"]
-        A6["Copybooks (28)<br/>Record Layouts"]
+    subgraph LEGACY["z/OS - FROZEN in app/ - never edited"]
+        T["3270 Terminal"] --> C["CICS Region<br/>COMMAREA / XCTL / BMS"]
+        C --> P["28 COBOL Programs<br/>19,254 lines"]
+        P --> V[("VSAM KSDS<br/>10 clusters / 3 AIX / 3 PATH<br/>7 GDG bases")]
+        J["JES2 + 29 JCL Members<br/>DFSORT / IDCAMS"] --> P
+        P --> Q["TDQ 'JOBS'<br/>internal reader"]
+        Q --> J
     end
 
-    subgraph Java_Target["Target: Java 25 + Spring Boot 3.x"]
-        B1["REST API<br/>Spring MVC Controllers"]
-        B2["Service Layer<br/>Spring Components"]
-        B3["Spring Batch<br/>Job Definitions"]
-        B4["PostgreSQL 16+<br/>Spring Data JPA"]
-        B5["Spring Profiles<br/>+ CI/CD Pipeline"]
-        B6["Java POJOs/DTOs<br/>BigDecimal Precision"]
+    subgraph TARGET["Java 25 + Spring Boot 3.5.11 - NEW src/ - one deployable JAR"]
+        H["HTTP / JSON Client"] --> F["CorrelationIdFilter<br/>JwtAuthenticationFilter<br/>RBAC"]
+        F --> R["8 RestControllers<br/>17 operations"]
+        R --> S["21 Service Beans"]
+        S --> RP["11 JpaRepositories"]
+        RP --> PG[("PostgreSQL 16<br/>Flyway V1 V2 V3")]
+        B["Spring Batch<br/>5 Jobs + Orchestrator<br/>Decider / split"] --> S
+        S --> SQ["SQS FIFO<br/>carddemo-report-jobs"]
+        SQ --> B
+        B --> S3[("S3 via LocalStack<br/>3 buckets")]
+        S --> OBS["Micrometer + OTel<br/>Jaeger / Prometheus / Grafana"]
     end
 
-    A1 -->|"Field contracts preserved"| B1
-    A2 -->|"Business logic migrated"| B2
-    A3 -->|"Batch semantics mapped"| B3
-    A4 -->|"Schema migration"| B4
-    A5 -->|"Step sequencing mapped"| B5
-    A6 -->|"Record layouts → POJOs"| B6
+    LEGACY -. "parity oracle + field contracts + traceability anchor" .-> TARGET
 ```
 
-**Transformation Rules and Patterns:**
+**Legend.** Solid arrows are runtime control or data flow. The single dashed arrow is a *design-time* relationship only: the legacy tree is read to derive contracts and to compare output, and is never invoked, transcoded or modified at run time. Rounded nodes are persistent stores. The two subgraphs are the two substrates; nothing crosses between them at run time.
 
-| Source Construct | Transformation Rule | Target Pattern |
-|---|---|---|
-| COBOL DATA DIVISION (PIC, COMP-3, COMP) | Exact decimal precision mapping | Java POJOs with `BigDecimal` — no `float`/`double` |
-| COBOL PARAGRAPH / SECTION | Method extraction preserving control flow | Service/Component class methods |
-| COPY / REPLACE directives | Shared module extraction | Shared DTOs, utility classes |
-| VSAM KSDS with keyed access | Relational schema with JPA repositories | `@Entity` classes + `JpaRepository` interfaces |
-| VSAM AIX/PATH (alternate indexes) | Secondary JPA query methods | `@Query` or derived queries on alternate fields |
-| CICS SEND MAP / RECEIVE MAP | REST request/response DTOs | Spring MVC `@RestController` + validation |
-| CICS RETURN TRANSID COMMAREA | Stateless REST with context propagation | JWT or session-scoped state |
-| JCL EXEC PGM + DD statements | Spring Batch job configuration | `@Configuration` + `Job`/`Step` beans |
-| JCL COND codes | Spring Batch step execution decisions | `JobExecutionDecider` + `FlowBuilder` |
-| DFSORT / IDCAMS REPRO | Java sort + bulk insert | `Comparator` + batch `JdbcTemplate` / JPA `saveAll` |
-| CICS TDQ WRITEQ | Message queue publish | AWS SQS via Spring Cloud AWS |
-| GDG generations | Versioned S3 objects | S3 keys with timestamp/generation prefixes |
-| FILE STATUS codes | Exception mapping | Custom exception hierarchy + status enums |
-| EXEC CICS SYNCPOINT ROLLBACK | Spring transaction rollback | `@Transactional(rollbackFor=...)` |
-| LE CEEDAYS date validation | Java date/time API | `java.time.LocalDate` + custom validators |
+Detailed visuals are deliberately deferred to `architecture-before-after.md` rather than duplicated here, per Rule 1 Clause C's avoid-duplication requirement.
 
+#### 0.1.2.3 Transformation Rules: Sixteen Binding Invariants
+
+These are invariants, not guidelines. Every generated file is expected to satisfy them, and the validation gates exist to prove they hold. The "failure prevented" column states what goes wrong when the invariant is violated — in most cases silently.
+
+| # | Source Construct | Target Mechanism | Invariant and Failure Prevented |
+|---|-----------------|------------------|---------------------------------|
+| 1 | `PIC S9(n)V99`, `COMP-3`, `COMP` | `java.math.BigDecimal` with scale from the PIC clause; `NUMERIC(p,2)` columns | **Zero `float` or `double` in any financial field.** `RoundingMode.HALF_EVEN`; `compareTo()` for equality, never `equals()`. Precision exceptions that differ from the common case: `TRAN-CAT-BAL` is `S9(09)V99` `[app/cpy/CVTRA01Y.cpy:L9]` so `NUMERIC(11,2)`; `DIS-INT-RATE` is `S9(04)V99` `[app/cpy/CVTRA02Y.cpy:L9]` so `NUMERIC(6,2)`; account money fields are `S9(10)V99` `[app/cpy/CVACT01Y.cpy:L7-L8]` so `NUMERIC(12,2)`. Prevents binary-floating-point drift in money and rate arithmetic. |
+| 2 | `PARAGRAPH` / `SECTION` | One private Java method | One-to-one, **no consolidation across paragraphs**; Javadoc cites the source paragraph label. Prevents the paragraph map that the scope-coverage gate verifies from becoming unprovable. |
+| 3 | `COPY <member>` | A Java `import` | Resolved by the mapping table in [§0.5.2.1](#0521-cobol-copy-to-java-import-translation) — exactly one entity import per record-layout copybook. Prevents duplicate entity types for the same layout. |
+| 4 | VSAM KSDS cluster | `@Entity` plus a `JpaRepository` | One entity per cluster catalogued in `[app/catlg/LISTCAT.txt]`. Prevents a dataset being silently folded into another. |
+| 5 | Alternate index and path | A derived or `@Query` finder plus a B-tree index | Non-unique alternate keys become non-unique indexes. Prevents a full-table scan replacing an indexed browse. |
+| 6 | `EXEC CICS SEND MAP` / `RECEIVE MAP` | A `@RestController` method | Field names, types and lengths taken from `[app/cpy-bms/**]` **exactly**. Prevents silent truncation or widening at the API boundary. |
+| 7 | `RETURN TRANSID ... COMMAREA` | Stateless REST plus JWT claims | **No server-side session state.** Pagination state moves to request parameters and response metadata. Prevents a hidden server-side conversation that cannot be horizontally scaled. |
+| 8 | JCL `EXEC PGM` plus DD statements | A Spring Batch `Job` and `Step` | `COND` codes become a `JobExecutionDecider`. Prevents step gating being lost, which would run downstream steps after an upstream failure. |
+| 9 | DFSORT and IDCAMS `REPRO` | `java.util.Comparator` and `JdbcTemplate.batchUpdate` | **No external sort process is spawned.** Prevents a host-tool dependency the container image cannot satisfy. |
+| 10 | `EXEC CICS WRITEQ TD` | `SqsTemplate.send()` to a FIFO queue | The 80-byte fixed record becomes a typed JSON message. Prevents ordering loss on the online-to-batch bridge. |
+| 11 | Generation `(+1)` / `(0)` | An S3 key with a timestamp or job-instance prefix, over a versioned bucket | Record length is preserved byte-exactly at the S3 boundary. Prevents the parity comparison failing on geometry rather than content. |
+| 12 | `FILE STATUS` value | A typed exception | Applied on **every** I/O path, never swallowed. Prevents an I/O failure being mistaken for an empty result. |
+| 13 | `EXEC CICS SYNCPOINT ROLLBACK` | `@Transactional(rollbackFor = Exception.class)` | Scoped so the source's asymmetric rollback behaviour is reproduced — see [§0.7.1.2](#0712-why-the-rollback-asymmetry-is-correct-not-a-defect). Prevents a half-applied dual-dataset update. |
+| 14 | `CALL 'CSUTLDTC'` | `java.time.LocalDate` plus a date validation service | Validation **outcomes**, not merely parsing, must match. Prevents a date the legacy system rejects being accepted, or vice versa. |
+| 15 | Plaintext `SEC-USR-PWD` | BCrypt with strength 10 | The ten seeded users are stored only as hashes. Prevents credential material reaching the database or a log. |
+| 16 | `READ ... UPDATE` plus snapshot comparison | JPA `@Version` **plus** an explicit field-by-field snapshot comparison | `@Version` alone is insufficient — see [§0.7.1.5](#0715-why-optimistic-version-checking-alone-is-insufficient). Prevents an update being accepted that the legacy system would have rejected as concurrently modified. |
+
+Rule 16 warrants emphasis because it is the one place where the obvious mechanical translation is wrong. The source compares business field values, not a version counter: `9700-CHECK-CHANGE-IN-REC` runs ten account predicates expanding to sixteen comparison terms, plus a customer predicate set, against a snapshot captured when the screen was first displayed `[app/cbl/COACTUPC.cbl:L4109-L4193]`. A version counter detects *that* a row changed; the source detects *which fields* changed and in what representation. Both layers are therefore required, and the request DTO must carry the snapshot. [§0.7.1](#071-account-update-dual-dataset-write-asymmetric-rollback-and-the-stateless-snapshot-contract) develops this in full, including the date-offset asymmetry that makes a naive implementation fail on every single request.
 
 ## 0.2 Source Analysis
 
+Every count, size and line number in this sub-section was established by direct machine inspection of the checkout at commit `7756d89`. Where the earlier generation of this document reported a different figure, the figure below supersedes it and the discrepancy is recorded in [§0.2.2.1](#0221-corrections-to-the-prior-specification).
+
 ### 0.2.1 Comprehensive Source File Discovery
 
-The CardDemo repository contains **140+ source artifacts** organized across 7 application subdirectories plus governance files. Every file has been inventoried through systematic repository traversal.
+#### 0.2.1.1 COBOL Programs: `app/cbl/`
 
-**Current Structure Mapping:**
+Twenty-eight programs totalling **19,254 lines**. These are the exact figures to be used in `../TRACEABILITY_MATRIX.md`.
 
-```
-Source Repository: aws-samples/carddemo (COBOL Mainframe)
-├── README.md                        (Installation guide, feature inventory)
-├── CODE_OF_CONDUCT.md               (Amazon Open Source CoC)
-├── CONTRIBUTING.md                   (GitHub collaboration workflow)
-├── LICENSE                           (Apache 2.0)
-├── app/
-│   ├── cbl/                         (28 COBOL programs — 19,254 total lines)
-│   │   ├── CBACT01C.cbl            (193 lines — Account File Reader utility)
-│   │   ├── CBACT02C.cbl            (178 lines — Card File Reader utility)
-│   │   ├── CBACT03C.cbl            (178 lines — Cross-Reference File Reader utility)
-│   │   ├── CBACT04C.cbl            (652 lines — Interest Calculation batch)
-│   │   ├── CBCUS01C.cbl            (178 lines — Customer File Reader utility)
-│   │   ├── CBSTM03A.CBL            (924 lines — Statement Generation main)
-│   │   ├── CBSTM03B.CBL            (230 lines — Statement file-service subroutine)
-│   │   ├── CBTRN01C.cbl            (491 lines — Daily Transaction Validation driver)
-│   │   ├── CBTRN02C.cbl            (731 lines — Daily Transaction Posting engine)
-│   │   ├── CBTRN03C.cbl            (649 lines — Transaction Report generation)
-│   │   ├── COACTUPC.cbl            (4,236 lines — Account Update, most complex)
-│   │   ├── COACTVWC.cbl            (941 lines — Account View)
-│   │   ├── COADM01C.cbl            (268 lines — Admin Menu)
-│   │   ├── COBIL00C.cbl            (572 lines — Bill Payment)
-│   │   ├── COCRDLIC.cbl            (1,459 lines — Credit Card List)
-│   │   ├── COCRDSLC.cbl            (887 lines — Credit Card Detail)
-│   │   ├── COCRDUPC.cbl            (1,560 lines — Credit Card Update)
-│   │   ├── COMEN01C.cbl            (282 lines — Regular User Main Menu)
-│   │   ├── CORPT00C.cbl            (649 lines — Report Submit, online-to-batch bridge)
-│   │   ├── COSGN00C.cbl            (260 lines — Sign-On / Authentication)
-│   │   ├── COTRN00C.cbl            (699 lines — Transaction List)
-│   │   ├── COTRN01C.cbl            (330 lines — Transaction Detail)
-│   │   ├── COTRN02C.cbl            (783 lines — Transaction Add)
-│   │   ├── COUSR00C.cbl            (695 lines — User List browse)
-│   │   ├── COUSR01C.cbl            (299 lines — User Add)
-│   │   ├── COUSR02C.cbl            (414 lines — User Update)
-│   │   ├── COUSR03C.cbl            (359 lines — User Delete)
-│   │   └── CSUTLDTC.cbl            (157 lines — Date Validation subprogram)
-│   ├── cpy/                         (28 shared copybooks)
-│   │   ├── COADM02Y.cpy            (Admin menu option table)
-│   │   ├── COCOM01Y.cpy            (Central COMMAREA contract)
-│   │   ├── COMEN02Y.cpy            (Main menu 10-option table)
-│   │   ├── COSTM01.CPY             (Reporting transaction layout)
-│   │   ├── COTTL01Y.cpy            (Application banner/title lines)
-│   │   ├── CSDAT01Y.cpy            (Date/time working storage)
-│   │   ├── CSLKPCDY.cpy            (NANPA, state, ZIP validation tables)
-│   │   ├── CSMSG01Y.cpy            (Common user messages)
-│   │   ├── CSMSG02Y.cpy            (Abend data work areas)
-│   │   ├── CSSETATY.cpy            (BMS field attribute setting)
-│   │   ├── CSSTRPFY.cpy            (EIBAID key decoding)
-│   │   ├── CSUSR01Y.cpy            (User security record — 80 bytes)
-│   │   ├── CSUTLDPY.cpy            (Date validation paragraphs)
-│   │   ├── CSUTLDWY.cpy            (Date-edit working storage)
-│   │   ├── CUSTREC.cpy             (Customer record layout — 500 bytes)
-│   │   ├── CVACT01Y.cpy            (Account record — 300 bytes)
-│   │   ├── CVACT02Y.cpy            (Card record — 150 bytes)
-│   │   ├── CVACT03Y.cpy            (Card cross-reference — 50 bytes)
-│   │   ├── CVCRD01Y.cpy            (Card work areas and routing)
-│   │   ├── CVCUS01Y.cpy            (Customer record — 500 bytes)
-│   │   ├── CVTRA01Y.cpy            (Category balance record — 50 bytes)
-│   │   ├── CVTRA02Y.cpy            (Disclosure group record — 50 bytes)
-│   │   ├── CVTRA03Y.cpy            (Transaction type record — 60 bytes)
-│   │   ├── CVTRA04Y.cpy            (Transaction category record — 60 bytes)
-│   │   ├── CVTRA05Y.cpy            (Transaction record — 350 bytes)
-│   │   ├── CVTRA06Y.cpy            (Daily transaction record — 350 bytes)
-│   │   ├── CVTRA07Y.cpy            (Report line formats)
-│   │   └── UNUSED1Y.cpy            (Reserved/unused 80-byte layout)
-│   ├── bms/                         (17 BMS mapset source files)
-│   │   ├── COACTVW.bms, COACTUP.bms, COADM01.bms, COBIL00.bms
-│   │   ├── COCRDLI.bms, COCRDSL.bms, COCRDUP.bms, COMEN01.bms
-│   │   ├── CORPT00.bms, COSGN00.bms
-│   │   ├── COTRN00.bms, COTRN01.bms, COTRN02.bms
-│   │   └── COUSR00.bms, COUSR01.bms, COUSR02.bms, COUSR03.bms
-│   ├── cpy-bms/                     (17 symbolic map copybooks)
-│   │   ├── COACTVW.CPY, COACTUP.CPY, COADM01.CPY, COBIL00.CPY
-│   │   ├── COCRDLI.CPY, COCRDSL.CPY, COCRDUP.CPY, COMEN01.CPY
-│   │   ├── CORPT00.CPY, COSGN00.CPY
-│   │   ├── COTRN00.CPY, COTRN01.CPY, COTRN02.CPY
-│   │   └── COUSR00.CPY, COUSR01.CPY, COUSR02.CPY, COUSR03.CPY
-│   ├── jcl/                         (29 JCL jobs)
-│   │   ├── ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, XREFFILE.jcl
-│   │   ├── TRANFILE.jcl, TRANIDX.jcl, TRANBKP.jcl
-│   │   ├── TCATBALF.jcl, TRANCATG.jcl, TRANTYPE.jcl, DISCGRP.jcl
-│   │   ├── DUSRSECJ.jcl, DEFCUST.jcl, DEFGDGB.jcl, REPTFILE.jcl, DALYREJS.jcl
-│   │   ├── CLOSEFIL.jcl, OPENFIL.jcl, CBADMCDJ.jcl
-│   │   ├── POSTTRAN.jcl, INTCALC.jcl, COMBTRAN.jcl
-│   │   ├── CREASTMT.JCL, TRANREPT.jcl, PRTCATBL.jcl
-│   │   └── READACCT.jcl, READCARD.jcl, READCUST.jcl, READXREF.jcl
-│   ├── data/
-│   │   ├── ASCII/                   (9 fixture files)
-│   │   │   ├── acctdata.txt, carddata.txt, custdata.txt, cardxref.txt
-│   │   │   ├── dailytran.txt, discgrp.txt, tcatbal.txt
-│   │   │   └── trancatg.txt, trantype.txt
-│   │   └── EBCDIC/                  (13 binary data files)
-│   │       ├── AWS.M2.CARDDEMO.ACCTDATA.PS, .CARDDATA.PS, .CUSTDATA.PS
-│   │       ├── AWS.M2.CARDDEMO.CARDXREF.PS, .DALYTRAN.PS, .DALYTRAN.PS.INIT
-│   │       ├── AWS.M2.CARDDEMO.DISCGRP.PS, .TCATBALF.PS
-│   │       ├── AWS.M2.CARDDEMO.TRANCATG.PS, .TRANTYPE.PS, .USRSEC.PS
-│   │       └── AWS.M2.CARDDEMO.ACCDATA.PS, .gitkeep
-│   └── catlg/
-│       └── LISTCAT.txt              (IDCAMS catalog report — 209 entries)
-└── samples/
-    └── jcl/                         (3 sample build JCL)
-        ├── BATCMP.jcl, BMSCMP.jcl, CICCMP.jcl
-```
+| Program | Lines | Class | Role |
+|---------|------:|-------|------|
+| `COACTUPC.cbl` | 4,236 | Online | Account update — dual-dataset write with snapshot comparison and asymmetric rollback |
+| `COCRDUPC.cbl` | 1,560 | Online | Card update |
+| `COCRDLIC.cbl` | 1,459 | Online | Card list, 7 rows per page |
+| `COACTVWC.cbl` | 941 | Online | Account view |
+| **`CBSTM03A.CBL`** | 924 | Batch | Statement generation — self-modifying `ALTER` dispatch |
+| `COCRDSLC.cbl` | 887 | Online | Card detail |
+| `COTRN02C.cbl` | 783 | Online | Transaction add — descending-browse auto-identifier |
+| `CBTRN02C.cbl` | 731 | Batch | Daily transaction posting — validation cascade and reject engine |
+| `COTRN00C.cbl` | 699 | Online | Transaction list, 10 rows per page |
+| `COUSR00C.cbl` | 695 | Online | User list, 10 rows per page |
+| `CBACT04C.cbl` | 652 | Batch | Interest calculation |
+| `CORPT00C.cbl` | 649 | Online | Report submission — transient-data-queue job-submission bridge |
+| `CBTRN03C.cbl` | 649 | Batch | Transaction report, 20 lines per page |
+| `COBIL00C.cbl` | 572 | Online | Bill payment |
+| `CBTRN01C.cbl` | 491 | Batch | Daily transaction pre-flight — **read-only** |
+| `COUSR02C.cbl` | 414 | Online | User update |
+| `COUSR03C.cbl` | 359 | Online | User delete |
+| `COTRN01C.cbl` | 330 | Online | Transaction detail |
+| `COUSR01C.cbl` | 299 | Online | User add |
+| `COMEN01C.cbl` | 282 | Online | Main menu dispatch |
+| `COADM01C.cbl` | 268 | Online | Admin menu dispatch |
+| `COSGN00C.cbl` | **260** | Online | Sign-on |
+| **`CBSTM03B.CBL`** | 230 | Batch | File-access subprogram called by `CBSTM03A` |
+| `CBACT01C.cbl` | 193 | Batch | Account file sequential read |
+| `CBCUS01C.cbl` | 178 | Batch | Customer file sequential read |
+| `CBACT03C.cbl` | 178 | Batch | Cross-reference file sequential read |
+| `CBACT02C.cbl` | 178 | Batch | Card file sequential read |
+| `CSUTLDTC.cbl` | 157 | Utility | Date validation, statically called |
+
+> **Case-sensitivity hazard, verified.** `CBSTM03A.CBL` and `CBSTM03B.CBL` use an **UPPERCASE `.CBL`** extension while the other twenty-six use lowercase `.cbl`. A `app/cbl/*.cbl` glob therefore yields only **18,100** of the 19,254 lines — it silently drops 1,154 lines, including the whole statement-generation program and its file-access subprogram. **Case-insensitive matching is mandatory for `app/cbl` as well as `app/jcl`.**
+
+The four simple readers — `CBACT01C`, `CBACT02C`, `CBACT03C` and `CBCUS01C` — have a verb inventory of `OPEN`, `READ` and `CLOSE` only, with no `WRITE`, `REWRITE` or `DELETE`. They become read-only Spring Batch verification steps.
+
+#### 0.2.1.2 Program Count Reconciliation: 17 Sourced, 1 Orphan
+
+The CICS CSD defines **18 transactions and 18 programs but only 17 mapsets** `[app/csd/CARDDEMO.CSD]`. The reconciliation is decisive.
+
+Seventeen transaction-to-program pairs have both source and a mapset:
+
+| Tran | Program | Tran | Program | Tran | Program |
+|------|---------|------|---------|------|---------|
+| `CC00` | `COSGN00C` | `CCLI` | `COCRDLIC` | `CA00` | `COADM01C` |
+| `CM00` | `COMEN01C` | `CCDL` | `COCRDSLC` | `CU00` | `COUSR00C` |
+| `CAVW` | `COACTVWC` | `CCUP` | `COCRDUPC` | `CU01` | `COUSR01C` |
+| `CAUP` | `COACTUPC` | `CT00` | `COTRN00C` | `CU02` | `COUSR02C` |
+| `CB00` | `COBIL00C` | `CT01` | `COTRN01C` | `CU03` | `COUSR03C` |
+| `CR00` | `CORPT00C` | `CT02` | `COTRN02C` | | |
+
+The eighteenth is `CDV1` to `COCRDSEC`. **`COCRDSEC` has no source file anywhere in the repository.** Its only two occurrences repository-wide are the CSD definitions themselves: `[app/csd/CARDDEMO.CSD:L211]` (`DEFINE PROGRAM(COCRDSEC) GROUP(CARDDEMO)`) and `[app/csd/CARDDEMO.CSD:L390]` (`PROGRAM(COCRDSEC) TWASIZE(0) PROFILE(DFHCICST) STATUS(ENABLED)`). It is a dangling legacy definition with nothing to translate.
+
+**Therefore: 17 sourced screen programs + 1 orphan CSD definition = 18 CSD entries.** No endpoint may be invented for `CDV1`.
+
+Independent corroboration: `README.md` lists exactly 17 online transaction, BMS-map and program rows in its online inventory table, and a case-insensitive search of that file for `CDV1` returns zero hits.
+
+`CSUTLDTC` does not appear in the CSD at all — it is a statically-called subprogram. `CBSTM03A` and `CBSTM03B` are batch and likewise absent; a search of the CSD for either name returns zero hits.
+
+The CSD yields two further contracts:
+
+- **Eight CICS `DEFINE FILE` entries** constitute the online file control table: `ACCTDAT`, `CARDAIX`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `CXACAIX`, `TRANSACT`, `USRSEC`. Therefore **`TCATBALF`, `DISCGRP`, `TRANCATG` and `TRANTYPE` are batch-only datasets with no online definition** — a fact that shapes both the authorisation model and the integration-test surface.
+- **One transient data queue definition** is the source of the SQS bridge `[app/csd/CARDDEMO.CSD:L499-L505]`: `DEFINE TDQUEUE(JOBS) GROUP(CARDDEMO)` / `DESCRIPTION(SUBMIT JOBS FROM CICS)` / `TYPE(EXTRA) DATABUFFERS(1) DDNAME(INREADER) ERROROPTION(IGNORE)` / `OPENTIME(INITIAL) TYPEFILE(OUTPUT) RECORDSIZE(80)` / `RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD)`.
+
+#### 0.2.1.3 Copybooks: `app/cpy/`
+
+Twenty-eight copybooks totalling 2,614 lines, in four functional classes. Note that `COSTM01.CPY` uses an uppercase extension.
+
+| Class | Members | Target Disposition |
+|-------|---------|-------------------|
+| Record layouts (11) | `CVACT01Y` (300 B), `CVACT02Y` (150 B), `CVACT03Y` (50 B slot, 36 populated), `CVCUS01Y` (500 B), `CVTRA01Y` (50 B), `CVTRA02Y` (50 B), `CVTRA03Y` (60 B), `CVTRA04Y` (60 B), `CVTRA05Y` (350 B), `CVTRA06Y` (350 B), `CVTRA07Y` (133 B report line) | 11 JPA entities plus the report-line DTOs |
+| Additional layouts (3) | `CSUSR01Y` (80 B user security), `CUSTREC` (duplicate of `CVCUS01Y` differing only in the `CUST-DOB` field name), `COSTM01.CPY` (statement record, 32-byte `TRNX-KEY`) | `UserSecurity` entity, the same `Customer` entity, `StatementTransaction` DTO |
+| Shared state and tables (6) | `COCOM01Y` (COMMAREA), `CVCRD01Y` (navigation and action-identifier state), `COMEN02Y` (menu option table), `COADM02Y` (admin option table), `CSLKPCDY` (lookup tables), `CSDAT01Y` (date and time) | JWT claims plus request DTOs, controller mapping, two menu services, three JSON validation resources, a date and time header utility |
+| Constants, abend and procedural (8) | `COTTL01Y`, `CSMSG01Y`, **`CSMSG02Y`**, `CSUTLDPY`, `CSUTLDWY`, **`CSSTRPFY`**, **`CSSETATY`**, **`UNUSED1Y`** | Constants holders, `FatalProcessingException` fields, date validation service internals, controller action mapping, validation annotations, and one documented dead artefact |
+
+Four dispositions correct earlier misreadings that would otherwise have produced wrong code. Each was verified by reading the member.
+
+- **`CSMSG02Y` is not a message copybook.** It is internally titled `CABENDD.CPY` and described as "Work areas for abend routine". It declares `01 ABEND-DATA.` with `ABEND-CODE PIC X(4)`, `ABEND-CULPRIT PIC X(8)`, `ABEND-REASON PIC X(50)` and `ABEND-MSG PIC X(72)` `[app/cpy/CSMSG02Y.cpy:L21-L29]` (COBOL sequence numbers `001200` through `002000`). It maps to the field set of `FatalProcessingException`. Treating it as a message copybook would have lost that field set entirely.
+- **`CSSTRPFY` is procedural, not a data layout.** It contains the `PROCEDURE DIVISION` paragraph `YYYY-STORE-PFKEY` `[app/cpy/CSSTRPFY.cpy:L17]` which evaluates `EIBAID` against `DFHENTER`, `DFHCLEAR`, `DFHPA1`, `DFHPA2` and the function keys `[app/cpy/CSSTRPFY.cpy:L21-L40]`. It has five `COPY` call sites in `app/cbl` and no entity or DTO counterpart; it maps to controller-level action mapping.
+- **`CSSETATY` is a parameterised template** resolved via `COPY ... REPLACING`. Its body uses parenthesised placeholders `(TESTVAR1)`, `(SCRNVAR2)` and `(MAPNAME3)`, testing `FLG-(TESTVAR1)-NOT-OK` and `FLG-(TESTVAR1)-BLANK` and moving `DFHRED` and `'*'` into the map `[app/cpy/CSSETATY.cpy:L17-L27]`. It has one `COPY` call site. It maps to validation annotations plus per-field error markers, not to a type.
+- **`UNUSED1Y` has zero `COPY` references anywhere in the live corpus** — a search of `app/` for `COPY UNUSED1Y` returns zero hits. The only other repository-wide occurrence of the name is inside the out-of-scope binary archive `samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip`. It is dispositioned as documented dead so the scope-coverage gate can reach 100%.
+
+`COSTM01.CPY` geometry, which is load-bearing for statement generation: `01 TRNX-RECORD.` with `05 TRNX-KEY.` comprising `TRNX-CARD-NUM PIC X(16)` and `TRNX-ID PIC X(16)` `[app/cpy/COSTM01.CPY:L20-L23]` — **32 bytes**, exactly matching `KEYS(32 0)` on the work cluster `[app/jcl/CREASTMT.JCL:L30]` — followed by `05 TRNX-REST.` whose fields sum to **318 bytes** `[app/cpy/COSTM01.CPY:L24-L36]`, for **350 bytes total**, matching `RECORDSIZE(350 350)` `[app/jcl/CREASTMT.JCL:L32]`.
+
+`COPY DFHAID`, `COPY DFHBMSCA` and `COPY DFHATTR` are supplied by CICS, are absent from the repository, and map onto framework mechanisms with no import.
+
+#### 0.2.1.4 BMS Presentation Layer: `app/bms/` and `app/cpy-bms/`
+
+Seventeen mapsets (4,472 lines) with their seventeen generated symbolic maps (5,632 lines). The symbolic maps are the DTO field budget.
+
+The total was counted two independent ways that agree exactly — once over the `02 <name>L COMP PIC S9(4)` length fields and once over the `02 <name>I PIC` data fields. Both yield **441**.
+
+| Symbolic Map | Input Fields | Symbolic Map | Input Fields |
+|--------------|-------------:|--------------|-------------:|
+| `COACTUP.CPY` | 54 | `COSGN00.CPY` | 11 |
+| `COACTVW.CPY` | **37** | `COTRN00.CPY` | 59 |
+| `COADM01.CPY` | 20 | `COTRN01.CPY` | 21 |
+| `COBIL00.CPY` | 10 | `COTRN02.CPY` | 21 |
+| `COCRDLI.CPY` | 45 | `COUSR00.CPY` | 59 |
+| `COCRDSL.CPY` | 15 | `COUSR01.CPY` | 12 |
+| `COCRDUP.CPY` | 17 | `COUSR02.CPY` | 12 |
+| `COMEN01.CPY` | 20 | `COUSR03.CPY` | 11 |
+| `CORPT00.CPY` | 17 | **Total** | **441** |
+
+Each screen field is generated as a quintuple, verified at `[app/cpy-bms/COACTUP.CPY:L17-L24]`: the group header `01 CACTUPAI.` at L17, a twelve-byte `02 FILLER PIC X(12)` terminal-I/O area header at L18, then per field a `02 <n>L COMP PIC S9(4).` length field, a `02 <n>F PICTURE X.` attribute byte, a `02 FILLER REDEFINES <n>F.` with `03 <n>A PICTURE X.` attribute alias, four reserved bytes `02 FILLER PICTURE X(4).`, and the data field `02 <n>I PIC X(w).`. The output group is `01 <map>O REDEFINES <map>I` carrying C, P, H and V attribute bytes followed by `<n>O`.
+
+Six header fields recur on all seventeen maps: `TRNNAME X(4)`, `TITLE01 X(40)`, `CURDATE X(8)`, `PGMNAME X(8)`, `TITLE02 X(40)` and `CURTIME`. **`CURTIME` is `X(8)` on sixteen maps and `X(9)` only on `COSGN00.CPY`**, which additionally carries `APPLIDI PIC X(8)` `[app/cpy-bms/COSGN00.CPY:L60]` and `SYSIDI PIC X(8)` `[app/cpy-bms/COSGN00.CPY:L66]`.
+
+The three highest field counts are explained by row arrays rather than by richer screens: `COTRN00` and `COUSR00` carry ten-row tables (`SEL000n`, `TRNIDnn`, `TDATEnn`, `TDESCnn`, `TAMT00n`), and `COCRDLI` carries seven (`CRDSELn`, `CRDSTPn`, `ACCTNOn`, `CRDNUMn`, `CRDSTSn`, with no `CRDSTP1` on row 1) — matching the pagination sizes 10, 10 and 7.
+
+#### 0.2.1.5 JCL, Procedures and Control Cards
+
+**`app/jcl/` contains 29 members.** Twenty-eight use a lowercase `.jcl` extension; the twenty-ninth is **`CREASTMT.JCL` with an uppercase extension**, which a `*.jcl` glob silently omits. That member is the sole source for statement generation, so every wildcard pattern touching this directory must be case-insensitive.
+
+Full member list: `ACCTFILE`, `CARDFILE`, `CBADMCDJ`, `CLOSEFIL`, `COMBTRAN`, **`CREASTMT.JCL`**, `CUSTFILE`, `DALYREJS`, `DEFCUST`, `DEFGDGB`, `DISCGRP`, `DUSRSECJ`, `INTCALC`, `OPENFIL`, `POSTTRAN`, `PRTCATBL`, `READACCT`, `READCARD`, `READCUST`, `READXREF`, `REPTFILE`, `TCATBALF`, `TRANBKP`, `TRANCATG`, `TRANFILE`, `TRANIDX`, `TRANREPT`, `TRANTYPE`, `XREFFILE`.
+
+Three members drive batch jobs whose logic exists nowhere else:
+
+- **`CREASTMT.JCL`** (97 lines) — five steps. `DELDEF01` `[L22]` defines a work cluster with `KEYS(32 0)` `[L30]` and `RECORDSIZE(350 350)` `[L32]`, the 32-byte key confirming `COSTM01.CPY`'s `TRNX-KEY` composition. `STEP010` `[L44]` sorts `SORT FIELDS=(263,16,CH,A,1,16,CH,A)` `[L53]` and reshuffles the record with `OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)` `[L54]`. `STEP020` `[L56]`, gated `COND=(0,NE)`, `REPRO`s the sorted sequential file into the cluster `[L61]`. `STEP030` `[L66]` pre-deletes outputs. `STEP040` `[L79]` runs `CBSTM03A` with `STMTFILE` at `LRECL=80` `[L89]` and `HTMLFILE` at `LRECL=100` `[L94]`.
+- **`COMBTRAN.jcl`** (52 lines) — two steps, no COBOL program. `STEP05R` `[L22]` sorts a **concatenated** input of the transaction backup `[L24]` and the interest-generated transaction generation `[L26]` by `TRAN-ID` ascending `[L30]`, with its own `SYMNAMES` defining `TRAN-ID,1,16,CH` `[L27-L28]`; `STEP10` `[L41]` `REPRO`s the combined result into the transaction cluster `[L48]`.
+- **`app/proc/TRANREPT.prc`** (82 lines) — three steps. `STEP01R` `[L21]` backs up the transaction cluster at `LRECL=350` `[L29]`; `STEP05R` `[L35]` sorts by card number `[L44]` with an `INCLUDE COND` date-range filter `[L45-L46]` driven by `SYMNAMES` defining `TRAN-CARD-NUM,263,16,ZD` `[L39]` and `TRAN-PROC-DT,305,10,CH` `[L40]` plus literal defaults `PARM-START-DATE,C'2022-01-01'` `[L41]` and `PARM-END-DATE,C'2022-07-06'` `[L42]`; `STEP10R` `[L57]` runs `CBTRN03C` producing a `LRECL=133` report `[L76]`.
+
+`app/proc/` holds two members, `REPROC.prc` and `TRANREPT.prc`. `app/ctl/REPROCT.ctl` is a single IDCAMS control card, `REPRO INFILE(FILEIN) OUTFILE(FILEOUT)`. A legacy quirk worth recording: both procedure members declare `//REPROC PROC` on their first line, so `TRANREPT.prc`'s internal procedure name is `REPROC` while the member name that `EXEC PROC=TRANREPT` resolves is `TRANREPT` `[app/proc/TRANREPT.prc:L1]`.
+
+Primary utility or program per JCL member: `ACCTFILE`=IDCAMS; `CARDFILE`=IDCAMS+SDSF; `CBADMCDJ`=DFHCSDUP (installs the CSD); `CLOSEFIL`=SDSF; `COMBTRAN`=SORT+IDCAMS; `CREASTMT.JCL`=IDCAMS+SORT+IEFBR14+`CBSTM03A`; `CUSTFILE`=IDCAMS+SDSF; `DALYREJS`=IDCAMS; `DEFCUST`=IDCAMS; `DEFGDGB`=IDCAMS; `DISCGRP`=IDCAMS; `DUSRSECJ`=IDCAMS+IEBGENER+IEFBR14; `INTCALC`=`CBACT04C`; `OPENFIL`=SDSF; `POSTTRAN`=`CBTRN02C`; `PRTCATBL`=IEFBR14+REPROC+SORT; `READACCT`=`CBACT01C`; `READCARD`=`CBACT02C`; `READCUST`=`CBCUS01C`; `READXREF`=`CBACT03C`; `REPTFILE`=IDCAMS; `TCATBALF`=IDCAMS; `TRANBKP`=IDCAMS+REPROC; `TRANCATG`=IDCAMS; `TRANFILE`=IDCAMS+SDSF; `TRANIDX`=IDCAMS; `TRANREPT`=`CBTRN03C`+REPROC+SORT; `TRANTYPE`=IDCAMS; `XREFFILE`=IDCAMS.
+
+#### 0.2.1.6 VSAM Catalogue: `app/catlg/LISTCAT.txt`
+
+Three thousand nine hundred and fifty-six lines of authoritative physical specification. The summary block reports the entry counts verbatim `[app/catlg/LISTCAT.txt:L3937-L3951]`: `AIX 3`, `ALIAS 0`, `CLUSTER 10`, `DATA 13`, `GDG 7`, `INDEX 13`, `NONVSAM 160`, `PAGESPACE 0`, `PATH 3`, `SPACE 0`, `USERCATALOG 0`, `TAPELIBRARY 0`, `TAPEVOLUME 0`, `TOTAL 209`.
+
+**Exactly 10 base clusters**, all named `AWS.M2.CARDDEMO.<name>.VSAM.KSDS`, with their key length and average record length:
+
+| Cluster | Locator | Key length | Avg record length | Geometry locator |
+|---------|---------|-----------:|------------------:|------------------|
+| `ACCTDATA` | `[L22]` | 11 | 300 | `[L59]` |
+| `CARDDATA` | `[L164]` | 16 | 150 | `[L202]` |
+| `CARDXREF` | `[L365]` | 16 | 50 | `[L403]` |
+| `CUSTDATA` | `[L595]` | 9 | 500 | `[L632]` |
+| `DISCGRP` | `[L859]` | 16 | 50 | `[L896]` |
+| `TCATBALF` | `[L1334]` | 17 | 50 | `[L1371]` |
+| `TRANCATG` | `[L1440]` | 6 | 60 | `[L1475]` |
+| `TRANSACT` | `[L3555]` | 16 | 350 | `[L3593]` |
+| `TRANTYPE` | `[L3742]` | 2 | 60 | `[L3779]` |
+| `USRSEC` | `[L3846]` | 8 | 80 | `[L3883]` |
+
+**Three alternate indexes, each with a matching path.** Alternate indexes at `CARDDATA.VSAM.AIX` `[L254]`, `CARDXREF.VSAM.AIX` `[L455]` and `TRANSACT.VSAM.AIX` `[L3645]`; paths at `[L150]`, `[L351]` and `[L3541]`.
+
+Alternate-index physical detail, needed to place each index correctly:
+
+| Alternate index | KEYLEN | RKP | AXRKP | Meaning |
+|-----------------|-------:|----:|------:|---------|
+| `CARDDATA.VSAM.AIX` | 11 `[L281]` | 5 `[L282]` | **16** `[L283]` | The alternate key sits at byte 16 of the base record — the account identifier |
+| `CARDXREF.VSAM.AIX` | 11 `[L482]` | 5 `[L485]` | **25** `[L486]` | The alternate key sits at byte 25 of the base record |
+| `TRANSACT.VSAM.AIX` | 26 `[L3674]` | 5 `[L3675]` | **304** `[L3676]` | The alternate key is the processing timestamp |
+
+**`USRSEC` is catalogued** at `[app/catlg/LISTCAT.txt:L3846]` with key length 8 and average record length 80 `[L3883]`, and its authoritative creation geometry is declared in JCL: `DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS)` `[app/jcl/DUSRSECJ.jcl:L64]` with `KEYS(8,0)` `[L65]`, `RECORDSIZE(80,80)` `[L66]`, `REUSE` `[L67]`, `INDEXED` `[L68]`, `TRACKS(45,15)` `[L69]` and `FREESPACE(10,15)` `[L70]`. The two sources corroborate each other exactly.
+
+**Seven generation data group bases**: `DALYREJS` `[L684]`, `SYSTRAN` `[L1098]`, `TCATBALF.BKUP` `[L1202]`, `TRANREPT` `[L1527]`, `TRANSACT.BKUP` `[L1631]`, `TRANSACT.COMBINED` `[L2919]`, `TRANSACT.DALY` `[L3021]`.
+
+A **retention conflict exists in the source** and must be resolved rather than propagated. `DEFGDGB.jcl` declares a generation group for `AWS.M2.CARDDEMO.TRANREPT` `[app/jcl/DEFGDGB.jcl:L37]` with `LIMIT(5)` `[app/jcl/DEFGDGB.jcl:L38]`, while `REPTFILE.jcl` declares the same base `[app/jcl/REPTFILE.jcl:L26]` with `LIMIT(10)` `[app/jcl/REPTFILE.jcl:L27]`. **Resolved to 10**, because a single S3 lifecycle value must be chosen; the conflict **is to be logged** in `../DECISION_LOG.md`, which does not exist yet — see [§0.3.1.5](#0315-create-evidence-and-documentation).
+
+An orphan cluster definition also exists: `DEFINE CLUSTER (NAME(AWS.CUSTDATA.CLUSTER)` `[app/jcl/DEFCUST.jcl:L35]` with `KEYS(10 0)` `[L37]` and `RECORDSIZE(500 500)` `[L38]`, which no program opens.
+
+#### 0.2.1.7 Seed and Test Data: `app/data/`
+
+Nine ASCII fixtures. Record widths corroborate the catalogued average record lengths exactly, which is what makes them usable as both Flyway seed data and test input. In every case the byte count divided by the row count equals the width plus one, confirming single-byte line terminators.
+
+| Fixture | Bytes | Rows | Record width | Corroborates |
+|---------|------:|-----:|-------------:|--------------|
+| `acctdata.txt` | 15,050 | **50** | 300 | `ACCTDATA` 300 |
+| `carddata.txt` | 7,550 | 50 | 150 | `CARDDATA` 150 |
+| `cardxref.txt` | 1,850 | 50 | 36 | `CVACT03Y` 16+9+11; cluster record size 50 leaves 14 bytes slack |
+| `custdata.txt` | 25,050 | 50 | 500 | `CUSTDATA` 500 |
+| **`dailytran.txt`** | **105,300** | **300** | 350 | `DALYTRAN` 350 — **the Gate 1 fixture** |
+| `discgrp.txt` | 2,601 | 51 | 50 | `DISCGRP` 50 |
+| `tcatbal.txt` | 2,550 | 50 | 50 | `TCATBALF` 50; key 11+2+4 = 17 confirms key length 17 |
+| `trancatg.txt` | 1,098 | 18 | 60 | `TRANCATG` 60 |
+| `trantype.txt` | 427 | 7 | 60 | `TRANTYPE` 60 |
+
+Four findings here materially change the implementation and are easy to get wrong.
+
+- **The fixture is named `dailytran.txt` and carries 300 records.** The mainframe DD name and dataset are `DALYTRAN`, but the ASCII fixture spells the word in full. The Gate 1 and Gate 4 test resource paths must use the fixture's actual name.
+- **There is no separate user-security fixture file.** A case-insensitive search for `*usrsec*` under `app/` returns only `app/jcl/DUSRSECJ.jcl` and the EBCDIC image `app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS`. The ten user records exist only as inline `SYSUT1 DD *` data `[app/jcl/DUSRSECJ.jcl:L34]`, spanning `[app/jcl/DUSRSECJ.jcl:L35-L44]` with the `/*` terminator at `[L45]`, fed through IEBGENER into a `LRECL=80` sequential dataset `[L46-L48]`. The layout is `CSUSR01Y`: `ID X(8) + FNAME X(20) + LNAME X(20) + PWD X(8) + TYPE X(1) + FILLER`, totalling 80 bytes. The seed set is **ten rows — five of type `A` and five of type `U`**, in that order, each row occupying the full 80 bytes of that layout. **The ten literal identifier and personal-name values are deliberately not reproduced in this document.** They are eight-character person-shaped keys with a given name and a surname attached, and copying them into published documentation buys no analytical accuracy that the aggregate and the layout do not already give; a reader who needs the literal values reads them from the frozen source at `[app/jcl/DUSRSECJ.jcl:L35-L44]`, which is the only authority for them. Where this document needs an illustrative key it uses the clearly synthetic eight-character forms `ADMNUSR1` through `ADMNUSR5` for the administrator rows and `STDUSR01` through `STDUSR05` for the standard-user rows, which match the real keys in width and in type distribution without being them. **Every one of the ten rows carries the same literal plaintext password value in that inline data**, which is stated here purely as source evidence with its locator; the value itself is not reproduced, it is **not** a usable, default or example credential, and it must never be treated as one. `V3__seed_data.sql` **stores only BCrypt strength-10 hashes**, and it is present in this branch. The hashes are produced from those ten values, and these ten rows are what the security gate's "every password hashed" assertion is provable against.
+- **Signed numerics use zoned-decimal trailing-sign overpunch, so a naive text load produces wrong values.** The first account record of `[app/data/ASCII/acctdata.txt:L1]` opens with an eleven-character account key and a one-character active flag and then carries three consecutive twelve-character `S9(10)V99` money fields; **the whole record is not reproduced here**, because only the money fields carry the evidence and the record additionally carries an account key and dates. Read at the field level, those three fields are `00000001940{`, `00000020200{` and `00000010200{`: each terminates in an overpunch character, `{` denotes `+0`, and they therefore decode to +194.00, +2020.00 and +1020.00 respectively. The decode table is `{` to +0, `A` through `I` to +1 through +9, `}` to −0, `J` through `R` to −1 through −9. Two further confirmations, again quoted at field level rather than as whole records: the balance field of `[app/data/ASCII/tcatbal.txt:L1]` is `0000000000{`, the overpunch form of an eleven-character `S9(09)V99`; and `[app/data/ASCII/discgrp.txt:L18]`, a pure reference-data row keyed on the literal group name `DEFAULT`, reads `DEFAULT   01000100150{000000000000000000`, whose six-character `S9(04)V99` rate field `00150{` decodes to +15.00. **Decoding must be position-aware from the PIC clauses**, because the same letters occur legitimately inside text fields such as merchant names. Critically, `dailytran.txt` contains both `{` (25 occurrences) and `}` (6 occurrences), meaning it carries genuinely negative amounts and therefore exercises the cycle-debit branch of the posting logic — it must not be normalised.
+- **`discgrp.txt` contains 17 rows whose group identifier is the literal `DEFAULT`**, including zero-rate combinations, out of 51 total. That set is precisely what makes the interest program's default-rate fallback succeed for those type-and-category pairs and abend for any other, so the integration test must cover both outcomes.
+
+`app/data/EBCDIC/` holds **12 `.PS` dataset images plus a `.gitkeep`**, all carrying the `AWS.M2.CARDDEMO.` prefix: `.ACCDATA.PS` (a legacy typo duplicate missing the `T`), `.ACCTDATA.PS`, `.CARDDATA.PS`, `.CARDXREF.PS`, `.CUSTDATA.PS`, `.DALYTRAN.PS`, `.DALYTRAN.PS.INIT`, `.DISCGRP.PS`, `.TCATBALF.PS`, `.TRANCATG.PS`, `.TRANTYPE.PS`, `.USRSEC.PS`. A `*.PS` glob matches only 11 of the 12 because `.DALYTRAN.PS.INIT` does not end in `.PS`. They are retained as **byte-level codepage reference only and are never parsed by the build**; the ASCII fixtures are the authoritative seed and test input.
+
+#### 0.2.1.8 Repository Conventions Discovered
+
+Two conventions were found by inspection that bind every file the migration creates.
+
+**A universal Apache-2.0 source banner exists.** Verified coverage, counted by searching each directory for the licence text:
+
+| Directory | Files carrying the banner |
+|-----------|--------------------------|
+| `app/cbl` | **28 of 28** |
+| `app/cpy-bms` | **17 of 17** |
+| `app/bms` | **17 of 17** |
+| `app/jcl` | **28 of 29** — the single member lacking it is `app/jcl/READCUST.jcl` |
+| `app/cpy` | **12 of 28** — precisely the shared, constant and procedural members (`COADM02Y`, `COCOM01Y`, `COMEN02Y`, `COSTM01.CPY`, `COTTL01Y`, `CSDAT01Y`, `CSLKPCDY`, `CSMSG01Y`, `CSMSG02Y`, `CSSETATY`, `CSSTRPFY`, `CSUSR01Y`); none of the eleven `CV*` record layouts, nor `CUSTREC`, nor `UNUSED1Y` carries it |
+
+The canonical form is a rule of asterisks, the Amazon copyright, "Licensed under the Apache License, Version 2.0 (the \"License\")", the `http://www.apache.org/licenses/LICENSE-2.0` URL, the AS-IS warranty disclaimer, and a closing rule `[app/cbl/CBACT04C.cbl:L1-L21]`, `[app/cpy-bms/COACTUP.CPY:L1-L16]`. The repository `LICENSE` is Apache License 2.0 and `NOTICE` reads "Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved."
+
+**Every new Java, SQL, YAML, Dockerfile and shell artefact must open with the equivalent header — and, because the legacy banner names the component and its function, the Java equivalent additionally names the originating COBOL program, copybook or JCL member.** That single convention discharges style consistency, the per-module documentation requirement of Rule 1 Clause E, the evidence-citation requirement of Clause F, and paragraph-level provenance simultaneously.
+
+**No formatter, linter or style-tool configuration existed at the anchor commit.** A search of the anchor tree for `.editorconfig`, `.prettierrc*`, `checkstyle*`, `spotless*`, `Makefile`, `*.toml` and `*.cfg` returns nothing. Rule 1 Clause C's "if present" condition is therefore **not triggered**: there is no existing style to fight, but deterministic build and format configuration must be **established** rather than inherited — which is not the same thing as overriding an existing style. That is precisely why `.editorconfig` and the pinned build configuration are creations rather than edits. `CONTRIBUTING.md` supports this reading directly: contributors are asked to focus on the specific change they are contributing and warned that also reformatting all the code makes the change hard to review `[CONTRIBUTING.md:L33]`, and to ensure local tests pass `[CONTRIBUTING.md:L34]`.
+
+**Documentation publication is nav-bound.** At the anchor commit `mkdocs.yml` was 8 lines / 187 bytes with `site_name: 'blitzy-card-demo'`, exactly three nav entries (`Home: index.md`, `Project Guide: project-guide.md`, `Technical Specifications: technical-specifications.md`) and two plugins, `techdocs-core` and `mermaid2`. `docs_dir` is unset, so MkDocs sources `docs/`. Because `catalog-info.yaml` sets `backstage.io/techdocs-ref: dir:.` `[catalog-info.yaml:L22]`, TechDocs renders straight from that nav, and **a document omitted from it silently never appears — a defect that produces no error and no output.** The `mermaid2` plugin confirms Mermaid as the sanctioned diagram format.
+
+**Current state of that file, measured 7 August 2026: 105 lines / 5,338 bytes**, of which the leading 33 are the Apache-2.0 provenance banner every new artefact in this repository carries. `mkdocs.yml` is one of the three `UPDATE` targets of [§0.3.1.6](#0316-update-exactly-three-files), and **three** edits are applied to it. First, a `markdown_extensions` block registering `pymdownx.superfences` with a `mermaid` custom fence, which is what makes the diagram in [§0.1.2.2](#0122-target-architecture) render as a diagram rather than as a code block. Second, **the nav has grown from three entries to eight** — in file order, `Home`, `Project Guide`, `Technical Specifications`, `API Contracts`, `Architecture Before and After`, `Onboarding Guide`, `Validation Gates` and `Executive Presentation`, with the anchor's three entries keeping their relative order at the head of the list. Third, a `validation` block, for the reason below. `site_name` and the two plugins are unchanged from the anchor.
+
+The nav grew only once every document it points at existed — all seven artefacts of [§0.3.1.5](#0315-create-evidence-and-documentation) are now present — because the two failure modes are opposite and both real: a nav entry naming an absent file makes MkDocs fail outright, while a document absent from the nav fails silently. **The five entries that were a pending obligation are therefore a completed change**, and the High-severity silent-publication finding in [§0.2.2.2](#0222-findings-register) is remediated rather than outstanding.
+
+**One assumption about detection was wrong, and the correction is why the `validation` block exists.** It is natural to expect `mkdocs build --strict` to catch an omitted page, because `--strict` promotes warnings to errors. **It does not.** MkDocs defaults `validation.nav.omitted_files` to `info`, and `--strict` acts only on warnings, so under the anchor configuration an omitted page passed a strict build **silently** — the failure was not merely error-free, it was warning-free by default. `mkdocs.yml` now declares `validation.nav.omitted_files: warn`, together with `nav.not_found`, `nav.absolute_links`, `links.not_found`, `links.anchors`, `links.absolute_links` and `links.unrecognized_links`, all at `warn`. That is what converts a silent publication failure into a build failure. Verified by execution on 7 August 2026: `mkdocs build --strict --site-dir <path outside the repository>` **exits 0 with zero warnings**. *Historical:* exit 1 with 20 warnings, taken before the two then-missing documents landed.
+
+One consequence is worth stating for anyone adding a reference: `links.not_found` at `warn` means a Markdown link to a repository-root file, such as `](../README.md)`, now **fails the build**, because MkDocs resolves links only inside `docs_dir`. Root-level artefacts must be named as code spans, never linked — which is the notation this document already uses and the convention every sibling document follows.
+
+`README.md` (324 lines / 14,639 bytes at the anchor) is the authoritative legacy transaction, program and JCL inventory. Its tables are preserved verbatim and Java sections appended. This document **cites** it by path rather than restating it, and deliberately does not hyperlink it: `README.md` sits at the repository root, **outside the MkDocs `docs_dir`**, so a relative link would resolve in the Git-forge view but emit a build warning and fail `--strict` in the rendered TechDocs site. Every repository-root and not-yet-created artefact referenced anywhere in this document is therefore written as a plain code span naming its path — the same treatment applied to the two root evidence artefacts in [§0.3.1.5](#0315-create-evidence-and-documentation). The rationale and the measured effect are recorded in the Medium finding in [§0.2.2.2](#0222-findings-register).
+
+**No `.blitzyignore` file exists anywhere**, so no path-based exclusions were imposed on this analysis beyond those documented here.
+
+#### 0.2.1.9 Directories Excluded After Inspection
+
+`samples/` was inspected and dispositioned rather than assumed. It contains eight files: three z/OS compile templates `samples/jcl/BATCMP.jcl`, `samples/jcl/CICCMP.jcl` and `samples/jcl/BMSCMP.jcl`; three build procedures `samples/proc/BUILDBAT.prc`, `samples/proc/BUILDONL.prc` and `samples/proc/BUILDBMS.prc`; and two binary emulator runtime bundles `samples/m2/mf/CardDemo_runtime.zip` and `samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip`. None has a Java analogue; conceptually the whole set is superseded by `pom.xml`. Nothing is ported from it.
+
+`diagrams/` holds six legacy architecture illustrations — `Admin-Menu.png`, `Application-Flow-Admin.png`, `Application-Flow-User.png`, `CARDDEMO-DataModel.drawio`, `Main-Menu.png` and `Signon-Screen.png` — read as reference for `architecture-before-after.md` and never modified.
+
+#### 0.2.1.10 Environment Evidence
+
+Four dated snapshots of the authoring host are reported, because each supersedes the one before it on at least one material point and honesty about all four is required by Rule 1 Clause F. **Snapshot 4 is the current one; snapshots 1, 2 and 3 are retained as history and must not be read as present state.** Every environment or gate statement anywhere in this document is dated, and where a statement is undated the dated table in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) governs.
+
+**Snapshot 4 — Friday 7 August 2026. CURRENT.** Measured on the host this checkpoint was validated on, and re-verified by invoking each tool on that date. **It differs from snapshot 3 on exactly two material points, and both are stated rather than folded away: MkDocs is present and exercised, and `psql` is absent.**
+
+| Tool | Status |
+|------|--------|
+| `java` / `javac` | **Eclipse Temurin OpenJDK 25.0.3+9 (2026-04-21 LTS)**, installed at `/usr/lib/jvm/jdk-25.0.3+9` with a stable `/usr/lib/jvm/temurin-25` symlink and `/usr/bin/java` on `PATH` through `update-alternatives`. Note the path change from snapshot 3, and note that `JAVA_HOME` is **not** exported in this shell — the wrapper resolves the JDK through `PATH`, so the build works either way, and no instruction in this repository depends on a host-specific `JAVA_HOME` value |
+| `./mvnw` | **Apache Maven 3.9.11** (`3e54c93a704957b63ee3494413a2b544fd3d825b`), resolved by the wrapper, which is the canonical entry point |
+| `docker` | **Engine 29.7.0** (build `c1eba93`), `docker compose` **v5.3.1**, daemon reachable |
+| `localstack` | **LocalStack CLI 4.14.0** |
+| `aws` | **aws-cli 1.46.0** on Python 3.13.7 — a later patch than the 1.45.57 the plan records and the 1.45.62 snapshots 2 and 3 observed. Immaterial for the same reason as before: the CLI provisions the local emulator and is never reached by application code |
+| **`mkdocs`** | **Available and exercised. MkDocs 1.6.1**, with `mkdocs-techdocs-core` **1.7.0** and `mkdocs-mermaid2-plugin` **1.2.3** — the two plugins `mkdocs.yml` declares — both resolving as `mkdocs.plugins` entry points named `techdocs-core` and `mermaid2`. `mkdocs build --strict` exits **0 with zero warnings** against the real `docs/` tree. **Snapshot 3's `Not available` reading, and its rule that "no statement about `mkdocs build` may be made in this document as present-tense fact", are both withdrawn** — the prerequisite it named has been supplied. What remains unexercised is the **Backstage-hosted** TechDocs pipeline, which no snapshot has ever reached |
+| `node` / `mmdc` | **Node v22.23.2** with `@mermaid-js/mermaid-cli` **11.16.0**, used to render each Mermaid block outside a browser as an independent check on the diagram sources. Requires `--no-sandbox` in a container |
+| `git` | 2.51.0 |
+| `psql` | **`Not available`** — no `psql` on `PATH`, where snapshot 3 reported client 17.10. Immaterial to every gate: nothing in this repository shells out to `psql`. The database is reached through the JDBC driver, by Flyway inside the application and by Testcontainers inside the test tiers, and `docker compose` carries its own health check. *What is needed if a manual session is ever wanted:* the PostgreSQL client package, or `docker compose exec postgres psql` |
+| `yamllint`, `markdownlint`, `mdl`, `markdown-link-check`, `bc`, `unzip` | **`Not available`.** YAML is validated by the loaders that consume it — `docker compose config` parses `docker-compose.yml`, Spring's binder parses the four profile files at context start, and MkDocs parses `mkdocs.yml` on every build. Markdown structure is validated by `mkdocs build --strict`, which escalates every dangling link to an error, plus a heading/anchor audit. JAR contents are listed with `jar tf` rather than `unzip`, and arithmetic is done in Python rather than `bc` |
+
+**Snapshot 3 — HISTORICAL. Sunday 2 August 2026, 23:55 UTC.** Measured after the provisioned toolchain was on `PATH`. Two entries are contradicted by snapshot 4 and are retained only as the record of what was measured then: `mkdocs` was `Not available` and `psql` was present:
+
+| Tool | Status |
+|------|--------|
+| `java` / `javac` | **Eclipse Temurin OpenJDK 25.0.3+9 (2026-04-21 LTS)**, `JAVA_HOME=/opt/java/jdk-25.0.3+9` |
+| `mvn` / `./mvnw` | **Apache Maven 3.9.11** (`3e54c93a704957b63ee3494413a2b544fd3d825b`); the wrapper is the canonical entry point and resolves the same 3.9.11 |
+| `docker` | **Engine 29.7.0** (build `c1eba93`), `docker compose` **v5.3.1**, daemon reachable |
+| `localstack` | **LocalStack CLI 4.14.0** |
+| `aws` | **aws-cli 1.45.62** on Python 3.13.7 |
+| `psql` | **PostgreSQL client 17.10** |
+| `git` | 2.51.0 |
+| **`mkdocs`** | **Available and measured, Friday 7 August 2026 — MkDocs 1.6.1** at `/usr/local/bin/mkdocs`, importable as `python3 -m mkdocs`, carrying `mkdocs-techdocs-core` and `mkdocs-mermaid2-plugin` to match the two plugins `mkdocs.yml` declares. `mkdocs build --strict --site-dir <path outside the repository>` exits **0** with **0 `WARNING` lines and 0 `ERROR` lines**. *Superseded reading, 2 August 2026:* `Not available` — no executable on `PATH`, `import mkdocs` failing for both `python3` and `/usr/bin/python3`, and no `/opt/awscli-venv` to explain the ambiguity away |
+| `yamllint`, `markdownlint`, `mdl`, `markdown-link-check` | **NOT FOUND.** YAML is instead validated by the loaders that consume it — `docker compose config` parses `docker-compose.yml`, and Spring's own binder parses the four profile files when the context starts. Markdown structure is validated by a heading/anchor audit rather than by a linter |
+
+**Snapshot 1 — HISTORICAL. Thursday 30 July 2026, 06:56 UTC.** `docker --version` reported Docker Engine 29.6.2 (build dfc4efb); `docker compose version` reported v5.3.1; `docker info` reported server version 29.6.2. **A container runtime was reachable.** `java`, `javac`, `mvn`, `localstack`, `aws` and `mkdocs` were all not found on `PATH`.
+
+**Snapshot 2 — HISTORICAL. Saturday 1 August 2026, 00:07 UTC**, after the provisioned toolchain was put on `PATH`. Two entries below are contradicted by snapshot 3 and are retained only as the record of what was measured then: the `JAVA_HOME` path differs, and `mkdocs` was reported as provisioned when it is now `Not available`:
+
+| Tool | Status |
+|------|--------|
+| `java` / `javac` | **OpenJDK 25.0.3 (2026-04-21)**, `JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64` |
+| `mvn` | **Apache Maven 3.9.11** |
+| `docker` | **Engine 29.7.0**, `docker compose` **v5.3.1**, daemon reachable |
+| `localstack` | **LocalStack CLI 4.14.0** |
+| `aws` | **aws-cli 1.45.62** |
+| `git` | 2.51.0 |
+| `yamllint` | **NOT FOUND** — not on `PATH`, and `python3 -m yamllint` reports no such module. YAML files are instead validated by the loaders that consume them: MkDocs parses `mkdocs.yml` on every build, and `docker compose config` parses `docker-compose.yml` |
+| **`mkdocs`** | **Provisioned during validation** — MkDocs 1.6.1 with `mkdocs-techdocs-core` 1.7.0 and `mkdocs-mermaid2-plugin`. Absent on the base host; installed so the documentation build could actually be executed rather than assumed |
+| `markdownlint`, `mdl`, `markdown-link-check` | NOT FOUND. Substituted by a rendered-output audit through Python-Markdown 3.10.3 and by the real MkDocs build below |
+
+**The correct consequences, stated precisely:**
+
+- A container runtime **is** available. The container-dependent gates are therefore **pending implementation and evidence generation — not container-blocked**.
+- Host-native `mvn` and `./mvnw` execution is **available** as of snapshot 2; the JDK 25 and Maven 3.9.11 prerequisite recorded in snapshot 1 is **no longer unmet**.
+- **The documentation build is executable on this host and has been executed.** *Snapshot 3, 2 August 2026:* `mkdocs` was **`Not available`** - no executable on `PATH`, `import mkdocs` failing for both `python3` and `/usr/bin/python3`, and no `/opt/awscli-venv` to explain the ambiguity away. **Snapshot 4, Friday 7 August 2026:** MkDocs 1.6.1 with both declared plugins is installed at `/usr/local/bin/mkdocs`, and `mkdocs build --strict --site-dir <path outside the repository>` was executed and exits **0** with **0 `WARNING` lines and 0 `ERROR` lines** - read as exit status *together with* the count, exactly as the caution below requires. Every present-tense claim about `mkdocs build` in this document is therefore a measured statement carrying that date. *What reproducing that measurement requires:* a pinned MkDocs environment carrying the two plugins `mkdocs.yml` declares — `techdocs-core` and `mermaid2` — or the equivalent output from a CI job that has one; and the reading must be `mkdocs build --strict` read as **exit status together with the warning count, never the count alone**, because `0` is also what a `grep -c WARNING` prints when MkDocs was never importable. Three structural properties additionally hold without MkDocs at all, because each is a property of the source rather than of the renderer, and all three are re-measured on this tree at this checkpoint: this document contains **exactly one level-one heading**, it declares **162 anchored headings with no duplicate slug**, and all **280** in-page anchor references resolve to one of them with **0** unresolved. Those three are the properties that Defect R1 and the anchor integrity of this document depend on, and they are re-derivable from the Markdown alone. *Historical, 1 August 2026:* a MkDocs environment was provisioned during that validation run and `mkdocs build --strict` was measured at **79 warnings, exiting 1**, then **0 warnings, exiting 0** after all 79 unresolvable links — every one of them a link to a repository-root or `docs/` artefact that does not exist — were converted to plain code spans per the disposition in [§0.2.1.8](#0218-repository-conventions-discovered). That remediation is still in the source and is why the link form is a code span rather than a hyperlink; the exit-status measurement itself is historical and is not evidence for the current checkpoint. One caution governs any warning count quoted for this document: a count that covers only the repository-root subset of unresolvable links, or that was obtained with the sibling `docs/` artefacts stubbed in, is not reproducible from a clean checkout and is not evidence. See the Medium finding in [§0.2.2.2](#0222-findings-register).
+- **The rendered page was then verified in a real browser — HISTORICAL, 1 August 2026, and not reproducible on the current host because it required a served MkDocs site.** A build exiting zero proves only that MkDocs accepted the input, not that a reader can use the result, so a headless Chrome session at a 1600 x 1000 viewport loaded the served page and audited the live DOM against the source; the measurements are tabulated immediately after this list and are labelled historical for the same reason. That pass is what found two of the three rendering defects recorded below, neither of which the build log reveals: on the fenced blocks it found the defect recorded as R3, **all 23 of 23** rendering as code with a line-number gutter and a monospaced face, including the one block that is a `mermaid` diagram source and must not. **The two source-side remediations it produced — the single level-one heading and the `markdown_extensions` block in `mkdocs.yml` — are still in the repository and are verifiable without MkDocs; the DOM measurements are not.**
+- `localstack-init/init-aws.sh` is written to be **idempotent** so repeated `docker compose up` cycles converge rather than failing on already-existing resources.
+
+**Rendered-output measurements — HISTORICAL, taken in a headless browser at 1600 x 1000 on 1 August 2026, when a MkDocs environment was available. Not present state.** These are live-DOM figures, not source counts, because the point of the pass is to establish what a reader actually receives. **Any figure below that is a count of document elements necessarily drifts as this document is edited** — adding a table changes the table count, adding a cross-reference changes the anchor count. Each such row therefore states the command that reproduces it, and the figure is to be read as "measured on the stated date", never as a permanent invariant. The rows that *are* invariants, and that must never change, are the level-one-heading count, the duplicate-identifier count, the unresolved-anchor count, the column-mismatch count and the overflow measurement.
+
+| Property measured in the live DOM | Result | Why it is stated this way |
+|---|---|---|
+| Content tables | **58**, every one well-formed | `document.querySelectorAll('table')` returns **81** as re-measured on 1 August 2026 after the current-state corrections of [§0.7.9.2](#0792-gate-status-stated-honestly), which reconciles as 58 content tables plus 23 syntax-highlight wrappers. A reader checking this should expect 81 from that selector and 58 from a count of attribute-less `<table>` elements. Three earlier figures illustrate the drift the note above describes rather than contradicting it: the browser pass itself audited 56 content tables, before the table you are now reading was added; the wrapper count was 22 before a `cobol` block was added to [§0.7.3.3](#0733-control-break-the-unreachable-final-flush-and-the-two-paragraph-default-fallback); and the content-table count was 57 before the three-state status table was added to [§0.7.9.2](#0792-gate-status-stated-honestly) |
+| Table column geometry | **0 mismatches** | Colspan-aware audit across **576 body rows** in the browser pass, checked against *every* body row rather than only the last. Re-measured against the built HTML on 1 August 2026, after the source-semantics and current-state corrections added rows: **590 body rows** across the 58 content tables, still **0 mismatches**. The row count drifts as rows are added; the mismatch count is the invariant, and any nonzero result is a defect |
+| Level-one headings | **exactly 1** | `Technical Specification`. This is the invariant Defect R1 depends on; a second one silently empties the contents column |
+| Anchored headings | **159**, all identifiers unique | 1 / 10 / 36 / 112 across levels one to four. Zero duplicates: the browser pass audited **185** id-bearing elements in the live DOM, and a static re-measurement of the built HTML on 1 August 2026 finds **164**, all unique. The live figure is the larger of the two because the theme's own scripts add identifiers at run time that are not present in the served markup, so the two are not in conflict and neither is a duplicate count. 159 heading ids = 158 contents entries + 1 title, the title being excluded from the contents by theme design |
+| In-page anchor references | **0 unresolved** | The browser pass counted 200 references over 80 distinct targets inside the article and 676 over 159 targets across the whole page. Re-measured on 1 August 2026, after the later corrections added cross-references: **238** anchor references in the Markdown source over **82** distinct targets; **397** in the rendered article, which reconciles as those same 238 plus one permalink per heading, 238 + 159 = 397; and **714** across the whole page, which reconciles as the article total plus the theme's two contents copies, 397 + 158 + 159 = 714. Every reference resolves against the 159 heading identifiers on both the source side and the rendered side. The **0** is the invariant; the reference and target counts drift with every cross-reference added |
+| In-page contents column | **populated and painted** | 253 × 7554 px, computed `display: block`, and a hit-test at its first entry returns that entry rather than an overlaying element. A second 0 × 0 `display: none` copy exists because the theme emits the column twice, for the desktop and mobile layouts — which is why the anchor count is 316 for 158 distinct targets |
+| Horizontal overflow | **none** | `scrollWidth` equals `innerWidth` at 1600, and **0 of 10,650 elements** extend past the viewport edge, measured at three scroll depths. Live page height at this viewport: 146,701 px |
+| Entity and delimiter leakage | **none** | Across 12,436 visible non-code text nodes: zero occurrences of source-form `&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#39;` or `&nbsp;`, zero unrendered Markdown residue, and zero stranded table delimiters. A whole-page cross-check found exactly one `&lt;` anywhere, inside a `<code>` element where this document quotes the sequence deliberately |
+| Console output | **1 message** on 1 August; **0** as re-measured 9 August 2026 | The 1 August reading was the single expected error of Defect R2, and nothing else — zero warnings, zero info, zero log. **Defect R2 has since been fixed, so this row's figure is withdrawn as the present state:** the re-measurement on 9 August 2026 records **zero console messages of every level** on this page, and the same on the site root and the diagram page. This is the one row in the table whose drift was a *repair* rather than an edit, which is why it is restated here instead of being left to read as an outstanding defect |
+| Network requests | **14** on 1 August; **9** as re-measured 9 August 2026 | The 1 August reading was 13 returning HTTP 200 plus one benign HTTP 302 CDN version redirect resolving to a 200, with **nine of the 14 cross-origin** to the public internet. **That cross-origin count is withdrawn as the present state and is retained only as the 1 August reading**, because the remediation recorded in [§0.2.2.2](#0222-findings-register) set `theme.font: false`, which deletes the web-font stylesheet and the font files it pulls in. Re-measured cold on 9 August 2026 against a served build of this tree: **9 real network requests — 7 same-origin, 2 cross-origin, 8 × HTTP 200 plus the same single 302, zero 4xx, zero 5xx, zero blocked, zero 304, and zero `data:` URI fetches.** The **one** external host contacted is `unpkg.com`, for the Mermaid runtime; `fonts.googleapis.com`, `fonts.gstatic.com` and every `cdnjs` host are now at **zero requests**, confirmed against a reachability control — Google Fonts answers this host, so the absence is the configuration's effect and not a blocked network. The surviving 302 is the version redirect `mermaid@11` → `mermaid@11.16.1`, both hops on that same host, so it adds no second origin |
+
+**The five invariants above were re-measured from the Markdown source on 7 August 2026 and all five still hold; the drifting counts have moved and are restated once rather than edited in place above.** Current: **exactly 1** level-one heading, **162** anchored headings with **0** duplicate identifiers, **280** in-page anchor references with **0** unresolved, and **68** tables with **0** cell-count mismatches once escaped pipes are honoured. The 1 August live-DOM figures of 159 headings, 238 source-side references and 58 content tables are therefore **historical readings of a smaller document**, not contradictions — the counts drift with every cross-reference and every table added, exactly as the note above this table says they will, and the invariants are what carry forward. The corresponding rendered-output figures are not re-derived here, because the invariant that matters at render time is now checked directly: `mkdocs build --strict` exits 0 with zero warnings, measured 7 August 2026, and it escalates every dangling link and every broken anchor to a build error ([§0.2.1.10](#02110-environment-evidence)).
+
+**Three rendering defects were found by that browser pass, and two of them were in this document.** All three are recorded here because a defect that produces no build warning is exactly the kind that ships.
+
+**Defect R1 — the on-page table of contents rendered completely empty, and the cause was a second level-one heading. FIXED in this document.** The published theme reserves a right-hand column for the in-page contents; on this page that column was blank at every scroll depth, on a document measured at 124,917 pixels tall at the time — so a reader had no navigation aid whatsoever across every section of it. The build log reported nothing, because nothing was wrong with the Markdown as Markdown. The mechanism is in the theme's contents template: it takes the first root entry of the heading tree and, **if that entry is a level-one heading, replaces the entire contents tree with that entry's children**. This document previously opened with two consecutive level-one headings — the title, then `0. Agent Action Plan`. The first therefore had no children at all, because the second sat beside it rather than beneath it, so the substitution replaced the tree with an empty list and the template's emptiness guard suppressed the whole navigation block. The fix is one character: `0. Agent Action Plan` is now a level-two heading, which makes it and the nine `0.x` sections children of the single document title. Measured before and after against the identical repository configuration — **0 contents entries before, one entry per non-title heading after**. Re-measured 7 August 2026 on the current text: **161 distinct contents entries**, one for each of the 161 non-title headings, which is exactly the invariant the fix establishes. Reproduce with `python3 -m mkdocs build`, then count the distinct fragment-only `href` values on the secondary-navigation links in `site/technical-specifications/index.html` — the count appears twice in the markup because the theme renders the contents column for both the desktop and the mobile layout. Nothing else moved: heading anchors are derived from heading *text*, not heading level, so `0. Agent Action Plan` keeps the identical anchor it had as a level-one heading, every other anchor is untouched, and all 280 in-page anchor references continue to resolve. The section numbering the requirements cite is unaffected, which is the property that mattered.
+
+> **Rule for anyone editing this file: it must contain exactly ONE level-one heading — the document title on line 1.** A second one silently empties the navigation for the whole page. This is the same class of trap as the silent-publication risk in [§0.2.1.8](#0218-repository-conventions-discovered): no error, no warning, no output.
+
+**Defect R2 — a console error on every page load, originating in the documentation toolchain rather than in any document. FIXED in `mkdocs.yml`, and the fix needed two changes rather than one.** Every rendered page threw exactly one uncaught error, `base_url is not defined`, from line 106 of the search bootstrap script that the documentation generator's built-in search plugin ships. That script reads a JavaScript global which only the generator's *default* theme defines; the theme the documentation configuration actually selects does not define it, so the script loaded and immediately failed at `var searchWorker = new Worker(joinUrl(base_url, "search/worker.js"));`. The consequence was not only noise: the statement that threw is the one that starts the search web worker, so **site search was dead**, and the original measurement of a "narrow blast radius" mistook that for a small problem when it was the whole search subsystem.
+
+The mechanism is an option default. The documentation plugin bundle exposes a `use_material_search` switch that defaults to **false**, and when false it installs the *stock* search plugin while still forcing the *selected* theme — the two halves that cannot work together. Setting it true installs the theme's own search plugin instead, and the stock bootstrap script is not emitted at all.
+
+**That alone was not sufficient, and the reason is worth recording because a clean console makes it look sufficient.** The bundle registers the theme's search plugin under the plugin key `search`, while the theme's header template gates the only include of its search partial on the key `material/search`. A key that does not match the template's test leaves the guard false, so the theme emitted **no search markup at all** — no field, no results panel, not even a magnify button — and, because nothing rendered, the worker was never started and the index was never fetched. Search was therefore still completely dead after the first change, silently and for an entirely different reason. Declaring `material/search` explicitly alongside the option puts the plugin under the key the template actually tests. **Both entries are required**; the emitted search index is byte-identical either way and the built markup differs by exactly 40 added lines with none removed, so the second registration costs nothing.
+
+Measured after both changes, on a served build: **zero console messages of every type on all seven rendered pages** — not merely zero errors. The search field exists and exposes a `textbox` role inside a `search` landmark; the worker asset loads with HTTP 200 and Chrome reports `sec-fetch-dest: worker`, which it sets only for a script actually loaded *as* a worker, so the worker genuinely starts; the 1,455,563-byte index covering **511 documents** loads with HTTP 200; and one results container transitions **0 → 15 → 20 → 0** result links purely as a function of the typed query, with per-row relevance scores and `<mark>`-wrapped term hits, ending on a rendered "No matching documents" for a deliberately absent term. The network census is correspondingly smaller than the figure this paragraph used to publish: a cold load of the site root now issues **7 requests, every one HTTP 200, against a single host**, and a cold load of the diagram-bearing page issues **9 requests — 8 returning 200 and one a benign HTTP 302 CDN version redirect that resolves to a 200** — against two hosts. The earlier "14 requests" figure counted two consecutive page loads; there is no 302 on the site root at all, because the site's only redirect is the diagram renderer's version resolution.
+
+**Defect R3 — the sole architecture diagram rendered as a wall of line-numbered text instead of a diagram, and the cause was a missing extension declaration. FIXED in `mkdocs.yml`.** The `mermaid` fence at [§0.1.2.2](#0122-target-architecture) reached the reader as a syntax-highlighted, line-numbered code block: the rendered page contained **zero** `class="mermaid"` elements and loaded no Mermaid runtime, so the one figure that shows the legacy-to-target mapping degraded into its own source text. As with R1 the build log said nothing, because nothing was wrong with the Markdown as Markdown. The mechanism is extension precedence: `techdocs-core` enables `pymdownx.superfences`, which claims **every** fenced block before the `mermaid2` plugin is consulted, and at the anchor `mkdocs.yml` declared no `markdown_extensions` block at all, so there was nothing to hand the fence back. The fix is a `markdown_extensions` block declaring `pymdownx.superfences` with a `custom_fences` entry whose `name` is `mermaid`, whose `class` is `mermaid`, and whose `format` is the `mermaid2` plugin's own fence formatter. Measured before and after against the identical document — in the **served HTML**, `<pre class="mermaid">` elements **0 before, 1 after**; line-numbered highlight tables **23 before, 22 after**; source fences **23 in both**, which is the reconciliation that proves exactly one block moved and no code block was lost. `mkdocs build` still exits 0. Those are the before-and-after pair taken against the document as it stood at the fix. Re-measured on 1 August 2026, after a `cobol` fence was added to [§0.7.3.3](#0733-control-break-the-unreachable-final-flush-and-the-two-paragraph-default-fallback), the same reconciliation reads **24 source fences, 23 line-numbered highlight wrappers and 1 `mermaid` fence**, so the one-block-moved invariant continues to hold. Because `mkdocs.yml` is an `UPDATE` target of this change ([§0.3.1.6](#0316-update-exactly-three-files)) the remedy was applied here rather than deferred, and the reasoning is left as a comment block in the file so the declaration is not removed as apparent boilerplate.
+
+**How the fixed diagram must be verified, because the obvious check reports a false failure.** A headless-browser pass confirmed the diagram renders as a genuine vector figure — one `<svg id="__mermaid_0" aria-roledescription="flowchart-v2">`, 43,478 characters of markup, 18 nodes, 17 edge paths and 2 clusters, with all 18 node labels matching the source one for one, and **zero** occurrences of the string `graph LR` anywhere in the page's visible text. But in the *live DOM* `document.querySelectorAll('pre.mermaid')` returns **0** and `pre.mermaid svg` returns **0**, so a check written against those selectors reports failure on a perfect render. The reason is that the published theme carries its **own** Mermaid integration, which takes precedence over the plugin's in-place path: at mount it removes the `mermaid` class, replaces the `<pre>` with a `<div class="mermaid">`, and writes the SVG into a **closed shadow root**, which `document.querySelectorAll` cannot traverse by design. The reliable assertions are therefore `pre.mermaid` **= 0**, `div.mermaid` **= 1**, that div's client height **> 0** (measured 380 px against 0 px for an identical empty control div in the same parent), and the absence of `graph LR` from `document.body.innerText`. A hard SVG assertion additionally requires forcing `Element.prototype.attachShadow` to `mode: 'open'` before navigation.
+
+**The diagram's runtime is fetched from the public internet at an unpinned major version, and that is a reproducibility risk rather than a defect in this document.** The served HTML contains **no** Mermaid script tag at all — zero occurrences of the CDN host, of `.mjs` and of `esm`. The theme injects a classic script for `mermaid@11` at run time and then removes the tag again. On the measured run that specifier redirected (HTTP 302) to **Mermaid 11.16.0**, which returned HTTP 200; the `10.4.0` version that the `mermaid2` plugin logs at build time is **not** what the browser executes, and this document does not claim it is. **The predicted drift has since been observed rather than merely predicted:** re-measured on 9 August 2026 the same specifier resolved to **11.16.1**, and all nine diagrams on `architecture-before-after.md` rendered against it — so the risk below is recorded from two readings of the same unpinned specifier returning two different versions, not from reasoning about one. Consequences, stated because they are load-bearing for anyone reproducing the evidence: rendering requires outbound network egress, and the resolved Mermaid version will drift as the CDN's `11` tag advances. Recorded as a Low finding with remediation in [§0.2.2.2](#0222-findings-register).
+
+> **Rule for anyone editing `mkdocs.yml`: the `markdown_extensions` block is load-bearing, not decoration.** Deleting it silently turns every diagram in the published documentation set back into text. There is no error and no warning — the same class of trap as R1 and as the silent-publication risk in [§0.2.1.8](#0218-repository-conventions-discovered).
+
 
 ### 0.2.2 Source Artifact Inventory Summary
 
-| Category | Count | Location | Migration Relevance |
-|---|---|---|---|
-| COBOL Online Programs | 18 | `app/cbl/CO*.cbl` | Each becomes a Spring service + REST controller |
-| COBOL Batch Programs | 10 | `app/cbl/CB*.cbl` + `CSUTLDTC.cbl` | Each becomes a Spring Batch job step or utility |
-| Shared Copybooks (Record) | 15 | `app/cpy/CV*.cpy`, `CUSTREC.cpy`, `CSUSR01Y.cpy` | Each becomes a JPA `@Entity` or DTO class |
-| Shared Copybooks (Logic) | 13 | `app/cpy/CO*.cpy`, `CS*.cpy`, `UNUSED1Y.cpy` | Each becomes a shared utility or configuration class |
-| BMS Map Sources | 17 | `app/bms/*.bms` | Each maps to REST API request/response contracts |
-| Symbolic Map Copybooks | 17 | `app/cpy-bms/*.CPY` | Merged into DTO field definitions |
-| JCL Provisioning Jobs | 16 | `app/jcl/` (VSAM/GDG/CICS admin) | Become Flyway migrations + Docker Compose setup |
-| JCL Business Batch Jobs | 9 | `app/jcl/` (POSTTRAN, INTCALC, etc.) | Become Spring Batch job definitions |
-| JCL Utility Read Jobs | 4 | `app/jcl/READ*.jcl` | Become diagnostic/health-check endpoints |
-| ASCII Fixture Data | 9 | `app/data/ASCII/*.txt` | Become SQL seed scripts and test fixtures |
-| EBCDIC Data Files | 13 | `app/data/EBCDIC/` | Reference for validation; ASCII equivalents used |
-| Catalog Report | 1 | `app/catlg/LISTCAT.txt` | Reference for VSAM cluster verification |
-| Sample Build JCL | 3 | `samples/jcl/*.jcl` | Become Maven/Gradle build configuration |
-| Repository Governance | 4 | Root (`README.md`, `LICENSE`, etc.) | Updated for Java project context |
+| Artefact Set | Count | Lines | Disposition |
+|--------------|------:|------:|-------------|
+| `app/cbl/**` | 28 | **19,254** | REFERENCE — 17 online to services and controllers; 10 batch to jobs, processors, readers, writers; 1 utility to a date service |
+| `app/cpy/**` | 28 | 2,614 | REFERENCE — 11 layouts to entities; the remainder to DTOs, enums, constants, framework mechanisms, 1 documented dead |
+| `app/cpy-bms/**` | 17 | 5,632 | REFERENCE — **441** field contracts driving DTO shape |
+| `app/bms/**` | 17 | 4,472 | REFERENCE — mapset definitions, not translated |
+| `app/jcl/**` | **29** | 1,894 | REFERENCE — 5 batch jobs, 12 provisioning jobs to DDL, generation-group jobs to S3 layout, 4 reader jobs, 3 with no analogue |
+| `app/proc/**` | 2 | 114 | REFERENCE — batch step semantics |
+| `app/ctl/**` | 1 | 15 | REFERENCE — IDCAMS control card |
+| `app/csd/CARDDEMO.CSD` | 1 | 505 | REFERENCE — operation and authorisation inventory, file control table, queue contract |
+| `app/catlg/LISTCAT.txt` | 1 | 3,956 | REFERENCE — physical DDL specification |
+| `app/data/ASCII/**` | 9 | 626 | REFERENCE — Flyway seed plus test fixtures |
+| `app/data/EBCDIC/**` | 12 `.PS` + `.gitkeep` | — | REFERENCE — codepage validation only, never parsed |
+| `diagrams/**` | 6 | — | REFERENCE — legacy architecture illustrations |
+| `samples/**` | 8 | — | OUT OF SCOPE — z/OS build tooling and binary runtimes |
+| Root convention files | 4 | — | REFERENCE — `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `catalog-info.yaml` |
 
-**Total Source Artifacts: 149 files across 12 directories**
+#### 0.2.2.1 Corrections to the Prior Specification
+
+The earlier generation of this document, and in two cases the prior-run evidence in `docs/project-guide.md`, carried the statements in the left column. They are wrong. Generated code that trusted them would fail to compile, fail to resolve, or silently diverge from the source. **The strings in the left column appear in this document only here, and only as the stale claim being corrected.**
+
+Where a stale claim sits in the prior file, its line number is given. Where a claim came from the prior-generation plan prose or from `docs/project-guide.md` rather than from the prior file body, that is stated instead of inventing a line number.
+
+| Stale statement (source) | Correction | Why it matters |
+|---|---|---|
+| "New repository — standalone greenfield project" (prior file L12); "standalone, fully operational" (L312); "Target: `carddemo-java/`" (L315) | **Same repository, in place.** Java tree at `src/` beside the frozen `app/`. No `carddemo-java` wrapper directory and no separate repository. | Every generated path would be wrong, and `app/` would lose its parity-oracle role |
+| "18 interactive CICS online programs" (L13); "28 COBOL programs (18 online + 10 batch)" (L232); "18 online + 10 batch programs" (L1207) | **17 sourced online programs** + 10 batch + 1 statically-called utility (`CSUTLDTC`) = 28. The eighteenth CSD entry is the orphan `COCRDSEC`. | An eighteenth service, controller and endpoint would be invented for a program that does not exist |
+| "11 primary datasets" (L13); "11 VSAM datasets" (L1207) | **10 base VSAM clusters**, which map to **11 target tables** — the eleventh entity is the `DailyTransaction` staging layout, which is a sequential dataset and not a cluster. | Confuses a staging file with a catalogued cluster; the schema and the integration-test surface both change |
+| "2 AIX/PATH alternate indexes" (L19); "10 KSDS + 1 PS + 2 AIX/PATH + 7 GDG bases" (L1208) | **3 alternate indexes, each with a path** `[app/catlg/LISTCAT.txt:L3938, L3946]`. | A missing derived finder and a missing B-tree index; a browse becomes a table scan |
+| "executive reveal.js presentation" (prior file, 8 occurrences: L24, L271, L327, L542, L935, L951, L1087, L1238); also `docs/project-guide.md:L212` | **No reveal.js.** `executive-presentation.html` is a single self-contained static document with no external runtime, CDN, script, font or image dependency. **The artefact exists as of 7 August 2026 and the constraint is verified rather than merely stated**: it declares zero `<script>` elements, zero `<link>` elements, zero `<img>` elements and zero `http`-scheme `src` or `href` attributes; its only styling is one inline `<style>` block; its only fonts are locally-resolved family names with no `@font-face`; and MkDocs copies it byte-identically into the built site. | An external CDN dependency in a checked-in artefact is both a supply-chain risk and a broken-offline-build risk |
+| "13 EBCDIC data files serve as canonical test data" (L36, L244) | **12 `.PS` files plus `.gitkeep`**, retained as byte-level codepage reference **only** and never parsed by the build. The ASCII fixtures are authoritative. | Building an EBCDIC transcoder is wasted work on out-of-scope binaries |
+| `import com.carddemo....` (prior file L783-L797, 14 rows; 15 occurrences of the token in total) | **`com.cardemo`** — one spelling across main sources, tests, configuration and documentation. | Every import statement, every component scan base package and every test would fail to resolve |
+| "`DailyTransactionReader.java` from `app/cbl/CBTRN01C.cbl`" (L670) | The reader derives from `CBTRN02C`'s `DALYTRAN` 350-byte sequential read. `CBTRN01C` is read-only and is folded into `DailyTransactionPostingJob` as a labelled pre-flight step. | Attributes a reader to a program that performs no write and has no distinct job |
+| "`COSGN00C.cbl` \| 1,100" (L1129) | **260 lines** — verified by machine count. Two line-count tables in the prior file disagreed with each other. | The traceability matrix would cite a non-existent line range |
+| `COSTM01Y.cpy`, `CVACT04Y.cpy`, `CVACT05Y.cpy`, `CVCRD02Y.cpy` (L1178-L1182) | **None of these files exists.** The real members are `COSTM01.CPY` and `CVCRD01Y.cpy`. | Four non-existent source references; four unresolvable `COPY`-to-import mappings |
+| "`dailytran.txt` ... with 20 records" (L843) | **300 records**, 350 bytes each, 105,300 bytes. | The Gate 1 parity fixture would exercise 7% of the intended data and miss the negative-amount branch |
+| "`acctdata.txt` (9 account records)" (L860) | **50 records**, 300 bytes each, 15,050 bytes. | Seed data and referential-integrity assertions would be sized wrong |
+| Legacy user data referred to as a fixture file named `usrsec.txt` (prior-generation plan prose) | **No such file exists.** The ten users are inline `SYSUT1 DD *` data at `[app/jcl/DUSRSECJ.jcl:L34-L45]`. | A test resource path that cannot resolve |
+| "`mvn clean verify -Werror`" (prior file L849, L975, L1095) | `./mvnw clean verify` using the pinned wrapper. `-Xlint:all` and `-Werror` are **configured in `maven-compiler-plugin`**, not passed ad hoc — `-Werror` is not a `mvn` command-line option. | The documented command does not work, and the zero-warning gate would not actually be enforced by the build |
+| "Gate 6 — Unsafe/Low-Level Code Audit" with suppressed-warning count thresholds (prior file L880, L886) | **Gate 6 is the security audit**: no floating-point type in any financial field, every password BCrypt-hashed, no literal secret anywhere. | A count threshold is not an assertion about correctness; the real financial-precision risk would go unchecked |
+| "Gate 7 — Scope Matching (Extended)" (L889) | **Gate 7 is scope coverage**: all twenty-eight programs mapped, with the traceability matrix demonstrating complete paragraph coverage. | Without it, the paragraph-level mapping is claimed rather than proven |
+| "Gate 8 — Integration Sign-Off Checklist" carrying the coverage floor and dependency scan (L893-L901) | Coverage and the vulnerability scan belong to **Gate 2** (repeatable zero-warning build). **Gate 8 is integration sign-off**: the full compose stack up, health reporting up, all three migrations applying cleanly. | Two different prerequisites conflated; a container-free gate would be reported as container-dependent |
+| "The user provided six implementation rules" (prior file L1079); §0.9.5 "Implementation Rules Provided" 5-row table (L1231) | **Exactly ONE user-specified rule** — "Rule 1: Build Verify", a global coding and design standard with six lettered clauses A-F. Observability, Visual Architecture Documentation, Explainability, Executive Presentation, Onboarding, and LocalStack Verification are **prompt-level requirements**, not rules. | Rule-compliance accounting would be measured against five fabricated rules and would miss what the real rule requires |
+| "460 input fields" across the symbolic maps (prior-generation plan prose; the prior file's own table rows sum to 440) | **441**, machine-verified two independent ways. `COACTVW` is **37**, not 36. | The DTO field budget is the API contract; an unverified total means unverified DTOs |
+| `app/cbl/CBSTM03A.CBL` / `CBSTM03B.CBL` cited in lowercase (prior-generation plan prose) | **`app/cbl/CBSTM03A.CBL` and `app/cbl/CBSTM03B.CBL` are UPPERCASE.** `app/cbl/*.cbl` yields 18,100 of 19,254 lines. | 1,154 lines of COBOL vanish from scope, including a whole batch job |
+| `9700-CHECK-CHANGE-IN-REC` located at `COACTUPC:L669-L756` (prior-generation plan prose) | The paragraph is at **`[app/cbl/COACTUPC.cbl:L4109-L4193]`**. L669 and L757 are the `ACUP-OLD-DETAILS` and `ACUP-NEW-DETAILS` working-storage declarations. A second, distinct paragraph `1205-COMPARE-OLD-NEW` sits at **L1681-L1777** and must not be conflated with it. | Two different comparison paragraphs with different semantics would be merged into one wrong implementation |
+| "JaCoCo 0.8.14" (`docs/project-guide.md:L520`) | The requirement pins **0.8.12**, and the as-built `pom.xml` pins **0.8.12**. The pin is frozen and is not advanced. A Java 25 analyzer incompatibility was observed during validation and is resolved *inside* the pinned version, on the plugin's own classpath — see the validation-evidence entry in [§0.2.2.2](#0222-findings-register) and [§0.6.1.1](#0611-explicitly-pinned-coordinates). | A coverage plugin that cannot read the class files it is asked to analyse fails the build |
+| Session or token-based server-side state management (prior-generation plan prose) | **Stateless only.** No server-side session, no COMMAREA screen state; pagination state moves to request parameters and response metadata. | A hidden server-side conversation cannot be horizontally scaled and breaks invariant 7 |
+| "`@Version` **or** equivalent snapshot comparison" (prior-generation plan prose) | **`@Version` AND an explicit field-by-field snapshot comparison.** Neither substitutes for the other — see [§0.7.1.5](#0715-why-optimistic-version-checking-alone-is-insufficient). | An update the legacy system would reject as concurrently modified would be accepted |
+| "No container runtime available" / Docker-unavailable framing (prior-generation plan prose) | **A container runtime is available.** Docker Engine 29.6.2 with compose v5.3.1 on 30 July 2026, Engine 29.7.0 with compose v5.3.1 on 1 August 2026, daemon reachable in both snapshots. | Four validation gates would be written off as impossible when they are merely not yet implemented |
+| "20 service classes" (`docs/project-guide.md:L194`) | **21** service beans — 20 directly mandated plus the additive `FileService`. See [§0.4.1.2](#0412-application-source-srcmainjavacomcardemo). | An off-by-one in the service inventory makes the coverage proof unverifiable |
+| CORPT00C monthly period described as month-to-date (prior-generation plan prose) | **A full calendar month.** The source rolls to the first of the next month and subtracts one day `[app/cbl/CORPT00C.cbl:L223-L230]`. | Every monthly report would omit the remainder of the current month |
+
+Two additional AAP-prose corrections found during verification and published here for completeness, because downstream artefacts would otherwise inherit them:
+
+| Stale statement (source) | Correction |
+|---|---|
+| `CBSTM03A` accepts `'00'` or `'04'` "at every open and read site", cited at `L347-L351` (prior-generation plan prose); and a later description of the same nine lines as "nine open and close sites" | The `IF WS-M03B-RC = '00' OR '04'` test appears at exactly **nine** sites, and the correct decomposition is **four opens, one priming read and four closes** — not "open and close". They are `8100-TRNXFILE-OPEN` open `[app/cbl/CBSTM03A.CBL:L736]`, **the priming read inside that same paragraph** `[:L748]` following `SET M03B-READ TO TRUE` at `[:L744]`, `8200-XREFFILE-OPEN` `[:L771]`, `8300-CUSTFILE-OPEN` `[:L789]`, `8400-ACCTFILE-OPEN` `[:L807]`, `9100-TRNXFILE-CLOSE` `[:L862]`, `9200-XREFFILE-CLOSE` `[:L879]`, `9300-CUSTFILE-CLOSE` `[:L895]` and `9400-ACCTFILE-CLOSE` `[:L911]`. The **four remaining read sites** use `EVALUATE WS-M03B-RC` accepting only `'00'` `[:L353-L362, :L379-L382, :L403-L406, :L837-L847]`. `L347-L351` is the call idiom, not the status check. |
+| `CREASTMT.JCL` `HTMLFILE` record-length mismatch located "between L73 and L94" (prior-generation plan prose) | The mismatch is **`[app/jcl/CREASTMT.JCL:L69]` (`LRECL=80`, pre-delete) versus `[app/jcl/CREASTMT.JCL:L94]` (`LRECL=100`, execution)**. L73 is the `STMTFILE` pre-delete DCB at `LRECL=80`, which correctly matches L89. |
+
+#### 0.2.2.2 Findings Register
+
+Classified per Rule 1 Clause F. Every finding carries a remediation step. Where information is genuinely unavailable the literal wording **"Not available"** is used together with what is needed.
+
+**Artefacts referenced below, and whether they are on disk — read this before any reference in this document.** This document is written against the completed migration and is published from a checkpoint, so for a time seven of the artefacts it cites were planned rather than present. **All seven have since landed.** The table is kept, and its column re-measured, rather than deleted: the earlier reading is what the surrounding prose was written against, and a register that silently drops what it retires cannot be audited.
+
+Re-measured by direct filesystem inspection on **Friday, 7 August 2026**, reproducible with `ls -1 DECISION_LOG.md TRACEABILITY_MATRIX.md docs/api-contracts.md docs/architecture-before-after.md docs/onboarding-guide.md docs/validation-gates.md docs/executive-presentation.html`:
+
+| Referenced artefact | On disk, 7 August 2026 | Earlier reading (superseded) |
+|---|---|---|
+| `DECISION_LOG.md` | **Present** | Absent |
+| `TRACEABILITY_MATRIX.md` | **Present** | Absent |
+| `docs/validation-gates.md` | **Present** | Absent |
+| `docs/architecture-before-after.md` | **Present** | Absent |
+| `docs/onboarding-guide.md` | **Present** | Absent |
+| `docs/executive-presentation.html` | **Present** | Absent |
+| `docs/api-contracts.md` | **Present** | Absent |
+
+**The five under `docs/` are additionally published**, each carrying a `mkdocs.yml` nav entry as of the same date. The two at the repository root are deliberately **not** published: they are worked against in a checkout rather than read in a browser, and they sit outside the MkDocs `docs_dir`, which is why this document names them and never links them.
+
+**A per-artefact reference count is deliberately not published here.** This document grows at every checkpoint, so any such tally is stale the moment another section cites one of these artefacts again, and a stale count is worse than no count because it invites the reader to trust it. What is asserted instead is a property that does not drift and can be re-derived on demand:
+
+```
+grep -c 'DECISION_LOG\.md' docs/technical-specifications.md      # count, re-derived
+grep -oE '\]\(\.\./[A-Z_]+\.md\)' docs/technical-specifications.md | wc -l   # must be 0
+mkdocs build --strict --site-dir <path outside the repository>    # must exit 0 - measured exit 0, zero warnings
+```
+
+Every reference to the two **root-level** artefacts, `DECISION_LOG.md` and `TRACEABILITY_MATRIX.md`, is rendered as a **plain code span, deliberately not as a hyperlink**, and that convention survives their existence unchanged. The reason is structural rather than about existence: MkDocs resolves links relative to `docs_dir`, so a root-level file is outside the documentation tree and a `../DECISION_LOG.md` link warns — which `--strict` promotes to an error — no matter that the file is on disk. This is exactly why `mkdocs build --strict` exits 0: **measured 7 August 2026, exit 0 with zero warnings.** *Historical, 1 August 2026:* the same convention was credited with a strict exit 0 on a host where MkDocs was then available, and a claim that one residual `--strict` warning was produced by a retained `README.md` hyperlink is **withdrawn** — the current build produces no warning at all, and `README.md`, like the other root-level files, is cited as a code span. The five artefacts that live **inside** `docs/` are ordinary documentation pages and are linked normally.
+
+The same applies to one further class of reference that runs throughout this document and its sibling source files: the `src/test/java/com/cardemo/e2e` test tree. **That tree is present** and holds `BatchPipelineE2ETest`, `OnlineTransactionE2ETest` and `GateVerificationTest`, across 5 sources. So are the Flyway migrations `V2__create_indexes.sql` and `V3__seed_data.sql`, and the `src/test/java/com/cardemo/integration` tree, which as measured on 7 August 2026 holds 40 sources of which 36 are concrete and execute ([§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint)).
+
+| Severity | Finding | Evidence | Remediation |
+|---|---|---|---|
+| **Blocker** | Testcontainers 2.x renamed every module artefact. The bare `localstack`, `postgresql` and `junit-jupiter` artefacts under `org.testcontainers` **do not exist at 2.0.3**. Compounding hazard: Spring Boot 3.5.11 already manages a 1.x Testcontainers version and imports the Testcontainers BOM itself, so adding a competing BOM import produces ordering-dependent resolution. | [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename) | **Two-part, both required.** (1) Override the managed version by setting the `testcontainers.version` **property** to `2.0.3` — never by importing a second BOM. (2) Use **only** the prefixed coordinates `testcontainers`, `testcontainers-localstack`, `testcontainers-postgresql`, `testcontainers-junit-jupiter` throughout test scope. One without the other still fails. |
+| **High** | JWT signing key was hardcoded in configuration in the prior implementation. | `docs/project-guide.md:L52`, `docs/project-guide.md:L215` | Environment-variable indirection in **all four** profiles with fail-fast on absence and no committed default; `.env.example` ships the key blank. |
+| **High** | No production Spring profile existed in the prior implementation. | `docs/project-guide.md:L51` | Add `application-prod.yml` with every secret externalised under the least-privilege standard. |
+| **High** | No CI workflow existed in the prior implementation. | `docs/project-guide.md:L49` | Add `.github/workflows/build.yml` pinned to JDK 25 and Maven 3.9.11 with the zero-warning gate, coverage report and vulnerability scan. |
+| **High** | The vulnerability scan was never executed in the prior implementation. | `docs/project-guide.md:L50` | Wire `dependency-check-maven` into `verify` and run it in CI. |
+| **High — resolved by remediation, and re-measured.** | The vulnerability scan **did not pass on the pinned dependency set**: a `verify` run failed at the `dependency-check-maven` CVSS ≥ 7 gate against the versions pinned in [§0.6.1](#061-key-private-and-public-packages), which was for a time the single reason Gate 2 could not be reported as passed. It now passes. Re-measured `2026-08-14T14:48:43Z` over **168 dependencies**: **0 findings at CVSS ≥ 7 remain active**, **2 lower-severity findings across 2 artefacts** remain reported and unsuppressed — `CVE-2026-40977` at 6.7 on `spring-boot-3.5.11.jar` and `CVE-2026-64607` at 5.3 on `docker-java-transport-zerodep-3.7.0.jar` — and **166** findings are suppressed with per-entry evidence. `dependency-check:check` exits 0. **The suppressed figure here read 167 until this measurement and the two active findings read one**, which is why every dated reading further down this row differs from this one: the counts move with the advisory feed while the clause the gate turns on, zero at or above CVSS 7, does not. An earlier reading of 58 unsuppressed associations across 11 artefacts, with 208 suppressed, is superseded: the managed-version overrides described in [§0.6.1](#061-key-private-and-public-packages) removed 35 of the 37 unique findings outright, and several suppression entries became moot in the process because the artefacts they named are no longer on the graph at the vulnerable version. | `target/dependency-check/dependency-check-report.{html,json,sarif}`; `pom.xml` `dependency-check-maven` configuration; `owasp-suppressions.xml` | **Closed two ways, neither of which weakens the gate.** First by **remediation**: Netty is pinned *forward* to `4.1.136.Final` through `netty-bom`, so the findings against it are fixed rather than excused. Second by **evidence-based suppression** on a four-tier taxonomy — identifier mismatch, vulnerable class absent from the graph, feature not present, and applicable-but-accepted. Only the fourth tier concedes anything, and every entry in it carries an `until="2026-11-01Z"` expiry, so those suppressions lapse and the build fails again rather than hiding the finding for ever. **The CVSS threshold was not lowered, no skip was added, and no genuine finding was silently suppressed.** Residual risk: the time-boxed tier must be re-triaged before it expires. Also recorded in `DECISION_LOG.md` — the closing paragraph of its security section and row `V-10c` of its verification section — and in `docs/validation-gates.md` at Gate 2 and Gate 6, both of which now publish a dated result rather than a disclosure; neither is "planned" any longer. **Re-measured 7 August 2026 after `CVE-2026-66299` arrived at CVSS 7.5 against the pinned Tomcat and turned the gate red with no pin forward available: 166 dependencies, 167 suppressed matches, one active finding at CVSS 6.7, zero at or above the threshold, `BUILD SUCCESS`. The register is seventeen entries declaring eighteen `<cve>` identifiers, and two of them carry an expiry.** The two are different in kind, which is why both have one. `CVE-2026-22731` is the Tier 4 acceptance and expires `2026-11-01Z`, because an acceptance must lapse. `CVE-2026-66299` is a Tier 2 record and expires `2026-10-01Z`, because the fixed release it names is unpublished and the record has to return when that changes — it is the one entry with an expiry that is *not* an acceptance, which is exactly how [`docs/validation-gates.md`](validation-gates.md#gate-2) describes it. The remaining fifteen state an absence — an identifier mismatch, or a vulnerable class absent from the graph — and an absence does not expire. **Two earlier figures here are withdrawn**: *"exactly one of them — not five — carries an expiry"* and *"the other sixteen state an absence"*; the first was true before the Tier 2 record was added and the second followed from it. **Count these from the parsed document, not with a bare `grep`:** `<suppress` and `<cve>` both also occur inside the `CDATA` notes, so a raw line count reports eighteen and twenty. `python3 -c "import xml.etree.ElementTree as E;r=E.parse('owasp-suppressions.xml').getroot();s=r.findall('suppress');print(len(s),len(r.findall('.//cve')),sum(1 for e in s if e.get('until')))"` reports `17 18 2`. |
+| **High — resolved by remediation, and mutation-verified.** | Silent-publication risk: any document absent from the `mkdocs.yml` nav never appears in the rendered site, and the omission produces **no error and no output**. Worse than first stated: it is not merely error-free but **warning-free**, because MkDocs defaults `validation.nav.omitted_files` to `info` and `--strict` acts only on warnings. | `[mkdocs.yml]`, `[catalog-info.yaml:L22]` | **APPLIED 7 August 2026, both halves.** (1) All five missing nav entries added — `api-contracts.md`, `architecture-before-after.md`, `onboarding-guide.md`, `validation-gates.md`, `executive-presentation.html` — giving **eight entries for the eight files in `docs/`**. (2) `validation.nav.omitted_files: warn` set, so an omission now fails a strict build; `validation.links.anchors: warn` set with it, which surfaced and fixed one broken in-page anchor that had been reported at INFO. Measured outcome: `mkdocs build --strict` **exit 0, zero warnings, zero errors**, against **exit 1 with 20 warnings** before. Verified load-bearing by mutation: removing one nav entry aborts the build; removing the setting too returns it to exit 0. |
+| **Medium** | `TRANREPT` generation-group retention is declared twice with conflicting limits. | `[app/jcl/DEFGDGB.jcl:L38]` `LIMIT(5)` versus `[app/jcl/REPTFILE.jcl:L27]` `LIMIT(10)` | Resolve to **10** because a single S3 lifecycle value must be chosen; log the conflict in `DECISION_LOG.md`. This is the **only** legacy inconsistency actually resolved rather than preserved. |
+| **High** | **A fenced `mermaid` block does not render as a diagram under the repository's own MkDocs configuration.** Verified by building the site: the block emits a syntax-highlighted `<pre><code>` element with line numbers, with **zero** occurrences of `class="mermaid"` and no Mermaid runtime loaded, so the architecture diagram degrades to a wall of text in the published site. The cause is that `techdocs-core` enables `pymdownx.superfences`, which claims the fence before the `mermaid2` plugin can convert it, and `mkdocs.yml` declares no `markdown_extensions` block to redirect it. | Rendered site output built from `[mkdocs.yml]`; `[catalog-info.yaml:L22]` | Add a `markdown_extensions` block to `mkdocs.yml` declaring `pymdownx.superfences` with a `custom_fences` entry whose `name` is `mermaid`, whose `class` is `mermaid`, and whose `format` is the `mermaid2` plugin's fence formatter. **This fix is out of scope for this document** — `mkdocs.yml` is owned by a separate change — so it is reported here with its remediation rather than actioned. Until it lands, every diagram in the published documentation set is affected, not only this one, which is why the severity is High. Mitigation already in place here: the diagram is accompanied by a prose legend and by the narrative in [§0.1.2.1](#0121-current-architecture) and [§0.1.2.2](#0122-target-architecture), so the architecture remains fully readable as text. |
+| **Medium — resolved; retained for the reasoning.** | **Repository-root evidence artefacts must not be linked from inside `docs/`.** MkDocs treats any link whose target is not among the documentation files as a warning, and `--strict` promotes warnings to errors. Root-relative links to `DECISION_LOG.md`, `TRACEABILITY_MATRIX.md` and `README.md` resolve correctly in the Git-forge view, which is the view those links exist to serve, but they are invisible to MkDocs; sibling links to documentation-set members that later checkpoints create behave the same way. | Rendered build output; [§0.2.1.10](#02110-environment-evidence) | **Applied:** every such reference is written as an inline code span rather than a link, which keeps the artefact named and citable while leaving nothing for MkDocs to resolve. Measured after the change on 1 August 2026, when a MkDocs environment existed: `mkdocs build` and `mkdocs build --strict` both exited 0 with **0 warnings**. **Re-measured on 7 August 2026 on a host that has MkDocs 1.6.1, so the result is reproducible rather than historical:** `mkdocs build --strict` exits 0 with 0 warnings and 0 errors. The rule the de-linking encodes is unchanged and still load-bearing for the **two repository-root** artefacts, which remain outside the `docs_dir`; the five artefacts under `docs/` are now freely linkable and are linked from their siblings ([§0.2.1.10](#02110-environment-evidence)). The two rejected alternatives are recorded because both are actively harmful — deleting the references would strand the evidence artefacts, and copying them under `docs/` would duplicate them in violation of Rule 1 Clause C. Recorded in `DECISION_LOG.md`. |
+| **Medium** | Flyway migration filenames are referred to by short aliases elsewhere in project documentation. | [§0.4.1.3](#0413-resources) | Treat `V1__create_schema.sql`, `V2__create_indexes.sql` and `V3__seed_data.sql` as canonical and record the aliases in `DECISION_LOG.md`. Ordering is unaffected because Flyway keys on the `V1__`/`V2__`/`V3__` prefixes. |
+| **Medium** | **Validation evidence, not a requirement change: the pinned JaCoCo `0.8.12` cannot read Java 25 bytecode with its own declared ASM, and the pin is nevertheless kept.** `jacoco-maven-plugin` is pinned at `0.8.12` in `pom.xml`, exactly as the requirement specifies. Reproduced cause: `javac` 25.0.3 emits class files at **major version 69**. The constraint is ASM, and it binds on **two independent classpaths**. On the report side, `org.jacoco.core` bundles no shaded ASM, so the ASM release the build resolves governs what bytecode the analyser can read — `0.8.12` resolves ASM 9.7 (`Opcodes.V23 = 67`), `0.8.13` ASM 9.8 (`V25 = 69`), `0.8.14` ASM 9.9 (`V26 = 70`). On the instrumentation side the agent runtime jar **does** shade ASM, so its ceiling travels with the agent artefact and is unaffected by any plugin-classpath override: `javap -p -constants` on the shaded `Opcodes` class reports **67** for agent `0.8.12`, **69** for `0.8.13` and **70** for `0.8.14`. This two-classpath split is why a report-side fix alone silently instruments nothing and reports zero coverage rather than failing loudly. | `pom.xml` `jacoco-maven-plugin` declaration and its inline justification; `javap` inspection of the shaded agent classes; two-arm measured `jacoco:report` output | **Keep the pinned `0.8.12` and lift both ceilings inside the pin**: a plugin-scoped `<dependencies>` block advancing `asm`, `asm-commons` and `asm-tree` to `9.9` **and** `org.jacoco:org.jacoco.agent:runtime` to `0.8.14`. Verified by a two-arm measurement on the integrated tree in which the plugin version was the only variable: the pinned-`0.8.12`-plus-overrides arm and an unpinned-`0.8.13` arm both emitted the same LINE counters on the tree of that day — byte-identical, which is what establishes that the override changes the analyser's reach and nothing else. Both halves are load-bearing: raising ASM without the agent override leaves the agent at ceiling 67 and yields a zero-coverage report. **Residual risk:** the override couples this build to specific ASM and agent releases and must be re-verified whenever the JDK, ASM or JaCoCo version moves. Held as `DL-CR-04` in `DECISION_LOG.md`, which names all three coordinates, records the ASM ceiling as validation evidence rather than a changed requirement, and carries the collapse-to-one-coordinate remediation with its owner. The requirement is **not** rewritten. |
+| **Medium** | The pinned Maven 3.9.11 distribution bundles Guice 5.1.0, which calls the terminally deprecated `sun.misc.Unsafe::staticFieldBase`, so under the pinned JDK 25 **four warnings are emitted on stderr on every plugin invocation** — including a plain `./mvnw -B clean compile`. This contradicts the zero-warning build the plan requires; the warnings originate in the build tool, not in any source file under compilation. | Provisioned-environment build evidence; `.mvn/wrapper/maven-wrapper.properties` distribution pin; [§0.6.2.5](#0625-version-drift-and-residual-risk) | Supply the required JDK option through **repository-controlled JVM configuration** in `.mvn/jvm.config`, which both `bin/mvn` and `bin/mvn.cmd` read, so the default invocation is warning-free and deterministic on Unix and Windows alike with no per-developer setup; pin the file to `eol=lf` in `.gitattributes`. Carry a **tracked removal plan**: delete the option when the pinned Maven distribution ships Guice 7 or newer. Do **not** redirect stderr, adjust Maven logging, or lower the JDK — each hides the signal that says when the option is no longer needed. |
+| **Medium** | Spring Boot 3.5 open-source support horizon. | [§0.4.2](#042-web-search-research-conducted) | Honour the pinned 3.5.11 exactly as instructed; do not unilaterally advance it. Record the horizon as a residual risk in `DECISION_LOG.md`. **Verified as of 1 August 2026:** Spring Boot 3.5 reached **end of open-source support on 30 June 2026**, and the final open-source patch on that line was **3.5.16**, released 25 June 2026. No further open-source patches will be published for 3.5.x, so the pinned **3.5.11 is both out of open-source support and five patch releases behind the last free one**; newly disclosed vulnerabilities in the 3.5 line will not receive a free fix. Only the 4.0 and 4.1 lines remain in open-source support, and commercial extended support for 3.5 is available separately. **The pin is nevertheless retained**, because [§0.8.4](#084-special-instructions-and-constraints) makes pinned versions binding and forbids advancing one unilaterally; an upgrade requires an approved plan change. This is therefore an **accepted, disclosed residual risk**, not an open action. |
+| **Low — resolved by remediation, and the severity was understated.** | **Every rendered documentation page threw one uncaught console error, `base_url is not defined`, and site search was dead.** The error originated at line 106 of the search bootstrap script shipped by the documentation generator's built-in search plugin, which reads a JavaScript global that only the generator's *default* theme defines; the configuration selects a different theme, so the script loaded and failed immediately. The original entry recorded the blast radius as narrow on the grounds that no search interface was present in the markup. That reading was inverted: the statement that threw is the one that starts the search web worker, so the absent interface was the *symptom*, not the mitigation. | Rendered site output built from `[mkdocs.yml]`; [§0.2.1.10](#02110-environment-evidence) | **APPLIED, both halves — and one half alone would not have been enough.** (1) `use_material_search: true` on the documentation plugin, whose default is false and which is what installed the stock search plugin under the selected theme; this removes the script and the error. (2) `material/search` declared explicitly, because the plugin bundle registers the theme's search plugin under the key `search` while the theme's header template gates its search partial on `material/search` — so after (1) alone the console was clean and search was still completely dead, with no field rendered at all. Measured outcome on a served build: **zero console messages of every type across all seven pages**, the search field present with a `textbox` role, the worker loading with `sec-fetch-dest: worker`, the 511-document index at HTTP 200, and a query returning scored, term-highlighted results. Network census also corrected: **7 requests all 200 on the site root** and **9 requests, 8×200 plus one benign 302, on the diagram page** — the previously published "all twelve return HTTP 200" was wrong on both count and status. Re-measured cold on 9 August 2026, both figures still hold, and a third measurement settles a question the pair invites: **a page carrying nine diagrams produces a census byte-identical to a page carrying one** — 9 requests, 7 same-origin, 2 cross-origin — because the theme memoises the runtime loader and fetches it **once per page load regardless of diagram count**. The site root, carrying none, is the control that proves the fetch is diagram-triggered rather than theme boilerplate: it contacts **no external host at all**. So the census has exactly two shapes, 7 requests for a page without diagrams and 9 for a page with any number of them, and diagram count does **not** scale network cost. |
+| **Low** — reported with remediation but **deliberately NOT in scope**, because `catalog-info.yaml` is not one of the three files this change may modify | `spec.type: website` `[catalog-info.yaml:L35]` is inaccurate for a Spring Boot modular-monolith service; `spec.system: blitzy-typescript` `[catalog-info.yaml:L38]` is inaccurate; `metadata.tags` `[catalog-info.yaml:L7-L18]` wrongly include `python`, `typescript` and `web-app`; the link at `[catalog-info.yaml:L31]` points at a `.../tree/main/blitzy/documentation` path that does not exist in this repository (verified: the root `blitzy/` directory contains only empty untracked scratch folders). | as cited | In a separate, appropriately scoped change: set `spec.type` to `service`, correct `spec.system`, drop the three inaccurate tags, and repoint or remove the dead link. Not actioned here. |
+
+**Genuinely unavailable information, stated plainly per Rule 1 Clause F:**
+
+- **Not available — the source program behind CSD transaction `CDV1`.** `COCRDSEC` has no source file anywhere in the repository. What is needed: the original `COCRDSEC` source, which is not present at any commit in this checkout. Until then no endpoint is invented and the definition is documented as dangling.
+- **Not available — any service-level objective for the legacy system.** The COBOL publishes no throughput, latency or availability target. What is needed: a stakeholder-supplied objective. Until then Gate 3 records a **measured baseline**, never a fabricated threshold.
+- **Closed 7 August 2026 — the expected legacy output artefact for Gate 1 now exists, and it was produced rather than found.** No pre-computed expected-output file exists anywhere in the frozen corpus, and the two obvious substitutes are both unusable, since fabricating bytes invents evidence and asserting against the implementation's own output is circular. The route that does work is **executing the legacy program.** `app/cbl/CBTRN02C.cbl` compiles **unmodified** under GnuCOBOL 3.2.0 with `-fsign=EBCDIC -std=ibm -I app/cpy`, the sign flag selecting the IBM trailing overpunch convention the fixtures carry, and its `ORGANIZATION INDEXED` files are served by the BDB handler; the only scaffolding needed is six small load and dump utilities standing in for the IDCAMS steps of `app/jcl/ACCTFILE.jcl`, `app/jcl/XREFFILE.jcl` and `app/jcl/TCATBALF.jcl`. The run over `dailytran.txt` read 300 records, rejected **38** — every one for `OVERLIMIT TRANSACTION` at `app/cbl/CBTRN02C.cbl:L410` — posted 262, took the category-balance store from 50 rows to 100 and exited with return code 4. Its DALYREJS, TRANSACT, ACCTDATA, TCATBALF and SYSOUT images are committed under `src/test/resources/parity/gate1/` with `PROVENANCE.properties` recording the compiler, its flags and every input and output digest, and `harness/derive-gate1-oracle.sh` regenerating every byte. **One modelling question decides the reject total, and it is settled rather than open.** A stateless model of the source yields 13 rejects and a stateful one yields 38; only the stateful reading is a model of *this* program, because `:L395` re-reads the account per transaction and `:L554` rewrites it inside the same iteration. The legacy execution yields 38, and so does an independent derivation of the stateful reading in a third language. What remains disclosed is a **Low** residual: the execution environment was GnuCOBOL on Linux rather than IBM Enterprise COBOL on z/OS, which leaves exactly two excluded spans — the run-generated processing timestamp at offsets 305-330 and the never-assigned trailing `FILLER PIC X(20)` at 331-350.
+- **Resolved on 1 August 2026, recorded `Not available` on an intervening host, and re-measured on 7 August 2026.** MkDocs 1.6.1 with `techdocs-core` 1.7.0 and `mermaid2` 1.2.3 was provisioned during the 1 August validation run and executed against the repository configuration: **`mkdocs build` and `mkdocs build --strict` both exited 0 with 0 warnings** once the 79 unresolvable links had been de-linked. *Superseded, 2 August 2026:* that host had no MkDocs environment, so the figures could not be reproduced there. **Current, Friday 7 August 2026:** MkDocs 1.6.1 with both plugins is installed on this host and `mkdocs build --strict --site-dir <path outside the repository>` exits **0** with **0 `WARNING` lines and 0 `ERROR` lines**, now publishing all eight files in `docs/` through the `nav` ([§0.2.1.10](#02110-environment-evidence)). The prior 79-warning state, and the two withdrawn figures of 41 and 40 published for it, are accounted for in the Medium finding above. Three defects were found by that build-and-browser pass and are recorded as findings rather than silently absorbed: the empty in-page table of contents (fixed), the Mermaid fence rendering as a code block (fixed), and the strict-mode link incompatibility (fixed by de-linking) - and all three remediations are in the source and survive the loss of the tooling. What remains genuinely unverified, and was unverified then too, is the behaviour of the **Backstage-hosted** TechDocs pipeline; what is needed for that is a documentation CI step in the Backstage environment itself. **Also `Not available` - a `yamllint` result for `mkdocs.yml`.** `yamllint` is on neither host; what is needed is the tool, or a CI step that runs it.
 
 
 ## 0.3 Scope Boundaries
 
+Scope is expressed in three transformation modes. **CREATE** files did not exist at commit `7756d89` and their absence was verified by direct inspection of the anchor tree, not inferred. **UPDATE** files exist and are edited additively. **REFERENCE** files are read to extract contracts and are never modified. Wildcards are trailing-only, per [§0.5.3](#053-wildcard-pattern-policy).
+
 ### 0.3.1 Exhaustively In Scope
 
-**Source Transformations (COBOL → Java):**
-- `app/cbl/*.cbl` — All 28 COBOL programs (18 online + 10 batch)
-- `app/cbl/*.CBL` — Statement generation programs (CBSTM03A.CBL, CBSTM03B.CBL)
-- `app/cpy/*.cpy` — All 28 shared copybooks (record layouts, validation, COMMAREA)
-- `app/cpy/*.CPY` — COSTM01.CPY reporting layout
-- `app/cpy-bms/*.CPY` — All 17 symbolic map copybooks (field contract definitions)
-- `app/bms/*.bms` — All 17 BMS mapset definitions (screen layouts → API contracts)
-- `app/jcl/*.jcl` — All 29 JCL jobs (provisioning + business batch)
-- `app/jcl/*.JCL` — CREASTMT.JCL statement generation job
-- `samples/jcl/*.jcl` — 3 sample build JCL (build pattern reference)
+#### 0.3.1.1 CREATE: Java Application Source
 
-**Data Migration:**
-- `app/data/ASCII/*.txt` — All 9 ASCII fixture files → SQL seed scripts and test data
-- `app/data/EBCDIC/*` — All 13 EBCDIC files → reference for byte-level validation
-- `app/catlg/LISTCAT.txt` — Catalog report → schema verification reference
+**Absence proof.** None of `pom.xml`, `src/`, `Dockerfile`, `docker-compose.yml`, `localstack-init/`, `observability/`, `.github/`, `.gitignore`, `.gitattributes`, `.editorconfig`, `.dockerignore`, `.env.example`, `mvnw`, `mvnw.cmd`, `.mvn/`, `DECISION_LOG.md` or `TRACEABILITY_MATRIX.md` is present at `7756d89`. The anchor repository root holds only `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `README.md`, `catalog-info.yaml`, `mkdocs.yml` and the directories `app/`, `diagrams/`, `docs/` and `samples/`. **Every Java artefact below is therefore a CREATE; there is no pre-existing Java tree to modify.**
 
-**Target Deliverables (New Java Repository):**
-- Java 25 LTS source code with Spring Boot 3.5.x application structure
-- Spring Data JPA entities mapping all 11 VSAM/PS data entities to PostgreSQL tables
-- Spring Batch job definitions for the complete 5-stage batch pipeline
-- REST API controllers preserving all 22 features (F-001 through F-022)
-- Spring Security configuration with BCrypt password hashing
-- AWS S3 integration for batch file staging via LocalStack
-- AWS SQS/SNS integration for message queue via LocalStack
-- PostgreSQL 16+ schema migrations (Flyway)
-- Docker Compose for local development (PostgreSQL, LocalStack)
-- Testcontainers-based integration tests
-- Maven build producing deployable artifact with zero warnings
+| Pattern | Count | Derived From |
+|---------|------:|--------------|
+| `src/main/java/com/cardemo/CardDemoApplication.java` | 1 | Application entry point |
+| `src/main/java/com/cardemo/config/**` | 6 | JCL dataset wiring, CSD file control table, batch job structure |
+| `src/main/java/com/cardemo/security/**` | 3 | `COSGN00C` sign-on, `CSUSR01Y` user security layout, `COCOM01Y` COMMAREA identity |
+| `src/main/java/com/cardemo/model/entity/**` | 11 | The 11 record-layout copybooks of [§0.2.1.3](#0213-copybooks-appcpy) |
+| `src/main/java/com/cardemo/model/key/**` | 3 | The three composite-key clusters — `TCATBALF` key length 17, `DISCGRP` 16, `TRANCATG` 6 |
+| `src/main/java/com/cardemo/model/enums/**` | 4 | `CSLKPCDY` lookups, `COCOM01Y` user-type levels, the FILE STATUS idiom, plus `RejectCode` with **exactly five constants** |
+| `src/main/java/com/cardemo/model/dto/**` | **17** | All **441** BMS input fields of [§0.2.1.4](#0214-bms-presentation-layer-appbms-and-appcpy-bms), including `AccountUpdateRequest` carrying both `oldDetails` and `newDetails`. **17, not 16** — the figure is corrected here and reconciled against the by-name enumeration in [§0.4.1.2](#0412-application-source-srcmainjavacomcardemo), which lists 17; `SignOnResponse` is the payload the earlier count omitted, and it has no BMS symbolic map because CICS returned identity in the COMMAREA rather than on a screen |
+| `src/main/java/com/cardemo/repository/**` | 11 | VSAM access verbs; **three derived finders correspond to the three alternate indexes** of [§0.2.1.6](#0216-vsam-catalogue-appcatlglistcattxt) |
+| `src/main/java/com/cardemo/service/**` | 21 | 17 online programs, plus `DateValidationService`, `ValidationLookupService`, `FileStatusMapper` and `FileService` — see [§0.4.1.2](#0412-application-source-srcmainjavacomcardemo) for why the total is 21 |
+| `src/main/java/com/cardemo/controller/**` | 8 | The 17 sourced CSD transactions of [§0.2.1.2](#0212-program-count-reconciliation-17-sourced-1-orphan), grouped by resource, with `AdminController` at `/api/admin/*` |
+| `src/main/java/com/cardemo/batch/jobs/**` | 6 | `POSTTRAN`, `INTCALC`, `COMBTRAN`, `CREASTMT.JCL`, `TRANREPT` plus an orchestrator |
+| `src/main/java/com/cardemo/batch/processors/**` | 5 | The per-record bodies of the five batch programs |
+| `src/main/java/com/cardemo/batch/readers/**` | 7 | Five dataset readers plus `TransactionBackupReader` and `CombinedTransactionReader` |
+| `src/main/java/com/cardemo/batch/writers/**` | 3 | The reject writer at `LRECL=430`, the report writer at `LRECL=133`, the statement writer at `LRECL=80` and `100` |
+| `src/main/java/com/cardemo/exception/**` | 9 | `CardDemoException` base, `ValidationException`, and the seven FILE STATUS and response-code translations |
+| `src/main/java/com/cardemo/observability/**` | 3 | `CorrelationIdFilter`, metric registration, health indicators — replacing the `DISPLAY`-only legacy instrumentation |
+| `src/main/java/com/cardemo/**/package-info.java` | 14 | One per package, each naming the COBOL artefacts the package derives from |
 
-**Observability Deliverables:**
-- Structured logging with correlation IDs (SLF4J + Logback structured format)
-- Distributed tracing across service boundaries (Micrometer Tracing)
-- Metrics endpoint (Spring Boot Actuator + Micrometer)
-- Health and readiness checks (`/actuator/health`, `/actuator/readiness`)
-- Dashboard template (Grafana JSON or equivalent)
+**Rollup.** The table above totals **132 Java source files**: 1 application entry point, 6 configuration classes, 3 security classes, 11 entities, 3 composite-key classes, 4 enums, **17** DTOs, 11 repositories, 21 services, 8 controllers, 6 batch jobs, 5 processors, 7 readers, 3 writers, 9 exceptions, 3 observability classes and 14 `package-info.java` files across 14 packages. Every one of those figures is derived in [§0.4.1.2](#0412-application-source-srcmainjavacomcardemo), where each file is listed against the COBOL program, copybook or JCL member it is translated from. The count is stated here so that a downstream agent sizing the build, the coverage gate or the traceability matrix has a single authoritative total rather than an inferred one.
 
-**Documentation Deliverables:**
-- README.md with complete setup-to-running instructions
-- Bidirectional traceability matrix (100% COBOL paragraph coverage)
-- Decision log (Markdown table: decision, alternatives, rationale, risks)
-- Executive reveal.js HTML presentation
-- Before/after architecture Mermaid diagrams
-- Onboarding guide for new developers
+**The arithmetic is written out so it cannot drift from its parts.** A total asserted as a literal is exactly how the previous figures — 16 DTOs and 131 files — survived alongside a by-name enumeration of 17, so the sum is stated term by term and its running total given:
 
-**Validation Gate Deliverables:**
-- Gate 1: End-to-end boundary verification comparison report
-- Gate 2: Zero-warning build evidence
-- Gate 3: Performance baseline benchmark report
-- Gate 4: Named real-world validation artifacts with comparison
-- Gate 5: API/interface contract verification test suite
-- Gate 6: Unsafe/low-level code audit report
-- Gate 7: Extended scope matching confirmation
-- Gate 8: Integration sign-off checklist
+`1 + 6 + 3 + 11 + 3 + 4 + 17 + 11 + 21 + 8 + 6 + 5 + 7 + 3 + 9 + 3 + 14 = 132`
 
-**Test Coverage:**
-- `src/test/**/*.java` — JUnit 5 unit tests
-- `src/test/**/*IT.java` — Integration tests with Testcontainers
-- `src/test/**/*E2E.java` — End-to-end tests with LocalStack
-- ≥80% line coverage (unit + integration combined)
-- OWASP dependency-check — zero critical/high CVEs
+Running totals, in the row order of the table above: 1, 7, 10, 21, 24, 28, 45, 56, 77, 85, 91, 96, 103, 106, 115, 118, **132**. Any change to a row count must move this sum in the same commit; a reviewer checking the total does not have to recount the table. The corrected figures are **17 DTO payload files** (18 `.java` files in that package once its `package-info.java` is included, which the 14-package row already accounts for) and **132 Java source files** in total.
+
+
+#### 0.3.1.2 CREATE: Resources
+
+| Pattern | Files | Notes |
+|---------|-------|-------|
+| `src/main/resources/application*.yml` | `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml` | Four profiles. The requirements name the first three; the fourth is added to satisfy least-privilege configuration and to close the prior missing-production-profile gap |
+| `src/main/resources/db/migration/*.sql` | `V1__create_schema.sql`, `V2__create_indexes.sql`, `V3__seed_data.sql` | Canonical names. Short forms used elsewhere in project documentation are aliases recorded in `../DECISION_LOG.md` |
+| `src/main/resources/validation/*.json` | `nanpa-area-codes.json`, `us-state-codes.json`, `state-zip-prefixes.json` | Externalising `CSLKPCDY`'s 88-level tables as data rather than generating over a thousand Java constants |
+| `src/main/resources/logback-spring.xml` | 1 | JSON encoding with `traceId`, `spanId` and `correlationId` from MDC, and masking of credentials, password hashes and social security numbers |
+
+`V3__seed_data.sql`, **which exists as of the 2 August 2026 checkpoint** ([§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint)), satisfies two obligations established in [§0.2.1.7](#0217-seed-and-test-data-appdata): it decodes zoned-decimal overpunch signs position-aware from the PIC clauses, and it BCrypt-hashes the ten inline plaintext password values from `[app/jcl/DUSRSECJ.jcl:L35-L44]` so that only hashes are ever stored. Both obligations remain the acceptance criteria for any future edit to it.
+
+#### 0.3.1.3 CREATE: Tests
+
+| Pattern | Content |
+|---------|---------|
+| `src/test/java/com/cardemo/unit/**` | Service, processor, model, DTO, enum and validation unit tests, asserting paragraph-level behaviour against cited COBOL locators |
+| `src/test/java/com/cardemo/integration/**` | Repository, batch and AWS integration tests on Testcontainers-backed PostgreSQL 16 and LocalStack |
+| `src/test/java/com/cardemo/e2e/**` | `BatchPipelineE2ETest`, `OnlineTransactionE2ETest`, `GateVerificationTest` |
+| `src/test/resources/**` | Fixture copies and expected-output baselines, keyed on the **actual** fixture names of [§0.2.1.7](#0217-seed-and-test-data-appdata) |
+
+#### 0.3.1.4 CREATE: Build, Container and Infrastructure
+
+- **`pom.xml`** — every plugin and every non-BOM dependency pinned to an exact version; `maven.compiler.release` 25; `-Xlint:all -Werror -parameters` configured on `maven-compiler-plugin`; JaCoCo and the OWASP dependency check wired into `verify`; the enforcer plugin asserting the Java and Maven floor.
+- **`mvnw`, `mvnw.cmd`, `.mvn/wrapper/maven-wrapper.properties`** — the Maven wrapper pinned to **3.9.11** with a checksum, so the build is reproducible without a preinstalled Maven and cannot silently run on a different Maven generation.
+- **`Dockerfile`** — a multi-stage build producing a single runnable JAR on a JDK 25 base. No legacy equivalent exists; the mainframe had no container image.
+- **`docker-compose.yml`** — provisioning PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana, with pinned image tags.
+- **`.dockerignore`, `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`** — establishing rather than inheriting conventions, because [§0.2.1.8](#0218-repository-conventions-discovered) proves no such configuration existed at the anchor. `.env.example` ships every secret blank.
+- **`localstack-init/init-aws.sh`** — **idempotent** creation of the three S3 buckets (with versioning on the **output bucket alone**), the FIFO queue and the single notification topic, so that repeated `docker compose up` cycles converge instead of failing on already-existing resources. The versioning scope is deliberate and is stated in the script itself: `carddemo-batch-output` is versioned because it stands in for the generation data groups of [app/jcl/DEFGDGB.jcl], whose relative `(+1)`/`(0)` references require retained prior generations, whereas `carddemo-batch-input` is re-seeded from the frozen ASCII fixtures and `carddemo-statements` holds output that the statement job reproduces deterministically from the transaction table, so versioning it would retain objects the legacy system never kept. The script versions exactly one bucket, verifies the read-back, and exits `5` if the verification fails. Authority for the single-bucket policy is [§0.5.1.1](#0511-build-container-and-infrastructure) and [§0.5.2.2](#0522-dataset-and-dd-name-to-object-storage-mapping).
+- **`observability/prometheus.yml`** — a fifteen-second scrape of the application metrics endpoint.
+- **`observability/grafana/provisioning/datasources/datasource.yml`** — datasource provisioning so the integration gate needs no manual configuration step.
+- **`observability/grafana/dashboards/carddemo-dashboard.json`** — a dashboard definition over the four named counters, replacing the legacy end-of-run `DISPLAY` counters `[app/cbl/CBTRN02C.cbl:L227-L228]`.
+- **`.github/workflows/build.yml`** — continuous integration on JDK 25 and Maven 3.9.11 with the zero-warning gate, the JaCoCo report and the vulnerability scan.
+- **`.mvn/jvm.config`** — **an addition this plan did not originally enumerate, listed here rather than left as a silent expansion of scope.** It carries exactly one line, the JDK flag that permits the terminally-deprecated `sun.misc.Unsafe` memory-access methods, because the pinned Maven 3.9.11 bundles a Guice generation that calls one and JDK 25 warns on first use. Without it the **build tool itself** emits warnings against a tree that is otherwise warning-free, so the file exists to keep the zero-warning gate measuring the project rather than its own toolchain. Its removal trigger is recorded with it: the first Maven 3.9.x release that bundles a Guice generation without that call.
+- **`owasp-suppressions.xml`** — **the second such addition, and likewise listed rather than absorbed.** `dependency-check-maven` fails the build at CVSS 7.0 and above, and the gate is never lowered, skipped or removed; where an advisory cannot be resolved by pinning a fixed version forward — because none exists on the compatible release line — the only honest alternative is a **narrowly scoped, evidence-backed** suppression naming one vendor, one advisory and one artefact, never a blanket pattern. This file is that register, and it carries its own tier scheme, its own currency block and a dated re-measurement, so a suppression cannot outlive its evidence unnoticed.
+
+**Scope reconciliation, because both files above are additions and a reader is entitled to know how many there are.** Against the frozen anchor `7756d89` the change set is **461 additions and exactly 3 modifications**, and those three are precisely the three that [§0.3.1.6](#0316-update-exactly-three-files) permits — `README.md`, `mkdocs.yml` and this document. No fourth pre-existing file is touched, which is the invariant that matters; the addition count is not, because it moves with every test class and evidence document authored. Reproduce both halves rather than trusting a figure:
+
+```
+git diff --name-status 7756d895ffeb65f7ea72aaa609e356d9899afcec HEAD | awk '$1=="M"'   # must be exactly 3
+git diff --name-status 7756d895ffeb65f7ea72aaa609e356d9899afcec HEAD | awk '$1=="A"' | wc -l
+git diff --name-only  7756d895ffeb65f7ea72aaa609e356d9899afcec HEAD -- app samples diagrams  # must be empty
+```
+
+The third command is the load-bearing one: the frozen corpus is untouched, and that is asserted rather than asserted-about.
+
+#### 0.3.1.5 CREATE: Evidence and Documentation
+
+**All seven of these paths are present.** Re-verified by direct inspection on 7 August 2026: `DECISION_LOG.md` and `TRACEABILITY_MATRIX.md` at the repository root, and `api-contracts.md`, `architecture-before-after.md`, `onboarding-guide.md`, `validation-gates.md` and `executive-presentation.html` under `docs/`. With `src/`, `pom.xml`, the wrapper, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`, `localstack-init/`, `observability/` and `.github/` alongside them, the CREATE inventory is complete.
+
+Two notation consequences follow, and they are opposite. The five `docs/`-resident members **may now be hyperlinked**, because each exists and each carries a `mkdocs.yml` nav entry ([§0.2.1.8](#0218-repository-conventions-discovered)); the condition that previously made a link inappropriate is discharged. The two repository-root members **remain plain code spans permanently**, because they sit outside the MkDocs `docs_dir` by design, so a relative link to them resolves in the Git-forge view but is reported by MkDocs as a target "not found among documentation files" — and with `validation.links.not_found: warn` now declared, that fails the build rather than merely warning. Where this document still writes a `docs/`-resident member as a code span, read it as a path citation rather than as a statement that the file is missing.
+
+**Path notation used throughout this document, stated once.** The de-linking preserved each referenced path *verbatim* as it was written, so the spans are still relative to this file's own directory, `docs/`. A leading `../` therefore means **the repository root**: `../DECISION_LOG.md` is `DECISION_LOG.md` at the root, and `../README.md` is the root `README.md`. An unprefixed name means **inside `docs/`**: `validation-gates.md` is `docs/validation-gates.md`. Both forms are written below with their full repository-root path in parentheses so no reader has to infer it.
+
+- `../DECISION_LOG.md` (repository root, `DECISION_LOG.md`) — every mechanism substitution and every preserved legacy quirk, each citing its COBOL locator. *Outside the MkDocs `docs_dir`, so it is deliberately named and never linked from here.* **Present** as of 7 August 2026. While it was absent, every decision it would hold was recorded **in the docstring of the file it governs** and every cross-reference was written as a forward reference — "tracked *for*", never "tracked *in*" — so no reader was sent to a document that was not there. Both halves of that discipline survive its arrival: the per-file docstrings remain the primary record and are not thinned, and the forward-reference wording is now **conservative rather than wrong**, because it under-claims about a register that does in fact hold the entry. `DocumentationConsistencyTest` still enforces both halves, and its own guard for this pair is now armed on presence rather than absence.
+- `../TRACEABILITY_MATRIX.md` (repository root, `TRACEABILITY_MATRIX.md`) — paragraph-level mapping from all 28 programs to their Java methods, using the line counts of [§0.2.1.1](#0211-cobol-programs-appcbl). *Outside the MkDocs `docs_dir`, so it is deliberately named and never linked from here.* **Present** as of 7 August 2026.
+- `api-contracts.md` (`docs/api-contracts.md`) — the manual substitute for generated OpenAPI, which is out of scope. **Present** as of 7 August 2026, and published through the `mkdocs.yml` nav.
+- `architecture-before-after.md` (`docs/architecture-before-after.md`) — side-by-side legacy and target architecture, carrying the detailed visuals deliberately not duplicated in this document. **Present** as of 7 August 2026, and published through the `mkdocs.yml` nav.
+- `onboarding-guide.md` (`docs/onboarding-guide.md`) — the clean-machine-to-verified-checkout walkthrough, its key configuration and defaults, and a symptom-keyed troubleshooting section, consistent with `CONTRIBUTING.md`. **Present** as of 7 August 2026, and published through the `mkdocs.yml` nav.
+- `validation-gates.md` (`docs/validation-gates.md`) — the authoritative gate ledger, gate definitions, evidence, prerequisites and the residual-risk register. **Present** as of 7 August 2026, and published through the `mkdocs.yml` nav. It is now **the** authoritative gate-status statement; [§0.7.9.2](#0792-gate-status-stated-honestly) is subordinate to it, and where the two disagree that ledger wins.
+- `executive-presentation.html` (`docs/executive-presentation.html`) — a single self-contained static stakeholder document with no external runtime, CDN, script, font or image dependency. **Present** as of 7 August 2026, and published through the `mkdocs.yml` nav. The self-containment constraint is **verified, not merely asserted**: the file declares zero `<script>` elements, zero `<link>` elements, zero `<img>` elements and zero `http`-scheme `src` or `href` attributes, and MkDocs copies it byte-identically into the built site.
+
+#### 0.3.1.6 UPDATE: Exactly Three Files
+
+**No fourth existing file may be touched.** In particular `docs/index.md` and `docs/project-guide.md` remain byte-for-byte identical, and `catalog-info.yaml`, `CONTRIBUTING.md`, `LICENSE` and `NOTICE` are read-only.
+
+| File | Change | Constraint |
+|------|--------|-----------|
+| `README.md` | Append Java build, run and architecture sections | 324 lines / 14,639 bytes at the anchor; the legacy transaction, program and JCL inventory tables are **preserved verbatim**, not replaced |
+| `mkdocs.yml` | Register the Mermaid custom fence; add nav entries for every new document; make an omitted page detectable | 8 lines / 187 bytes with three nav entries at the anchor; 79 lines / 4,055 bytes as of this tree. **All three edits applied.** (1) The `markdown_extensions` block that makes fenced `mermaid` render as a diagram (Defect R3, [§0.2.1.10](#02110-environment-evidence)). (2) **The five nav entries** `API Contracts`, `Architecture Before and After`, `Onboarding Guide`, `Validation Gates` and `Executive Presentation`, each added in the same change that created or completed its document — the nav is now eight entries in reading order, and all seven target artefacts exist ([§0.3.1.5](#0315-create-evidence-and-documentation)). Because `catalog-info.yaml` publishes via `backstage.io/techdocs-ref: dir:.` `[catalog-info.yaml:L22]`, a document omitted here fails to publish silently, while an entry naming an absent file fails the build outright; sequencing the entry with its document is what avoids both. (3) A `validation` block raising `nav.omitted_files` and six related nav and link checks to `warn`, because MkDocs defaults that setting to `info` and `--strict` acts only on warnings, so an omission previously passed a strict build silently. Verified by execution: `mkdocs build --strict` exits 0 with zero warnings |
+| `docs/technical-specifications.md` | This Agent Action Plan section | 1,239 lines / 94,043 bytes at the anchor; the stale prior-generation plan is replaced and the `# Technical Specification` title plus the `0.1`-`0.9` numbering are preserved because downstream artefacts cite that numbering |
+
+#### 0.3.1.7 REFERENCE: Read-Only Contract Sources
+
+`app/cbl/**` (**case-insensitive**, or `CBSTM03A.CBL` and `CBSTM03B.CBL` are dropped), `app/cpy/**`, `app/cpy-bms/**`, `app/bms/**`, `app/jcl/**` (**case-insensitive**, or `CREASTMT.JCL` is dropped), `app/csd/CARDDEMO.CSD`, `app/ctl/REPROCT.ctl`, `app/proc/**`, `app/catlg/LISTCAT.txt`, `app/data/ASCII/**`, `app/data/EBCDIC/**` (codepage reference only, never parsed), `diagrams/**`, `docs/index.md`, `docs/project-guide.md`, `CONTRIBUTING.md`, `catalog-info.yaml`, `LICENSE`, `NOTICE`, `CODE_OF_CONDUCT.md`.
+
+#### 0.3.1.8 Rule-Mandated Files
+
+The single user-specified rule, **Rule 1: Build Verify**, forces files into scope that the migration requirements alone would not have produced. They are listed here so that no downstream agent treats them as optional.
+
+| Rule Clause | Files Forced Into Scope | Why the Requirements Alone Would Have Missed Them |
+|-------------|------------------------|--------------------------------------------------|
+| Clause A — observability and measurable behaviour | `observability/prometheus.yml`; `observability/grafana/provisioning/datasources/datasource.yml`; `observability/grafana/dashboards/carddemo-dashboard.json`; `src/main/resources/logback-spring.xml`; the three `com.cardemo.observability` classes | The legacy system has no instrumentation at all, so no functional requirement produces any of these |
+| Clause B — no untracked dead code; documented public surface | 14 `package-info.java` files; `api-contracts.md`; the `../DECISION_LOG.md` entries that are **to give** every intentionally-retained no-op a tracking reference — none of the three artefact groups is complete yet, so this row states scope rather than evidence | Preserving legacy control flow creates artefacts that look like dead code and must be justified in writing rather than deleted |
+| Clause C — repository conventions and deterministic builds | Apache-2.0 headers on **every** new file; `.editorconfig`; `.gitignore`; `.gitattributes`; `.dockerignore`; `mvnw`; `mvnw.cmd`; `.mvn/wrapper/maven-wrapper.properties`; the enforcer configuration in `pom.xml`; **the `mkdocs.yml` nav update** | [§0.2.1.8](#0218-repository-conventions-discovered) shows the banner convention is universal in the legacy corpus and that no formatter configuration exists to inherit, so both must be established explicitly. Without the nav update, none of the new documentation publishes |
+| Clause D — least privilege and secret hygiene | `application-prod.yml`; `.env.example`; environment-variable indirection for the JWT signing key in all four profiles; masking rules in `logback-spring.xml`; the vulnerability-scan configuration in `pom.xml` | The prior implementation hardcoded the signing key and had no production profile |
+| Clause E — documentation standards | 14 `package-info.java` files; `onboarding-guide.md`; `validation-gates.md`; `architecture-before-after.md`; `executive-presentation.html`; the `README.md` update | Package documentation and a troubleshooting guide are not functional requirements |
+| Clause F — evidence, severity and residual risk | `../DECISION_LOG.md`; `../TRACEABILITY_MATRIX.md`; the residual-risk register inside `validation-gates.md` | Known gaps must be disclosed with severity and remediation rather than silently omitted |
 
 ### 0.3.2 Explicitly Out of Scope
 
-Per the user's explicit boundaries and preservation requirements:
-
-- **No feature expansion** — Migrate what exists in COBOL; do not add new business features beyond the 22 documented features (F-001 through F-022)
-- **No COBOL source copying** — COBOL files are NOT copied into the target repository; traceability references the original repository by commit SHA
-- **No infrastructure provisioning** — The migration architect does NOT have authority over infrastructure provisioning, COBOL runtime decommissioning, or external interface contract changes
-- **No production/staging access** — All validation runs against local development environment only (Docker Compose, Testcontainers, LocalStack)
-- **No live AWS dependencies** — Every AWS service interaction must be verifiable against LocalStack with zero live AWS credentials
-- **No hardcoded credentials** — Secrets via environment variables or vault references only
-- **EBCDIC binary files** — The EBCDIC data files in `app/data/EBCDIC/` are reference only; ASCII equivalents are used for data migration
-- **RACF security integration** — The original application uses file-based authentication (not RACF); this constraint is preserved
-- **Db2, IMS, and MQ integrations** — These were explicitly deferred in the original application (constraint C-001) and remain out of scope
-- **Web/browser UI** — The migration targets REST API endpoints, not a graphical web interface (unless explicitly added as a separate feature)
+- **Deleting, editing, reformatting or relocating any file under `app/**`.** The corpus is frozen. The migration is purely additive: the new `src/` tree sits beside `app/` in the same repository. `app/` remains simultaneously the parity oracle, the field-contract source and the traceability anchor, and it loses all three roles the moment it is edited.
+- **`app/data/EBCDIC/**`** — the twelve `.PS` dataset images of [§0.2.1.7](#0217-seed-and-test-data-appdata). No transcoding is performed and no codepage conversion utility is built. The ASCII fixtures are the authoritative seed and test input.
+- **`samples/**` in its entirety** — the three compile templates, the three build procedures and the two binary emulator runtime bundles catalogued in [§0.2.1.9](#0219-directories-excluded-after-inspection). `pom.xml` supersedes the whole set conceptually; nothing is ported from it.
+- **`COCRDSEC` and transaction `CDV1`** — defined in the CSD `[app/csd/CARDDEMO.CSD:L211, L390]` but with no source anywhere in the repository. There is nothing to translate. It is documented as a dangling legacy definition and no endpoint is invented for it.
+- **3270 and BMS terminal emulation.** No green-screen rendering, no pseudo-conversational session emulation, no web or single-page front end. The interface is REST and JSON plus Actuator endpoints. The BMS symbolic maps are consumed as DTO field contracts — all **441** fields — and are not reimplemented as a user interface. **This is why no Design System Compliance sub-section appears in this plan: no component library or design system is in play.** See [§0.4.4](#044-user-interface-design-applicability).
+- **Microservice decomposition, event sourcing and CQRS.** The target is a single deployable modular monolith. The dual-dataset atomicity of `COACTUPC`'s `9600-WRITE-PROCESSING` `[app/cbl/COACTUPC.cbl:L3888-L4107]` and the three-dataset atomicity of `CBTRN02C`'s `2000-POST-TRANSACTION` `[app/cbl/CBTRN02C.cbl:L424-L444]` are transactional invariants; distributing those writes across service boundaries would require compensating transactions and would change failure semantics, which is a behaviour change and therefore forbidden.
+- **Kubernetes, Helm and service mesh deployment.** Container orchestration stops at Docker Compose.
+- **Live AWS accounts and real credentials.** All AWS interaction is against LocalStack. Zero live credentials appear in any file, and no code path may reach a real AWS endpoint.
+- **Deferred hardening**, each **recorded** as a residual risk in `validation-gates.md` rather than silently dropped. **That file is present** and carries the register, with [§0.6.2.5](#0625-version-drift-and-residual-risk) as its technical companion. The deferred items are: table partitioning, read replicas, connection-pool tuning, TLS termination, request rate limiting, URI-based API versioning, generated OpenAPI documentation, and encryption at rest for personally identifiable data.
+- **Rewriting COBOL business rules to be "more correct."** Parity is the contract. Three concrete quirks are preserved rather than repaired: the sequential unguarded over-limit and expiry checks in `1500-B-LOOKUP-ACCT`, where reject code 103 overwrites 102 when both conditions fail `[app/cbl/CBTRN02C.cbl:L407-L420]`; the control break in `CBTRN03C` that triggers on the card number while the emitted label reads "Account Total"; and the absence of any self-delete guard in `COUSR03C`, which never compares the target user identifier against the signed-on identifier. Each is to be preserved in code, cited in `../TRACEABILITY_MATRIX.md`, and justified in `../DECISION_LOG.md`; neither evidence artefact exists yet, so [§0.7](#07-special-analysis) is where all three are currently justified.
+- **Repairing the legacy JCL defects.** The corrupted `STMTFILE` DD line `[app/jcl/CREASTMT.JCL:L90]`, the `HTMLFILE` 80-versus-100 record-length mismatch `[app/jcl/CREASTMT.JCL:L69]` versus `[app/jcl/CREASTMT.JCL:L94]`, and the procedure whose internal name differs from its member name `[app/proc/TRANREPT.prc:L1]` are logged, not fixed. Only the retention conflict is resolved, and only because a single S3 lifecycle value must be chosen.
+- **Generation-data-group retention semantics beyond S3 object versioning.** Relative generation references become deterministic S3 keys over a versioned bucket. No tape or DASD emulation, no catalogue simulation.
+- **Rewriting, reinterpreting or extending the user-specified rule.** Rule 1 is honoured as written; [§0.8](#08-refactoring-rules) summarises it and records the one conflict it creates with the parity mandate, together with the resolution.
 
 
 ## 0.4 Target Design
 
 ### 0.4.1 Refactored Structure Planning
 
-The target Java repository is a standalone, fully operational Spring Boot 3.x application. The structure follows Maven standard layout conventions, Spring Boot best practices, and a modular domain-driven design that maps naturally from the COBOL program organization.
+Every node below is annotated with the legacy artefact it derives from. Nodes marked `(UPDATE)` exist at commit `7756d89`; nodes marked `(FROZEN)` and `(OUT)` are never written. Everything else is created.
 
-```
-Target: carddemo-java/
-├── pom.xml                                          (Maven build, dependencies, plugins)
-├── mvnw / mvnw.cmd                                  (Maven wrapper scripts)
-├── .mvn/wrapper/maven-wrapper.properties             (Maven wrapper config)
-├── Dockerfile                                        (Application container image)
-├── docker-compose.yml                                (PostgreSQL, LocalStack, app services)
-├── localstack-init/                                  (LocalStack resource provisioning)
-│   └── init-aws.sh                                   (S3 buckets, SQS queues creation)
-├── README.md                                         (Setup, build, run, onboarding)
-├── DECISION_LOG.md                                   (All non-trivial decision rationale)
-├── TRACEABILITY_MATRIX.md                            (COBOL → Java bidirectional mapping)
+#### 0.4.1.1 Repository Root
+
+```text
+.  (same repository, in place — no wrapper sub-directory, no separate repository)
+├── pom.xml                              <- samples/jcl/{BATCMP,CICCMP,BMSCMP}.jcl (z/OS compile
+│                                           templates, conceptually superseded); all versions pinned
+├── mvnw / mvnw.cmd                      <- samples/proc/{BUILDBAT,BUILDONL,BUILDBMS}.prc
+├── .mvn/wrapper/maven-wrapper.properties <- wrapper pinned to Maven 3.9.11 with a checksum
+├── .mvn/jvm.config                      <- no legacy equivalent; one JDK flag so the BUILD TOOL's own
+│                                           sun.misc.Unsafe warning cannot fail the zero-warning gate
+├── owasp-suppressions.xml               <- no legacy equivalent; the narrowly-scoped, evidence-backed
+│                                           suppression register for advisories with no fixed version
+├── Dockerfile                           <- no legacy equivalent; single-JAR runtime image, JDK 25 base
+├── docker-compose.yml                   <- app/jcl/OPENFIL.jcl + CLOSEFIL.jcl (file availability
+│                                           becomes declared service dependencies)
+├── .dockerignore / .gitignore / .gitattributes / .editorconfig / .env.example
+├── DECISION_LOG.md                      <- every mechanism substitution and preserved legacy quirk
+├── TRACEABILITY_MATRIX.md               <- 28 programs x paragraphs -> Java methods
+├── README.md                   (UPDATE) <- append Java build/run/architecture; legacy tables verbatim
+├── mkdocs.yml                  (UPDATE) <- nav entries for the five new documents
+├── LICENSE / NOTICE / CODE_OF_CONDUCT.md / CONTRIBUTING.md / catalog-info.yaml   (FROZEN)
+├── .github/
+│   └── workflows/build.yml              <- JDK 25 + Maven 3.9.11, zero-warning gate, JaCoCo, OWASP
+├── localstack-init/
+│   └── init-aws.sh                      <- app/jcl/DEFGDGB.jcl + DALYREJS.jcl + REPTFILE.jcl
+│                                           (7 GDG bases -> 3 S3 buckets)
+│                                           + app/csd/CARDDEMO.CSD TDQUEUE(JOBS) -> 1 FIFO queue
+├── observability/
+│   ├── prometheus.yml                   <- no legacy equivalent; 15s scrape of the metrics endpoint
+│   └── grafana/
+│       ├── provisioning/datasources/datasource.yml
+│       └── dashboards/carddemo-dashboard.json  <- app/cbl/CBTRN02C.cbl:L227-L228 counter DISPLAYs
 ├── docs/
-│   ├── executive-presentation.html                   (reveal.js executive summary)
-│   ├── architecture-before-after.md                  (Mermaid architecture diagrams)
-│   ├── onboarding-guide.md                           (New developer quickstart)
-│   ├── validation-gates.md                           (Gate 1-8 evidence and reports)
-│   └── api-contracts.md                              (REST endpoint specifications)
-├── src/
-│   ├── main/
-│   │   ├── java/com/cardemo/
-│   │   │   ├── CardDemoApplication.java              (Spring Boot main class)
-│   │   │   ├── config/
-│   │   │   │   ├── SecurityConfig.java               (Spring Security + BCrypt)
-│   │   │   │   ├── BatchConfig.java                  (Spring Batch infrastructure)
-│   │   │   │   ├── AwsConfig.java                    (S3, SQS/SNS client beans)
-│   │   │   │   ├── JpaConfig.java                    (JPA/Hibernate configuration)
-│   │   │   │   ├── ObservabilityConfig.java          (Tracing, metrics, logging)
-│   │   │   │   └── WebConfig.java                    (CORS, serialization, error handling)
-│   │   │   ├── model/
-│   │   │   │   ├── entity/
-│   │   │   │   │   ├── Account.java                  (← CVACT01Y.cpy, 300-byte record)
-│   │   │   │   │   ├── Card.java                     (← CVACT02Y.cpy, 150-byte record)
-│   │   │   │   │   ├── Customer.java                 (← CVCUS01Y.cpy, 500-byte record)
-│   │   │   │   │   ├── CardCrossReference.java       (← CVACT03Y.cpy, 50-byte record)
-│   │   │   │   │   ├── Transaction.java              (← CVTRA05Y.cpy, 350-byte record)
-│   │   │   │   │   ├── UserSecurity.java             (← CSUSR01Y.cpy, 80-byte record)
-│   │   │   │   │   ├── TransactionCategoryBalance.java (← CVTRA01Y.cpy, composite key)
-│   │   │   │   │   ├── DisclosureGroup.java          (← CVTRA02Y.cpy, composite key)
-│   │   │   │   │   ├── TransactionType.java          (← CVTRA03Y.cpy, 60-byte record)
-│   │   │   │   │   ├── TransactionCategory.java      (← CVTRA04Y.cpy, composite key)
-│   │   │   │   │   └── DailyTransaction.java         (← CVTRA06Y.cpy, staging entity)
-│   │   │   │   ├── dto/
-│   │   │   │   │   ├── AccountDto.java               (API view/update payloads)
-│   │   │   │   │   ├── CardDto.java                  (Card list/detail/update payloads)
-│   │   │   │   │   ├── TransactionDto.java           (Transaction CRUD payloads)
-│   │   │   │   │   ├── UserSecurityDto.java          (User admin payloads)
-│   │   │   │   │   ├── SignOnRequest.java             (Authentication request)
-│   │   │   │   │   ├── SignOnResponse.java            (Authentication response with token)
-│   │   │   │   │   ├── BillPaymentRequest.java       (Bill payment request)
-│   │   │   │   │   ├── ReportRequest.java            (Report criteria submission)
-│   │   │   │   │   └── CommArea.java                  (← COCOM01Y.cpy COMMAREA mapping)
-│   │   │   │   ├── enums/
-│   │   │   │   │   ├── UserType.java                 (ADMIN / USER role enum)
-│   │   │   │   │   ├── FileStatus.java               (COBOL FILE STATUS code mappings)
-│   │   │   │   │   ├── TransactionSource.java        (Transaction origination sources)
-│   │   │   │   │   └── RejectCode.java               (Batch rejection codes 100-109)
-│   │   │   │   └── key/
-│   │   │   │       ├── TransactionCategoryBalanceId.java (Composite PK: acctId+typeCode+catCode)
-│   │   │   │       ├── DisclosureGroupId.java        (Composite PK: groupId+typeCode+catCode)
-│   │   │   │       └── TransactionCategoryId.java    (Composite PK: typeCode+catCode)
-│   │   │   ├── repository/
-│   │   │   │   ├── AccountRepository.java            (← ACCTDAT VSAM access)
-│   │   │   │   ├── CardRepository.java               (← CARDDAT VSAM access)
-│   │   │   │   ├── CustomerRepository.java           (← CUSTDAT VSAM access)
-│   │   │   │   ├── CardCrossReferenceRepository.java (← CARDXREF + CXACAIX access)
-│   │   │   │   ├── TransactionRepository.java        (← TRANSACT VSAM + AIX access)
-│   │   │   │   ├── UserSecurityRepository.java       (← USRSEC VSAM access)
-│   │   │   │   ├── TransactionCategoryBalanceRepository.java (← TCATBALF access)
-│   │   │   │   ├── DisclosureGroupRepository.java    (← DISCGRP access)
-│   │   │   │   ├── TransactionTypeRepository.java    (← TRANTYPE access)
-│   │   │   │   ├── TransactionCategoryRepository.java (← TRANCATG access)
-│   │   │   │   └── DailyTransactionRepository.java   (← DALYTRAN staging access)
-│   │   │   ├── service/
-│   │   │   │   ├── auth/
-│   │   │   │   │   └── AuthenticationService.java    (← COSGN00C.cbl sign-on logic)
-│   │   │   │   ├── account/
-│   │   │   │   │   ├── AccountViewService.java       (← COACTVWC.cbl)
-│   │   │   │   │   └── AccountUpdateService.java     (← COACTUPC.cbl + SYNCPOINT logic)
-│   │   │   │   ├── card/
-│   │   │   │   │   ├── CardListService.java          (← COCRDLIC.cbl paginated browse)
-│   │   │   │   │   ├── CardDetailService.java        (← COCRDSLC.cbl)
-│   │   │   │   │   └── CardUpdateService.java        (← COCRDUPC.cbl + concurrency)
-│   │   │   │   ├── transaction/
-│   │   │   │   │   ├── TransactionListService.java   (← COTRN00C.cbl paginated browse)
-│   │   │   │   │   ├── TransactionDetailService.java (← COTRN01C.cbl)
-│   │   │   │   │   └── TransactionAddService.java    (← COTRN02C.cbl + auto-ID)
-│   │   │   │   ├── billing/
-│   │   │   │   │   └── BillPaymentService.java       (← COBIL00C.cbl)
-│   │   │   │   ├── report/
-│   │   │   │   │   └── ReportSubmissionService.java  (← CORPT00C.cbl → SQS trigger)
-│   │   │   │   ├── admin/
-│   │   │   │   │   ├── UserListService.java          (← COUSR00C.cbl)
-│   │   │   │   │   ├── UserAddService.java           (← COUSR01C.cbl)
-│   │   │   │   │   ├── UserUpdateService.java        (← COUSR02C.cbl)
-│   │   │   │   │   └── UserDeleteService.java        (← COUSR03C.cbl)
-│   │   │   │   ├── menu/
-│   │   │   │   │   ├── MainMenuService.java          (← COMEN01C.cbl option routing)
-│   │   │   │   │   └── AdminMenuService.java         (← COADM01C.cbl option routing)
-│   │   │   │   └── shared/
-│   │   │   │       ├── DateValidationService.java    (← CSUTLDTC.cbl + CSUTLDPY.cpy)
-│   │   │   │       ├── ValidationLookupService.java  (← CSLKPCDY.cpy NANPA/state/ZIP)
-│   │   │   │       └── FileStatusMapper.java         (← FILE STATUS → exception mapping)
-│   │   │   ├── controller/
-│   │   │   │   ├── AuthController.java               (POST /api/auth/signin)
-│   │   │   │   ├── AccountController.java            (GET/PUT /api/accounts/*)
-│   │   │   │   ├── CardController.java               (GET/PUT /api/cards/*)
-│   │   │   │   ├── TransactionController.java        (GET/POST /api/transactions/*)
-│   │   │   │   ├── BillingController.java            (POST /api/billing/pay)
-│   │   │   │   ├── ReportController.java             (POST /api/reports/submit)
-│   │   │   │   ├── UserAdminController.java          (CRUD /api/admin/users/*)
-│   │   │   │   └── MenuController.java               (GET /api/menu/*)
-│   │   │   ├── batch/
-│   │   │   │   ├── jobs/
-│   │   │   │   │   ├── DailyTransactionPostingJob.java   (← POSTTRAN.jcl + CBTRN02C)
-│   │   │   │   │   ├── InterestCalculationJob.java       (← INTCALC.jcl + CBACT04C)
-│   │   │   │   │   ├── CombineTransactionsJob.java       (← COMBTRAN.jcl DFSORT+REPRO)
-│   │   │   │   │   ├── StatementGenerationJob.java       (← CREASTMT.JCL + CBSTM03A/B)
-│   │   │   │   │   ├── TransactionReportJob.java         (← TRANREPT.jcl + CBTRN03C)
-│   │   │   │   │   └── BatchPipelineOrchestrator.java    (5-stage sequential orchestration)
-│   │   │   │   ├── processors/
-│   │   │   │   │   ├── TransactionPostingProcessor.java  (4-stage validation cascade)
-│   │   │   │   │   ├── InterestCalculationProcessor.java (Rate lookup + computation)
-│   │   │   │   │   ├── TransactionCombineProcessor.java  (Sort + merge logic)
-│   │   │   │   │   ├── StatementProcessor.java           (Text + HTML generation)
-│   │   │   │   │   └── TransactionReportProcessor.java   (Date filtering + enrichment)
-│   │   │   │   ├── readers/
-│   │   │   │   │   ├── DailyTransactionReader.java       (S3 file reader)
-│   │   │   │   │   ├── AccountFileReader.java            (← CBACT01C utility)
-│   │   │   │   │   ├── CardFileReader.java               (← CBACT02C utility)
-│   │   │   │   │   ├── CrossReferenceFileReader.java     (← CBACT03C utility)
-│   │   │   │   │   └── CustomerFileReader.java           (← CBCUS01C utility)
-│   │   │   │   └── writers/
-│   │   │   │       ├── TransactionWriter.java            (DB + S3 output)
-│   │   │   │       ├── RejectWriter.java                 (S3 rejection file output)
-│   │   │   │       └── StatementWriter.java              (S3 text + HTML output)
-│   │   │   ├── exception/
-│   │   │   │   ├── CardDemoException.java                (Base exception)
-│   │   │   │   ├── RecordNotFoundException.java          (← INVALID KEY)
-│   │   │   │   ├── DuplicateRecordException.java         (← DUPKEY/DUPREC)
-│   │   │   │   ├── ConcurrentModificationException.java  (← Snapshot mismatch)
-│   │   │   │   ├── CreditLimitExceededException.java     (← Reject code 102)
-│   │   │   │   ├── ExpiredCardException.java             (← Reject code 103)
-│   │   │   │   └── ValidationException.java              (Field validation failures)
-│   │   │   └── observability/
-│   │   │       ├── CorrelationIdFilter.java              (Request correlation ID injection)
-│   │   │       ├── MetricsConfig.java                    (Custom business metrics)
-│   │   │       └── HealthIndicators.java                 (DB, S3, SQS health checks)
-│   │   └── resources/
-│   │       ├── application.yml                           (Spring Boot main config)
-│   │       ├── application-local.yml                     (LocalStack + local PostgreSQL)
-│   │       ├── application-test.yml                      (Testcontainers config)
-│   │       ├── db/migration/
-│   │       │   ├── V1__create_schema.sql                 (All 11 tables DDL)
-│   │       │   ├── V2__create_indexes.sql                (Primary + alternate indexes)
-│   │       │   └── V3__seed_data.sql                     (← ASCII fixture data)
-│   │       ├── validation/
-│   │       │   ├── nanpa-area-codes.json                 (← CSLKPCDY NANPA data)
-│   │       │   ├── us-state-codes.json                   (← CSLKPCDY state data)
-│   │       │   └── state-zip-prefixes.json               (← CSLKPCDY ZIP prefixes)
-│   │       └── logback-spring.xml                        (Structured logging config)
-│   └── test/
-│       └── java/com/cardemo/
-│           ├── unit/
-│           │   ├── service/                              (Unit tests for each service)
-│           │   ├── batch/                                (Batch processor unit tests)
-│           │   └── validation/                           (Validation logic unit tests)
-│           ├── integration/
-│           │   ├── repository/                           (JPA repository tests)
-│           │   ├── batch/                                (Spring Batch integration tests)
-│           │   └── aws/                                  (LocalStack integration tests)
-│           └── e2e/
-│               ├── BatchPipelineE2ETest.java             (Full pipeline with real data)
-│               ├── OnlineTransactionE2ETest.java         (REST API end-to-end)
-│               └── GateVerificationTest.java             (Validation gate evidence)
+│   ├── index.md                              (FROZEN)
+│   ├── project-guide.md                      (FROZEN — prior-run evidence, REFERENCE only)
+│   ├── technical-specifications.md   (UPDATE) <- this Agent Action Plan section
+│   ├── api-contracts.md                 <- app/csd/CARDDEMO.CSD 17 sourced transactions
+│   ├── architecture-before-after.md     <- diagrams/** + app/catlg/LISTCAT.txt
+│   ├── onboarding-guide.md              <- CONTRIBUTING.md
+│   ├── validation-gates.md              <- the eight validation gates and their evidence
+│   └── executive-presentation.html      <- self-contained static document, no external dependency
+├── app/                                 (FROZEN — 28 programs / 19,254 lines, 28 copybooks,
+│                                           17 mapsets + 17 symbolic maps, 29 JCL, 2 PROC,
+│                                           1 CTL, 1 CSD, 1 LISTCAT, 9 ASCII + 12 EBCDIC data files)
+├── diagrams/                            (FROZEN — 6 legacy architecture illustrations, REFERENCE)
+├── samples/                             (OUT — 3 compile JCL, 3 build PROC, 2 binary bundles)
+└── src/                                 (CREATE — Maven standard layout)
 ```
+
+#### 0.4.1.2 Application Source: `src/main/java/com/cardemo/`
+
+```text
+src/main/java/com/cardemo/
+├── CardDemoApplication.java              <- @SpringBootApplication entry point; replaces the CICS
+│                                            region plus the JES2 initiators
+│
+├── config/                               (6 + package-info.java)
+│   ├── SecurityConfig.java               <- app/cbl/COSGN00C.cbl (auth) + app/csd/CARDDEMO.CSD
+│   │                                        (transaction -> endpoint authorisation)
+│   │                                        + COCOM01Y CDEMO-USER-TYPE 'A'/'U' RBAC
+│   ├── BatchConfig.java                  <- app/jcl/POSTTRAN.jcl, INTCALC.jcl, TRANREPT.jcl,
+│   │                                        COMBTRAN.jcl, CREASTMT.JCL (topology and COND gating)
+│   ├── AwsConfig.java                    <- app/jcl/DEFGDGB.jcl + CARDDEMO.CSD TDQUEUE(JOBS)
+│   ├── JpaConfig.java                    <- app/catlg/LISTCAT.txt + the IDCAMS DEFINE CLUSTER jobs
+│   ├── ObservabilityConfig.java          <- replaces the DISPLAY-only legacy instrumentation
+│   └── WebConfig.java                    <- app/cpy/CVCRD01Y.cpy navigation state -> URL routing
+│
+├── security/                             (3 + package-info.java)
+│   ├── JwtTokenProvider.java             <- app/cpy/COCOM01Y.cpy CDEMO-USER-ID / CDEMO-USER-TYPE
+│   ├── JwtAuthenticationFilter.java      <- replaces COMMAREA propagation across EXEC CICS XCTL
+│   └── CardDemoUserDetailsService.java   <- app/cbl/COSGN00C.cbl + app/cpy/CSUSR01Y.cpy (80 B)
+│
+├── model/
+│   ├── entity/                           (11 + package-info.java)
+│   │   ├── Account.java                  <- app/cpy/CVACT01Y.cpy (300 B, key 11, S9(10)V99 money)
+│   │   ├── Card.java                     <- app/cpy/CVACT02Y.cpy (150 B, key 16)
+│   │   ├── Customer.java                 <- app/cpy/CVCUS01Y.cpy (500 B) + app/cpy/CUSTREC.cpy
+│   │   │                                    (same layout, differs only in the CUST-DOB field name)
+│   │   ├── CardCrossReference.java       <- app/cpy/CVACT03Y.cpy (36 populated bytes in a 50 B slot)
+│   │   ├── Transaction.java              <- app/cpy/CVTRA05Y.cpy (350 B, the proven offset map)
+│   │   ├── DailyTransaction.java         <- app/cpy/CVTRA06Y.cpy (350 B staging layout)
+│   │   ├── TransactionCategoryBalance.java <- app/cpy/CVTRA01Y.cpy (50 B, composite key 17,
+│   │   │                                    TRAN-CAT-BAL S9(09)V99 -> NUMERIC(11,2))
+│   │   ├── DisclosureGroup.java          <- app/cpy/CVTRA02Y.cpy (50 B, DIS-INT-RATE S9(04)V99
+│   │   │                                    -> NUMERIC(6,2))
+│   │   ├── TransactionType.java          <- app/cpy/CVTRA03Y.cpy (60 B, key 2)
+│   │   ├── TransactionCategory.java      <- app/cpy/CVTRA04Y.cpy (60 B, composite key 6)
+│   │   └── UserSecurity.java             <- app/cpy/CSUSR01Y.cpy (80 B) + app/jcl/DUSRSECJ.jcl seed
+│   ├── key/                              (3 + package-info.java)
+│   │   ├── TransactionCategoryBalanceId.java <- CVTRA01Y: acctId + typeCd + catCd, COBOL field order
+│   │   ├── DisclosureGroupId.java        <- CVTRA02Y: groupId + typeCd + catCd
+│   │   └── TransactionCategoryId.java    <- CVTRA04Y: typeCd + catCd
+│   ├── enums/                            (4 + package-info.java)
+│   │   ├── UserType.java                 <- app/cpy/COCOM01Y.cpy 88-levels ('A' admin / 'U' user)
+│   │   ├── FileStatus.java               <- the universal COBOL FILE STATUS idiom
+│   │   ├── TransactionSource.java        <- app/cbl/CBACT04C.cbl:L484 literal 'System' + online sources
+│   │   └── RejectCode.java               <- app/cbl/CBTRN02C.cbl — EXACTLY 5: 100, 101, 102, 103, 109
+│   └── dto/                              (17 + package-info.java)
+│       ├── SignOnRequest.java            <- app/cpy-bms/COSGN00.CPY (11 fields, CURTIME X(9))
+│       ├── SignOnResponse.java           <- NO BMS symbolic map: Not available. A REST response
+│       │                                    carrying the issued token in place of the COMMAREA
+│       │                                    identity COSGN00C returned on success
+│       ├── AccountDto.java               <- app/cpy-bms/COACTVW.CPY (37 fields)
+│       ├── AccountUpdateRequest.java     <- app/cpy-bms/COACTUP.CPY (54 fields)
+│       │                                    + COACTUPC ACUP-OLD-DETAILS (L669) and
+│       │                                    ACUP-NEW-DETAILS (L757): carries BOTH old and new
+│       ├── CardDto.java                  <- app/cpy-bms/COCRDSL.CPY (15) + COCRDLI.CPY (45)
+│       ├── CardUpdateRequest.java        <- app/cpy-bms/COCRDUP.CPY (17 fields)
+│       │                                    + COCRDUPC CCUP-OLD-DETAILS and CCUP-NEW-DETAILS
+│       │                                    (app/cbl/COCRDUPC.cbl:L291-L313): carries BOTH
+│       ├── TransactionDto.java           <- app/cpy-bms/COTRN01.CPY (21 fields)
+│       ├── TransactionAddRequest.java    <- app/cpy-bms/COTRN02.CPY (21 fields)
+│       ├── UserSecurityDto.java / UserCreateRequest.java / UserUpdateRequest.java
+│       │                                 <- COUSR00.CPY (59) + COUSR03.CPY (11, delete projection)
+│       │                                    / COUSR01.CPY (12) / COUSR02.CPY (12)
+│       ├── BillPaymentRequest.java       <- app/cpy-bms/COBIL00.CPY (10 fields)
+│       ├── ReportRequest.java            <- app/cpy-bms/CORPT00.CPY (17 fields)
+│       ├── MenuResponse.java             <- app/cpy-bms/COMEN01.CPY + COADM01.CPY (20 fields
+│       │                                    each, field-for-field identical) + app/cpy/COMEN02Y.cpy
+│       │                                    + COADM02Y.cpy option tables (counts 10 and 4)
+│       ├── PageResponse.java             <- app/cpy-bms/COCRDLI.CPY:L60 PAGENOI X(3);
+│       │                                    COTRN00/COUSR00.CPY:L60 PAGENUMI X(8); + program
+│       │                                    WORKING-STORAGE COTRN00C:L65-L66, COUSR00C:L70-L71,
+│       │                                    COCRDLIC:L242. NOT COCOM01Y, which declares no page
+│       │                                    field at all. Totals: Not available
+│       ├── CommArea.java                 <- app/cpy/COCOM01Y.cpy (live fields only)
+│       └── StatementTransaction.java     <- app/cpy/COSTM01.CPY (32 B key + 318 B rest = 350)
+│                                            + app/cpy/CVTRA07Y.cpy (133 B report lines)
+│
+├── repository/                           (11 + package-info.java)
+│   ├── AccountRepository.java            <- CICS FILE ACCTDAT + ACCTDATA.VSAM.KSDS (key 11)
+│   ├── CardRepository.java               <- CICS FILE CARDDAT + CARDAIX; findByAccountId
+│   │                                        <- CARDDATA.VSAM.AIX (KEYLEN 11, RKP 5, AXRKP 16)
+│   ├── CardCrossReferenceRepository.java <- CICS FILE CCXREF + CXACAIX; findByAccountId
+│   │                                        <- CARDXREF.VSAM.AIX (KEYLEN 11, RKP 5, AXRKP 25)
+│   ├── CustomerRepository.java           <- CICS FILE CUSTDAT (key 9)
+│   ├── TransactionRepository.java        <- CICS FILE TRANSACT (key 16); top-one descending finder;
+│   │                                        processing-timestamp finder
+│   │                                        <- TRANSACT.VSAM.AIX (KEYLEN 26, AXRKP 304)
+│   ├── DailyTransactionRepository.java   <- the DALYTRAN sequential staging dataset
+│   ├── TransactionCategoryBalanceRepository.java <- TCATBALF (batch-only, no CICS definition)
+│   ├── DisclosureGroupRepository.java    <- DISCGRP (batch-only); default-group fallback query
+│   ├── TransactionTypeRepository.java    <- TRANTYPE (batch-only, key 2)
+│   ├── TransactionCategoryRepository.java <- TRANCATG (batch-only, key 6)
+│   └── UserSecurityRepository.java       <- CICS FILE USRSEC (key 8)
+│
+├── service/                              (21 + package-info.java per sub-package)
+│   ├── auth/AuthenticationService.java           <- app/cbl/COSGN00C.cbl (260 lines)
+│   ├── account/AccountViewService.java           <- app/cbl/COACTVWC.cbl (941)
+│   ├── account/AccountUpdateService.java         <- app/cbl/COACTUPC.cbl (4,236) dual-dataset write
+│   ├── card/CardListService.java                 <- app/cbl/COCRDLIC.cbl (1,459), page size 7
+│   ├── card/CardDetailService.java               <- app/cbl/COCRDSLC.cbl (887)
+│   ├── card/CardUpdateService.java               <- app/cbl/COCRDUPC.cbl (1,560)
+│   ├── transaction/TransactionListService.java    <- app/cbl/COTRN00C.cbl (699), page size 10
+│   ├── transaction/TransactionDetailService.java  <- app/cbl/COTRN01C.cbl (330)
+│   ├── transaction/TransactionAddService.java     <- app/cbl/COTRN02C.cbl (783), descending browse
+│   ├── billing/BillPaymentService.java           <- app/cbl/COBIL00C.cbl (572)
+│   ├── report/ReportSubmissionService.java       <- app/cbl/CORPT00C.cbl (649), TDQ -> SQS bridge
+│   ├── admin/UserListService.java                <- app/cbl/COUSR00C.cbl (695), page size 10
+│   ├── admin/UserAddService.java                 <- app/cbl/COUSR01C.cbl (299)
+│   ├── admin/UserUpdateService.java              <- app/cbl/COUSR02C.cbl (414)
+│   ├── admin/UserDeleteService.java              <- app/cbl/COUSR03C.cbl (359) no self-delete guard
+│   ├── menu/MainMenuService.java                 <- app/cbl/COMEN01C.cbl (282) + COMEN02Y.cpy
+│   ├── menu/AdminMenuService.java                <- app/cbl/COADM01C.cbl (268) + COADM02Y.cpy
+│   ├── shared/DateValidationService.java         <- app/cbl/CSUTLDTC.cbl (157) + CSUTLDPY + CSUTLDWY
+│   ├── shared/ValidationLookupService.java       <- app/cpy/CSLKPCDY.cpy lookup tables
+│   ├── shared/FileStatusMapper.java              <- the universal FILE STATUS guard idiom
+│   └── shared/FileService.java                   <- app/cbl/CBSTM03B.CBL (230) CALL contract
+│
+├── controller/                           (8 + package-info.java)
+│   ├── AuthController.java               <- CSD CC00 -> COSGN00C
+│   ├── MenuController.java               <- CSD CM00 -> COMEN01C, CA00 -> COADM01C
+│   ├── AccountController.java            <- CSD CAVW -> COACTVWC, CAUP -> COACTUPC
+│   ├── CardController.java               <- CSD CCLI -> COCRDLIC, CCDL -> COCRDSLC, CCUP -> COCRDUPC
+│   ├── TransactionController.java        <- CSD CT00/CT01/CT02 -> COTRN00C/COTRN01C/COTRN02C
+│   ├── BillingController.java            <- CSD CB00 -> COBIL00C
+│   ├── ReportController.java             <- CSD CR00 -> CORPT00C
+│   └── AdminController.java              <- CSD CU00/CU01/CU02/CU03 -> COUSR00C/01C/02C/03C,
+│                                            mounted at /api/admin/*, administrator role only
+│
+├── batch/
+│   ├── jobs/                             (6 + package-info.java)
+│   │   ├── DailyTransactionPostingJob.java    <- app/jcl/POSTTRAN.jcl + CBTRN02C.cbl, with
+│   │   │                                         CBTRN01C.cbl folded in as a labelled read-only
+│   │   │                                         pre-flight step (it performs no write)
+│   │   ├── InterestCalculationJob.java        <- app/jcl/INTCALC.jcl + CBACT04C.cbl
+│   │   ├── CombineTransactionsJob.java        <- app/jcl/COMBTRAN.jcl (SORT + IDCAMS REPRO only,
+│   │   │                                         no COBOL program exists for this job)
+│   │   ├── StatementGenerationJob.java        <- app/jcl/CREASTMT.JCL (5 steps) + CBSTM03A.CBL
+│   │   │                                         + CBSTM03B.CBL
+│   │   ├── TransactionReportJob.java          <- app/jcl/TRANREPT.jcl + app/proc/TRANREPT.prc
+│   │   │                                         + CBTRN03C.cbl
+│   │   └── BatchPipelineOrchestrator.java     <- the end-to-end job stream with COND gating
+│   ├── processors/                       (5 + package-info.java)
+│   │   ├── TransactionPostingProcessor.java   <- CBTRN02C 1500-VALIDATE-TRAN + 2000-POST-TRANSACTION
+│   │   ├── InterestCalculationProcessor.java  <- CBACT04C 1050/1100/1200/1300/1400 paragraphs
+│   │   ├── TransactionReportProcessor.java    <- CBTRN03C control-break and page logic (20/page)
+│   │   ├── StatementProcessor.java            <- CBSTM03A.CBL 1000-MAINLINE and HTML emission
+│   │   └── TransactionCombineProcessor.java   <- COMBTRAN.jcl STEP05R sort/merge semantics
+│   ├── readers/                          (7 + package-info.java)
+│   │   ├── AccountReader.java                 <- app/cbl/CBACT01C.cbl (read-only)
+│   │   ├── CardReader.java                    <- app/cbl/CBACT02C.cbl (read-only)
+│   │   ├── CardCrossReferenceReader.java      <- app/cbl/CBACT03C.cbl (read-only)
+│   │   ├── CustomerReader.java                <- app/cbl/CBCUS01C.cbl (read-only)
+│   │   ├── DailyTransactionReader.java        <- CBTRN02C DALYTRAN sequential read (LRECL 350)
+│   │   ├── TransactionBackupReader.java       <- app/proc/TRANREPT.prc STEP01R backup (LRECL 350)
+│   │   └── CombinedTransactionReader.java     <- app/jcl/COMBTRAN.jcl concatenated SORTIN (L23-L26)
+│   └── writers/                          (3 + package-info.java)
+│       ├── TransactionWriter.java             <- CBTRN02C 2900-WRITE-TRANSACTION-FILE (DB + S3)
+│       ├── RejectWriter.java                  <- CBTRN02C 2500-WRITE-REJECT-REC, LRECL 430 = 350+80
+│       └── StatementWriter.java               <- CREASTMT.JCL STMTFILE LRECL 80 + HTMLFILE LRECL 100
+│
+├── exception/                            (9 + package-info.java)
+│   ├── CardDemoException.java            <- base
+│   ├── ValidationException.java          <- app/cpy/CSSETATY.cpy field-error semantics
+│   ├── RecordNotFoundException.java      <- FILE STATUS '23' / DFHRESP(NOTFND)
+│   ├── DuplicateRecordException.java     <- FILE STATUS '22' / DFHRESP(DUPREC)
+│   ├── FileUnavailableException.java     <- FILE STATUS '35' / DFHRESP(NOTOPEN)
+│   ├── ConcurrentUpdateException.java    <- COACTUPC 9700-CHECK-CHANGE-IN-REC outcome (L4109-L4193)
+│   ├── DataIntegrityException.java       <- referential failures across the foreign keys
+│   ├── FileAccessException.java          <- FILE STATUS '9x', carrying the NNNN-expanded status
+│   └── FatalProcessingException.java     <- app/cpy/CSMSG02Y.cpy abend fields (L21-L29)
+│                                            + CALL 'CEE3ABD' with ABCODE 999 (CBTRN02C L710-L711)
+│
+└── observability/                        (3 + package-info.java)
+    ├── CorrelationIdFilter.java          <- replaces WS-TRANID (17 online programs) + the COMMAREA
+    │                                        CDEMO-FROM-TRANID/CDEMO-TO-TRANID pair as the thread of
+    │                                        identity. NOT EIBTRNID - 0 corpus references
+    ├── MetricsConfig.java                <- replaces the DISPLAY counters (CBTRN02C L227-L228)
+    └── HealthIndicators.java             <- replaces OPENFIL.jcl / CLOSEFIL.jcl availability checks
+```
+
+**Why the service count is 21, stated explicitly so downstream verification does not read a contradiction.** **Twenty are directly mandated** — seventeen online program services plus `DateValidationService` (from `CSUTLDTC`), `ValidationLookupService` (from `CSLKPCDY`) and `FileStatusMapper` (from the universal I/O guard idiom). A twenty-first, `FileService`, is **additive**: `CBSTM03A` reaches all of its datasets through `CALL 'CBSTM03B' USING WS-M03B-AREA` with a DD-name selector `[app/cbl/CBSTM03A.CBL:L71-L83]`, and that indirection has no home in any of the twenty. **The total is therefore 21.** The prior-run evidence claims 20 `[docs/project-guide.md:L194]`; that figure is stale and is corrected in [§0.2.2.1](#0221-corrections-to-the-prior-specification).
+
+#### 0.4.1.3 Resources
+
+```text
+src/main/resources/
+├── application.yml                       <- base profile; JWT signing key via environment indirection
+├── application-local.yml                 <- LocalStack endpoint override, compose PostgreSQL
+├── application-test.yml                  <- Testcontainers-backed profile
+├── application-prod.yml                  <- least-privilege production profile (Rule 1 Clause D)
+├── logback-spring.xml                    <- JSON encoding; traceId/spanId/correlationId from MDC;
+│                                            credential, password-hash and SSN masking
+├── db/migration/
+│   ├── V1__create_schema.sql             <- app/catlg/LISTCAT.txt + the IDCAMS DEFINE CLUSTER jobs
+│   │                                        + the 11 record-layout copybooks: 11 tables, NOT NULL on
+│   │                                        every column, CHECK constraints, foreign keys,
+│   │                                        @Version columns
+│   ├── V2__create_indexes.sql            <- the 3 alternate indexes (AXRKP 16, 25, 304)
+│   └── V3__seed_data.sql                 <- the 9 ASCII fixtures with position-aware overpunch
+│                                            decoding, plus the 10 inline users from
+│                                            app/jcl/DUSRSECJ.jcl:L35-L44, BCrypt strength-10 hashed
+└── validation/
+    ├── nanpa-area-codes.json             <- app/cpy/CSLKPCDY.cpy area-code tables
+    ├── us-state-codes.json               <- app/cpy/CSLKPCDY.cpy state table
+    └── state-zip-prefixes.json           <- app/cpy/CSLKPCDY.cpy state and ZIP-prefix pairs
+```
+
+#### 0.4.1.4 Tests
+
+```text
+src/test/java/com/cardemo/
+├── unit/
+│   ├── service/     <- one test class per service bean (21), asserting paragraph-level behaviour
+│   │                   against the cited COBOL locators
+│   ├── batch/       <- one per processor (5), incl. the 102/103 fall-through assertion
+│   ├── model/       <- entity, DTO, key and enum tests; RejectCode literal assertions
+│   └── validation/  <- DateValidationService and ValidationLookupService
+├── integration/
+│   ├── repository/  <- 11 repository tests on a Testcontainers PostgreSQL 16
+│   ├── batch/       <- job and step tests, incl. decider outcomes for return codes 0/4/8/12
+│   └── aws/         <- S3 and SQS tests against LocalStack
+└── e2e/
+    ├── BatchPipelineE2ETest.java     <- app/data/ASCII/dailytran.txt (300 records) through posting
+    ├── OnlineTransactionE2ETest.java <- sign-on through transaction add across the REST surface
+    └── GateVerificationTest.java     <- machine-checkable assertions for the eight validation gates
+
+src/test/resources/   <- fixture copies keyed on the ACTUAL fixture names of 0.2.1.7 and
+                         expected-output baselines for parity comparison
+```
+
+**The tree above is the target, and the tree on disk now matches it. Present state is stated once, in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint), and only differences from the target are repeated here.** Measured on this tree, that difference is nil: the test tree is complete against this sub-section's design, and `e2e/` holds exactly the three suites named above beside the two oracle support types. **The per-tier census is deliberately not restated here**, because a census repeated in two places is a census that will disagree with itself, and nothing recomputes either copy. `src/test/resources/` holds the **nine** ASCII fixture copies at its root and, beneath it, the two **declared** expectation trees `parity/gate1/` and `expected/posttran/` &mdash; and nothing else, which is the property [§0.7.9.2](#0792-gate-status-stated-honestly) relies on. **`e2e/` is present and executes:** `BatchPipelineE2ETest`, `OnlineTransactionE2ETest` and `GateVerificationTest` are all authored and all run. What remains genuinely `Not available` is narrower and is one thing only: a capture of the frozen COBOL running on **z/OS or a licensed emulator**, which would corroborate the two committed expectations rather than replace either, and which cannot be produced from inside this repository. Gate status is in [§0.7.9.2](#0792-gate-status-stated-honestly).
 
 ### 0.4.2 Web Search Research Conducted
 
-- **Java 25 LTS**: Released September 16, 2025 as the latest LTS after Java 21. Includes 18 JEPs with features like flexible constructor bodies, compact source files, module import declarations, and compact object headers. Oracle provides at least 8 years of LTS support.
-- **Spring Boot 3.5.x**: Spring Boot 3.5.11 (released February 19, 2026) is the latest stable 3.x release. Spring Boot 3.x requires Java 17 minimum and uses Jakarta EE 10 APIs. Includes built-in support for structured logging, observability via Micrometer, and virtual threads.
-- **PostgreSQL 16+**: PostgreSQL 16.13 (released February 26, 2026) is the latest 16.x patch. PostgreSQL 16 provides improved query parallelism, bulk loading performance (up to 300% improvement), and enhanced SQL/JSON syntax.
-- **COBOL-to-Java migration patterns**: Industry standard practice for VSAM-to-RDBMS migration includes BigDecimal for COMP-3 precision, fixed-point arithmetic preservation, and record-level mapping to JPA entities.
+Four research questions were resolved before the target design was fixed. Each outcome is a design constraint, not background reading.
+
+- **Java 25 readiness of the pinned Spring Boot line.** The Spring Boot project tracked Java 25 support explicitly and identified the 3.5 line as Java 25 ready. Since the requirement pins 3.5.11, which is later than the release identified as the readiness point, the pinned combination is supported. **Design consequence:** `maven.compiler.release` is set to 25 with no toolchain downgrade and **no preview features enabled**.
+- **Support horizon of the 3.5 line.** Open-source support for the Spring Boot 3.5 line concluded on 30 June 2026. **Design consequence:** the pinned 3.5.11 is honoured exactly as instructed — the version is not unilaterally advanced — and the end-of-support horizon is recorded as a residual risk with a `DECISION_LOG.md` entry rather than being silently absorbed. **Verified as of 1 August 2026:** Spring Boot 3.5 reached **end of open-source support on 30 June 2026**, and the final open-source patch on that line was **3.5.16**, released 25 June 2026. No further open-source patches will be published for 3.5.x, so the pinned **3.5.11 is both out of open-source support and five patch releases behind the last free one**; newly disclosed vulnerabilities in the 3.5 line will not receive a free fix. Only the 4.0 and 4.1 lines remain in open-source support, and commercial extended support for 3.5 is available separately. **The pin is nevertheless retained**, because [§0.8.4](#084-special-instructions-and-constraints) makes pinned versions binding and forbids advancing one unilaterally; an upgrade requires an approved plan change. This is therefore an **accepted, disclosed residual risk**, not an open action.
+- **Maven major-version choice.** Maven 4 exists, but the plugin ecosystem this build depends on is validated against the 3.9 line. **Design consequence:** the wrapper pins **Maven 3.9.11**, matching the provisioned environment, and the enforcer plugin asserts that floor so the build cannot silently run on a different generation.
+- **COBOL-to-Java modernisation practice, and the conflict it creates.** Industry guidance consistently warns against literal transliteration that reproduces `GO TO` and `PERFORM` structure in Java and recommends restructuring into idiomatic object-oriented code. **This directly conflicts with the mandate to preserve control flow one-to-one.** The conflict is resolved in favour of the requirement: paragraph-level correspondence is preserved because behavioural parity is the contract and `TRACEABILITY_MATRIX.md` must be mechanically provable against it. The legitimate readability concern behind the guidance is answered by two compensating mechanisms rather than by restructuring — every private method carries a Javadoc citation naming its source paragraph, and the traceability matrix makes the correspondence navigable. Where the guidance can be honoured without touching control flow, it is: naming is idiomatic, `BigDecimal` replaces packed decimal, and framework mechanisms replace static linkage.
+
+Additionally, **every pinned coordinate in [§0.6.1](#061-key-private-and-public-packages) was verified against the public package registry**, which is how the Testcontainers module-artefact rename of [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename) was discovered before it could fail a build.
+
+**Fixed-width and decimal parity hazards** were researched alongside. The recurring failure modes in this class of migration are loss of fixed-width record geometry, mishandling of packed and zoned decimal signs, and floating-point substitution for decimal arithmetic. All three are pre-empted by design: record lengths 350, 430, 133, 100 and 80 are preserved byte-exactly at the S3 boundary; overpunch decoding is position-aware from the PIC clauses ([§0.2.1.7](#0217-seed-and-test-data-appdata)); and `BigDecimal` is used throughout with no `float` or `double` in any financial field. Side-by-side output comparison against the legacy fixtures is the parity proof, which is why the reject-record and report-line writers reproduce the legacy layouts exactly.
 
 ### 0.4.3 Design Pattern Applications
 
-| Pattern | Application in CardDemo Migration |
+Each pattern below is adopted because a specific legacy construct requires it, not as a stylistic preference.
+
+- **Repository pattern.** Eleven Spring Data JPA interfaces replace the VSAM access verbs `READ`, `WRITE`, `REWRITE`, `DELETE`, `STARTBR`, `READNEXT`, `READPREV` and `ENDBR`. Browse sequences become `Pageable` and `Slice` queries, preserving the page sizes **7, 10 and 10** established in [§0.2.1.1](#0211-cobol-programs-appcbl).
+- **Service layer with paragraph-level correspondence.** One bean per COBOL program; one private method per source paragraph; a Javadoc citation on each. This is what makes the scope-coverage gate provable by inspection rather than by assertion.
+- **Dependency injection.** Replaces `EXEC CICS XCTL PROGRAM(...)` static dispatch `[app/cbl/COMEN01C.cbl:L153]` and the static linkage `CALL 'CSUTLDTC'` and `CALL 'CBSTM03B'` `[app/cbl/CBSTM03A.CBL:L351]` with constructor injection.
+- **Strategy pattern, two distinct uses.** First, `RejectCode` encapsulates the five validation outcomes together with their exact literal descriptions, so the reject-record text is produced from one place. Second, a DD-name-keyed handler map inside `FileService` replaces the four-file dispatch of `CBSTM03B` `[app/cbl/CBSTM03B.CBL:L118-L127]`. **A clarification matters here:** the `ALTER` chain in `CBSTM03A` is a deterministic one-shot initialisation pipeline that walks the datasets and then permanently exits to the mainline `[app/cbl/CBSTM03A.CBL:L815]`, **not** a runtime dispatch table. The strategy map therefore belongs at the file-access layer, where the file-and-operation matrix genuinely varies, and the `ALTER` chain itself becomes ordinary sequential initialisation. See [§0.7.6.1](#0761-the-dispatch-is-a-static-initialisation-pipeline-not-a-strategy-table).
+- **Template method.** An abstract batch-step base captures the universal legacy batch skeleton — open files, loop read, process, write, close, display counters, set `RETURN-CODE` — and each job specialises it. Every batch program in the corpus follows this shape.
+- **`JobExecutionDecider`.** Replaces JCL `COND=(0,NE)` step gating `[app/jcl/CREASTMT.JCL:L56]` and maps return codes 0, 4, 8 and 12 onto completed, completed-with-rejects, failed and abend outcomes. Return code 4 has a precise legacy meaning: it is set when and only when the reject count exceeds zero `[app/cbl/CBTRN02C.cbl:L229-L231]`.
+- **`FlowBuilder.split()`.** Models the independent parallel branches of the batch stream where the legacy job stream has no ordering dependency.
+- **Comparator plus repository ordering.** Replaces the three DFSORT specifications: sort by card number with an `INCLUDE COND` date range `[app/proc/TRANREPT.prc:L44-L46]`; the two-key sort with an `OUTREC` projection `[app/jcl/CREASTMT.JCL:L53-L54]`; and sort by transaction identifier over a concatenated input `[app/jcl/COMBTRAN.jcl:L30]`. The `OUTREC` projection needs care — see [§0.7.5.4](#0754-the-statement-projection-that-silently-truncates-two-bytes).
+- **Embedded composite identifiers.** `@EmbeddedId` with `@Embeddable` for the three composite VSAM keys, preserving COBOL field order exactly so that key-order-sensitive browses behave identically. This matters directly: `CBACT04C`'s account-level control break is only correct because the `TCATBALF` key is account, then type, then category.
+- **Filter chain as request context.** `CorrelationIdFilter` followed by `JwtAuthenticationFilter` replaces the COMMAREA as the request-scoped context carrier. The pseudo-conversational enter-versus-re-enter flag has no Java counterpart and collapses into stateless request handling.
+- **Two-layer optimistic concurrency.** JPA `@Version` provides the store-level guard, but it is **not sufficient on its own**. `COACTUPC` compares business field values against a snapshot taken when the screen was populated `[app/cbl/COACTUPC.cbl:L4109-L4193]`, including the deliberate asymmetry whereby the account group identifier is compared through `FUNCTION LOWER-CASE` while customer name and address fields are compared through `FUNCTION UPPER-CASE`, and dates are compared as three separate substrings rather than whole strings. Both layers are required.
+- **Transaction boundary with preserved asymmetry.** A single `@Transactional(rollbackFor = Exception.class)` method reproduces `COACTUPC`'s rollback behaviour, where `EXEC CICS SYNCPOINT ROLLBACK` fires only on the customer rewrite failure `[app/cbl/COACTUPC.cbl:L4099-L4101]` and not on the account rewrite failure `[app/cbl/COACTUPC.cbl:L4080]`. See [§0.7.1.2](#0712-why-the-rollback-asymmetry-is-correct-not-a-defect).
+- **Publisher and listener bridge.** `SqsTemplate.send()` replaces `EXEC CICS WRITEQ TD QUEUE('JOBS')` `[app/cbl/CORPT00C.cbl:L517-L523]`, and an SQS listener replaces the JES2 internal reader, carrying the start and end dates that reproduce the 80-byte parameter record.
+- **Externalised lookup resources.** The `CSLKPCDY` 88-level tables become three classpath JSON resources loaded by `ValidationLookupService`, preserving exact membership without generating over a thousand lines of Java constants.
+
+### 0.4.4 User Interface Design Applicability
+
+**Not applicable.** The target exposes a REST and JSON surface — eight controllers over seventeen operations — plus Actuator endpoints. There is no HTML, CSS or JavaScript application, no single-page front end, and no component library. The legacy 3270 and BMS presentation layer is consumed as **DTO field contracts**, all **441** fields across the seventeen symbolic maps catalogued in [§0.2.1.4](#0214-bms-presentation-layer-appbms-and-appcpy-bms), and is not reimplemented as a user interface.
+
+The one HTML artefact in scope, `executive-presentation.html`, **is** a static stakeholder document rather than an application interface, and **carries** no external runtime, CDN, script, font or image dependency. It exists as of 7 August 2026 ([§0.3.1.5](#0315-create-evidence-and-documentation)) and the self-containment property is measured on the file rather than asserted: zero `<script>` elements, zero `<img>` elements, zero `<iframe>` elements, zero `http`-scheme `src` or `href` attributes, one inline `<style>` block, and no `@font-face` - only locally-resolved font family names. There is exactly **one** `<link>` element, a `rel="icon"` carrying a 130-byte PNG as a `data:` URI. It is deliberate and it does not spend the property: a `data:` URI is data rather than a fetch, and the string holds no URL of any kind - not even an SVG namespace - so the file still contains exactly two `http` occurrences, both the Apache licence address in licence text. Loaded from a served copy in headless Chrome the only network request is the document itself, on a cold cache-bypassing reload as well as a warm one, and the console is empty of messages of every kind. Reaching that empty console is what the icon is for: a browser requests `/favicon.ico` for any document whether or not one is declared, and the resulting 404 was the single console error the file ever produced - browser-originated rather than page-originated, and therefore invisible to any check that reads only the markup.
+
+Its **in-page** links are all fragments and resolve with no network and no sibling file. Its **cross-document** links do not, and the distinction matters, because conflating the two is what produced a Critical finding once already. Thirty-two of its links point at sibling documents and thirteen references point at repository-root artefacts, and MkDocs rewrites none of them: it copies this file to the site root byte for byte and parses no part of it, which places every one of those links outside the reach of the `validation` block established in [§0.2.1.8](#0218-repository-conventions-discovered). A wrong href here 404s on the published site while `mkdocs build --strict` still exits 0 reporting nothing - and that is precisely how all 45 non-fragment links in an earlier generation came to point at source file names such as `validation-gates.md`, every one of which 404ed once published, with no build signal at all. The resolution is two conventions, applied to the file and recorded in `mkdocs.yml` beside the nav they govern. Cross-document hrefs use the **published directory form** (`validation-gates/`) while the visible link **text** keeps the source file name, so a reader on the site clicks and arrives while a reader holding the raw file still sees which file to open; the accepted cost, stated rather than hidden, is that those hrefs do not resolve outside the published site. Repository-root artefacts are **named in code spans and never linked**, because they live outside `docs_dir` and have no published URL - the same rule this document and every sibling already applies to `](../README.md)`. Because no build step can check either convention, the links are hand-maintained and are verified by serving the built site and requesting each target, which was done: all thirty-two answer 200.
+
+`CBSTM03A`'s HTML statement emission produces a fixed 100-byte-per-line output file whose layout is dictated by the legacy program's literal constants `[app/cbl/CBSTM03A.CBL:L149]`, not by any design system.
+
+Because no component library or design system is specified anywhere in the requirements, and because `ui_design_system_specified` is false for this file, the design-system alignment protocol has no subject and **no Design System Compliance sub-section is produced**. This is a determination reached by inspection, not an omission.
+
+### 0.4.5 Building, Running and Testing the Target
+
+Rule 1 Clause E requires that a component's documentation state how it is built, run and tested, alongside its key configuration and its common failure modes. Those four things are recorded here in one place because the validation gates depend on the exact commands, not on approximations of them. This is a **command contract**, deliberately not a tutorial: step-by-step developer setup belongs in `onboarding-guide.md` and the legacy inventory and appended Java sections belong in the root `README.md`, and duplicating either here would violate Clause C.
+
+#### 0.4.5.1 Checkpoint Inventory and Canonical Commands, Measured at This Checkpoint
+
+**This sub-section is the single dated statement of present state for the whole document, and the only one.** Everything else here is either target design or explicitly-dated historical evidence; where any other passage disagrees with this sub-section, **this sub-section governs**. It exists because the alternative — restating present state wherever it happens to be relevant — is exactly what produced the drift recorded as a High finding in [§0.2.2.2](#0222-findings-register). A census copied into hundreds of Javadoc blocks is stale the moment the next file lands, so it is stated once, here, with the command that reproduces it.
+
+**Every figure in this sub-section was re-measured on Friday 7 August 2026, and the rows that moved afterwards were re-measured again on Sunday 9 August 2026 and carry that date inline.** Those two dates together are the current-evidence dating for this document; every other date appearing anywhere in it is historical and is labelled as such. The 4 August 2026 figures they replace are retained, labelled and dated rather than deleted. The dating convention, and the one execution date that is **`Not available`**, are set out in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention).
+
+**A caution about the precedence rule stated above, because it can be turned against a reader.** This sub-section governs *where another passage disagrees about the same measurement on the same date* — it is not a licence to prefer a stale figure over a fresher one. The rows below that moved after 7 August are the executed test counts, the container-image reading and the vulnerability-scan residue; each states its own date, and **the later date wins**. When a count published here disagrees with [`docs/validation-gates.md`](validation-gates.md), that ledger is the authority for gate results and for the test-tier totals by construction, because it is the only document permitted to publish them. Naming this explicitly matters: a precedence rule written to stop two undated tables contradicting each other will, once one of them ages, start defending the wrong number.
+
+**Present state of `src/main/java`, against the target enumerated in [§0.4.1.2](#0412-application-source-srcmainjavacomcardemo).** Reproduce the left column with `find src/main/java -name '*.java' | wc -l` and the per-package rows with `find src/main/java/com/cardemo/<package> -maxdepth 1 -name '*.java' ! -name package-info.java | wc -l`.
+
+| Package | Types now | Types at target | Still to be authored |
+|---|---:|---:|---|
+| `com.cardemo` (bootstrap) | 1 | 1 | — |
+| `config` | 6 | 6 | — |
+| `security` | **4** | 3 | — (one above target: `SnapshotTokenService`, which seals the as-displayed snapshot and the list cursor) |
+| `model.entity` | 11 | 11 | — |
+| `model.key` | 3 | 3 | — |
+| `model.enums` | 4 | 4 | — |
+| `model.dto` | **29** | 16 | — (thirteen above target: the per-endpoint request and response records that keep a controller from returning an entity) |
+| `repository` | 11 | 11 | — |
+| `service` (nine leaves) | **21** | 21 | — (complete: `admin/UserDeleteService`, from `app/cbl/COUSR03C.cbl`, has since been authored) |
+| `controller` | **8** | 8 | — (complete: `AuthController` and `AdminController` have since been authored) |
+| `batch.jobs` | **6** | 6 | — (complete: `CombineTransactionsJob`, `TransactionReportJob` and `BatchPipelineOrchestrator` have since been authored) |
+| `batch.processors` | 5 | 5 | — |
+| `batch.readers` | **7** | 7 | — (complete: `CombinedTransactionReader` has since been authored) |
+| `batch.writers` | 3 | 3 | — |
+| `batch` (layer) | **1** | 0 | — (one above target: `GenerationPrefixContract`, the object-key namespace contract all four leaves share) |
+| `exception` | 9 | 9 | — |
+| `observability` | **4** | 3 | — (one above target: `TemplatedUriObservationConvention`, which keeps a path variable out of a metric tag) |
+| **Types, total** | **133** | 117 | **0** |
+| `package-info.java` | **26** | 14 | — |
+| **`.java` files, total** | **159** | 131 | **0** |
+
+**Measured Friday 7 August 2026, and this is the third reading published for this table.** All three are kept, because a shortfall that closes is only auditable if the readings that showed it survive:
+
+| Reading | Types | Package documents | `.java` files | Outstanding |
+|---|---:|---:|---:|---:|
+| 2 August 2026 *(historical)* | 117 | 26 | 143 | 11 |
+| 4 August 2026 *(superseded)* | 124 | 25 | 149 | 4 |
+| **7 August 2026 *(current)*** | **133** | **26** | **159** | **0** |
+
+Between the second and third readings the four outstanding classes landed - `CombineTransactionsJob`, `TransactionReportJob`, `BatchPipelineOrchestrator` and `CombinedTransactionReader` - and four further types were added that no earlier reading anticipated: three `model.dto` types and one `observability` type. The package-document count went 26 to 25 to 26: the first 26 counted one document twice, and the return to 26 is the `batch` layer document being authored, which is a real addition rather than the same miscount recurring. The bijection Clause E requires - one document per package that holds a type - is asserted mechanically by `com.cardemo.unit.model.PackageDocumentationInventoryTest` rather than by this table, and the per-leaf figures are additionally asserted against the bootstrap document's own prose by `com.cardemo.unit.infrastructure.InventoryCountGateTest`, which is what stops this table and that document drifting apart again.
+
+**Nothing remains to be authored, and the shortfall column is empty.** Every type the target design names is on disk, so **any text anywhere in this repository that marks one of them *planned* is stale by definition** — including `CombineTransactionsJob`, `BatchPipelineOrchestrator`, `admin/UserDeleteService`, `AuthController`, `AdminController`, `DailyTransactionPostingJob`, `StatementGenerationJob`, `DailyTransactionReader`, `TransactionBackupReader`, `TransactionReportJob`, `CombinedTransactionReader`, `BatchConfig` and `ObservabilityConfig`, each of which a reader may remember as outstanding.
+
+**Sixteen** types sit above the target count, and every one is deliberate rather than scope creep: `security/SnapshotTokenService` exists because a stateless list cursor must not be forgeable by the caller who receives it; the **thirteen** additional `model.dto` types are per-endpoint request and response records that keep an entity from being serialised straight onto the wire; the additional `observability` type carries the reject-code-tagged counter registration that the four named counters require; and `batch/GenerationPrefixContract` carries the one generation-to-object-key scheme the four batch leaves share. All are additions the target design implies and does not enumerate. The reconciliation is 1 + 13 + 1 + 1 = 16, against 133 measured and 117 at target.
+
+**Twenty-six `package-info.java` files: one for each of the 25 packages that hold a type, plus one layer document.** They sit at `com/cardemo`, `config`, `security`, `model/entity`, `model/key`, `model/enums`, `model/dto`, `repository`, `service`, the nine `service` leaves (`account`, `admin`, `auth`, `billing`, `card`, `menu`, `report`, `shared`, `transaction`), `controller`, `batch`, `batch/jobs`, `batch/processors`, `batch/readers`, `batch/writers`, `exception` and `observability`. The target figure of fourteen was the count when five leaves were documented by their parent; each of those leaves now carries its own document, which is what Rule 1 Clause E asks for and is why the measured figure is higher. The command that reproduces the current one is `find src/main/java -name package-info.java | wc -l`. **There is deliberately no document at the `model` root, because that package holds no type and its leaves are cohesive enough to document themselves.** The `batch` root is not that exception either, because it holds a type of its own — `GenerationPrefixContract` — and so earns its document under the same one-per-type-holding-package rule as any leaf. `src/main/java/com/cardemo/batch/package-info.java` is mandated by [§0.3.1.1](#0311-create-java-application-source) and doubles as the batch **layer** document, because four leaves sit beneath it and a set of facts belongs to all four rather than to any one of them — one exit-code vocabulary of 0, 4, 8 and 12, one fixed-width record geometry contract, one generation-to-object-key scheme over the seven GDG bases, and one register of preserved source quirks. Stating those per leaf would be the duplication Rule 1 Clause C forbids; stating them nowhere would fail Clause E for the layer. The invariant, rather than the list, is what `PackageDocumentationInventoryTest` asserts: one document per package that contains a type, plus a bounded allow-list whose single entry is `com/cardemo/service`, the one package that is documented while holding no type of its own. The same class independently re-checks that every allow-list entry is genuinely type-less and genuinely documented, so the allow-list cannot shelter an emptied package, and `com/cardemo/model` stays undocumented by rule rather than by accident.
+
+**The rest of the present state, each row reproducible from the repository.**
+
+| Property | Measured at this checkpoint | How to reproduce |
+|---|---|---|
+| HTTP operations | **17** across the eight controllers, which is the full target surface: `POST /api/auth/signon`; `GET /api/menu/main`, `GET /api/menu/admin`; `GET /api/accounts/{accountId}`, `PUT /api/accounts`; `GET /api/cards`, `GET /api/cards/detail`, `PUT /api/cards`; `GET /api/transactions`, `GET /api/transactions/detail`, `POST /api/transactions`; `POST /api/billing/payments`; `POST /api/reports`; and the four user-administration operations under `/api/admin/*`. The reconciliation against the seventeen sourced CICS transactions of [§0.2.1.2](#0212-program-count-reconciliation-17-sourced-1-orphan) is one-to-one | `grep -rhc '@GetMapping\|@PostMapping\|@PutMapping\|@DeleteMapping' src/main/java/com/cardemo/controller/*.java` |
+| Test sources | **269** `.java` files — **224** under `unit/` (`model` 82, `batch` 46, `service` 30, `config` 18, `controller` 13, `infrastructure` 10, `observability` 9, `validation` 8, `security` 5, `repository` 2, `exception` 1), **40** under `integration/` (`repository` 19, `batch` 13, `aws` 8) and **5** under `e2e/`. Re-measured on this tree rather than copied from an earlier reading | `find src/test/java -name '*.java' \| wc -l` |
+| Unit tests executed | **15,162** as re-measured 14 August 2026, with 0 failures, 0 errors and 0 skipped, across 212 Surefire suites. It read 14,914 on 7 August, then moved six times inside the 9 August checkpoint &mdash; 14,917, 14,925, 14,929, 14,931, 14,932, 15,092 &mdash; then 15,098, and now 15,162 with this revision's QA-remediation hardening; each move lands guards that convert a published claim into a measured one; [`docs/validation-gates.md`](validation-gates.md) §2.6 carries the series and is the authority for it. The declaration count is lower and is a different measurement: **10,318** methods, being 9,354 `@Test`, 962 `@ParameterizedTest` and 2 `@RepeatedTest`, whose arguments expand to the executed total &mdash; it read 10,314 as 9,351 / 961 / 2 before this revision. *Historical, 4 August 2026:* 14,308 executed from 9,556 declarations | the no-skip `clean verify` below; `grep -rho '@Test\b' src/test/java \| wc -l` for declarations |
+| Integration and end-to-end tests executed | **922** Failsafe cases as re-measured 14 August 2026, with 0 failures, 0 errors and 0 skipped, across **38** concrete classes &mdash; **807** across the **35** classes under `integration/` and **115** across the **3** under `e2e/`, of which the gate harness is **64**. It read 919 with an 804 integration split on 9 August and 907 with a 107 end-to-end split on 7 August; the end-to-end tier has gained cases with every gate assertion added since, the harness moving 58 &rarr; 59 &rarr; 64. The tier requires a reachable container daemon, because all three abstract bases stand up Testcontainers PostgreSQL 16 and LocalStack; measured with one running, all 38 executed. *Historical, 4 August 2026:* 744 cases across 29 concrete classes, when `e2e/` was still empty &mdash; and that earlier row also carried an internal contradiction, reporting twenty-nine concrete classes and then twenty-five executed | the no-skip `clean verify` below |
+| Merged line coverage | **0.914882** — `LINE missed=2122 covered=22808 total=24930` over a **351-class** bundle, re-measured 14 August 2026 — against the `jacoco.line.coverage.minimum` floor of **0.80** declared in `pom.xml`, which `jacoco:check` reported as `All coverage checks have been met` with no command-line override. The floor is never edited: where a run needs to proceed below it the floor is overridden on the command line and the result is reported as a measurement rather than as a gate pass | the `verify` command below, then `target/site/jacoco/jacoco.csv` |
+| Compiler warnings | **0**. `maven-compiler-plugin` runs `-Xlint:all -Werror` with `failOnWarning` at `release 25`, so the build cannot carry one | the `verify` command below |
+| Maven warnings | **0** `[WARNING]` lines when the scan is skipped; **1 or 2** when it is not, and every one of them is the scan plugin's rather than the build's. Measured twice on 9 August 2026: `-Ddependency-check.skip=true clean verify` gives **0**; the full no-skip `clean verify` gave **2** at 06:18Z and **1** at 07:29Z. **The variation is not noise and is worth stating**, because a fixed figure here would go stale within the hour: one of the two is a blank continuation line the plugin always emits with its findings summary, and the other is an advisory that no NVD API key was supplied, which appears only when the plugin actually attempts a feed refresh. **Neither is a compiler warning**, which is what the gate constrains: `-Xlint:all -Werror` with `failOnWarning` means a compiler warning fails the build rather than appearing in the log, so **0 compiler warnings is an invariant while the `[WARNING]` count is a reading**. A third distinction is needed before quoting any grep: **five** *unprefixed* `WARNING` lines also appear and are not Maven's &mdash; JVM-level `sun.misc.Unsafe` deprecation notices from Netty inside test JVMs, plus OpenJDK class-sharing notices. So on that 07:29Z run a case-insensitive `grep -c warning` returns 8, `grep -c '^WARNING'` returns 5, and `grep -c '^\[WARNING\]'` returns 1 &mdash; three different numbers for the same log, of which only the last is about Maven | `grep -c '^\[WARNING\]' <build log>`, run once per command |
+| Strict doclint | **0 errors and 0 warnings** across all 159 main sources, and separately across all 423 main-plus-test sources when run manually as `javadoc -Xdoclint:all -Werror` at the same member scope the gate uses. This is now a **Maven gate** rather than a manual step: `maven-javadoc-plugin` is pinned at **3.11.2** and bound as the `doclint-gate` execution with `doclint` set to `all` and warnings fatal, so `verify` fails on a malformed or incomplete doc comment. Two limits of the figure are stated rather than left to be discovered: the bound gate reads the **main** sources only, so the main-plus-test reading is the manual command and not the gate; and widening that command to `-private` reports 100 further warnings, every one of them a private member, an implicit constructor or a record component in a test source, which is a member scope no claim in this document covers | the `verify` command below; the goal is `javadoc:3.11.2:javadoc-no-fork (doclint-gate)` |
+| Packaging | One executable JAR, `target/carddemo-1.0.0.jar`, carrying **378** `com/cardemo` entries under `BOOT-INF/classes`, the excess over the 133 source types being nested, record and package-info types | `jar tf target/carddemo-1.0.0.jar \| grep -c 'com/cardemo/.*\.class'` |
+| Resources | `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`, `logback-spring.xml`, `db/migration/V1__create_schema.sql`, `V2__create_indexes.sql`, `V3__seed_data.sql` and the three `validation/*.json` lookups are **all present**. Nine ASCII fixtures are present under `src/test/resources` | `ls -R src/main/resources src/test/resources` |
+| Documentation render | **Exit 0, 0 warnings, 0 errors** — MkDocs 1.6.1 with both declared plugins, measured 7 August 2026 ([§0.2.1.10](#02110-environment-evidence)) | reproducible here with `mkdocs build --strict --site-dir <path outside the repository>` |
+
+**Canonical commands. Every one is repository-owned, contains no host-specific path, and uses the pinned wrapper rather than a host `mvn`.** A host `mvn` may resolve a different Maven generation, which is why it appears nowhere in this document as an instruction.
+
+| Purpose | Command |
 |---|---|
-| **Repository Pattern** | Spring Data JPA repositories for each VSAM KSDS dataset — `AccountRepository`, `TransactionRepository`, etc. |
-| **Service Layer** | Each COBOL online program maps to a service class encapsulating business logic, decoupled from controller and repository layers |
-| **DTO Pattern** | Request/response DTOs separate API contracts from JPA entities, mirroring the BMS symbolic map role |
-| **Strategy Pattern** | Batch processors implement pluggable validation strategies (4-stage cascade in POSTTRAN) |
-| **Template Method** | Statement generation (CBSTM03A + CBSTM03B file-service subroutine) maps to a template method pattern with injectable data sources |
-| **Factory Pattern** | Transaction ID auto-generation (browse-to-end + increment) implemented via sequence factory |
-| **Observer Pattern** | Online-to-batch bridge (CORPT00C → TDQ) maps to SQS message publishing with Spring event listeners |
-| **Composite Key** | JPA `@IdClass` / `@EmbeddedId` for TCATBALF, DISCGRP, and TRANCATG composite keys |
-| **Optimistic Locking** | JPA `@Version` for Account and Card update concurrency (replacing CICS READ UPDATE snapshot comparison) |
-| **Transaction Management** | Spring `@Transactional` with explicit rollback for COACTUPC dual-dataset update pattern |
+| Compile only | `./mvnw -B -ntp -q -DskipTests compile` |
+| Unit tests | `./mvnw -B -ntp test` |
+| Full verification | `./mvnw -B -ntp clean verify` |
+| Full verification, local, while coverage is below the floor | `./mvnw -B -ntp -Ddependency-check.skip=true -Djacoco.line.coverage.minimum=0 clean verify` |
+| Vulnerability scan on its own | `./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check` |
+| Strict documentation check | `./mvnw -B -ntp -o dependency:build-classpath -Dmdep.outputFile=target/cp-test.txt -Dmdep.includeScope=test` then `javadoc -private -Xdoclint:all --release 25 -quiet -d target/javadoc -classpath "$(cat target/cp-test.txt)" $(find src/main/java src/test/java -name '*.java')` |
+| Supporting topology | `docker compose up -d` |
+| Package | `./mvnw -B -ntp clean package` |
+| Documentation render | `mkdocs build --strict --site-dir <path outside the repository>` |
+
+Four things about that table are load-bearing rather than incidental.
+
+- **`-Xlint:all` and `-Werror` are POM configuration, not command-line flags.** They live inside `maven-compiler-plugin` 3.14.1, so every one of the commands above compiles under them and none of them can be weakened by omitting a flag.
+- **`./mvnw` is the load-bearing part of every command; `-B` and `-ntp` are not.** `-B` selects batch mode and `-ntp` suppresses transfer-progress lines — both make output stable for logs and neither changes what is built or gated. An invocation elsewhere in this repository written as `./mvnw clean verify` or `./mvnw -q test` is therefore the *same* command as its `-B -ntp` form here, running the same pinned Maven 3.9.11. What is never equivalent is a host `mvn`, which may resolve a different Maven generation, and that form appears nowhere in this repository as an instruction.
+- **`-Ddependency-check.skip=true` and `-Djacoco.line.coverage.minimum=0` are command-line overrides for a local run and must never be written into `pom.xml`.** A run that skipped the vulnerability scan is not evidence that the scan passes, exactly as recorded in [§0.6.2.5](#0625-version-drift-and-residual-risk); and a coverage figure obtained against a floor of 0 is a measurement, not a gate result.
+- **The doclint check is a Maven gate, not a manual step.** `maven-javadoc-plugin` is pinned at **3.11.2** and bound as the `doclint-gate` execution with `doclint` set to `all` and warnings fatal, so `./mvnw clean verify` fails on a malformed or incomplete doc comment. The standalone two-step `javadoc` command above is retained because it additionally covers `src/test/java`, which the bound execution does not, and because only its **exit status** counts: the printed warning list is capped by the default `-Xmaxwarns`, so a printed count is never evidence on its own. A per-file or per-package invocation is never sufficient either: it re-caps the warning list per invocation, so a set of per-file zero-error readings can sum to a tree that does not pass.
+- **Prerequisites are stated as capabilities, never as host paths.** What is needed is JDK 25 with `JAVA_HOME` set, and a reachable container daemon for anything that starts PostgreSQL or LocalStack. No instruction in this document names a file under `/etc/profile.d`, because such a path is a property of one machine image and not of this repository; the repository's own contract is `.env` plus `./mvnw`, and `.env.example` documents the variables.
+
+#### 0.4.5.2 Target Command Surface, Configuration and Failure Modes
+
+**This table is the target command surface. Which of its rows executes today is stated once, in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) and [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention), and is not restated here.** In summary, measured 6 August 2026: compile, unit test, integration test, package, `docker compose up -d`, `mkdocs build --strict` and `./mvnw -B -ntp clean verify` all execute, and `verify` exits 0 **with no coverage override at all** — the merged ratio clears the 0.80 floor on its own, and its value is published once in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention) rather than restated here, so that a re-measurement moves one figure and not four. `./mvnw spring-boot:run` executes given an exported `JWT_SIGNING_KEY` and a running stack. **Batch launching by job name now executes**, because `BatchPipelineOrchestrator` and the `@SqsListener`-annotated `BatchConfig.ReportJobQueueListener` are both present &mdash; the queue-driven path is **exactly one** `@SqsListener`, declared in `config/BatchConfig`, and `grep -rnE '^\s*@SqsListener' src/main/java` is the check that keeps a second, competing listener from being added — **anchored**, because the unanchored spelling also matches the annotation name written in comments and currently reports ten lines for one annotation. *Two earlier revisions of this paragraph are withdrawn: the first said `verify` needed two overrides and that no batch configuration existed to wire a launcher; the second said batch launching was still a target instruction because the orchestrator and the listener were planned. `config/BatchConfig` exists, the coverage floor is met unaided, and both the orchestrator and the listener are authored.* The documentation build is **measured**, not `Not available`: `mkdocs build --strict` exits 0 with zero warnings. Nothing in this table should be read as a report that a row was run successfully; the dated sub-sections above are the only such report.
+
+| Activity | Canonical invocation | Notes that matter |
+|----------|---------------------|-------------------|
+| Build | `./mvnw clean compile` | Always the **pinned wrapper**, never a host `mvn`, so the build cannot silently run on a different Maven generation. `-Xlint:all` and `-Werror` are configured inside `maven-compiler-plugin` 3.14.1; they are **not** command-line flags, which is the correction recorded in [§0.2.2.1](#0221-corrections-to-the-prior-specification) |
+| Unit tests | `./mvnw clean test` | Surefire 3.5.4. Requires no container runtime |
+| Full verification | `./mvnw clean verify` | Adds Failsafe 3.5.4 integration tests, the JaCoCo line-coverage check and the OWASP dependency scan. Requires a container runtime, because the integration tier starts PostgreSQL and LocalStack through Testcontainers |
+| Package | `./mvnw clean package` | Produces the single deployable JAR of the modular monolith |
+| Run the supporting topology | `docker compose up -d` | PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana. `localstack-init/init-aws.sh` provisions the three buckets, the FIFO queue and the single notification topic, and is **idempotent** so repeated cycles converge |
+| Run the application | `./mvnw -B -ntp spring-boot:run -Dspring-boot.run.profiles=local` | **Executable, with one prerequisite.** `CardDemoApplication.java` and all four profile files exist. `JWT_SIGNING_KEY` must be exported first - the property has no default and the context fails fast without it ([§0.7.8](#078-security-implementation)) - and `docker compose up -d` must have brought PostgreSQL and LocalStack up |
+| Batch execution | A job-name job parameter against the Spring Batch launcher | **Target instruction.** `config/BatchConfig` exists and `batch/jobs` holds three of its six jobs, so a `Job` bean can be launched directly from a test; what is still planned is the name-driven entry point, because `BatchPipelineOrchestrator` and the SQS listener that would drive it are both outstanding. The remaining jobs and the orchestrator are enumerated in [§0.5.1.8](#0518-batch) |
+| Documentation build | `mkdocs build --strict --site-dir <path outside the repository>` | **Exit 0, with 0 `WARNING` lines and 0 `ERROR` lines**, measured 7 August 2026 with MkDocs 1.6.1 and both declared plugins ([§0.2.1.10](#02110-environment-evidence)) |
+
+**Key configuration and its defaults — the target design, followed by what exists.** Four Spring profiles are to carry it — `application.yml` as the base, plus `local`, `test` and `prod` — enumerated in [§0.3.1.2](#0312-create-resources). Every secret is to be resolved from the environment in **every** profile with no committed default, and `.env.example` documents each variable with its value deliberately left blank. The schema is to be established by three Flyway migrations rather than by Hibernate schema generation, so the database shape is versioned and reviewable.
+
+**All four profile files and all three migrations are present** ([§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint)). `src/main/resources/` carries `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml` and `logback-spring.xml`, alongside `db/migration/V1__create_schema.sql` - which declares the 11 tables with 10 named foreign keys, 5 named `CHECK` constraints and 4 optimistic-lock version columns - together with `V2__create_indexes.sql` for the three alternate-index B-trees and `V3__seed_data.sql`, which seeds **636 rows** across ten tables with the `transaction` table deliberately empty. The three `validation/*.json` lookups are present, and `.env.example` ships the signing key blank. The environment-indirection and fail-fast claims above are therefore assertable against the tree rather than specified: the signing key is bound from `${JWT_SIGNING_KEY}` with no default in every one of the four profiles, and `com.cardemo.unit.config.EnvironmentTemplateContractTest` asserts the correspondence between `.env.example` and the four profiles in **both** directions - every placeholder the profiles read is documented, and every documented name has a committed consumer.
+
+**Common failure modes, and where each is diagnosed.** These are the failures a newcomer will actually hit, which is why they are named rather than left to be discovered:
+
+- **Startup aborts complaining about the signing key** — `JWT_SIGNING_KEY` is absent. This is intended fail-fast behaviour, not a defect ([§0.7.8](#078-security-implementation)).
+- **The build resolves no Testcontainers artefact, or resolves the wrong version** — the module-artefact rename described in the Blocker finding in [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename). Both halves of the remedy are required; either alone still fails.
+- **`verify` reaches every gate, and the skipped-scan distinction still matters.** `./mvnw -B -ntp -Ddependency-check.skip=true clean verify` exits **0** with every tier green and **0** `[WARNING]` lines; the case counts and the coverage ratio are published once, in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention), and are deliberately not restated here. Where a run has to proceed below the floor, `-Djacoco.line.coverage.minimum=0` is supplied **on the command line and never written into the POM**, and its result is reported as a measurement rather than as a gate pass. **That invocation is a fast local verification and is not the full gate**: the `-Ddependency-check.skip=true` override prints `Skipping dependency-check`, and a skipped scan is never evidence of a pass. Offline, `dependency-check:check` declares `requiresOnline` and Maven skips it with `[WARNING] Goal check requires online mode for execution but Maven is currently offline, skipping`, which is the same hole reached by a different route - which is why the scan is run separately and online, and why the no-skip online `./mvnw -B -ntp clean verify` is the only invocation that satisfies Gate 2 whole, and the only one CI runs. **Run online with no skip on 7 August 2026 the scan exits 0**: one active finding, the non-blocking `CVE-2026-40977` against `spring-boot-3.5.11.jar` at CVSS **6.7**, and zero at or above the `owasp.failBuildOnCVSS` threshold of 7 declared in `pom.xml`. The one 7.5 record the feed attributes to this graph, `CVE-2026-66299` against `tomcat-embed-core-10.1.57.jar`, is answered by an evidence-based Tier 2 entry in `owasp-suppressions.xml` and appears as a SUPPRESSED row rather than an absent one. That result is reported in full in [§0.7.9.2](#0792-gate-status-stated-honestly). *Historical, 4 August 2026:* the same skipping command exited 0 with 14,308 unit and 744 integration tests at ratio 0.8952 over a 324-class bundle. *Historical, 1 August 2026:* against the partial tree of that date the same offline command exited 0 and `jacoco:check` reported `All coverage checks have been met` at `LINE missed=17 covered=2929 total=2946`, ratio 0.9942 - a figure that reflects how little of the tree existed then, not a regression since. *Historical, 1 August 2026:* the online scan on that date exited 0 with 0 findings at CVSS >= 7 across 167 dependencies. The offline-versus-online distinction is recorded in [§0.6.1.3](#0613-runtime-and-toolchain).
+- **The integration and end-to-end tiers execute** - measured 7 August 2026. `src/test/java/com/cardemo/integration/` holds **40 sources** (`repository` 19, `batch` 13, `aws` 8), of which 3 are abstract Testcontainers bases and 2 are support types, leaving **35 concrete classes** that match the Failsafe include. `src/test/java/com/cardemo/e2e/` holds **5 sources** - the three suites `BatchPipelineE2ETest`, `OnlineTransactionE2ETest` and `GateVerificationTest` plus the two oracle support types - so Failsafe runs **38** classes in total. The executed case counts are stated once, in the census table above, and are not restated here. The one failure mode that applies to both tiers is an unreachable container daemon, because all three abstract bases stand up Testcontainers.
+- **A batch job ends with exit status 4 rather than failing** — that is correct and expected: it means the reject count exceeded zero, and nothing else sets it ([§0.7.2.2](#0722-the-per-record-loop-and-the-exit-code-contract)).
+- **A monetary or interest value differs from the legacy output in the last decimal place** — an arithmetic-shape violation. Invariants 1 and the formula rules in [§0.8.3](#083-behavioural-preservation-rules) explain why these expressions may not be algebraically rewritten.
+- **A newly added document does not appear in the published site** — it is missing from the `mkdocs.yml` nav, the High-severity silent-publication risk in [§0.2.2.2](#0222-findings-register). **`mkdocs build --strict` does not catch this**, because a page absent from the nav is not an error; it is caught by comparing the nav against `ls docs/`.
+- **An intra-page link resolves to nothing while `--strict` still exits 0** — MkDocs classes an unresolved *anchor* as `INFO`, not `WARNING`, so a green strict build does not prove the cross-references work. Read the `INFO` stream too. A link to a path outside `docs_dir`, such as `../DECISION_LOG.md`, is the opposite case: that *is* a `WARNING` and does fail `--strict`, which is why both root registers are cited as inline-code paths rather than linked.
+
+#### 0.4.5.3 The Current-Evidence Ledger and Its Dating Convention
+
+**One date carries current evidence for this whole document, and every other date in it is historical.** Evidence attributed to several undated or differently dated snapshots is unusable, because a reader cannot tell a live measurement from a superseded one; the convention below exists to make that distinction structural rather than a matter of inference. When the current-evidence date advances, **every** mutable figure is re-measured rather than some edited and others left, because a partially advanced census reintroduces exactly the fragmentation the convention prevents.
+
+| Rule | Statement |
+|---|---|
+| **The current-evidence date** | **Friday 7 August 2026, at the commit this change publishes.** Every present-tense measurement in this document was taken on that date, against the working tree at that same commit, and is published once in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) and once in [§0.7.9.2](#0792-gate-status-stated-honestly) |
+| **Every other date is historical** | A figure carrying any other date is retained only to date the progression and is never offered as present state. Each such passage says so in its own words — *Historical, 30 July 2026*, *Historical, 1 August 2026*, *Historical, 2 August 2026*, *Historical, 3 August 2026* |
+| **Where present state is unmeasurable it says `Not available`** | Per Rule 1 Clause F an absent measurement is declared, together with the artefact that would supply it. **This row currently has no standing subject**, because the two measurements it would otherwise name are both taken: the MkDocs render, on 7 August 2026 at exit 0 with 0 warnings ([§0.2.1.10](#02110-environment-evidence)), and the end-to-end parity comparison, closed by executing the frozen program itself ([§0.7.9.2](#0792-gate-status-stated-honestly)). The convention is retained rather than retired, because it is how the next unmeasurable state must be reported |
+| **Host tool readings do not belong in source documentation** | A reading of `java --version` or `docker --version` is a property of one machine image, not of this repository. Such readings live here and in [§0.2.1.10](#02110-environment-evidence) only. Package and class documentation states the required **capability** — JDK 25 with `JAVA_HOME` set, the pinned wrapper, and a reachable container daemon where one is needed — and never a dated host measurement |
+| **A measured figure is published with its command, its date and its commit — never on its own** | Because build artefacts are **not retained in version control**, a figure is reproducible rather than retrievable, and the three things that make it reproducible travel with it. A figure quoted without all three is not evidence, and the convention is what stops one sub-section's reading from silently competing with another's |
+
+**A Friday 31 July 2026 execution is `Not available`, and that is stated rather than approximated.** No build, test or gate run dated 31 July 2026 exists on this host or anywhere in this repository, and none of the figures published in this document was produced on that date. *What would be needed to supply one:* a `./mvnw -B -ntp clean verify` console log whose timestamp falls on 2026-07-31, together with the `target/surefire-reports/`, `target/failsafe-reports/` and `target/site/jacoco/jacoco.csv` artefacts from that same run. **No figure is dated 31 July by inference from a neighbouring run**, because a census interpolated between two dated snapshots is not a measurement. The nearest bracketing evidence is the *Historical, 1 August 2026* set, which is labelled as such wherever it appears.
+
+**The measured current-evidence set, in one place, each row carrying its own date and commit.** That per-row provenance is this sub-section's own rule — *a measured figure is published with its command, its date and its commit, never on its own* — and it is what lets one table be current without every row having to be re-measured on the same day. **Rows unmarked below were measured Friday 7 August 2026 at the commit this change publishes by the full no-skip `./mvnw -B -ntp clean verify`; a row measured at any other point says so in its own cell.**
+
+**This replaces a second table that was also headed *current*.** An earlier revision published this set as *the measured current-evidence set, 6 August 2026 at commit `1363f491`* while the rule row a few lines above simultaneously declared 7 August the current-evidence date — so the document named two current sets, dated differently, and the older one reported the vulnerability scan as failing. That reading is superseded. Its predecessor, the 4 August set — 149 sources, 25 package documents, 14,308 unit tests, 744 integration tests, ratio 0.8952 over 324 classes, 326 JAR classes — remains historical, as does the 6 August set itself.
+
+| Evidence class | Measured result | Artefact |
+|---|---|---|
+| Command | `./mvnw -B -ntp clean verify` — **the full gate, with no skip flag of any kind**, which is what `.github/workflows/build.yml` runs. **BUILD SUCCESS**, exit 0, elapsed **11:20**, 15:37:36 UTC to 15:48:56 UTC on 14 August 2026, at parent commit `b76e332b`. *Superseding the reading of 11:13 elapsed, 16:31:37 to 16:42:50 UTC on 9 August, and the same-day 11:19 reading before it: this revision added sixty-four unit cases and three integration cases, so neither run's tier figures can describe this tree.* The vulnerability scan therefore ran *inside* this invocation rather than separately, which is the only arrangement in which one command's exit code speaks for every clause of Gate 2. *Historical, 6 August 2026 at `1363f491`:* the fast local invocation `-Ddependency-check.skip=true clean verify`, 10 min 53 s, whose skipped scan was never evidence of a pass | build log |
+| Goals executed | **19**, with `dependency-check:12.1.0:check` among them and **executed** — no override, no `Skipping dependency-check` line. **A skipped scan is never evidence of a pass**, which is why the skip is absent here | Maven reactor output |
+| Compilation | **0 compiler warnings** under `-Xlint:all -Werror -parameters` at `release 25`. All **159** `src/main/java` sources compile. **An earlier revision of this row claimed the `package-info.java` files "produce no top-level class by design"; that is withdrawn as factually wrong** — `target/classes` holds exactly **26** `package-info.class` files, one per package document, which is what makes the source count **159** rather than the **133** types it contains | build log; `target/classes` |
+| Doclint | **0 errors, 0 warnings** — `javadoc:3.11.2:javadoc-no-fork (doclint-gate)` with `doclint` set to `all` and warnings fatal | build log |
+| Unit tests | **15,162** run, 0 failures, 0 errors, 0 skipped, across 212 suites, re-measured 14 August 2026. **Count the `testcase` elements, never a `testsuite` root attribute:** Surefire and Failsafe write `tests="0"` on the root element of a suite built from `@Nested` classes while the same file still carries every case beneath it, so reading the attribute renders a suite that ran everything as one that ran nothing. *Historical, 4 August 2026:* 14,308 | Surefire reports, counted by element; `target/surefire-reports` |
+| Integration and end-to-end tests | **922** run as re-measured 14 August 2026, 0 failures, 0 errors, 0 skipped &mdash; **807** across the 35 concrete classes under `integration/` and **115** across the 3 under `e2e/` &mdash; against Testcontainers PostgreSQL 16 and LocalStack. *It read 919 with an 804 integration split on 9 August and 907 with a 107 end-to-end split on 7 August. Historical, 4 August 2026:* 744 across 29 classes | Failsafe summary; `target/failsafe-reports` |
+| Merged line coverage | **0.914882** — `LINE missed=2122 covered=22808 total=24930` over a **351-class** bundle — against the 0.80 floor, with `All coverage checks have been met` and no command-line override. `target/jacoco.exec` is 587,440 bytes and the merged execution data carries 2 `sessioninfo` elements spanning 15:38:01Z to 15:48:33Z. *Superseding the 9 August reading of 0.914594, `missed=2112 covered=22617 total=24729` over 350 classes with a 587,008-byte unit exec.* *Historical, 4 August 2026:* 0.8952 over a 324-class bundle | `target/site/jacoco/jacoco.csv`, `target/jacoco.exec` |
+| Gate harness | `GateVerificationTest` ran **64** test cases and declares **64** in this tree, with 0 failures and 0 errors &mdash; the executed total and the declaration count agree, because every method is a plain `@Test`. It was 58 until 9 August 2026, then 59 when a case was added to pin the credential walk's root and extension sets, and 64 with the Gate 1 oracle, tier-census, severity-register and build-context assertions added since. `gate.harness.executedAtUtc` and `gate.harness.runtime` are restamped by every run and live in the **evidence** file rather than the summary one &mdash; the run measured for this row wrote `2026-08-14T15:40:35Z` and `25.0.3+9-2-25.10.2-Ubuntu`, vendor Ubuntu, *superseding the `2026-08-09T09:41:48Z` and `25.0.3+9-LTS`/Eclipse Adoptium pair an earlier reading published: the timestamp moved with the run and the runtime string is what this host actually reports, so the earlier vendor was wrong rather than merely old*, and the summary file carries `gate.harness.publishedAtUtc` and `gate.harness.commit` instead. **An earlier revision of this row named the summary file for both keys and printed a timestamp two days older than the tree it described**; the key names are the durable part and the value is whatever the latest run wrote | `target/gate-verification/gate-verification-evidence.properties`, alongside `…/gate-verification-summary.properties` |
+| Packaging | One executable JAR, `target/carddemo-1.0.0.jar`, carrying 326 `com/cardemo` classes | the JAR index |
+| Maven warnings | **0** `[WARNING]` lines on the scan-skipped command and **1 or 2** on the full no-skip `clean verify` &mdash; measured at both values on 9 August 2026 &mdash; every one of them emitted by the vulnerability-scan plugin rather than by the build; **0** compiler warnings either way, which is the property the gate constrains and the only one of these that is an invariant. The five unprefixed `WARNING` lines in the log are JVM-level notices from Netty and OpenJDK inside test JVMs, not Maven warnings. See [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) for the three different counts a single grep conflates, and for why the no-skip figure varies | build log |
+| Security scan | **Measured, and it PASSES — exit 0.** Re-measured again after the scanner's own HTTP transport was advanced — `dependency-check.httpcore5.version` moved 5.3.6 → 5.4.3 for `CVE-2026-54399` and `CVE-2026-54428`, both CVSS 7.5 — by running `org.owasp:dependency-check-maven:12.1.0:check` online with no skip on 9 August 2026, report timestamp `2026-08-09T15:30:31Z`: the feed refreshed over the new transport (`NVD API has 25 records in this update`, `Downloaded 25/25 (100%)`, `Check for updates complete (7482 ms)`) and the result reproduced exactly — **168 dependencies, one active finding at CVSS 6.7, zero at or above the threshold, BUILD SUCCESS**. **Re-measured `2026-08-14T14:48:43Z`: 168 dependencies, 166 suppressed matches, *two* active sub-threshold findings with a ceiling of 6.7, still zero at or above the threshold, exit 0** — the second being `CVE-2026-64607` at 5.3 on `docker-java-transport-zerodep-3.7.0.jar`, which the feed published in the interval without anything in this repository changing. The scan then ran again inside the canonical no-skip `./mvnw -B -ntp clean verify` of this revision, report timestamp `2026-08-09T16:42:42Z`, and reproduced the same shape a third time. The reading below is the first of the three, inside the earlier same-day no-skip `clean verify`, report timestamp `2026-08-09T09:49:54Z`, with no `-Ddependency-check.skip` override: **168 dependencies**, **zero** findings at or above the CVSS 7 threshold, and **one** active finding below it — `CVE-2026-40977` at CVSS 6.7. **CVE-2026-66299**, CVSS **7.5 HIGH** in `tomcat-embed-core:10.1.57`, **failed this scan with exit 1 when first measured** at `2026-08-07T01:37:37Z`, and is now carried as a **bounded, evidence-based suppression expiring 1 November 2026**: the advisory names 10.1.58 as the fixed version and no such artefact is published on Maven Central, so no upgrade is obtainable. It appears in the report under `suppressedVulnerabilities` — **not re-scored, not silently dropped, and not permanent**. Disposition and the rejected alternatives are registered as `DL-RR-09`. The row above it is a *separate* command whose `-Ddependency-check.skip=true` prints `Skipping dependency-check`, and **a skipped scan is never evidence of a pass** | `target/dependency-check/dependency-check-report.{html,json,sarif}` |
+| Documentation render | **Measured, and it passes.** MkDocs **1.6.1** on Python 3.13 with the `techdocs-core` and `mermaid2` plugins; `mkdocs build --strict` exits **0** with 0 `WARNING` lines and 0 unresolved-anchor `INFO` diagnostics. **This row previously read `Not available` on the grounds that no MkDocs environment existed on this host; that is withdrawn** | `mkdocs build --strict` console output |
+| Container image | **Builds and its in-image unit tier passes.** `docker compose up -d --build --wait --wait-timeout 900` brings all **seven** services to healthy — re-measured 14 August 2026 at 16:03:20Z against the tree as it now stands, exit code 0, **4 min 09 s** to all seven `healthy`, superseding the 9 August reading of 2 min 58 s at 16:55:46Z and the same-day readings of 3 min 26 s, 3 min 22 s, 2 min 39 s, 2 min 33 s, 2 min 40 s and 2 min 38 s taken before later test additions and the `pushgateway` service landed — and the image's build stage runs **15,162** unit tests green with **1** skipped, that one being the sentinel-token filter test, which assumes `python3` and finds none in the Maven builder image. *The elapsed figure is reported rather than compared: it grows with the unit tier the build stage runs, and this reading carries sixty-four more cases than the one it supersedes.* **Two disclosures keep this reading from being read as more than it is.** `git status --porcelain` was **not** empty at launch: it listed the **54** paths this revision modifies, so this is a working-tree reading where the 10:09:35Z one was a committed-tree reading. And this bring-up genuinely produced a **new image** rather than reusing the existing one, because the change set moves the runtime stage's base-image digest and packaged `main` sources — which is also what makes it the first image to carry this revision's fixes. **Reaching that has now required three separate fixes, all of one shape**, and the shape is the row's real subject: the build context is a *curated subset* of the repository while the unit tier reads the repository as data, so a host-only build can be green while the image is broken. First, the build stage omitted `DECISION_LOG.md` and `TRACEABILITY_MATRIX.md`, which unit guards read — 2 failures and 8 errors, every one an `UncheckedIOException` on those two paths. Second, `.dockerignore` prunes `app/data/EBCDIC` while a register row requires every cited `app/` path to resolve — 1 failure, and `docker compose up` exit 1. Third, five root dotfiles were never copied, three of them read unconditionally by the citation gate — 1 error on `.gitignore`, with `.editorconfig` and `.gitattributes` queued behind it and found by enumeration rather than by another build. The third fix closed the LIST rather than the instance | `docker compose` output; the image build log |
+
+One artefact property deserves note here rather than being rediscovered as a defect. `target/carddemo-1.0.0.jar` carries the timestamp `2026-01-01T00:00:00Z`, which is *older* than the commits it was built from. That is deliberate and required: `project.build.outputTimestamp` is set to that value so the build is byte-for-byte reproducible, and it normalises every entry in the archive to a single date. The archive's *contents* are current. Treating that fixed timestamp as evidence of a stale build inverts its purpose, and changing it to satisfy a freshness check would break the reproducibility Rule 1 Clause C requires.
 
 
 ## 0.5 Transformation Mapping
 
 ### 0.5.1 File-by-File Transformation Plan
 
-The entire refactor executes in ONE phase. Every target file is mapped to its source artifact(s).
+Three modes are used, as defined in [§0.3](#03-scope-boundaries). **CREATE** covers every Java, SQL, YAML, infrastructure and documentation artefact, because no Java tree exists at commit `7756d89`. **UPDATE** covers exactly three files. **REFERENCE** covers the frozen legacy corpus and the repository convention files. A dash in the source column means no legacy equivalent exists, and the row states what stands in its place.
 
-**Transformation Modes:**
-- **CREATE** — New file in the Java target repository with logic translated from the COBOL source
-- **REFERENCE** — Use as an example to reflect existing patterns, styles, or designs
+#### 0.5.1.1 Build, Container and Infrastructure
 
-#### Project Root and Configuration
-
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `pom.xml` | CREATE | `app/jcl/CBADMCDJ.jcl` (build reference) | Maven POM with Spring Boot 3.5.x parent, all dependencies |
-| `Dockerfile` | CREATE | (none) | Multi-stage build for Java 25 application |
-| `docker-compose.yml` | CREATE | `app/jcl/DEFGDGB.jcl`, `app/jcl/DUSRSECJ.jcl` | PostgreSQL 16, LocalStack, app service |
-| `localstack-init/init-aws.sh` | CREATE | `app/jcl/DEFGDGB.jcl` | S3 bucket and SQS queue creation scripts |
-| `README.md` | CREATE | `README.md` | Java project setup, build, run, onboarding |
-| `DECISION_LOG.md` | CREATE | (none) | All non-trivial architectural decisions |
-| `TRACEABILITY_MATRIX.md` | CREATE | `app/cbl/*.cbl`, `app/cpy/*.cpy` | 100% COBOL paragraph → Java method mapping |
-| `.gitignore` | CREATE | (none) | Java/Maven/IDE ignore patterns |
-| `mvnw` / `mvnw.cmd` | CREATE | (none) | Maven wrapper scripts |
+| `pom.xml` | CREATE | `samples/jcl/BATCMP.jcl`, `samples/jcl/CICCMP.jcl`, `samples/jcl/BMSCMP.jcl` | Replaces three z/OS compile templates with one Maven build. Every plugin and non-BOM dependency pinned to an exact version; `maven.compiler.release` 25; `-Xlint:all -Werror -parameters` configured **in the compiler plugin, not passed ad hoc**; JaCoCo and OWASP bound to `verify`; the enforcer plugin asserting the Java and Maven floor |
+| `mvnw`, `mvnw.cmd` | CREATE | `samples/proc/BUILDBAT.prc`, `samples/proc/BUILDONL.prc`, `samples/proc/BUILDBMS.prc` | Replaces three z/OS build procedures with a wrapper so the build is reproducible without a preinstalled Maven. Invocation is `./mvnw clean verify`, never a host `mvn` |
+| `.mvn/wrapper/maven-wrapper.properties` | CREATE | — | No legacy equivalent. Pins the distribution to **Maven 3.9.11** with a `distributionSha256Sum`, so the toolchain cannot drift between hosts. This file cites §0.3.1.4, §0.4.1.1 and §0.5.1.1 of this document as its provenance |
+| `Dockerfile` | CREATE | — | No legacy equivalent; the mainframe had no container image. Multi-stage build producing the single runnable JAR on a JDK 25 base |
+| `docker-compose.yml` | CREATE | `app/jcl/OPENFIL.jcl`, `app/jcl/CLOSEFIL.jcl` | The legacy file-availability jobs become declared service dependencies: PostgreSQL 16, LocalStack, Jaeger, Prometheus, Grafana. All image tags pinned |
+| `.dockerignore`, `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example` | CREATE | — | No legacy equivalent and, per [§0.2.1.8](#0218-repository-conventions-discovered), **no formatter, linter or ignore configuration exists anywhere at the anchor commit**. These *establish* conventions rather than inheriting them, which is a materially different act from overriding an existing style |
+| `localstack-init/init-aws.sh` | CREATE | `app/jcl/DEFGDGB.jcl`, `app/jcl/DALYREJS.jcl`, `app/jcl/REPTFILE.jcl`, `app/csd/CARDDEMO.CSD` | The seven GDG base definitions become three S3 buckets with versioning on **the output bucket only** — input unversioned, output versioned and verified by read-back, statements unversioned, because the output bucket is the only one carrying generation semantics; `DEFINE TDQUEUE(JOBS)` `[app/csd/CARDDEMO.CSD:L499-L505]` becomes one FIFO queue; one SNS notification topic created. **The script is idempotent**, so repeated `docker compose up` cycles converge instead of failing on already-existing resources |
+| `observability/prometheus.yml` | CREATE | — | No legacy equivalent; the corpus has no instrumentation beyond `DISPLAY`. Fifteen-second scrape of the application metrics endpoint |
+| `observability/grafana/provisioning/datasources/datasource.yml` | CREATE | — | Datasource provisioning so the integration sign-off gate needs no manual configuration step |
+| `observability/grafana/dashboards/carddemo-dashboard.json` | CREATE | `app/cbl/CBTRN02C.cbl:L227-L228` | The end-of-run `DISPLAY 'TRANSACTIONS PROCESSED :'` and `DISPLAY 'TRANSACTIONS REJECTED  :'` become dashboard panels over the processed and rejected counters |
+| `.github/workflows/build.yml` | CREATE | — | No legacy equivalent and absent from the prior implementation `[docs/project-guide.md:L49]`. JDK 25, Maven 3.9.11, the zero-warning gate, the JaCoCo report and the OWASP dependency check |
 
-#### Documentation
+#### 0.5.1.2 Application Bootstrap, Configuration and Security
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `docs/executive-presentation.html` | CREATE | All source files | reveal.js slides with Mermaid diagrams |
-| `docs/architecture-before-after.md` | CREATE | All source files | Before/after architecture Mermaid diagrams |
-| `docs/onboarding-guide.md` | CREATE | `README.md` | Developer setup, domain context, pitfalls |
-| `docs/validation-gates.md` | CREATE | (none) | Gate 1-8 evidence documentation |
-| `docs/api-contracts.md` | CREATE | `app/bms/*.bms`, `app/cpy-bms/*.CPY` | REST API endpoint specifications |
+| `CardDemoApplication.java` | CREATE | — | Single entry point replacing the CICS region plus the JES2 initiators |
+| `config/SecurityConfig.java` | CREATE | `app/cbl/COSGN00C.cbl`, `app/csd/CARDDEMO.CSD`, `app/cpy/COCOM01Y.cpy` | The CSD transaction definitions become endpoint authorisation rules; the `CDEMO-USER-TYPE` 88-levels `'A'` and `'U'` become role-based access control; **stateless session policy** |
+| `config/BatchConfig.java` | CREATE | `app/jcl/POSTTRAN.jcl`, `INTCALC.jcl`, `TRANREPT.jcl`, `COMBTRAN.jcl`, `CREASTMT.JCL` | Job and step topology, chunk sizes, and the decider wiring that replaces `COND` gating |
+| `config/AwsConfig.java` | CREATE | `app/jcl/DEFGDGB.jcl`, `app/csd/CARDDEMO.CSD` | S3, SQS and SNS clients pointed at a LocalStack endpoint override. **No live-credential code path exists** |
+| `config/JpaConfig.java` | CREATE | `app/catlg/LISTCAT.txt` | Entity scanning, naming strategy and transaction management derived from the catalogued physical layout |
+| `config/ObservabilityConfig.java` | CREATE | — | No legacy equivalent; tracing and metrics registration |
+| `config/WebConfig.java` | CREATE | `app/cpy/CVCRD01Y.cpy` | Navigation and action-identifier state becomes URL routing plus message converters |
+| `security/JwtTokenProvider.java` | CREATE | `app/cpy/COCOM01Y.cpy` | `CDEMO-USER-ID` becomes the subject claim and `CDEMO-USER-TYPE` a role claim. **The signing key is resolved from the environment, never a literal**, with fail-fast on absence |
+| `security/JwtAuthenticationFilter.java` | CREATE | `app/cbl/COMEN01C.cbl:L153` XCTL chain | Token validation replaces COMMAREA propagation across program transfers |
+| `security/CardDemoUserDetailsService.java` | CREATE | `app/cbl/COSGN00C.cbl`, `app/cpy/CSUSR01Y.cpy` | BCrypt verification replaces the plaintext comparison. **Both** the user identifier and the password are upper-cased before comparison, exactly as the legacy program does |
+| `**/package-info.java` (14) | CREATE | The COBOL artefacts each package derives from | Package-level documentation naming the originating programs, copybooks or JCL members |
 
-#### Spring Boot Application and Configuration
+#### 0.5.1.3 Entities, Keys and Enums
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/CardDemoApplication.java` | CREATE | `app/cbl/COSGN00C.cbl` | Spring Boot main class with `@SpringBootApplication` |
-| `src/main/java/**/config/SecurityConfig.java` | CREATE | `app/cbl/COSGN00C.cbl`, `app/cpy/CSUSR01Y.cpy` | Spring Security with BCrypt, role-based access |
-| `src/main/java/**/config/BatchConfig.java` | CREATE | `app/jcl/POSTTRAN.jcl`, `app/jcl/INTCALC.jcl`, `app/jcl/COMBTRAN.jcl` | Spring Batch infrastructure, job launcher |
-| `src/main/java/**/config/AwsConfig.java` | CREATE | `app/jcl/DEFGDGB.jcl` | S3 + SQS/SNS client beans with LocalStack profiles |
-| `src/main/java/**/config/JpaConfig.java` | CREATE | `app/jcl/TRANFILE.jcl`, `app/jcl/XREFFILE.jcl` | JPA/Hibernate config, auditing, naming strategy |
-| `src/main/java/**/config/ObservabilityConfig.java` | CREATE | (none) | Micrometer tracing, metrics, correlation IDs |
-| `src/main/java/**/config/WebConfig.java` | CREATE | (none) | CORS, Jackson serialization, error handling |
-| `src/main/resources/application.yml` | CREATE | `app/jcl/*.jcl` (dataset names) | Spring profiles, DB, S3, SQS, actuator config |
-| `src/main/resources/application-local.yml` | CREATE | (none) | LocalStack endpoints, local PostgreSQL |
-| `src/main/resources/application-test.yml` | CREATE | (none) | Testcontainers config |
-| `src/main/resources/logback-spring.xml` | CREATE | (none) | Structured logging with correlation IDs |
+| `model/entity/Account.java` | CREATE | `app/cpy/CVACT01Y.cpy` | 300-byte layout to table; `ACCT-CURR-BAL` and `ACCT-CREDIT-LIMIT` are `PIC S9(10)V99` `[app/cpy/CVACT01Y.cpy:L7-L8]` → `NUMERIC(12,2)` and `BigDecimal`; `@Version` column added |
+| `model/entity/Card.java` | CREATE | `app/cpy/CVACT02Y.cpy` | 150-byte layout; 16-character key; `@Version` |
+| `model/entity/Customer.java` | CREATE | `app/cpy/CVCUS01Y.cpy`, `app/cpy/CUSTREC.cpy` | 500-byte layout. The two copybooks are the same layout differing only in the date-of-birth field name, so **one entity serves both**; `@Version` |
+| `model/entity/CardCrossReference.java` | CREATE | `app/cpy/CVACT03Y.cpy` | 36 populated bytes in a 50-byte cluster slot; the 14-byte slack is not modelled |
+| `model/entity/Transaction.java` | CREATE | `app/cpy/CVTRA05Y.cpy` | 350-byte layout with the proven offset map preserved for fixed-width emission; `@Version` |
+| `model/entity/DailyTransaction.java` | CREATE | `app/cpy/CVTRA06Y.cpy` | 350-byte staging layout for the input dataset |
+| `model/entity/TransactionCategoryBalance.java` | CREATE | `app/cpy/CVTRA01Y.cpy` | 50-byte layout. **`TRAN-CAT-BAL` is `PIC S9(09)V99` `[app/cpy/CVTRA01Y.cpy:L9]`, so `NUMERIC(11,2)`** — not the `12,2` used for account money fields |
+| `model/entity/DisclosureGroup.java` | CREATE | `app/cpy/CVTRA02Y.cpy` | **`DIS-INT-RATE` is `PIC S9(04)V99` `[app/cpy/CVTRA02Y.cpy:L9]`, so `NUMERIC(6,2)`** |
+| `model/entity/TransactionType.java` | CREATE | `app/cpy/CVTRA03Y.cpy` | 60-byte layout, two-character key |
+| `model/entity/TransactionCategory.java` | CREATE | `app/cpy/CVTRA04Y.cpy` | 60-byte layout, six-character composite key |
+| `model/entity/UserSecurity.java` | CREATE | `app/cpy/CSUSR01Y.cpy` | 80-byte layout; the eight-character password field becomes a 60-character BCrypt hash column |
+| `model/key/TransactionCategoryBalanceId.java` | CREATE | `app/cpy/CVTRA01Y.cpy` | Composite identifier in COBOL field order; total key length 17, matching `TCATBALF` |
+| `model/key/DisclosureGroupId.java` | CREATE | `app/cpy/CVTRA02Y.cpy` | Composite identifier; key length 16 |
+| `model/key/TransactionCategoryId.java` | CREATE | `app/cpy/CVTRA04Y.cpy` | Composite identifier; key length 6 |
+| `model/enums/UserType.java` | CREATE | `app/cpy/COCOM01Y.cpy` | The `'A'` and `'U'` 88-levels become a typed enum feeding role mapping |
+| `model/enums/FileStatus.java` | CREATE | The universal FILE STATUS guard idiom | Typed representation of `'00'`, `'04'`, `'10'`, `'22'`, `'23'`, `'35'` and the `'9x'` family |
+| `model/enums/TransactionSource.java` | CREATE | `app/cbl/CBACT04C.cbl:L484` | The literal `'System'` used for generated interest transactions, plus the online sources such as `'POS TERM'` `[app/cbl/COBIL00C.cbl:L222]` |
+| `model/enums/RejectCode.java` | CREATE | `app/cbl/CBTRN02C.cbl` | **Exactly five constants — 100, 101, 102, 103, 109** — each carrying its exact literal description. Note that 101 and 109 share the literal `'ACCOUNT RECORD NOT FOUND'` `[app/cbl/CBTRN02C.cbl:L398-L399, L557-L558]`. **Reject codes are business outcomes, not exceptions**, and drive `ExitStatus` rather than being thrown |
 
-#### JPA Entity Classes (from Copybooks)
+#### 0.5.1.4 Data Transfer Objects
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/model/entity/Account.java` | CREATE | `app/cpy/CVACT01Y.cpy` | `@Entity` with BigDecimal for ACCT-CURR-BAL, ACCT-CREDIT-LIMIT; `@Version` for optimistic locking |
-| `src/main/java/**/model/entity/Card.java` | CREATE | `app/cpy/CVACT02Y.cpy` | `@Entity` with FK to Account, active status enum |
-| `src/main/java/**/model/entity/Customer.java` | CREATE | `app/cpy/CVCUS01Y.cpy`, `app/cpy/CUSTREC.cpy` | `@Entity` with SSN encryption, 500-byte field mapping |
-| `src/main/java/**/model/entity/CardCrossReference.java` | CREATE | `app/cpy/CVACT03Y.cpy` | `@Entity` with composite FK relationships |
-| `src/main/java/**/model/entity/Transaction.java` | CREATE | `app/cpy/CVTRA05Y.cpy` | `@Entity` with BigDecimal TRAN-AMT, timestamp fields |
-| `src/main/java/**/model/entity/UserSecurity.java` | CREATE | `app/cpy/CSUSR01Y.cpy` | `@Entity` with BCrypt password hash, role enum |
-| `src/main/java/**/model/entity/TransactionCategoryBalance.java` | CREATE | `app/cpy/CVTRA01Y.cpy` | `@Entity` with `@EmbeddedId` composite key (acctId+typeCode+catCode) |
-| `src/main/java/**/model/entity/DisclosureGroup.java` | CREATE | `app/cpy/CVTRA02Y.cpy` | `@Entity` with `@EmbeddedId` composite key, BigDecimal interest rate |
-| `src/main/java/**/model/entity/TransactionType.java` | CREATE | `app/cpy/CVTRA03Y.cpy` | `@Entity` with 2-byte type code PK |
-| `src/main/java/**/model/entity/TransactionCategory.java` | CREATE | `app/cpy/CVTRA04Y.cpy` | `@Entity` with `@EmbeddedId` composite key (typeCode+catCode) |
-| `src/main/java/**/model/entity/DailyTransaction.java` | CREATE | `app/cpy/CVTRA06Y.cpy` | `@Entity` for batch staging table, mirrors Transaction layout |
+| `dto/SignOnRequest.java` | CREATE | `app/cpy-bms/COSGN00.CPY` | 11 input fields. This is the one symbolic map with `CURTIME PIC X(9)` and the only one carrying `APPLIDI` and `SYSIDI` |
+| `dto/SignOnResponse.java` | CREATE | **No BMS symbolic map: `Not available`** | A **REST response** with no legacy screen counterpart. No response map exists anywhere in `app/cpy-bms` and none is invented: a successful sign-on in `COSGN00C` returned identity in the COMMAREA and transferred control by `EXEC CICS XCTL`, so it emitted no map. The type is derived from that **successful COMMAREA identity** and carries the issued token in its place. What would be needed to source it from the corpus is a symbolic map describing an authentication response, and the corpus contains none |
+| `dto/AccountDto.java` | CREATE | `app/cpy-bms/COACTVW.CPY` | **37** input fields; lengths taken from the symbolic map, never guessed |
+| `dto/AccountUpdateRequest.java` | CREATE | `app/cpy-bms/COACTUP.CPY`, `app/cbl/COACTUPC.cbl` | 54 input fields. **Carries both `oldDetails` and `newDetails`**, mirroring `ACUP-OLD-DETAILS` `[app/cbl/COACTUPC.cbl:L669]` and `ACUP-NEW-DETAILS` `[app/cbl/COACTUPC.cbl:L757]`, because a stateless request cannot otherwise reproduce the change-detection comparison. **The snapshot date of birth is carried in compact `YYYYMMDD` form** — see [§0.7.1.6](#0716-the-date-of-birth-offset-asymmetry) |
+| `dto/CardDto.java` | CREATE | `app/cpy-bms/COCRDSL.CPY`, `app/cpy-bms/COCRDLI.CPY` | Detail (15 fields) plus list-row projection (45 fields); list page size 7 |
+| `dto/CardUpdateRequest.java` | CREATE | `app/cpy-bms/COCRDUP.CPY`, `app/cbl/COCRDUPC.cbl` | 17 input fields. **Carries both the old and the new card snapshots**, mirroring `CCUP-OLD-DETAILS` and `CCUP-NEW-DETAILS` `[app/cbl/COCRDUPC.cbl:L291-L313]`, because a stateless request cannot otherwise reproduce the change-detection comparison. The snapshots carry the account identifier, card identifier, CVV, embossed name, the `EXPIRAION` date components and status; **the frozen misspelling `EXPIRAION` is preserved on the wire** |
+| `dto/TransactionDto.java` | CREATE | `app/cpy-bms/COTRN01.CPY` | 21 input fields; amount rendered on the legacy edited mask |
+| `dto/TransactionAddRequest.java` | CREATE | `app/cpy-bms/COTRN02.CPY` | 21 input fields. Amount parsing uses the **currency-aware** conversion `[app/cbl/COTRN02C.cbl:L383, L456]`, distinct from the plain conversion used for identifiers `[app/cbl/COTRN02C.cbl:L204, L218]` |
+| `dto/UserSecurityDto.java`, `dto/UserCreateRequest.java`, `dto/UserUpdateRequest.java` | CREATE | `COUSR00.CPY`, `COUSR03.CPY`, `COUSR01.CPY`, `COUSR02.CPY` | 59, 12 and 12 input fields; list page size 10; **the password is never returned**. `UserSecurityDto` additionally carries an exact **`COUSR03.CPY` 11-field delete projection**, so every one of the four user maps is represented |
+| `dto/BillPaymentRequest.java` | CREATE | `app/cpy-bms/COBIL00.CPY` | 10 input fields; full-balance payment semantics preserved |
+| `dto/ReportRequest.java` | CREATE | `app/cpy-bms/CORPT00.CPY` | 17 input fields covering the three report periods, including the six custom-range date components |
+| `dto/MenuResponse.java` | CREATE | `app/cpy-bms/COMEN01.CPY`, `app/cpy-bms/COADM01.CPY`, `app/cpy/COMEN02Y.cpy`, `app/cpy/COADM02Y.cpy` | The **20-field menu symbolic map** represented exactly - six recurring headers, twelve `X(40)` option slots, `OPTION X(2)` and `ERRMSG X(78)`. `COMEN01.CPY` and `COADM01.CPY` are **field for field identical**, so one shared shape represents both with the provenance of each named explicitly. The two option tables, bounded by their respective count fields (10 and 4) with the user-type gate preserved, are carried alongside it |
+| `dto/PageResponse.java` | CREATE | `app/cpy-bms/COCRDLI.CPY`, `app/cpy-bms/COTRN00.CPY`, `app/cpy-bms/COUSR00.CPY` + the owning programs' `WORKING-STORAGE` | Page number and next-page flag become response metadata rather than retained state. **Not sourced from `COCOM01Y`**, which declares no page field of any kind: the page fields are `PAGENOI PIC X(3)` `[app/cpy-bms/COCRDLI.CPY:L60]` and `PAGENUMI PIC X(8)` `[app/cpy-bms/COTRN00.CPY:L60, app/cpy-bms/COUSR00.CPY:L60]`, with `CDEMO-CT00-PAGE-NUM`/`CDEMO-CT00-NEXT-PAGE-FLG` `[app/cbl/COTRN00C.cbl:L65-L66]`, `CDEMO-CU00-*` `[app/cbl/COUSR00C.cbl:L70-L71]` and `WS-CA-NEXT-PAGE-IND` `[app/cbl/COCRDLIC.cbl:L242]` declared in program working storage **after** `COPY COCOM01Y` - the shared `CDEMO-` prefix is what makes them look like COMMAREA fields when they are not. **A total record count and a total page count are `Not available`**: `WS-REC-COUNT` `[app/cbl/COTRN00C.cbl:L52, app/cbl/COUSR00C.cbl:L52]` is declared and never referenced again, and no total-record or total-page field exists anywhere in the maps or the programs; see the correction note under [§0.5.2.4](#0524-commarea-to-token-and-dto-split) |
+| `dto/CommArea.java` | CREATE | `app/cpy/COCOM01Y.cpy` | The live fields only; routing and re-entry fields have no counterpart — see [§0.5.2.4](#0524-commarea-to-token-and-dto-split) |
+| `dto/StatementTransaction.java` | CREATE | `app/cpy/COSTM01.CPY`, `app/cpy/CVTRA07Y.cpy` | The 32-byte composite key `[app/cpy/COSTM01.CPY:L21-L23]` preserved exactly; report line layouts at 133 bytes |
 
-#### DTO and Enum Classes
+#### 0.5.1.5 Repositories
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/model/dto/AccountDto.java` | CREATE | `app/cpy-bms/COACTVW.CPY`, `app/cpy-bms/COACTUP.CPY` | API view/update payloads from BMS field contracts |
-| `src/main/java/**/model/dto/CardDto.java` | CREATE | `app/cpy-bms/COCRDLI.CPY`, `app/cpy-bms/COCRDSL.CPY`, `app/cpy-bms/COCRDUP.CPY` | Card list/detail/update payloads |
-| `src/main/java/**/model/dto/TransactionDto.java` | CREATE | `app/cpy-bms/COTRN00.CPY`, `app/cpy-bms/COTRN01.CPY`, `app/cpy-bms/COTRN02.CPY` | Transaction CRUD payloads |
-| `src/main/java/**/model/dto/UserSecurityDto.java` | CREATE | `app/cpy-bms/COUSR00.CPY`, `app/cpy-bms/COUSR01.CPY`, `app/cpy-bms/COUSR02.CPY`, `app/cpy-bms/COUSR03.CPY` | User admin payloads |
-| `src/main/java/**/model/dto/SignOnRequest.java` | CREATE | `app/cpy-bms/COSGN00.CPY` | Authentication request with userId, password |
-| `src/main/java/**/model/dto/SignOnResponse.java` | CREATE | `app/cpy/COCOM01Y.cpy` | Auth response with token, userType, routing |
-| `src/main/java/**/model/dto/BillPaymentRequest.java` | CREATE | `app/cpy-bms/COBIL00.CPY` | Bill payment request with accountId, confirmation |
-| `src/main/java/**/model/dto/ReportRequest.java` | CREATE | `app/cpy-bms/CORPT00.CPY` | Report criteria: monthly/yearly/custom, dates |
-| `src/main/java/**/model/dto/CommArea.java` | CREATE | `app/cpy/COCOM01Y.cpy` | Central session state DTO |
-| `src/main/java/**/model/enums/UserType.java` | CREATE | `app/cpy/CSUSR01Y.cpy` | ADMIN('A') / USER('U') enum |
-| `src/main/java/**/model/enums/FileStatus.java` | CREATE | `app/cbl/CBTRN02C.cbl` | All COBOL FILE STATUS codes mapped |
-| `src/main/java/**/model/enums/TransactionSource.java` | CREATE | `app/data/ASCII/dailytran.txt` | POS TERM, OPERATOR, etc. |
-| `src/main/java/**/model/enums/RejectCode.java` | CREATE | `app/cbl/CBTRN02C.cbl` | Codes 100-109 with descriptions |
-| `src/main/java/**/model/key/TransactionCategoryBalanceId.java` | CREATE | `app/cpy/CVTRA01Y.cpy` | `@Embeddable` composite key |
-| `src/main/java/**/model/key/DisclosureGroupId.java` | CREATE | `app/cpy/CVTRA02Y.cpy` | `@Embeddable` composite key |
-| `src/main/java/**/model/key/TransactionCategoryId.java` | CREATE | `app/cpy/CVTRA04Y.cpy` | `@Embeddable` composite key |
+| `AccountRepository.java` | CREATE | `app/jcl/ACCTFILE.jcl`, `app/catlg/LISTCAT.txt:L59` | Key length 11; record read and rewrite become `findById` and `save` |
+| `CardRepository.java` | CREATE | `app/jcl/CARDFILE.jcl`, `app/catlg/LISTCAT.txt:L281-L283` | Key length 16 plus a **derived finder replacing the alternate index** whose alternate key sits at byte 16 of the base record (`AXRKP 16`) |
+| `CardCrossReferenceRepository.java` | CREATE | `app/jcl/XREFFILE.jcl`, `app/catlg/LISTCAT.txt:L482-L486` | Key length 16 plus a derived finder replacing the cross-reference alternate index (`AXRKP 25`) |
+| `CustomerRepository.java` | CREATE | `app/jcl/CUSTFILE.jcl` | Key length 9 |
+| `TransactionRepository.java` | CREATE | `app/jcl/TRANFILE.jcl`, `app/catlg/LISTCAT.txt:L3674-L3676` | Key length 16; the descending-key browse becomes a **top-one ordered query**; a processing-timestamp finder replaces the third alternate index (`KEYLEN 26, AXRKP 304`) |
+| `DailyTransactionRepository.java` | CREATE | `app/jcl/POSTTRAN.jcl` | Sequential staging reads at 350 bytes |
+| `TransactionCategoryBalanceRepository.java` | CREATE | `app/jcl/TCATBALF.jcl` | Composite key length 17; **upsert semantics**, since the legacy code treats a not-found status as an accepted create path `[app/cbl/CBTRN02C.cbl:L481]` |
+| `DisclosureGroupRepository.java` | CREATE | `app/jcl/DISCGRP.jcl` | Composite key length 16; **the default-group fallback lookup is a second query, not an exception** `[app/cbl/CBACT04C.cbl:L437-L438]` |
+| `TransactionTypeRepository.java` | CREATE | `app/jcl/TRANTYPE.jcl` | Key length 2 |
+| `TransactionCategoryRepository.java` | CREATE | `app/jcl/TRANCATG.jcl` | Composite key length 6 |
+| `UserSecurityRepository.java` | CREATE | `app/jcl/DUSRSECJ.jcl:L64-L71` | Key length 8, record size 80. The ten inline seed rows load through the migration, not through this interface |
 
-#### Repository Interfaces
+#### 0.5.1.6 Services
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/repository/AccountRepository.java` | CREATE | `app/jcl/ACCTFILE.jcl` | `JpaRepository<Account, String>` with custom queries |
-| `src/main/java/**/repository/CardRepository.java` | CREATE | `app/jcl/CARDFILE.jcl` | With `findByCardAcctId()` for account-based lookup |
-| `src/main/java/**/repository/CustomerRepository.java` | CREATE | `app/jcl/CUSTFILE.jcl` | Standard JPA repository |
-| `src/main/java/**/repository/CardCrossReferenceRepository.java` | CREATE | `app/jcl/XREFFILE.jcl` | `findByXrefAcctId()` (← CXACAIX alternate index) |
-| `src/main/java/**/repository/TransactionRepository.java` | CREATE | `app/jcl/TRANFILE.jcl` | With pagination, date range, and max-ID queries |
-| `src/main/java/**/repository/UserSecurityRepository.java` | CREATE | `app/jcl/DUSRSECJ.jcl` | `findBySecUsrId()` for authentication |
-| `src/main/java/**/repository/TransactionCategoryBalanceRepository.java` | CREATE | `app/jcl/TCATBALF.jcl` | Composite key queries |
-| `src/main/java/**/repository/DisclosureGroupRepository.java` | CREATE | `app/jcl/DISCGRP.jcl` | Composite key with DEFAULT fallback query |
-| `src/main/java/**/repository/TransactionTypeRepository.java` | CREATE | `app/jcl/TRANTYPE.jcl` | Read-only reference data |
-| `src/main/java/**/repository/TransactionCategoryRepository.java` | CREATE | `app/jcl/TRANCATG.jcl` | Read-only reference data |
-| `src/main/java/**/repository/DailyTransactionRepository.java` | CREATE | `app/jcl/POSTTRAN.jcl` | Batch staging table access |
+| `auth/AuthenticationService.java` | CREATE | `app/cbl/COSGN00C.cbl` | Upper-case both identifier and password; BCrypt verification; issue a token in place of populating a COMMAREA; route by user type to the main or admin menu |
+| `account/AccountViewService.java` | CREATE | `app/cbl/COACTVWC.cbl` | Cross-reference, then account, then customer lookup chain; typed exceptions replace response-code branching |
+| `account/AccountUpdateService.java` | CREATE | `app/cbl/COACTUPC.cbl` | The write sequence preserved in order `[app/cbl/COACTUPC.cbl:L3888-L4105]`; snapshot comparison `[L4109-L4193]`; the lower-case versus upper-case asymmetry preserved; date comparison by component; **one transaction spanning both writes reproduces the asymmetric rollback** |
+| `card/CardListService.java` | CREATE | `app/cbl/COCRDLIC.cbl` | Page size 7; filter-by-account and filter-by-card paths preserved |
+| `card/CardDetailService.java` | CREATE | `app/cbl/COCRDSLC.cbl` | Single-record retrieval with the same validation order |
+| `card/CardUpdateService.java` | CREATE | `app/cbl/COCRDUPC.cbl` | Change-detection comparison mirroring the account update pattern |
+| `transaction/TransactionListService.java` | CREATE | `app/cbl/COTRN00C.cbl` | Page size 10; forward and backward paging preserved |
+| `transaction/TransactionDetailService.java` | CREATE | `app/cbl/COTRN01C.cbl` | Single-record retrieval |
+| `transaction/TransactionAddService.java` | CREATE | `app/cbl/COTRN02C.cbl` | Identifier generation by descending browse of the maximum key plus one `[L444-L449]`, with the end-of-file case yielding a first identifier of 1; **two distinct numeric parsers** |
+| `billing/BillPaymentService.java` | CREATE | `app/cbl/COBIL00C.cbl` | Reject when the current balance is at or below zero `[L198]`; pay the **full** balance `[L224]`; drive the balance to exactly zero `[L234]` |
+| `report/ReportSubmissionService.java` | CREATE | `app/cbl/CORPT00C.cbl` | Three report periods with date validation; the embedded job deck `[L81-L127]` becomes one queue message; the confirmation handshake preserved |
+| `admin/UserListService.java` | CREATE | `app/cbl/COUSR00C.cbl` | Page size 10 |
+| `admin/UserAddService.java` | CREATE | `app/cbl/COUSR01C.cbl` | Field-by-field validation order preserved; duplicate-key handling |
+| `admin/UserUpdateService.java` | CREATE | `app/cbl/COUSR02C.cbl` | Read-modify-write with change detection |
+| `admin/UserDeleteService.java` | CREATE | `app/cbl/COUSR03C.cbl` | Read-confirm-delete chain. **No self-delete guard is added, because none exists in the source** |
+| `menu/MainMenuService.java` | CREATE | `app/cbl/COMEN01C.cbl`, `app/cpy/COMEN02Y.cpy` | Option bounds check, user-type gate, dispatch by option index |
+| `menu/AdminMenuService.java` | CREATE | `app/cbl/COADM01C.cbl`, `app/cpy/COADM02Y.cpy` | Option bounds check plus the placeholder-program guard |
+| `shared/DateValidationService.java` | CREATE | `app/cbl/CSUTLDTC.cbl`, `app/cpy/CSUTLDPY.cpy`, `app/cpy/CSUTLDWY.cpy` | **One injected bean subsumes the static call and both work-area copybooks.** Returns the five-field result shape of `CSUTLDTC-PARM` `[app/cbl/CORPT00C.cbl:L129-L136]`: severity code, filler, message number and message |
+| `shared/ValidationLookupService.java` | CREATE | `app/cpy/CSLKPCDY.cpy` | Five 88-level tables become three classpath JSON resources with identical membership |
+| `shared/FileStatusMapper.java` | CREATE | The universal I/O guard idiom | Central translation from file status to typed exception, **including the three sites where a not-found or secondary status is an accepted control path rather than an error** |
+| `shared/FileService.java` | CREATE | `app/cbl/CBSTM03B.CBL` | The DD-name-keyed call contract `[app/cbl/CBSTM03B.CBL:L118-L127]` becomes a keyed handler map. **Only twelve of the twenty-four declared matrix cells are implemented in the source** — see [§0.7.6.6](#0766-the-file-service-call-contract) |
 
-#### Service Classes (from COBOL Programs)
+#### 0.5.1.7 Controllers
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/service/auth/AuthenticationService.java` | CREATE | `app/cbl/COSGN00C.cbl` | USRSEC read + BCrypt verify + JWT/session token |
-| `src/main/java/**/service/account/AccountViewService.java` | CREATE | `app/cbl/COACTVWC.cbl` | ACCTDAT + CUSTDAT + CXACAIX multi-dataset read |
-| `src/main/java/**/service/account/AccountUpdateService.java` | CREATE | `app/cbl/COACTUPC.cbl` | `@Transactional` with rollback, optimistic locking, all validation rules |
-| `src/main/java/**/service/card/CardListService.java` | CREATE | `app/cbl/COCRDLIC.cbl` | Paginated browse (7 rows/page), account/card filtering |
-| `src/main/java/**/service/card/CardDetailService.java` | CREATE | `app/cbl/COCRDSLC.cbl` | Single card keyed read |
-| `src/main/java/**/service/card/CardUpdateService.java` | CREATE | `app/cbl/COCRDUPC.cbl` | Optimistic concurrency via `@Version` |
-| `src/main/java/**/service/transaction/TransactionListService.java` | CREATE | `app/cbl/COTRN00C.cbl` | Paginated browse (10 rows/page), transaction ID filtering |
-| `src/main/java/**/service/transaction/TransactionDetailService.java` | CREATE | `app/cbl/COTRN01C.cbl` | Single transaction keyed read |
-| `src/main/java/**/service/transaction/TransactionAddService.java` | CREATE | `app/cbl/COTRN02C.cbl` | Auto-ID generation, cross-reference resolution, confirmation flow |
-| `src/main/java/**/service/billing/BillPaymentService.java` | CREATE | `app/cbl/COBIL00C.cbl` | Account balance update + transaction create in single transaction |
-| `src/main/java/**/service/report/ReportSubmissionService.java` | CREATE | `app/cbl/CORPT00C.cbl` | SQS message publish (replacing CICS TDQ WRITEQ) |
-| `src/main/java/**/service/admin/UserListService.java` | CREATE | `app/cbl/COUSR00C.cbl` | Paginated user browse |
-| `src/main/java/**/service/admin/UserAddService.java` | CREATE | `app/cbl/COUSR01C.cbl` | User creation with BCrypt password hashing |
-| `src/main/java/**/service/admin/UserUpdateService.java` | CREATE | `app/cbl/COUSR02C.cbl` | User record modification |
-| `src/main/java/**/service/admin/UserDeleteService.java` | CREATE | `app/cbl/COUSR03C.cbl` | User deletion with confirmation |
-| `src/main/java/**/service/menu/MainMenuService.java` | CREATE | `app/cbl/COMEN01C.cbl`, `app/cpy/COMEN02Y.cpy` | 10-option routing metadata |
-| `src/main/java/**/service/menu/AdminMenuService.java` | CREATE | `app/cbl/COADM01C.cbl`, `app/cpy/COADM02Y.cpy` | 4-option routing metadata |
-| `src/main/java/**/service/shared/DateValidationService.java` | CREATE | `app/cbl/CSUTLDTC.cbl`, `app/cpy/CSUTLDPY.cpy`, `app/cpy/CSUTLDWY.cpy` | Java `LocalDate` validation replacing LE CEEDAYS |
-| `src/main/java/**/service/shared/ValidationLookupService.java` | CREATE | `app/cpy/CSLKPCDY.cpy` | NANPA area codes, state abbreviations, ZIP prefixes |
-| `src/main/java/**/service/shared/FileStatusMapper.java` | CREATE | `app/cbl/CBTRN02C.cbl` (FILE STATUS patterns) | FILE STATUS → exception hierarchy mapping |
+| `AuthController.java` | CREATE | CSD transaction `CC00` | Sign-on operation returning a token |
+| `MenuController.java` | CREATE | CSD `CM00`, `CA00` | Menu retrieval; option dispatch replaced by URL navigation |
+| `AccountController.java` | CREATE | CSD `CAVW`, `CAUP` | View and update; the update body carries the snapshot |
+| `CardController.java` | CREATE | CSD `CCLI`, `CCDL`, `CCUP` | List with paging (7 per page), detail, update |
+| `TransactionController.java` | CREATE | CSD `CT00`, `CT01`, `CT02` | List with paging (10 per page), detail, add |
+| `BillingController.java` | CREATE | CSD `CB00` | Bill payment |
+| `ReportController.java` | CREATE | CSD `CR00` | Report submission publishing to the queue |
+| `AdminController.java` | CREATE | CSD `CU00`, `CU01`, `CU02`, `CU03` | User administration under `/api/admin/*`, restricted to the administrator role |
 
-#### REST Controllers
+**No controller method is created for transaction `CDV1`.** Its program `COCRDSEC` has no source anywhere in the repository — see [§0.2.1.2](#0212-program-count-reconciliation-17-sourced-1-orphan).
 
-| Target File | Transformation | Source File(s) | Key Changes |
+#### 0.5.1.8 Batch
+
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/controller/AuthController.java` | CREATE | `app/bms/COSGN00.bms`, `app/cpy-bms/COSGN00.CPY` | POST `/api/auth/signin` |
-| `src/main/java/**/controller/AccountController.java` | CREATE | `app/bms/COACTVW.bms`, `app/bms/COACTUP.bms` | GET/PUT `/api/accounts/{id}` |
-| `src/main/java/**/controller/CardController.java` | CREATE | `app/bms/COCRDLI.bms`, `app/bms/COCRDSL.bms`, `app/bms/COCRDUP.bms` | GET/PUT `/api/cards/*` |
-| `src/main/java/**/controller/TransactionController.java` | CREATE | `app/bms/COTRN00.bms`, `app/bms/COTRN01.bms`, `app/bms/COTRN02.bms` | GET/POST `/api/transactions/*` |
-| `src/main/java/**/controller/BillingController.java` | CREATE | `app/bms/COBIL00.bms` | POST `/api/billing/pay` |
-| `src/main/java/**/controller/ReportController.java` | CREATE | `app/bms/CORPT00.bms` | POST `/api/reports/submit` |
-| `src/main/java/**/controller/UserAdminController.java` | CREATE | `app/bms/COUSR00.bms` through `app/bms/COUSR03.bms` | CRUD `/api/admin/users/*` |
-| `src/main/java/**/controller/MenuController.java` | CREATE | `app/bms/COMEN01.bms`, `app/bms/COADM01.bms` | GET `/api/menu/{type}` |
+| `jobs/DailyTransactionPostingJob.java` | CREATE | `app/jcl/POSTTRAN.jcl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/CBTRN01C.cbl` | Five input datasets to repositories `[app/cbl/CBTRN02C.cbl:L196-L200]`. **`CBTRN01C` is folded in as an explicitly labelled read-only pre-flight step**, since it has no distinct job and performs no writes. Exit status decided **solely** by whether the reject count exceeds zero `[L229-L231]` |
+| `jobs/InterestCalculationJob.java` | CREATE | `app/jcl/INTCALC.jcl`, `app/cbl/CBACT04C.cbl` | The ten-character linkage date `[app/cbl/CBACT04C.cbl:L176-L178]` becomes a job parameter. **Output is written as a fresh sequential generation, matching the legacy target `[L53-L56]` — not to the transaction table** |
+| `jobs/CombineTransactionsJob.java` | CREATE | `app/jcl/COMBTRAN.jcl` | **No COBOL program exists for this job**, so the JCL is the source of truth. Concatenated input `[L23-L26]`, sort by transaction identifier `[L30]`, then a bulk load `[L48]`. **A repeated interest date parameter produces colliding identifiers here, which must surface as a duplicate-record exception and a failed exit status, never a silent upsert** |
+| `jobs/StatementGenerationJob.java` | CREATE | `app/jcl/CREASTMT.JCL`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBSTM03B.CBL` | Five steps preserved including the projection sort `[L53-L54]`. The `ALTER` initialisation chain becomes ordinary sequential setup. **The in-memory 510-transaction ceiling is removed by streaming, recorded as a labelled deviation** |
+| `jobs/TransactionReportJob.java` | CREATE | `app/jcl/TRANREPT.jcl`, `app/proc/TRANREPT.prc`, `app/cbl/CBTRN03C.cbl` | Backup `[L21]`, filtered sort `[L44-L46]`, then report generation `[L57]` at 133 bytes `[L76]`. The inclusive string date filter is re-applied in the processor exactly as the legacy program re-applies it |
+| `jobs/BatchPipelineOrchestrator.java` | CREATE | The overall JCL job stream | Sequential and parallel flow composition with decider gating |
+| `processors/TransactionPostingProcessor.java` | CREATE | `app/cbl/CBTRN02C.cbl` | The **two-paragraph** validation cascade `[L370-L378]`; the over-limit formula exactly as written `[L403-L405]`; **the unguarded sequential expiry check preserved so that code 103 overwrites 102** `[L407-L420]` |
+| `processors/InterestCalculationProcessor.java` | CREATE | `app/cbl/CBACT04C.cbl` | Interest computed without algebraic simplification `[L465]`; default-group fallback on a not-found status `[L422-L439]`; synthetic transaction construction preserved `[L473-L515]`; **the empty fee-computation paragraph retained as a documented reachable no-op** `[L518-L520]` |
+| `processors/TransactionReportProcessor.java` | CREATE | `app/cbl/CBTRN03C.cbl` | Twenty lines per page; **control break on the card number even though the emitted label reads "Account Total"** |
+| `processors/StatementProcessor.java` | CREATE | `app/cbl/CBSTM03A.CBL` | Per-card aggregation and dual-format emission; the HTML fragment table `[L149-L150 onward]` |
+| `processors/TransactionCombineProcessor.java` | CREATE | `app/jcl/COMBTRAN.jcl` | Merge and ordering semantics of the concatenated input |
+| `readers/AccountReader.java` | CREATE | `app/cbl/CBACT01C.cbl` | Read-only sequential reader; verification step only |
+| `readers/CardReader.java` | CREATE | `app/cbl/CBACT02C.cbl` | Read-only sequential reader |
+| `readers/CardCrossReferenceReader.java` | CREATE | `app/cbl/CBACT03C.cbl` | Read-only sequential reader |
+| `readers/CustomerReader.java` | CREATE | `app/cbl/CBCUS01C.cbl` | Read-only sequential reader |
+| `readers/DailyTransactionReader.java` | CREATE | `app/cbl/CBTRN02C.cbl` | The `DALYTRAN` 350-byte fixed-width sequential read. **Its source is `CBTRN02C`, not `CBTRN01C`** — see [§0.2.2.1](#0221-corrections-to-the-prior-specification) |
+| `readers/TransactionBackupReader.java` | CREATE | `app/proc/TRANREPT.prc:L21-L29` | Backup-generation read at 350 bytes, preceding the report sort |
+| `readers/CombinedTransactionReader.java` | CREATE | `app/jcl/COMBTRAN.jcl:L23-L26` | Multi-source concatenated read |
+| `writers/TransactionWriter.java` | CREATE | `app/cbl/CBTRN02C.cbl` | Table insert plus fixed-width object emission at 350 bytes |
+| `writers/RejectWriter.java` | CREATE | `app/cbl/CBTRN02C.cbl:L176-L182`, `app/jcl/POSTTRAN.jcl` | **430-byte record = 350 data bytes plus an 80-byte trailer carrying a four-digit reason and a 76-character description**, exactly matching the declared record length |
+| `writers/StatementWriter.java` | CREATE | `app/jcl/CREASTMT.JCL:L89, L94` | Two outputs at 80 and 100 bytes per line respectively |
 
-#### Batch Job Classes (from JCL + COBOL)
+#### 0.5.1.9 Exceptions, Observability and Resources
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/batch/jobs/DailyTransactionPostingJob.java` | CREATE | `app/jcl/POSTTRAN.jcl`, `app/cbl/CBTRN02C.cbl` | Spring Batch Job with 4-stage validation, condition codes |
-| `src/main/java/**/batch/jobs/InterestCalculationJob.java` | CREATE | `app/jcl/INTCALC.jcl`, `app/cbl/CBACT04C.cbl` | PARM parameter mapping, rate lookup, formula preservation |
-| `src/main/java/**/batch/jobs/CombineTransactionsJob.java` | CREATE | `app/jcl/COMBTRAN.jcl` | Java Comparator sort + bulk insert (replaces DFSORT+REPRO) |
-| `src/main/java/**/batch/jobs/StatementGenerationJob.java` | CREATE | `app/jcl/CREASTMT.JCL`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBSTM03B.CBL` | Text + HTML statement generation, S3 output |
-| `src/main/java/**/batch/jobs/TransactionReportJob.java` | CREATE | `app/jcl/TRANREPT.jcl`, `app/cbl/CBTRN03C.cbl` | Date-filtered reporting, S3 output |
-| `src/main/java/**/batch/jobs/BatchPipelineOrchestrator.java` | CREATE | `app/jcl/POSTTRAN.jcl` through `app/jcl/TRANREPT.jcl` | 5-stage sequential orchestration with condition code logic |
-| `src/main/java/**/batch/processors/TransactionPostingProcessor.java` | CREATE | `app/cbl/CBTRN02C.cbl` | 4-stage validation cascade (codes 100-109) |
-| `src/main/java/**/batch/processors/InterestCalculationProcessor.java` | CREATE | `app/cbl/CBACT04C.cbl` | `(balance × rate) / 1200` formula with DEFAULT fallback |
-| `src/main/java/**/batch/processors/TransactionCombineProcessor.java` | CREATE | `app/jcl/COMBTRAN.jcl` | Merge sort by transaction ID |
-| `src/main/java/**/batch/processors/StatementProcessor.java` | CREATE | `app/cbl/CBSTM03A.CBL` | In-memory buffering, dual-format output |
-| `src/main/java/**/batch/processors/TransactionReportProcessor.java` | CREATE | `app/cbl/CBTRN03C.cbl` | Date filtering, enrichment, page/account/grand totals |
-| `src/main/java/**/batch/readers/DailyTransactionReader.java` | CREATE | `app/cbl/CBTRN01C.cbl` | S3 file reader replacing DALYTRAN sequential read |
-| `src/main/java/**/batch/readers/AccountFileReader.java` | CREATE | `app/cbl/CBACT01C.cbl` | Diagnostic utility reader |
-| `src/main/java/**/batch/readers/CardFileReader.java` | CREATE | `app/cbl/CBACT02C.cbl` | Diagnostic utility reader |
-| `src/main/java/**/batch/readers/CrossReferenceFileReader.java` | CREATE | `app/cbl/CBACT03C.cbl` | Diagnostic utility reader |
-| `src/main/java/**/batch/readers/CustomerFileReader.java` | CREATE | `app/cbl/CBCUS01C.cbl` | Diagnostic utility reader |
-| `src/main/java/**/batch/writers/TransactionWriter.java` | CREATE | `app/cbl/CBTRN02C.cbl` | DB write + S3 backup |
-| `src/main/java/**/batch/writers/RejectWriter.java` | CREATE | `app/cbl/CBTRN02C.cbl` | S3 rejection file with reason trailers |
-| `src/main/java/**/batch/writers/StatementWriter.java` | CREATE | `app/cbl/CBSTM03A.CBL` | S3 text + HTML statement output |
+| `exception/CardDemoException.java` plus 8 subtypes | CREATE | The universal I/O guard idiom, `app/cpy/CSMSG02Y.cpy` | Nine classes total. Response codes and file statuses become typed exceptions; the abend copybook's four fields `[app/cpy/CSMSG02Y.cpy:L21-L29]` become the fatal exception's payload; **abend code 999 and return code 12 preserved** `[app/cbl/CBTRN02C.cbl:L710-L711]` |
+| `observability/CorrelationIdFilter.java` | CREATE | The CICS transaction identifier as thread of identity | Generates and propagates a correlation identifier into logging context, spans and outbound AWS calls |
+| `observability/MetricsConfig.java` | CREATE | `app/cbl/CBTRN02C.cbl:L227-L228` | Four named counters replace end-of-run display statements; rejected records **tagged by reject code** |
+| `observability/HealthIndicators.java` | CREATE | `app/jcl/OPENFIL.jcl`, `app/jcl/CLOSEFIL.jcl` | Composite readiness and liveness checks over the database, object storage and queue |
+| `resources/application.yml` and the three profile files | CREATE | `app/jcl` DD statements and dataset names | Dataset names become bucket and key prefixes; **the signing key is resolved from the environment in every profile** |
+| `resources/logback-spring.xml` | CREATE | `DISPLAY` statements throughout the batch corpus | Structured JSON with trace, span and correlation identifiers; masking of credentials, password hashes and social security numbers |
+| `resources/db/migration/V1__create_schema.sql` | CREATE | `app/catlg/LISTCAT.txt`, the IDCAMS jobs, the 11 record-layout copybooks | Eleven tables with primary keys taken from the catalogued key lengths; not-null on every column; check constraints; foreign keys; version columns |
+| `resources/db/migration/V2__create_indexes.sql` | CREATE | The three alternate index definitions | Three B-tree indexes at the byte offsets the catalogue records (`AXRKP` 16, 25, 304) |
+| `resources/db/migration/V3__seed_data.sql` | CREATE | The 9 ASCII fixtures, `app/jcl/DUSRSECJ.jcl:L35-L44` | **Position-aware overpunch decoding driven by the PIC clauses**; the ten inline users stored **only** as BCrypt strength-10 hashes |
+| `resources/validation/*.json` (3) | CREATE | `app/cpy/CSLKPCDY.cpy` | Exact membership preserved as data rather than generated constants |
 
-#### Database Migration Scripts
+#### 0.5.1.10 Tests, Documentation and the Three Updates
 
-| Target File | Transformation | Source File(s) | Key Changes |
+| Target File | Mode | Source File | Key Changes |
 |---|---|---|---|
-| `src/main/resources/db/migration/V1__create_schema.sql` | CREATE | `app/jcl/ACCTFILE.jcl`, `app/jcl/CARDFILE.jcl`, `app/jcl/CUSTFILE.jcl`, `app/jcl/XREFFILE.jcl`, `app/jcl/TRANFILE.jcl`, `app/jcl/DUSRSECJ.jcl`, `app/jcl/TCATBALF.jcl`, `app/jcl/DISCGRP.jcl`, `app/jcl/TRANCATG.jcl`, `app/jcl/TRANTYPE.jcl` | All 11 tables DDL from VSAM DEFINE CLUSTER specs |
-| `src/main/resources/db/migration/V2__create_indexes.sql` | CREATE | `app/jcl/XREFFILE.jcl`, `app/jcl/TRANFILE.jcl` | Alternate indexes (CXACAIX, TRANSACT AIX) |
-| `src/main/resources/db/migration/V3__seed_data.sql` | CREATE | `app/data/ASCII/acctdata.txt`, `app/data/ASCII/carddata.txt`, `app/data/ASCII/custdata.txt`, `app/data/ASCII/cardxref.txt`, `app/data/ASCII/dailytran.txt`, `app/data/ASCII/discgrp.txt`, `app/data/ASCII/tcatbal.txt`, `app/data/ASCII/trancatg.txt`, `app/data/ASCII/trantype.txt` | All 9 ASCII fixture files → INSERT statements |
+| `src/test/java/com/cardemo/unit/**` | CREATE | `app/cbl/**` paragraph bodies | One test class per service and per processor, asserting paragraph-level behaviour against cited locators |
+| `src/test/java/com/cardemo/integration/**` | CREATE | `app/jcl/**` job semantics, `app/catlg/LISTCAT.txt` | Repository, batch and cloud-service integration tests against containerised dependencies |
+| `e2e/BatchPipelineE2ETest.java` | CREATE | `app/data/ASCII/dailytran.txt`, `app/jcl/POSTTRAN.jcl` | **Three hundred** fixture records driven end to end with output compared against a baseline |
+| `e2e/OnlineTransactionE2ETest.java` | CREATE | `app/csd/CARDDEMO.CSD` | Sign-on through transaction add across the REST surface |
+| `e2e/GateVerificationTest.java` | CREATE | — | Machine-checkable assertions for the eight validation gates |
+| `src/test/resources/**` | CREATE | `app/data/ASCII/**` | Fixture copies under their **actual** names and expected-output baselines |
+| `DECISION_LOG.md` | CREATE | — | Every mechanism substitution and every preserved quirk, each citing its source locator |
+| `TRACEABILITY_MATRIX.md` | CREATE | All 28 programs | Paragraph-to-method mapping using the verified line counts of [§0.2.1.1](#0211-cobol-programs-appcbl) |
+| `docs/api-contracts.md` | CREATE | `app/csd/CARDDEMO.CSD` | Manual endpoint contract documentation, standing in for generated specification tooling that is out of scope |
+| `docs/architecture-before-after.md` | CREATE | `diagrams/**`, `app/catlg/LISTCAT.txt` | Side-by-side legacy and target architecture; the detailed visuals live here rather than being duplicated in this document |
+| `docs/onboarding-guide.md` | CREATE | `CONTRIBUTING.md` | Developer setup consistent with the existing contribution guidance |
+| `docs/validation-gates.md` | CREATE | — | Gate definitions, evidence and prerequisites — **the authoritative gate ledger** |
+| `docs/executive-presentation.html` | CREATE | `docs/project-guide.md` | Stakeholder summary; a static document with no external dependency, not an application interface |
+| `README.md` | **UPDATE** | `README.md` | Append Java build, run and architecture sections. **The legacy inventory tables under `README.md`'s `## Running full batch`, `#### **Online**` and `#### **Batch**` headings are preserved verbatim** |
+| `mkdocs.yml` | **UPDATE** | `mkdocs.yml` | Add nav entries for the five new documents. **Mandatory: the site publishes from this nav, so an omitted document never appears** |
+| `docs/technical-specifications.md` | **UPDATE** | `docs/technical-specifications.md` | This Agent Action Plan section, rewritten against verified source evidence |
 
-#### Validation Data Resources
+#### 0.5.1.11 Reference-Only Sources
 
-| Target File | Transformation | Source File(s) | Key Changes |
-|---|---|---|---|
-| `src/main/resources/validation/nanpa-area-codes.json` | CREATE | `app/cpy/CSLKPCDY.cpy` | NANPA area code lookup table extraction |
-| `src/main/resources/validation/us-state-codes.json` | CREATE | `app/cpy/CSLKPCDY.cpy` | US state/territory abbreviation extraction |
-| `src/main/resources/validation/state-zip-prefixes.json` | CREATE | `app/cpy/CSLKPCDY.cpy` | State/ZIP prefix combination extraction |
+| Source Pattern | Mode | Purpose |
+|---|---|---|
+| `app/cbl/**` (case-insensitive) | REFERENCE | Control flow, formulas, validation order, exact literals, error taxonomy |
+| `app/cpy/**` | REFERENCE | Field contracts, lookup tables, abend fields, framework-mechanism mappings |
+| `app/cpy-bms/**` | REFERENCE | The 441 field contracts that fix DTO names, types and lengths |
+| `app/bms/**` | REFERENCE | Mapset definitions; consulted for field attributes, not translated |
+| `app/jcl/**` (case-insensitive) | REFERENCE | Job topology, DD names, record lengths, cluster definitions, GDG bases, seed data |
+| `app/proc/**`, `app/ctl/REPROCT.ctl` | REFERENCE | Step semantics, sort specifications, control cards |
+| `app/csd/CARDDEMO.CSD` | REFERENCE | Endpoint and authorisation inventory, file control table, queue contract |
+| `app/catlg/LISTCAT.txt` | REFERENCE | Authoritative physical specification for the schema |
+| `app/data/ASCII/**` | REFERENCE | Seed and fixture source |
+| `app/data/EBCDIC/**` | REFERENCE | Codepage validation only; **never parsed by the build** |
+| `diagrams/**` | REFERENCE | Legacy architecture illustrations feeding the before-and-after document |
+| `docs/project-guide.md`, `CONTRIBUTING.md`, `catalog-info.yaml`, `LICENSE`, `NOTICE` | REFERENCE | Prior-run evidence and repository conventions |
+
+#### 0.5.1.12 Coverage Proof
+
+Every legacy source artefact appears as the source of at least one row above. This is the assertion the scope-coverage gate verifies, so it is stated exhaustively rather than summarised.
+
+- **28 programs.** Seventeen online programs map to seventeen services across eight controllers. `CBACT01C`, `CBACT02C`, `CBACT03C` and `CBCUS01C` map to four read-only readers. `CBACT04C` maps to the interest job and its processor. **`CBTRN01C` is folded into the posting job as a labelled read-only pre-flight step** — it has no distinct JCL job and its verb inventory contains no write operation, so a standalone job would be an invention. `CBTRN02C` maps to the posting job, its processor and the reject writer. `CBTRN03C` maps to the report job and its processor. `CBSTM03A.CBL` maps to the statement job, processor and writer. `CBSTM03B.CBL` maps to `FileService`. `CSUTLDTC` maps to `DateValidationService`. **`COCRDSEC` is the one CSD-referenced program with no source in the repository and therefore has no row; that absence is itself documented.**
+- **28 copybooks.** Eleven record layouts map to eleven entities. `CSUSR01Y` maps to the user entity. `COCOM01Y` splits across token claims and DTOs. `CVCRD01Y` maps to controller request handling. `COMEN02Y` and `COADM02Y` map to the two menu services. `CSLKPCDY` maps to three JSON resources. `CSUTLDPY` and `CSUTLDWY` fold into the date service. `COTTL01Y` and `CSMSG01Y` map to constants holders. **`CSMSG02Y`, which is actually the abend work-area copybook `CABENDD.CPY`, maps to the fatal exception's field set.** `CSDAT01Y` maps to the date-and-time header utility. **`CSSTRPFY`, being procedural, maps to controller-level action mapping** across its five call sites. **`CSSETATY`, being a parameterised template, maps to validation annotations and per-field error markers** at its single call site. `CVTRA07Y` maps to report line layouts. `COSTM01.CPY` maps to the statement DTO. `CUSTREC` maps to the customer entity. **`UNUSED1Y` has zero `COPY` references repository-wide and is dispositioned as documented dead.**
+- **17 mapsets and 17 symbolic maps.** All **441** input fields drive DTO names, types and lengths.
+- **29 JCL members.** `POSTTRAN`, `INTCALC`, `COMBTRAN`, `CREASTMT.JCL` and `TRANREPT` map to the five jobs. The IDCAMS provisioning jobs map to the first two migrations. `DEFGDGB`, `DALYREJS` and `REPTFILE` map to the object-storage layout. `TRANBKP` and `PRTCATBL` map to batch steps. `READACCT`, `READCARD`, `READCUST` and `READXREF` map to the four reader verification steps. `DUSRSECJ` maps to the user seed. `DEFCUST` contributes the orphan-cluster finding. **`CBADMCDJ`, which installs the CICS resource definitions, and `OPENFIL` and `CLOSEFIL`, which manage online file availability, have no Java analogue and are documented as such** — the first is superseded by the security configuration, the latter two by the health indicators.
+- **2 procedures, 1 control card, 1 CSD, 1 catalogue listing.** All consumed as reference driving step semantics, the endpoint inventory and the schema.
+- **9 ASCII fixtures.** All feed the seed migration and the test resources.
+- **12 EBCDIC images.** Retained as codepage reference; explicitly out of scope for parsing.
 
 ### 0.5.2 Cross-File Dependencies
 
-**Import Statement Transformations:**
+#### 0.5.2.1 COBOL `COPY` to Java Import Translation
 
-| COBOL Pattern | Java Replacement |
+The complete mapping for all 28 copybooks. The burden here is **translation, not refactoring** — see [§0.5.2.6](#0526-zero-java-to-java-import-churn).
+
+| COBOL Statement | Java Import or Mechanism |
 |---|---|
-| `COPY COCOM01Y` | `import com.cardemo.model.dto.CommArea;` |
-| `COPY CVACT01Y` | `import com.cardemo.model.entity.Account;` |
-| `COPY CVACT02Y` | `import com.cardemo.model.entity.Card;` |
-| `COPY CVCUS01Y` / `COPY CUSTREC` | `import com.cardemo.model.entity.Customer;` |
-| `COPY CVACT03Y` | `import com.cardemo.model.entity.CardCrossReference;` |
-| `COPY CVTRA05Y` | `import com.cardemo.model.entity.Transaction;` |
-| `COPY CSUSR01Y` | `import com.cardemo.model.entity.UserSecurity;` |
-| `COPY DFHAID` / `COPY CSSTRPFY` | Controller-level request mapping (no direct equivalent) |
-| `COPY CSSETATY` | `@Valid` + field-level validation annotations |
-| `CALL 'CSUTLDTC'` | `@Autowired DateValidationService` |
-| `CALL 'CBSTM03B'` | `@Autowired` file service bean injection |
+| `COPY CVACT01Y` | `com.cardemo.model.entity.Account` |
+| `COPY CVACT02Y` | `com.cardemo.model.entity.Card` |
+| `COPY CVACT03Y` | `com.cardemo.model.entity.CardCrossReference` |
+| `COPY CVCUS01Y` / `COPY CUSTREC` | `com.cardemo.model.entity.Customer` (both layouts, one entity) |
+| `COPY CVTRA05Y` | `com.cardemo.model.entity.Transaction` |
+| `COPY CVTRA06Y` | `com.cardemo.model.entity.DailyTransaction` |
+| `COPY CVTRA01Y` | `…model.entity.TransactionCategoryBalance` + `…model.key.TransactionCategoryBalanceId` |
+| `COPY CVTRA02Y` | `…model.entity.DisclosureGroup` + `…model.key.DisclosureGroupId` |
+| `COPY CVTRA03Y` | `com.cardemo.model.entity.TransactionType` |
+| `COPY CVTRA04Y` | `…model.entity.TransactionCategory` + `…model.key.TransactionCategoryId` |
+| `COPY CSUSR01Y` | `com.cardemo.model.entity.UserSecurity` |
+| `COPY COSTM01` | `com.cardemo.model.dto.StatementTransaction` |
+| `COPY CVTRA07Y` | `com.cardemo.model.dto` report-line types |
+| `COPY COCOM01Y` | `com.cardemo.model.dto.CommArea`, split across token claims and DTO fields |
+| `COPY COMEN02Y` | `com.cardemo.service.menu.MainMenuService` option table |
+| `COPY COADM02Y` | `com.cardemo.service.menu.AdminMenuService` option table |
+| `COPY CSLKPCDY` | `src/main/resources/validation/*.json` loaded by `ValidationLookupService` |
+| `COPY CSUTLDPY`, `COPY CSUTLDWY`, `CALL 'CSUTLDTC'` | **One** injected `com.cardemo.service.shared.DateValidationService` subsuming all three |
+| `COPY COTTL01Y`, `COPY CSMSG01Y` | Shared constants holders |
+| `COPY CSMSG02Y` | `com.cardemo.exception.FatalProcessingException` field set |
+| `COPY CSDAT01Y` | Shared date-and-time header utility |
+| `COPY CVCRD01Y` | Controller request mapping |
+| `COPY CSSTRPFY` | Controller-level action mapping — **procedural, no import** |
+| `COPY CSSETATY` (with `REPLACING`) | Validation annotations plus per-field error markers — **template, no import** |
+| `COPY UNUSED1Y` | **No target**; zero references repository-wide, recorded as dead |
+| `COPY DFHAID`, `COPY DFHBMSCA`, `COPY DFHATTR` | Supplied by CICS, absent from the repository, **no import** |
+| `CALL 'CBSTM03B' USING WS-M03B-AREA` | **One** injected `com.cardemo.service.shared.FileService` exposing the DD-name-keyed operation set with a two-character status and a payload buffer |
 
-### 0.5.3 One-Phase Execution
+**Three collapse rules** reduce many call sites to one dependency each, and they are the reason the import count is far lower than the copybook count:
 
-The entire migration executes as a single phase. All 100+ target files are delivered simultaneously — there is no phased rollout. The dependency graph ensures that entity classes are defined before repositories, repositories before services, and services before controllers and batch jobs. The Flyway migration scripts run on application startup to provision the PostgreSQL schema.
+1. The date utility plus its two work-area copybooks become a **single bean**.
+2. The file-access subprogram becomes a **single bean**.
+3. The five lookup tables become **one service over three classpath resources** rather than a generated constants class that would run to over a thousand lines while adding nothing to correctness.
+
+#### 0.5.2.2 Dataset and DD Name to Object Storage Mapping
+
+| Legacy Dataset / DD | Record Length | Target |
+|---|---:|---|
+| `DALYTRAN` staging dataset | 350 | Input bucket, date-partitioned prefix, seeded from `app/data/ASCII/dailytran.txt` (300 records) |
+| `DALYREJS` generation group | 430 | Output bucket, job-instance prefix, rejects object |
+| `TRANREPT` generation group | 133 | Output bucket, job-instance prefix, report object. **Retention conflict resolved to 10** — the two source declarations disagree `[app/jcl/DEFGDGB.jcl:L37]` versus `[app/jcl/REPTFILE.jcl:L26]`, and object versioning supersedes both |
+| `TRANSACT.BKUP`, `TRANSACT.DALY`, `TRANSACT.COMBINED`, `SYSTRAN`, `TCATBALF.BKUP` generation groups | 350 / varies | Output bucket, base-name plus job-instance prefixes; relative generation references become object versions plus a path segment |
+| `STMTFILE` | 80 | Statements bucket, account and month prefixes, text object |
+| `HTMLFILE` | 100 | Statements bucket, account and month prefixes, HTML object. **The 80-versus-100 mismatch between `[app/jcl/CREASTMT.JCL:L69]` and `[L94]` is a legacy defect logged, not fixed**; 100 governs because the emitting field is `PIC X(100)` `[app/cbl/CBSTM03A.CBL:L149]` |
+| `DATEPARM` control input | 80 | Job parameters for start and end date, delivered as the queue message body |
+| `TRXFL` work cluster | 350, key 32 | An in-job projection and sort; **never persisted** |
+
+**Record lengths are load-bearing.** The 430-byte reject length is exactly the 350-byte data image plus an 80-byte trailer, and the trailer itself decomposes into a four-digit reason code and a 76-character description `[app/cbl/CBTRN02C.cbl:L176-L182]`. Emitting anything other than 430 bytes breaks the parity comparison.
+
+#### 0.5.2.3 CICS File Names to Entities
+
+| CICS `DEFINE FILE` | Target |
+|---|---|
+| `ACCTDAT` | `Account` entity |
+| `CARDDAT` | `Card` entity |
+| `CARDAIX` | `Card` account-based derived finder |
+| `CCXREF` | `CardCrossReference` entity |
+| `CXACAIX` | `CardCrossReference` account-based derived finder |
+| `CUSTDAT` | `Customer` entity |
+| `TRANSACT` | `Transaction` entity |
+| `USRSEC` | `UserSecurity` entity |
+
+**`TCATBALF`, `DISCGRP`, `TRANCATG` and `TRANTYPE` have no CICS definition at all**, which is the evidence that they are batch-only datasets — a fact that shapes both the authorisation model (no online endpoint touches them) and the integration-test surface (they are exercised only through batch tests).
+
+#### 0.5.2.4 COMMAREA to Token and DTO Split
+
+| COMMAREA Field | Target |
+|---|---|
+| `CDEMO-USER-ID` | Token subject claim |
+| `CDEMO-USER-TYPE` | Token role claim driving access control |
+| `CDEMO-ACCT-ID`, `CDEMO-CARD-NUM`, `CDEMO-CUST-ID` | Request and response DTO fields |
+| Paging state — **declared by the programs, not by `COCOM01Y`**; see the correction note below | Query parameter and response metadata |
+| `CDEMO-FROM-TRANID`, `CDEMO-TO-TRANID`, `CDEMO-FROM-PROGRAM`, `CDEMO-TO-PROGRAM` | **No equivalent** — routing is URL-based |
+| `CDEMO-PGM-CONTEXT` | **No equivalent** — the enter-versus-re-enter flag collapses into stateless request handling |
+| `CDEMO-LAST-MAP`, `CDEMO-LAST-MAPSET` | **No equivalent** — no screen state is retained |
+
+**Correction, 1 August 2026 — paging state has never been a `COCOM01Y` field.** Earlier generations of this document attributed the page number and the next-page flag to `app/cpy/COCOM01Y.cpy`. That copybook is 47 lines long and declares exactly one record, `01 CARDDEMO-COMMAREA`, holding five `05` groups — `CDEMO-GENERAL-INFO` `[app/cpy/COCOM01Y.cpy:L20-L31]`, `CDEMO-CUSTOMER-INFO` `[:L32-L36]`, `CDEMO-ACCOUNT-INFO` `[:L37-L39]`, `CDEMO-CARD-INFO` `[:L40-L41]` and `CDEMO-MORE-INFO` `[:L42-L44]`. **A case-insensitive search of that file for the string `PAGE` returns zero matches.** The paging fields are declared by the individual paging programs, in three distinct shapes:
+
+- **Two programs append a private `05` group to the copied group.** `[app/cbl/COTRN00C.cbl:L61]` is `COPY COCOM01Y.` and `[:L62]` opens `05 CDEMO-CT00-INFO`, which carries `CDEMO-CT00-PAGE-NUM PIC 9(08)` at `[:L65]`, `CDEMO-CT00-NEXT-PAGE-FLG PIC X(01) VALUE 'N'` at `[:L66]` and the condition names `NEXT-PAGE-YES` and `NEXT-PAGE-NO` at `[:L67-L68]`. `[app/cbl/COUSR00C.cbl:L66-L73]` is the same construction under the name `CDEMO-CU00-INFO`, with `CDEMO-CU00-PAGE-NUM` at `[:L70]` and `CDEMO-CU00-NEXT-PAGE-FLG` at `[:L71]`. Because these items follow the `COPY` at the same level number they are appended to `CARDDEMO-COMMAREA` and do travel in the COMMAREA at run time — but they are **program-owned, per-transaction extensions**, they are named per transaction (`CT00`, `CU00`), and no two programs share them.
+- **One program uses a separate record entirely.** `[app/cbl/COCRDLIC.cbl:L227]` copies the COMMAREA and `[:L229]` then opens a wholly independent `01 WS-THIS-PROGCOMMAREA`, whose paging items are `WS-CA-SCREEN-NUM PIC 9(1)` with `88 CA-FIRST-PAGE` at `[:L237-L238]`, `WS-CA-LAST-PAGE-DISPLAYED PIC 9(1)` with two condition names at `[:L239-L241]`, and `WS-CA-NEXT-PAGE-IND PIC X(1)` with two condition names at `[:L242-L244]`. This is not an extension of `CARDDEMO-COMMAREA` at all.
+- **The screen-side carriers are BMS symbolic-map fields.** `[app/cpy-bms/COTRN00.CPY:L55-L60]` and `[app/cpy-bms/COUSR00.CPY:L55-L60]` generate the input quintuple `PAGENUML`, `PAGENUMF`, the redefinition `PAGENUMA` and `PAGENUMI PIC X(8)`; the output side is `PAGENUMC`, `PAGENUMP`, `PAGENUMH`, `PAGENUMV` and `PAGENUMO PIC X(8)` at `[:L412-L416]` in each. `COCRDLI.CPY` has **no** `PAGENUM` field, which is the corroborating detail: the card list keeps its paging entirely in the program and never surfaces a page number on the screen.
+
+Two consequences for the target follow, and neither is cosmetic. First, `PageResponse` must be derived from those program-owned declarations and from the BMS field widths, not from `COCOM01Y`, or its field types will be guessed rather than contracted — `PIC 9(08)` for the two eight-digit page numbers and `PIC X(01)` for the flag, against `PIC X(8)` on the wire. Second, because the paging state is per-transaction rather than shared, **a single shared page-state object across all three list endpoints would be a fabrication**: the three list surfaces carry independently named, independently sized state in the source, and only the response-metadata shape is common.
+
+#### 0.5.2.5 Queue and External Reference Updates
+
+The transient data queue write `[app/cbl/CORPT00C.cbl:L517-L523]` becomes a queue publish with a fixed message group, and the JES2 internal reader becomes a queue listener that maps the message body onto job parameters reproducing the 80-byte parameter record. The queue's declared record size of 80 bytes and fixed format `[app/csd/CARDDEMO.CSD:L499-L505]` are what fix that record's shape.
+
+External references requiring coordinated change: the build file, with every version pinned and no ranges; the four configuration profiles, all resolving the signing key from the environment and all pointing object storage at a local endpoint override; the logging configuration; the container and compose files with the initialisation script; the three observability provisioning files; the continuous integration workflow; and on the documentation side, the readme, the site navigation and this specification, plus the five new documents and two root evidence artefacts.
+
+#### 0.5.2.6 Zero Java-to-Java Import Churn
+
+There is **no pre-existing Java tree at commit `7756d89`**, so no Java import statement is ever rewritten. Every import is authored correctly on first write. The entire import-refactoring burden of this migration is the COBOL-copybook-to-Java-import **translation** documented in [§0.5.2.1](#0521-cobol-copy-to-java-import-translation) — a design activity, not a mechanical rewrite.
+
+This materially changes the risk profile: there is no possibility of a stale import surviving the change, and no need for repository-wide import sweeps.
+
+### 0.5.3 Wildcard Pattern Policy
+
+- **Trailing wildcards only.** Permitted forms name a concrete directory prefix and expand downward — for example `src/main/java/com/cardemo/service/**`, `app/cpy/**`, `src/test/java/com/cardemo/unit/**`.
+- **Leading wildcards are forbidden.** Patterns such as `**/service/**` or `**/*.java` are not used anywhere in this plan, because they match unintended trees and defeat scope review.
+- **`app/jcl/**` and `app/cbl/**` must be matched case-insensitively.** This is not a stylistic preference — it is the difference between complete and incomplete scope:
+  - `app/jcl/*.jcl` silently drops **`CREASTMT.JCL`**, the sole source for statement generation.
+  - `app/cbl/*.cbl` silently drops **`CBSTM03A.CBL` (924 lines)** and **`CBSTM03B.CBL` (230 lines)**, yielding **18,100** of the 19,254 total lines and losing both the statement generator and the file-access subprogram.
+- **Individually named files use specific paths.** Wildcards are reserved for homogeneous groups where every member receives the same treatment; wherever a file has distinct handling, it is named outright, which is why the tables in [§0.5.1](#051-file-by-file-transformation-plan) enumerate rather than abbreviate.
+
+### 0.5.4 One-Phase Execution
+
+The entire refactor executes in **one** phase. There is no staging, no partial delivery and no incremental cutover. Every file listed in [§0.3.1](#031-exhaustively-in-scope) and [§0.5.1](#051-file-by-file-transformation-plan) belongs to that single phase.
+
+This is not merely a convention — it is forced by the validation criteria:
+
+- The **zero-warning build gate** compiles the whole tree at once under `-Werror`, so a partial tree either fails or proves nothing.
+- The **scope-coverage gate** requires all 28 programs to be mapped simultaneously.
+- The **end-to-end and integration sign-off gates** require the complete service topology to stand up together.
+
+A partial delivery could not satisfy any of the four, so splitting the work would produce an unverifiable intermediate state rather than useful progress.
 
 
 ## 0.6 Dependency Inventory
 
 ### 0.6.1 Key Private and Public Packages
 
-All dependency versions are verified against the Spring Boot 3.5.11 managed BOM, web search results, and Maven Central as of March 2026. Where Spring Boot manages a version, the BOM-managed version is preferred.
+No private or internal registries are involved. Every artefact resolves from the public Maven registry, and every version below is an exact coordinate — **no ranges, no `LATEST`, no `RELEASE`**. Versions that are not managed by a bill of materials were verified to resolve before being recorded here.
 
-**Runtime Dependencies:**
+#### 0.6.1.1 Explicitly Pinned Coordinates
 
-| Registry | Group ID / Artifact ID | Version | Purpose |
-|---|---|---|---|
-| Maven Central | `org.springframework.boot:spring-boot-starter-web` | 3.5.11 (BOM) | REST API framework with embedded Tomcat |
-| Maven Central | `org.springframework.boot:spring-boot-starter-data-jpa` | 3.5.11 (BOM) | JPA/Hibernate ORM for PostgreSQL VSAM replacement |
-| Maven Central | `org.springframework.boot:spring-boot-starter-batch` | 3.5.11 (BOM) | Spring Batch for JCL job migration |
-| Maven Central | `org.springframework.boot:spring-boot-starter-security` | 3.5.11 (BOM) | Authentication/authorization replacing RACF concepts |
-| Maven Central | `org.springframework.boot:spring-boot-starter-validation` | 3.5.11 (BOM) | Bean validation for input data integrity |
-| Maven Central | `org.springframework.boot:spring-boot-starter-actuator` | 3.5.11 (BOM) | Health checks, metrics endpoint, readiness probes |
-| Maven Central | `io.awspring.cloud:spring-cloud-aws-starter-s3` | 3.3.0 | S3 client for batch file staging (GDG replacement) |
-| Maven Central | `io.awspring.cloud:spring-cloud-aws-starter-sqs` | 3.3.0 | SQS integration for CICS TDQ replacement |
-| Maven Central | `io.awspring.cloud:spring-cloud-aws-starter-sns` | 3.3.0 | SNS for notification and alert publishing |
-| Maven Central | `org.postgresql:postgresql` | 42.7.x (BOM) | PostgreSQL 16+ JDBC driver |
-| Maven Central | `org.flywaydb:flyway-core` | 11.x (BOM) | Database schema migration management |
-| Maven Central | `org.flywaydb:flyway-database-postgresql` | 11.x (BOM) | PostgreSQL-specific Flyway module |
-| Maven Central | `io.micrometer:micrometer-tracing-bridge-otel` | 1.6.x (BOM) | OpenTelemetry distributed tracing bridge |
-| Maven Central | `io.opentelemetry:opentelemetry-exporter-otlp` | 1.x (BOM) | OTLP trace/metric exporter |
-| Maven Central | `io.micrometer:micrometer-registry-prometheus` | 1.x (BOM) | Prometheus metrics endpoint |
-| Maven Central | `net.logstash.logback:logstash-logback-encoder` | 8.0 | Structured JSON logging with correlation IDs |
-| Maven Central | `com.fasterxml.jackson.core:jackson-databind` | 2.x (BOM) | JSON serialization/deserialization |
+These are declared with an explicit version because they are either the version-management roots themselves or artefacts outside any imported bill of materials.
 
-**Test Dependencies:**
+| Coordinate | Version | Purpose |
+|---|---:|---|
+| `org.springframework.boot:spring-boot-starter-parent` | 3.5.11 | Parent POM and the root of dependency management |
+| `io.awspring.cloud:spring-cloud-aws-dependencies` | 3.3.0 | Bill of materials for the cloud-service integrations |
+| `net.logstash.logback:logstash-logback-encoder` | 8.0 | Structured JSON log encoding with trace correlation |
+| `org.owasp:dependency-check-maven` | 12.1.0 | Vulnerability scan feeding the security gate |
+| `org.jacoco:jacoco-maven-plugin` | 0.8.12 | Coverage measurement, pinned exactly as the requirement specifies and **not** advanced. Java 25 bytecode support is obtained by raising ASM to `9.9` on the plugin's own classpath, not by changing the plugin version — see [§0.6.2.5](#0625-version-drift-and-residual-risk) |
+| `org.apache.maven.plugins:maven-enforcer-plugin` | 3.5.0 | Enforces the Java and Maven floor so the build cannot silently run on a wrong toolchain |
+| `org.apache.maven.plugins:maven-compiler-plugin` | 3.14.1 | Compilation with `-Xlint:all -Werror -parameters` |
+| `org.apache.maven.plugins:maven-surefire-plugin` | 3.5.4 | Unit-test execution |
+| `org.apache.maven.plugins:maven-failsafe-plugin` | 3.5.4 | Integration-test execution |
+| `org.springframework.boot:spring-boot-maven-plugin` | 3.5.11 | Repackaging into the single deployable JAR |
+| `org.apache.maven.plugins:maven-site-plugin` | 3.12.1 | Site lifecycle, pinned so the default-version resolution cannot drift |
+| `org.testcontainers` module set | **2.0.3 via a property** | Containerised integration testing. **The version must be set as the `testcontainers.version` property, never as a second BOM import** — see [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename) |
 
-| Registry | Group ID / Artifact ID | Version | Purpose |
-|---|---|---|---|
-| Maven Central | `org.springframework.boot:spring-boot-starter-test` | 3.5.11 (BOM) | JUnit 5 + Mockito + AssertJ test bundle |
-| Maven Central | `org.springframework.batch:spring-batch-test` | 5.x (BOM) | Spring Batch job testing utilities |
-| Maven Central | `org.springframework.security:spring-security-test` | 6.x (BOM) | Security context test utilities |
-| Maven Central | `org.testcontainers:testcontainers-bom` | 2.0.3 | BOM for Testcontainers version management |
-| Maven Central | `org.testcontainers:postgresql` | 2.0.3 (BOM) | PostgreSQL Testcontainer for integration tests |
-| Maven Central | `org.testcontainers:localstack` | 2.0.3 (BOM) | LocalStack Testcontainer for AWS service tests |
-| Maven Central | `org.testcontainers:junit-jupiter` | 2.0.3 (BOM) | JUnit 5 Testcontainers lifecycle integration |
+The three cloud-service starters — `io.awspring.cloud:spring-cloud-aws-starter-s3`, `-starter-sqs` and `-starter-sns` — are declared **without** a version and inherit from the 3.3.0 bill of materials above. They provide object storage for batch input, output and statements; queue publish and listen replacing the transient data queue and the internal reader; and notification topics respectively.
 
-**Build Plugins:**
+#### 0.6.1.2 Bill-of-Materials-Managed Coordinates
 
-| Registry | Group ID / Artifact ID | Version | Purpose |
-|---|---|---|---|
-| Maven Central | `org.springframework.boot:spring-boot-maven-plugin` | 3.5.11 | Executable JAR packaging |
-| Maven Central | `org.apache.maven.plugins:maven-surefire-plugin` | 3.5.2 | Unit test execution |
-| Maven Central | `org.apache.maven.plugins:maven-failsafe-plugin` | 3.5.2 | Integration test execution |
-| Maven Central | `org.owasp:dependency-check-maven` | 12.1.0 | OWASP CVE scanning (Gate 2/6 compliance) |
-| Maven Central | `org.jacoco:jacoco-maven-plugin` | 0.8.12 | Code coverage reporting (≥80% line target) |
+Declared without a version in the dependency block, so the version comes from the parent POM, from an imported bill of materials, or from a **forward override property** this build declares deliberately. The versions below are **not restated from the parent's published defaults — they are the versions this build actually resolves**, re-read on 7 August 2026 from
 
-### 0.6.2 Dependency Updates
+```shell
+./mvnw -B -ntp -o dependency:list -DincludeScope=test
+```
 
-**Import Refactoring — COBOL COPY to Java Imports:**
+so that the security gate and the reproducibility requirement have a concrete, reproducible baseline to assert against rather than an inherited assumption. Six families resolve **ahead** of the Spring Boot 3.5.11 parent's defaults because `pom.xml` sets an override property, and those rows say so with the property's line number; that is the mechanism by which a security fix reaches this build without the pinned parent version being advanced, which [§0.8.4](#084-special-instructions-and-constraints) forbids.
 
-All files in the target project use Java package imports. The COBOL `COPY` directive has no runtime equivalent; instead, import statements resolve at compile time.
+| Coordinate Family | Resolved Version | Version source | Purpose |
+|---|---:|---|---|
+| `org.springframework:spring-core`, `spring-web`, `spring-webmvc`, `spring-tx` | 6.2.19 | **Forward override** — the `spring-framework.version` property of `pom.xml` | Core framework, web MVC, transaction management. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes 6.2.16, the parent default; this pin overrides it forward |
+| `org.springframework.data:spring-data-commons` | 3.5.9 | Parent-managed, via `spring-data-bom` | Repository abstraction over the eleven entities. The coordinate [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes, `2025.0.9`, is the release train rather than the artefact version that resolves |
+| `org.springframework.security:spring-security-core`, `spring-security-web` | 6.5.11 | **Forward override** — the `spring-security.version` property of `pom.xml` | Authentication, role-based authorisation, BCrypt. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes 6.5.8, the parent default; this pin overrides it forward |
+| `org.springframework.boot:spring-boot`, `spring-boot-autoconfigure`, `spring-boot-starter-oauth2-resource-server`, `spring-boot-testcontainers` | 3.5.11 | Parent, pinned | **The chosen token-validation path.** Being parent-managed it introduces no unpinned third-party dependency; a standalone token library was evaluated as a fallback but would have required explicit pinning. `CVE-2026-40977` at CVSS 6.7 attaches to this artefact and is disclosed in [§0.6.2.5](#0625-version-drift-and-residual-risk) |
+| `org.springframework.batch:spring-batch-core` | 5.2.4 | Parent-managed | Job, step, flow, decider and chunk-oriented processing |
+| `org.hibernate.orm:hibernate-core` | 6.6.42.Final | Parent-managed | Persistence provider |
+| `org.hibernate.validator:hibernate-validator` | 8.0.5.Final | **Forward override** — the `hibernate-validator.version` property of `pom.xml` | Bean-validation implementation behind the `@Valid` layer |
+| `org.postgresql:postgresql` | 42.7.13 | **Forward override** — the `postgresql.version` property of `pom.xml` | Database driver. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes 42.7.10, the parent default; this pin overrides it forward |
+| `org.flywaydb:flyway-core` | 11.7.2 | Parent-managed | Migration execution |
+| `org.flywaydb:flyway-database-postgresql` | 11.7.2 | Parent-managed | **Required as a separate artefact** since the database-specific modules were split out of the core. Omitting it leaves migrations unable to resolve a PostgreSQL dialect |
+| `com.zaxxer:HikariCP` | 6.3.3 | Parent-managed | Connection pooling. Tuning is explicitly out of scope and recorded as a residual risk |
+| `io.micrometer:micrometer-core`, `micrometer-registry-prometheus` | 1.15.12 | **Forward override** — the `micrometer.version` property of `pom.xml` | The four named counters and the metrics endpoint. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes 1.15.9; this pin overrides it forward |
+| `io.micrometer:micrometer-tracing`, `micrometer-tracing-bridge-otel` | 1.5.12 | **Forward override** — the `micrometer-tracing.version` property of `pom.xml` | Trace context propagation. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes 1.5.9; this pin overrides it forward |
+| `io.opentelemetry:opentelemetry-exporter-otlp` | 1.49.0 | Parent-managed | Span export to the tracing backend |
+| `com.fasterxml.jackson.core:jackson-databind` | 2.22.1 | **Forward override** — the `jackson-bom.version` property of `pom.xml` | JSON serialisation for DTOs, queue messages and the lookup resources. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes the BOM at 2.19.4; this pin overrides it forward |
+| `ch.qos.logback:logback-classic` | 1.5.38 | **Forward override** — the `logback.version` property of `pom.xml` | Logging implementation, and `logback-core` moves with it because one parent property drives both. This section published 1.5.32, the parent default; this pin overrides it forward for three advisories **the configured scan does not report** — `CVE-2026-9828` (fixed 1.5.33) and `CVE-2026-10532` (fixed 1.5.34), both attributed to `logback-core` by OSV, and `CVE-2026-13006` at CVSS 7.0, whose definitive fix is 1.5.37 and which OSV does not carry for this coordinate at all. 1.5.38 is the highest release of the 1.5 line and removes Janino-based conditional expressions outright. The arbitrary-code path is **not reachable here** — Janino is absent from the resolved graph and `logback-spring.xml` uses no conditional configuration — so this is hardening rather than the remedy for a failing gate, and `pom.xml` records the measurement behind each clause |
+| `org.slf4j:slf4j-api` | 2.0.17 | Parent-managed | Logging facade |
+| `jakarta.validation:jakarta.validation-api` | 3.0.2 | Parent-managed | Field validation replacing the error-marker template copybook |
+| `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.57 | **Forward override** — the `tomcat.version` property of `pom.xml` | Embedded servlet container. [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) publishes 10.1.52, the parent default; this pin overrides it forward. **This is the artefact `CVE-2026-66299` at CVSS 7.5 attaches to**, and because no 10.1.58 exists to pin forward to, the finding is carried by an evidence-based Tier 2 suppression with an `until` expiry rather than by a lowered threshold ([§0.6.2.5](#0625-version-drift-and-residual-risk)) |
+| `org.junit.jupiter:junit-jupiter` | 5.12.2 | Parent-managed | Test framework |
+| `org.mockito:mockito-core`, `mockito-junit-jupiter` | 5.17.0 | Parent-managed | Unit-test doubles |
+| `org.assertj:assertj-core` | 3.27.7 | Parent-managed | Assertions |
+| `org.testcontainers:testcontainers`, `testcontainers-junit-jupiter`, `testcontainers-postgresql`, `testcontainers-localstack`, `testcontainers-jdbc`, `testcontainers-database-commons` | 2.0.3 | **Property override** — the `testcontainers.version` property of `pom.xml` | Containerised database and cloud-service emulation. The override is one of the two halves of the Blocker remedy in [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename); **prefixed coordinates only** is the other |
 
-- `src/main/java/**/service/**/*.java` — Import entity, repository, and DTO classes
-- `src/main/java/**/controller/**/*.java` — Import service and DTO classes
-- `src/main/java/**/batch/**/*.java` — Import entity, repository, and service classes
-- `src/test/java/**/*.java` — Import test utilities and application classes
+#### 0.6.1.3 Runtime and Toolchain
 
-**Import Transformation Rules:**
+| Component | Required Version | Status in the Provisioned Environment |
+|---|---:|---|
+| OpenJDK | 25.0.3 | **Available.** `maven.compiler.release` is set to 25; no preview feature is enabled |
+| Apache Maven | 3.9.11 | **Available.** The 3.9 line is retained deliberately — see [§0.4.2](#042-web-search-research-conducted) — and asserted by the enforcer floor |
+| PostgreSQL | 16 | Provisioned through the compose file and through Testcontainers |
+| LocalStack CLI | 4.14.0 | **Available** |
+| AWS CLI | 1.45.57 | **Available**, observed at a slightly later patch (`1.45.62`). The difference is immaterial: the CLI is used only for local emulator provisioning, never by application code, and no pinned application dependency resolves through it. Recorded here rather than silently normalised |
+| Docker Engine and Compose | — | **Available.** Engine 29.6.2 with Compose v5.3.1 observed on 30 July 2026, Engine 29.7.0 with Compose v5.3.1 on 1 August 2026. Container-dependent gates are therefore **pending implementation and execution, not container-blocked** |
+| MkDocs with `techdocs-core` and `mermaid2` | 1.6.1, with both declared plugins | **Available and measured, Friday 7 August 2026** - installed at `/usr/local/bin/mkdocs`; `mkdocs build --strict --site-dir <path outside the repository>` exits **0** with **0 warnings and 0 errors**, publishing all eight files in `docs/`. *Historical, 1 August 2026:* provisioned during that validation run, when the same command was measured at exit 0 with 0 warnings after the 79 unresolvable links were de-linked. *Superseded, 2 August 2026:* recorded `Not available` on that host - absent and not importable - which was true there and does not hold here. **Still `Not available`:** the **Backstage-hosted** TechDocs pipeline, which has never been exercised from any of these hosts; what is needed is a documentation step in the Backstage environment itself |
 
-| COBOL Source | Java Import Target |
-|---|---|
-| `COPY COCOM01Y` | `import com.carddemo.model.dto.CommArea;` |
-| `COPY CVACT01Y` | `import com.carddemo.model.entity.Account;` |
-| `COPY CVACT02Y` | `import com.carddemo.model.entity.Card;` |
-| `COPY CVCUS01Y` | `import com.carddemo.model.entity.Customer;` |
-| `COPY CVACT03Y` | `import com.carddemo.model.entity.CardCrossReference;` |
-| `COPY CVTRA05Y` | `import com.carddemo.model.entity.Transaction;` |
-| `COPY CSUSR01Y` | `import com.carddemo.model.entity.UserSecurity;` |
-| `COPY CVTRA01Y` | `import com.carddemo.model.entity.TransactionCategoryBalance;` |
-| `COPY CVTRA02Y` | `import com.carddemo.model.entity.DisclosureGroup;` |
-| `COPY CVTRA03Y` | `import com.carddemo.model.entity.TransactionType;` |
-| `COPY CVTRA04Y` | `import com.carddemo.model.entity.TransactionCategory;` |
-| `COPY CVTRA06Y` | `import com.carddemo.model.entity.DailyTransaction;` |
-| `COPY CSUTLDPY` / `CSUTLDWY` | `import com.carddemo.service.shared.DateValidationService;` |
-| `COPY CSLKPCDY` | `import com.carddemo.service.shared.ValidationLookupService;` |
-| `COPY COMEN02Y` | `import com.carddemo.model.dto.MenuOption;` (embedded menu table) |
-| `COPY CSSETATY` | `import jakarta.validation.Valid;` + field-level constraint annotations |
-| `COPY DFHAID` / `DFHBMSCA` | No equivalent — AID keys mapped to REST endpoints |
+The environment evidence behind this table, with its dates and the exact commands, is recorded in [§0.2.1.10](#02110-environment-evidence). The earlier snapshot in which the Java and Maven toolchain was absent is retained there deliberately, because [§0.2.2.1](#0221-corrections-to-the-prior-specification) corrects a prior claim about container-runtime availability, and showing both snapshots is what makes that correction auditable.
 
-**External Reference Updates:**
+### 0.6.2 Dependency Updates and Import Refactoring
 
-| Pattern | Update Required |
-|---|---|
-| `pom.xml` | All dependency declarations and plugin configurations |
-| `src/main/resources/application*.yml` | Spring profiles, datasource, AWS endpoints, actuator |
-| `src/main/resources/db/migration/*.sql` | Flyway migration scripts (auto-discovered) |
-| `docker-compose.yml` | PostgreSQL + LocalStack container definitions |
-| `README.md` | Build commands, run instructions, onboarding |
-| `docs/**/*.md` | Architecture diagrams, API contracts, decision log |
-| `.github/workflows/*.yml` | CI/CD pipeline with build, test, OWASP check stages |
+#### 0.6.2.1 Change Posture
+
+Every entry in [§0.6.1](#061-key-private-and-public-packages) is an **addition**. There are no upgrades, no downgrades and no removals, because there is no pre-existing Java dependency manifest at commit `7756d89` — `pom.xml` is itself a new file. Consequently no unchanged packages are enumerated, and no compatibility analysis against a prior manifest is required.
+
+The legacy corpus has **no dependency manifest of any kind**. Its build inputs are the three z/OS compile templates and three build procedures under `samples/`, which are out of scope and are superseded conceptually rather than migrated. There is therefore nothing to reconcile.
+
+#### 0.6.2.2 BLOCKER: A Build-Breaking Coordinate Rename
+
+One dependency detail will break the build if taken at face value, and it must be handled explicitly. It is classified **Blocker** in [§0.2.2.2](#0222-findings-register).
+
+**The Testcontainers 2.x line renamed every module artefact.** The coordinates that were correct in the 1.x line — the bare `localstack`, `postgresql` and `junit-jupiter` artefacts under the `org.testcontainers` group — **do not exist at version 2.0.3**. Resolution attempts against them fail outright. Only the prefixed coordinates resolve:
+
+- `org.testcontainers:testcontainers`
+- `org.testcontainers:testcontainers-localstack`
+- `org.testcontainers:testcontainers-postgresql`
+- `org.testcontainers:testcontainers-junit-jupiter`
+
+There is a second, compounding hazard. Spring Boot 3.5.11 **already manages a Testcontainers version from the 1.x line and imports the Testcontainers bill of materials itself**, so adding a competing bill-of-materials import produces an ordering-dependent resolution that may silently select the managed 1.x version instead of 2.0.3.
+
+**The remedy is twofold and both parts are required:**
+
+1. Override the managed version by setting the **`testcontainers.version` property** to `2.0.3` in the project properties, rather than importing a second bill of materials.
+2. Use **only** prefixed module coordinates throughout the test scope.
+
+Applying one without the other still fails: overriding without renaming resolves non-existent artefacts, and renaming without overriding resolves the wrong version.
+
+**Three further 2.x consequences are build-breaking under `-Werror` specifically**, and are recorded here because the zero-warning gate turns each from a warning into a compilation failure:
+
+- The legacy `org.testcontainers.containers.*` classes are deprecated at 2.x. Under `-Xlint:all -Werror` a deprecation warning **is** a build failure, so test sources must import `org.testcontainers.postgresql.PostgreSQLContainer` and `org.testcontainers.localstack.LocalStackContainer` from their new packages.
+- The LocalStack service selector is now `withServices(String...)`; the 1.x `Service` enum no longer exists.
+- `getEndpoint()` now returns a `java.net.URI` rather than a string, so endpoint wiring must consume a URI.
+
+Separately, the Ryuk resource-reaper image tag is version-coupled to the Testcontainers line and must be pre-pulled or reachable for container-dependent tests to start at all.
+
+#### 0.6.2.3 Import Rules
+
+- **Exactly one entity import per record-layout copybook.** The eleven layouts of [§0.2.1.3](#0213-copybooks-appcpy) yield eleven entity types and no more; the duplicate customer layout resolves to a single type.
+- **Three collapse rules**, as tabulated in [§0.5.2.1](#0521-cobol-copy-to-java-import-translation). The date utility together with its two work-area copybooks becomes one injected bean. The file-access subprogram becomes one injected bean. The five lookup tables become one service reading three classpath resources — deliberately **not** a generated constants class, which would run to over a thousand lines while adding nothing to correctness.
+- **No import for CICS-supplied copybooks.** The action-identifier, attribute and screen-attribute copybooks are supplied by the transaction monitor, are absent from the repository, and map onto framework mechanisms rather than types.
+- **Composite keys import alongside their entity.** Each of the three composite-key types is imported together with the entity it identifies, never independently.
+- **No unused imports.** Rule 1 Clause B forbids them, and the discipline is **enforced by review, not by the compiler**. This must be stated precisely, because `-Xlint:all -Werror` reads as though it made the prohibition mechanical. It does not: `javac --help-lint` on the pinned `javac` 25.0.3 lists **no `unused` key and no dead-code key at all**, and `-Xlint:all` therefore emits no diagnostic for an unused import or an unreachable private member. What the configured flags do enforce mechanically is the set of categories javac actually publishes — among them `deprecation`, `removal`, `rawtypes`, `unchecked`, `cast`, `fallthrough`, `serial`, `this-escape`, `dangling-doc-comments`, `text-blocks` and `overrides` — each of which `-Werror` escalates from a warning to a build failure. **Not available:** any mechanical unused-import or dead-code check. What is needed to make the prohibition mechanical is a pinned static analyser such as Checkstyle or Error Prone, which [§0.6.1](#061-key-private-and-public-packages) does not currently include.
+- **No import churn.** As established in [§0.5.2.6](#0526-zero-java-to-java-import-churn), every import is authored correctly on first write. There is no rewriting pass and no repository-wide sweep.
+
+#### 0.6.2.4 External Reference Updates
+
+Files whose contents must change in step with the dependency set. All are creations except the final three, which are the only three existing files this change may touch:
+
+- **Build** — `pom.xml`; every plugin and non-BOM dependency pinned, no ranges, the enforcer plugin asserting the toolchain floor, the `testcontainers.version` property carrying the override of [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename).
+- **Wrapper** — `mvnw`, `mvnw.cmd`, `.mvn/wrapper/maven-wrapper.properties` pinned to Maven 3.9.11 with a distribution checksum, plus `.mvn/jvm.config` carrying the one repository-controlled JVM option described in [§0.6.2.5](#0625-version-drift-and-residual-risk). All four are repointed in a single commit whenever the pinned Maven version changes.
+- **Configuration** — the four `src/main/resources/application*.yml` profiles and `logback-spring.xml`.
+- **Container and infrastructure** — `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `localstack-init/init-aws.sh`, and the three files under `observability/`.
+- **Continuous integration** — `.github/workflows/build.yml`: JDK 25, Maven 3.9.11, the zero-warning compile gate, coverage reporting and the vulnerability scan.
+- **Documentation** — `README.md` (UPDATE, legacy tables preserved verbatim), `mkdocs.yml` (UPDATE, nav additions — without which none of the new documents publish), and `docs/technical-specifications.md` (UPDATE, this section).
+
+#### 0.6.2.5 Version Drift and Residual Risk
+
+Two version divergences exist between the pinned requirement set and what a working build needs, two further entries record the two distinct obstacles that keep Gate 2 from passing against that set — a coverage shortfall, reached first, and the vulnerability gate, reached second — one more records a build-tool warning stream that the zero-warning build cannot tolerate, mitigated by repository-controlled JVM configuration, and two final entries record hardening the transfer-object layer still owes: log-injection-safe rendering and numeric-precision validation on the update snapshot. None is absorbed silently: each is classified, evidenced and given a remediation, per Rule 1 Clause F. Only the first is *resolved* — by an explicit amendment to a pinned coordinate, set out in full below — and it is the only pinned coordinate in the project that is departed from.
+
+**Coverage analyzer bytecode ceiling — Medium, and the pin is kept.** The requirement pins `jacoco-maven-plugin` `0.8.12`, and the as-built build pins `0.8.12`. **This is a validation observation and a residual risk, not a change to the pinned requirement.** The cause was reproduced rather than assumed: `javac` 25.0.3 emits class files at **major version 69**; `org.jacoco.core` bundles no shaded ASM, so the ASM version each JaCoCo build declares governs what bytecode the *analyser* can read, while the *agent* runtime jar shades ASM and therefore carries its own independent ceiling. `0.8.12` declares ASM 9.7, whose `Opcodes.V23` is 67; `0.8.13` declares ASM 9.8 (`V25` = 69) and `0.8.14` declares ASM 9.9 (`V26` = 70). A jar scan locates the `Unsupported class file major version` message **only** in `org/objectweb/asm/ClassReader.class` and nowhere in `org.jacoco.core`, which establishes ASM — not JaCoCo — as the constraint.
+
+**Build-tool `sun.misc.Unsafe` warnings — Medium, mitigated by repository-controlled JVM configuration, with a tracked removal plan.** The pinned Maven 3.9.11 distribution bundles Guice 5.1.0, whose `com.google.inject.internal.aop.HiddenClassDefiner` calls the terminally deprecated `sun.misc.Unsafe::staticFieldBase`. Under the pinned JDK 25 that emits **four warnings on stderr on every plugin invocation**, including a plain `./mvnw -B clean compile`, which is incompatible with the zero-warning build the plan requires: a build advertising a zero-warning gate must not itself print warnings, and these are not attributable to any source file under compilation.
+
+Neither the warnings nor their cause originate in this project's code, so the remedy is configuration rather than a source change. `.mvn/jvm.config` carries exactly one line — the JDK `sun-misc-unsafe-memory-access=allow` long option, written here without its leading hyphen pair only because the surrounding `pom.xml` comment cannot contain two consecutive hyphens; the file itself holds the real fully prefixed form. That file is **version controlled and read by both launchers**, so the default invocation is warning-free and deterministic on Unix and on Windows with no per-developer setup: `bin/mvn` reads it through `concat_lines` and *prepends* the contents to `MAVEN_OPTS`, so an operator-supplied `MAVEN_OPTS` still wins, while `bin/mvn.cmd` reads it with a `for /F` loop into `JVM_CONFIG_MAVEN_PROPS`. An exported `MAVEN_OPTS` was rejected as the mechanism precisely because it would be per-machine, undocumented and absent in CI — the non-determinism this replaces. `.gitattributes` pins the file to `eol=lf` so its bytes do not vary with the checking-out platform.
+
+**Caution, verified by experiment:** both launchers hand every line of that file to the JVM verbatim as a raw option, so it supports **no comments and no blank lines** — a leading `#` is parsed as a main class name and the launch dies with `Could not find or load main class #`. That is why the file holds one option and nothing else, why it is the single authored artefact in this repository carrying no Apache-2.0 header, and why its rationale lives in `pom.xml` and here instead.
+
+**Remediation — a tracked removal, not a permanent setting.** The trigger is the first Maven 3.9.x release bundling Guice 7 or newer, which removed the `HiddenClassDefiner` `Unsafe` path; a JDK release that removes the option outright is the second trigger, and it announces itself by failing the launch with an unrecognized-option error before any goal runs. The action is to bump `distributionUrl` and `distributionSha256Sum` together, delete `.mvn/jvm.config`, delete this entry and the matching `pom.xml` note, then confirm `./mvnw -B clean compile` prints no warning at all. Review at every dependency review alongside the pinned Maven version. **Do not** instead redirect stderr, adjust Maven logging, or lower the JDK: each hides the signal that tells you when the option is no longer needed. Record the removal in `DECISION_LOG.md`.
+
+**Resolution, applied within the pin.** The plugin remains at `0.8.12` and carries a plugin-scoped `<dependencies>` block that advances `org.ow2.asm:asm`, `asm-commons` and `asm-tree` to `9.9` and `org.jacoco:org.jacoco.agent:runtime` to `0.8.14`. Measured outcome on the integrated tree, with the plugin version as the only variable: the pinned-`0.8.12`-plus-overrides arm and an unpinned-`0.8.13` arm both emitted the same LINE counters on the tree of that day — byte-identical, so the substitution changes the analyser's reach and nothing else. Both halves are load-bearing and were checked separately: raising ASM on the plugin classpath while leaving the agent at `0.8.12` leaves the shaded agent ceiling at 67, so nothing is instrumented and the report renders zero coverage instead of failing loudly — which is the failure mode a report-side-only fix produces.
+
+**Residual risk and remediation.** A plugin-classpath override couples this build to a specific ASM release and must be re-verified whenever the JDK, ASM or JaCoCo version moves; the block is annotated in `pom.xml` to say so. Record it in `DECISION_LOG.md` with this reproduction. The prior-run record cites a different, later plugin version again; that figure is stale and is corrected in [§0.2.2.1](#0221-corrections-to-the-prior-specification), which is the single place in this document where superseded version claims are restated.
+
+**Framework support horizon — Medium.** Open-source support for the Spring Boot 3.5 line concluded on 30 June 2026. **The pinned 3.5.11 is honoured exactly as instructed and is not unilaterally advanced.** **Verified as of 1 August 2026:** Spring Boot 3.5 reached **end of open-source support on 30 June 2026**, and the final open-source patch on that line was **3.5.16**, released 25 June 2026. No further open-source patches will be published for 3.5.x, so the pinned **3.5.11 is both out of open-source support and five patch releases behind the last free one**; newly disclosed vulnerabilities in the 3.5 line will not receive a free fix. Only the 4.0 and 4.1 lines remain in open-source support, and commercial extended support for 3.5 is available separately. **The pin is nevertheless retained**, because [§0.8.4](#084-special-instructions-and-constraints) makes pinned versions binding and forbids advancing one unilaterally; an upgrade requires an approved plan change. This is therefore an **accepted, disclosed residual risk**, not an open action. **Remediation:** record the horizon as a residual risk in `DECISION_LOG.md` and revisit at the next dependency review.
+
+**Vulnerability and coverage gates — both halves now pass, and the offline caveat is retained.** A `verify` run on the provisioned toolchain completes `compile`, `test`, `package` and both gates. **Re-measured 7 August 2026 by one no-skip `./mvnw -B -ntp clean verify`, report timestamp `2026-08-07T17:39:05Z`: 166 dependencies, 167 suppressed matches, one active finding at CVSS 6.7 and therefore zero at or above the threshold; `All coverage checks have been met` at LINE missed=2,002 covered=21,333 total=23,335, ratio 0.9142; 14,477 unit and 850 integration tests green; `BUILD SUCCESS`.** The 4 August reading that follows is historical and is retained because it is what the register entries were written against. Re-measured 4 August 2026 against report timestamp `2026-08-04T11:31:31Z` from engine 12.1.0: `dependency-check-maven` scans **166** dependencies and reports **0 findings at or above the CVSS 7 threshold**, so the vulnerability half of the gate passes on remediation rather than on suppression. The residue below the threshold is **2** active findings, both MEDIUM - CVSS 6.7 `CVE-2026-40977` on `spring-boot-3.5.11.jar` and CVSS 5.3 `CVE-2025-15104` on `hibernate-validator-8.0.5.Final.jar` - carried as a disclosed residual rather than treated as a pass, with **165** suppressed matches attributable to the fifteen evidence-tiered entries of `owasp-suppressions.xml`. **The coverage half now passes as well:** measured 4 August 2026, `jacoco:check` reports a line ratio of **0.9171** (`LINE missed=1,624 covered=17,975 total=19,599`) against the 0.80 floor and prints `All coverage checks have been met`. That supersedes, in order, a 0.7815 reading that fell short, a 0.9942 reading taken over a tree a fraction of the current size, a 0.8665 reading and a 0.9438 reading. All four are historical; only the dated figure in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) governs. The OWASP goal is reached **only in an online run** — `dependency-check:check` declares `requiresOnline`, so any `-o` invocation skips it with a warning and writes no report, which is never evidence of a pass and is therefore measured separately. The gates were brought to green by remediation and by evidence-based, partly time-boxed suppression, and explicitly **not** by lowering the threshold or removing either gate, either of which would satisfy the letter of Gate 2 while destroying its purpose. See [§0.7.9](#079-validation-gates-evidence-and-prerequisites).
+
+**Vulnerability gate — the triage, performed and measured.** A finding count that names no CVE cannot be acted on, so every figure below carries its identifier and is read from `target/dependency-check/dependency-check-report.json` produced by the run recorded in [§0.7.9](#079-validation-gates-evidence-and-prerequisites). Note that the scan **must not** be run with Maven's `-o` flag: offline, `verify` executes sixteen goals and `dependency-check` is silently not among them, so an offline run is not evidence about this gate at all.
+
+- **Before any triage: 120 findings at CVSS ≥ 7 across 16 artefacts**, reproducing the count the provisioned-environment evidence reported and confirming the measurement is not environment-specific.
+- **After remediation and triage: 0 findings at CVSS ≥ 7, and the gate passes.** The largest single contribution is remediation rather than suppression: pinning Netty forward to `4.1.136.Final` via `netty-bom` removes its findings by upgrading, not by excusing them. The pre-remediation scan attached thirty-two findings to `netty-transport` 4.1.131.Final, two of them at 10.0; pinning Netty forward to `4.1.136.Final` through `netty-bom` closes them by upgrading rather than by excusing them, and what remains on the upgraded artifact is a single 7.5 for an HTTP/3 frame codec that is not on this dependency graph at all. Everything not closed that way is suppressed on a four-tier evidence taxonomy, each entry naming the tier that justifies it. **Measured 4 August 2026, the register held fifteen entries declaring seventeen `<cve>` identifiers: 8 Tier 1 identifier mismatches, 3 Tier 2 where the vulnerable class is absent from the flagged artifact, 3 Tier 3 where the feature the advisory needs is not present in this application, and 1 Tier 4 that concedes the advisory applies and time-boxes the acceptance.** **Re-measured 7 August 2026 by one no-skip `./mvnw -B -ntp clean verify`, report timestamp `2026-08-07T17:39:05Z` from engine 12.1.0: 166 dependencies, 167 suppressed matches and one active sub-threshold finding — `CVE-2026-40977` on `spring-boot-3.5.11.jar` at CVSS 6.7 — so zero at or above the threshold and `BUILD SUCCESS` with `failBuildOnCVSS` unchanged at 7. The register now holds seventeen entries declaring eighteen `<cve>` identifiers: 9 Tier 1, 4 Tier 2, 3 Tier 3 and 1 Tier 4, the fourth Tier 2 being the Tomcat WebSocket-example record added that day when `CVE-2026-66299` at CVSS 7.5 turned the gate red and no pin forward existed — the advisory names 10.1.58 "when released" and the registry answers HTTP 404 for it, while 10.1.57 is both the highest published 10.1.x and the version already pinned. The 4 August readings below are historical.** *Historical:* an earlier reading recorded 8 / 5 / 8 / 5, twenty-six entries in total; eleven were deleted when the forward security pins replaced the parent-managed versions, and `owasp-suppressions.xml` carries the deletion record.
+- **Six further mis-assigned CPEs were deliberately left unsuppressed** because they contribute zero findings at this threshold and an inert suppression is unverifiable clutter: `web_project:web` on three Spring artifacts, the `pivotal_software` and `springsource` aliases, `pivotal:spring_security_oauth`, `fasterxml:jackson-core`, `fasterxml:jackson-modules-java8` and `apache_tomcat:apache_tomcat`.
+- **The suppression file is load-bearing, and that is a measurement rather than a claim.** *Historical, 2 August 2026:* emptying it and re-running the scan yielded **93 findings at CVSS ≥ 7 across 18 artefacts** and 178 across all severities, while restoring the then twenty-six evidence-tiered entries yielded **0 at CVSS ≥ 7**; both arms scanned the same 167 dependencies with `skipTestScope` and `skipProvidedScope` `false`, so the delta was the triage and nothing else. The passing arm then reported a sub-threshold register of 58 findings across 11 artefacts, 51 MEDIUM and 7 LOW, ceiling 6.7. **Measured 4 August 2026 the register was far smaller**, because eleven suppressions became unnecessary when the forward pins landed: 166 dependencies, **165 suppressed matches** and **2** active sub-threshold findings, ceiling 6.7. **Re-measured 7 August 2026: 166 dependencies, 167 suppressed matches and *one* active sub-threshold finding, ceiling 6.7** — the second of the two became a Tier 1 false-positive entry, and the two new suppressed matches are the Tomcat WebSocket-example record described above. None of them reaches the threshold and none is hidden, which is exactly why they are left unsuppressed.
+- **The gate passes on evidence, and none of the three ways of faking it was used.** `failBuildOnCVSS` remains 7, `skipTestScope` and `skipProvidedScope` both remain `false` so test-scope and provided-scope artifacts are still scanned, and no `skip` was introduced — each of those levers would have turned the gate green while destroying its meaning. Nor is any entry a bare waiver: **the one entry that concedes the advisory genuinely applies carries `until="2026-11-01Z"`** — it was five before the forward pins closed four of them — so the acceptance expires and the gate goes red again if it is not revisited, rather than persisting silently. Every other entry states an absence rather than an acceptance, which is why it carries no expiry: an artifact that does not contain a component does not begin to contain it on a date. The exposure that remains is disclosed rather than absorbed — the coordinates it attaches to are the bill-of-materials versions that [§0.6.1.2](#0612-bill-of-materials-managed-coordinates) records as the baseline and [§0.8.4](#084-special-instructions-and-constraints) forbids advancing unilaterally, and the remediation path when a deviation is approved is to advance the pinned line and re-measure, which is precisely the route already taken for Netty.
+- **One supplementary analyzer is disabled, with its own disclosure.** The Sonatype OSS Index analyzer answers unauthenticated callers with HTTP 401. Enabled, it logs one warning per artifact — 237 lines in a single run, against zero warnings from the compiler — and because `failOnError` is deliberately `true`, it does not merely add noise: the goal fails outright with `AnalysisException: Failed to request component-reports` caused by `401 Unauthorized`. Disabling it is therefore what lets this gate run at all here, and the cost was measured rather than assumed: with the suppression file emptied so that the comparison is visible at all, the finding set is 93 at CVSS ≥ 7 and 178 across all severities **both** with the analyzer enabled and with it disabled, because a source that fails on every artifact contributes nothing to begin with. The authoritative NVD-backed analyzers — File Name, Hint, CPE and NVD CVE — all still run. The residual risk that Sonatype might carry an advisory the NVD does not is disclosed in `pom.xml`, and the remedy is to supply credentials, never to lower the threshold.
+
+**Transfer-object log-injection exposure — Medium, disclosed and unmitigated at this checkpoint.** Six of the seventeen types in `com.cardemo.model.dto` render caller-supplied text into their own `toString()` without neutralising control characters, so a value carrying a carriage-return/line-feed pair forges a complete additional log line. This is CWE-117 improper output neutralisation for logs, and where the forged line carries account or cardholder text it is also CWE-532. Measured on the integrated tree by constructing every transfer object through its widest constructor with `"\r\nWA"` in every `String` component and counting the control characters that survive into the rendering: `CommArea` and `SignOnRequest` emit three extra lines and six control characters each, and `CardUpdateRequest`, `SignOnResponse`, `TransactionAddRequest` and `UserUpdateRequest` emit two and four each. No `@Size` bound prevents this, because a two-character injection fits inside every declared width.
+
+The same measurement establishes that most of the layer is already safe, and how: seven types — `AccountDto`, `CardDto`, `MenuResponse`, `PageResponse`, `StatementTransaction`, `TransactionDto` and `UserSecurityDto` — reject the hostile payload at construction and never reach a rendering; `BillPaymentRequest` and `ReportRequest` render structurally, emitting each member's shape and code point rather than its text, and emit zero control characters; and `UserCreateRequest` declares no `toString()` of its own, which is why the type holding a credential is the structurally safest of the seventeen. **The downstream safety net now exists, and the reasoning above is why it is still not the load-bearing defence:** `src/main/resources/logback-spring.xml` is present and carries masking rules for credentials, password hashes and social security numbers. A masking rule protects only the sinks it is configured for, so a type that never emits a sensitive value at all remains strictly safer than one that relies on the appender to redact it — which is the property measured above.
+
+**Remediation.** Extend the structural rendering already proven on `BillPaymentRequest` and `ReportRequest` to the six remaining types, or reject control characters at construction as the seven guarded types already do; then re-run the construction probe and confirm zero surviving control characters across all seventeen. This is deliberately **not** done here: it changes the observable rendering of six types whose current output is pinned by existing assertions, and it is outside the scope every unit review at this checkpoint covered, so it is disclosed for scheduling rather than applied unreviewed. Record it in `DECISION_LOG.md` and re-verify when `logback-spring.xml` lands, since a masking layer changes the exposure but does not remove it — neutralisation at the point of rendering and masking at the point of writing are independent controls.
+
+**Update-snapshot numeric precision — Low, disclosed.** `AccountUpdateRequest.OldDetails` carries the three money members of the account snapshot as `String` guarded only by width. The frozen source declares each with a signed numeric REDEFINES view — `ACUP-OLD-CURR-BAL-N`, `ACUP-OLD-CREDIT-LIMIT-N` and `ACUP-OLD-CASH-CREDIT-LIMIT-N`, all `PIC S9(10)V99` at `app/cbl/COACTUPC.cbl:L676-L683` — so the source constrains both the width and the scale, whereas the Java form constrains only the width: the type declares 118 `@Size` bounds and **zero** `@Digits`. A snapshot value of the right length but the wrong scale is therefore accepted by validation and can only fail later, during the field-by-field comparison of [§0.7.1.4](#0714-two-distinct-comparison-paragraphs-do-not-conflate-them).
+
+**Remediation.** Add scale validation to those three members without altering the field set, the field order or the `EXPIRAION` spelling the frozen contract fixes — a `@Digits(integer = 10, fraction = 2)` equivalent applied to the string form, since the members must stay `String` to reproduce the representation the comparison depends on. The exposure is Low because the snapshot is compared rather than computed with, so a malformed value causes a rejected update rather than a wrong balance. Record it in `DECISION_LOG.md`.
+
+**Deferred hardening**, each recorded as residual risk rather than dropped: table partitioning, read replicas, connection-pool tuning, TLS termination, request rate limiting, URI-based API versioning, generated OpenAPI documentation, and encryption at rest for personally identifiable data.
 
 
 ## 0.7 Special Analysis
 
-### 0.7.1 Observability Implementation Analysis
+Six of the twenty-eight programs contain semantics where the obvious mechanical translation produces working code that behaves differently from the source. Those six are analysed here in the depth required to translate them correctly. Three further sub-sections cover the instrumentation the legacy system lacks entirely, the security posture, and the evidence design for the validation gates.
 
-Per the user-specified "Observability" implementation rule, the application is not complete until it is observable. Observability ships with the initial implementation, not as a follow-up. The source COBOL application has zero observability infrastructure — no logging framework, no metrics, no tracing, no health checks. Everything must be created from scratch.
+**Every locator in this section was verified by direct inspection of the file at the stated path and case.** Where a locator differs from one carried by earlier project prose, the difference is flagged inline with a **verified against source** note, so that a downstream reader can see the divergence was deliberate rather than accidental.
 
-**Required Observability Components:**
+### 0.7.1 Account Update: Dual-Dataset Write, Asymmetric Rollback and the Stateless Snapshot Contract
 
-- **Structured Logging with Correlation IDs** — Logback with `logstash-logback-encoder` outputs JSON with `traceId`, `spanId`, and custom `correlationId` fields. Every HTTP request generates a correlation ID propagated through all service and batch layers via MDC (Mapped Diagnostic Context). The `ObservabilityConfig.java` registers a `Filter` that injects the correlation ID into the MDC for the request lifecycle.
+At 4,236 lines `app/cbl/COACTUPC.cbl` is the largest program in the corpus and the one with the most subtle contract.
 
-- **Distributed Tracing** — Micrometer Tracing with the OpenTelemetry bridge (`micrometer-tracing-bridge-otel`) instruments all Spring MVC controller endpoints, JPA repository calls, S3/SQS operations, and Spring Batch step executions. Traces export via OTLP to a configurable collector endpoint. For local development, traces export to a Jaeger instance included in `docker-compose.yml`.
+#### 0.7.1.1 The Write Sequence
 
-- **Metrics Endpoint** — Spring Boot Actuator with Micrometer and the Prometheus registry exposes `/actuator/prometheus`. Key custom metrics include:
-  - `carddemo.batch.records.processed` (counter, per job)
-  - `carddemo.batch.records.rejected` (counter, with reason tag)
-  - `carddemo.auth.attempts` (counter, with success/failure tag)
-  - `carddemo.transaction.amount.total` (distribution summary)
+`9600-WRITE-PROCESSING` begins at `[app/cbl/COACTUPC.cbl:L3888]` and ends at `9600-WRITE-PROCESSING-EXIT` `[app/cbl/COACTUPC.cbl:L4105]`. It is invoked from `[app/cbl/COACTUPC.cbl:L2604]`. The order is fixed and must be preserved exactly:
 
-- **Health/Readiness Checks** — Spring Boot Actuator exposes `/actuator/health` with composite indicators for PostgreSQL connectivity, S3 bucket accessibility, and SQS queue availability. Kubernetes-style `/actuator/health/liveness` and `/actuator/health/readiness` endpoints enabled via configuration.
+1. **Read the account record for update** `[L3894-L3903]`. A non-normal response sets an input-error flag and a lock-failure flag, then branches to the exit `[L3907-L3915]`.
+2. **Read the customer record for update** `[L3921-L3930]`. A non-normal response sets a distinct customer-lock-failure flag and branches to the exit `[L3934-L3942]`.
+3. **Perform the change-detection comparison** `[L3947-L3948]`; if the data changed since the screen was populated, branch to the exit `[L3950-L3951]`.
+4. **Initialise the update images and move each new field into place.**
+5. **Rewrite the account record** `[L4065-L4071]`. On failure, set a combined lock-succeeded-but-update-failed flag and branch to the exit `[L4076-L4081]` — **with no rollback**.
+6. **Rewrite the customer record** `[L4085-L4091]`. On failure, set the same flag, **issue an explicit `EXEC CICS SYNCPOINT ROLLBACK`** `[L4099-L4101]`, then branch to the exit `[L4102]`.
+7. **Exit** `[L4105]`.
 
-- **Dashboard Template** — A Grafana dashboard JSON file (`docs/grafana-dashboard.json`) with panels for request rate, error rate, response latency (p50/p95/p99), batch job throughput, and JVM memory/GC metrics.
+There are exactly **seven** `GO TO 9600-WRITE-PROCESSING-EXIT` branch points in the program, at `[L3914]`, `[L3941]`, `[L3951]`, `[L4080]`, `[L4102]`, `[L4144]` and `[L4190]`. The last two belong to the comparison paragraph of [§0.7.1.4](#0714-two-distinct-comparison-paragraphs-do-not-conflate-them), which branches into this paragraph's exit rather than having its own.
 
-**Local Verification Requirement:** All observability components must be exercisable in the local Docker Compose environment. The `docker-compose.yml` includes Jaeger (tracing UI), Prometheus (metrics scraping), and Grafana (dashboard visualization) alongside PostgreSQL and LocalStack.
+#### 0.7.1.2 Why the Rollback Asymmetry Is Correct, Not a Defect
 
-### 0.7.2 Validation Gates Analysis
+The rollback appears on only one of the two rewrite failure paths, which reads like a defect and is not one.
 
-The user specified 8 validation gates. Each gate has concrete deliverables and verification methods.
+At the **account**-rewrite failure point `[L4080]` nothing has yet been written inside the unit of work, so the transaction monitor releases the read-for-update locks at task end without any explicit action. At the **customer**-rewrite failure point `[L4102]` the account rewrite has already occurred inside the same unit of work, so an explicit backout is the only way to avoid a half-applied update.
 
-**Gate 1 — End-to-End Boundary Verification:**
-- Input artifact: `app/data/ASCII/dailytran.txt` (the production-representative daily transaction file with 20 records)
-- Processing path: `DailyTransactionPostingJob` → reads file → validates each transaction → posts to PostgreSQL → writes rejections to S3
-- Expected output: Comparison report documenting input records, expected output (derived from COBOL baseline), Java output, and match status
-- Deliverable: `docs/validation-gates.md#gate-1` with structured comparison table
+**A single Java transactional service method reproduces both branches automatically**, because each failure path returns or throws before the commit point. Nothing needs to be conditional.
 
-**Gate 2 — Zero-Warning Build:**
-- Command: `mvn clean verify -Werror` with `<compilerArgs><arg>-Xlint:all</arg></compilerArgs>`
-- Suppressed warnings: Only allowed for framework-generated code (JPA metamodel, MapStruct)
-- Deliverable: Build log excerpt in `docs/validation-gates.md#gate-2`
+This is a **mechanism substitution, not a behaviour change**, and it **is recorded** as such in `../DECISION_LOG.md`, which now exists. The distinction matters: a reviewer comparing the two sources side by side will otherwise see a `SYNCPOINT ROLLBACK` statement with no Java counterpart and conclude something was lost.
 
-**Gate 3 — Performance Baseline:**
-- Benchmark command: Run `DailyTransactionPostingJob` against full dataset, measure elapsed time, peak memory (via JMX), and records/second
-- Comparison: COBOL baseline metrics unavailable in the repository (no SLA documentation found). Java baseline is established as the reference
-- Deliverable: `docs/validation-gates.md#gate-3` with throughput table
+#### 0.7.1.3 The Failure Taxonomy the REST Layer Must Surface
 
-**Gate 4 — Named Real-World Validation Artifacts:**
-- Named artifacts for batch pipeline processing:
-  - `acctdata.txt` (9 account records)
-  - `carddata.txt` (card records)
-  - `custdata.txt` (customer records)
-  - `cardxref.txt` (cross-reference records)
-  - `dailytran.txt` (daily transaction records)
-  - `discgrp.txt` (disclosure group rates)
-  - `tcatbal.txt` (transaction category balances)
-  - `trancatg.txt` (transaction categories)
-  - `trantype.txt` (transaction types)
-- All 9 ASCII fixture files are loaded via Flyway V3 migration and processed through the batch pipeline
-- Deliverable: `docs/validation-gates.md#gate-4` with per-file processing report
+Six distinguishable outcome markers are declared as 88-levels in the region `[app/cbl/COACTUPC.cbl:L513-L528]`, each with its own screen literal. **Every one must map to a distinguishable HTTP response**; collapsing them into a single conflict status loses information the legacy screen displayed.
 
-**Gate 5 — API/Interface Contract Verification:**
-- Contracts to verify:
-  - File format: Fixed-width record layouts preserved in `DailyTransactionReader` parsing
-  - SQS message schema: Report submission messages match contract published by `ReportSubmissionService`
-  - S3 object format: Batch output files (statements, reports, rejection files) match documented layouts
-  - REST API contracts: All endpoints verified via integration tests exercising real Spring context
-- Deliverable: `docs/validation-gates.md#gate-5` with per-interface test evidence
-
-**Gate 6 — Unsafe/Low-Level Code Audit:**
-- Audit categories and expected counts:
-  - Raw SQL string concatenation: 0 (all queries via Spring Data JPA `@Query` or method naming)
-  - `Runtime.exec` calls: 0
-  - Reflection usage: 0 (Spring DI handles instantiation)
-  - Unchecked casts: ≤5 (generic type erasure in Spring Batch ItemProcessor)
-  - Suppressed warnings: ≤3 (JPA metamodel-related)
-- Deliverable: `docs/validation-gates.md#gate-6` with per-site justification for any count above 0
-
-**Gate 7 — Scope Matching (Extended):**
-- Justification: Multi-subsystem batch processing (5-stage pipeline), file I/O (9 data files × 3 formats), inter-program calls (CALL/XCTL → Spring bean injection), JCL orchestration (29 JCL jobs → Spring Batch), AWS integration (S3 + SQS + SNS)
-- Deliverable: `docs/validation-gates.md#gate-7` with scope evidence matrix
-
-**Gate 8 — Integration Sign-Off Checklist:**
-- End-to-end verification: Gate 1 evidence
-- Interface contract verification: Gate 5 evidence
-- Performance baseline: Gate 3 evidence
-- Unsafe code audit: Gate 6 evidence
-- ≥80% line coverage: JaCoCo report with `<rule><limit><minimum>0.80</minimum></limit></rule>`
-- OWASP dependency-check: `mvn org.owasp:dependency-check-maven:check` with zero critical/high CVEs
-- Mapping traceability matrix: `TRACEABILITY_MATRIX.md` with 100% COBOL paragraph coverage
-- Deliverable: `docs/validation-gates.md#gate-8` with consolidated sign-off table
-
-### 0.7.3 Decision Log and Traceability Requirements
-
-Per the user-specified "Explainability" rule, every non-trivial implementation decision requires a documented rationale. The `DECISION_LOG.md` file is the single source of truth.
-
-**Decision Log Structure:**
-
-| # | Decision | Alternatives Considered | Rationale | Risks |
-|---|---|---|---|---|
-| D-001 | Use `BigDecimal` for all COMP-3/COMP fields | `double`, `long` (fixed-point) | COBOL PIC clauses define exact decimal precision; `BigDecimal` guarantees identical precision semantics | Performance overhead vs. primitives; mitigated by limiting BigDecimal to financial fields |
-| D-002 | BCrypt for password hashing | Plaintext (preserve COBOL), Argon2, PBKDF2 | COBOL uses plaintext (C-003 constraint); BCrypt provides secure default while maintaining login semantics | Existing passwords must be migrated with hash-on-first-login pattern |
-| D-003 | S3 versioned objects for GDG | Local filesystem with rotation, PostgreSQL LOB | GDG semantics require generation numbering and retention; S3 versioning provides native equivalent | Requires LocalStack for testing; S3 versioning costs |
-| D-004 | SQS for TDQ replacement | In-memory queue, Kafka, RabbitMQ | CICS TDQ is point-to-point with sequential read; SQS FIFO provides identical ordering guarantee | SQS FIFO has 300 msg/sec throughput limit (sufficient for this workload) |
-| D-005 | Spring Batch for JCL pipeline | Custom scheduler, Quartz, Temporal | JCL jobs are sequential batch with condition codes; Spring Batch provides native step sequencing and condition evaluation | Learning curve for Step/Job/Flow abstractions |
-
-The complete log will contain entries for all non-trivial decisions discovered during implementation.
-
-**Traceability Matrix Structure (`TRACEABILITY_MATRIX.md`):**
-
-The matrix provides bidirectional mapping with 100% coverage of all COBOL paragraphs. Example structure:
-
-| COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
-|---|---|---|---|---|
-| `COSGN00C.cbl` | `PROCESS-ENTER-KEY` | `AuthenticationService` | `authenticate()` | BCrypt verification replaces plaintext compare |
-| `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | `POST /api/auth/signin` response | BMS screen → JSON response |
-| `COACTUPC.cbl` | `9100-GETACCT-REQUEST` | `AccountUpdateService` | `getAccount()` | VSAM READ → JPA `findById` |
-| `COACTUPC.cbl` | `PROCESS-UPDATE-ACCT` | `AccountUpdateService` | `updateAccount()` | `@Transactional` with `@Version` for SYNCPOINT semantics |
-| `CBTRN02C.cbl` | `2000-VALIDATE-TXN` | `TransactionPostingProcessor` | `validate()` | 4-stage cascade preserved, reject codes 100-109 |
-
-All paragraphs across all 28 COBOL programs are mapped. References use the original COBOL repository commit SHA as specified by the user.
-
-### 0.7.4 Executive Presentation Requirements
-
-Per the user-specified "Executive Presentation" rule, a `docs/executive-presentation.html` reveal.js artifact is required.
-
-**Slide Deck Structure:**
-- Slide 1: Title + project scope visual (migration flow diagram)
-- Slide 2: Business value — why migrate, cost/risk of staying on mainframe (pie chart)
-- Slide 3: Before architecture — z/OS tier diagram (Mermaid)
-- Slide 4: After architecture — Java/Spring/AWS tier diagram (Mermaid)
-- Slide 5: COBOL-to-Java mapping summary (table visual)
-- Slide 6: Batch pipeline before/after (side-by-side Mermaid)
-- Slide 7: Data migration strategy (flow diagram)
-- Slide 8: Observability dashboard (screenshot placeholder)
-- Slide 9: Risk assessment matrix (color-coded table)
-- Slide 10: Validation gates summary (checklist visual)
-- Slide 11: Team onboarding path (timeline graphic)
-- Slide 12: Next steps and recommended improvements (roadmap visual)
-
-Every slide contains at least one visual element. Mermaid diagrams are embedded directly in reveal.js HTML.
-
-### 0.7.5 Visual Architecture Documentation
-
-Per the user-specified "Visual Architecture Documentation" rule, all architecture documentation uses Mermaid diagrams showing both before and after states.
-
-**Required Diagrams:**
-
-- **Before-State z/OS Architecture** — CICS region, VSAM datasets, BMS terminal interface, JES batch subsystem, TDQ queues
-- **After-State Java/AWS Architecture** — Spring Boot services, PostgreSQL, S3, SQS, REST API, Spring Batch
-- **Batch Pipeline Before/After** — JCL 5-stage flow → Spring Batch 5-stage flow
-- **Data Migration Flow** — VSAM → PostgreSQL mapping with Flyway migrations
-- **Component Interaction Diagram** — Controller → Service → Repository → Database layering
-- **Authentication Flow** — COBOL sign-on vs. Spring Security JWT flow
-
-All diagrams include descriptive titles and legends. Both before and after states are shown for every modified architectural aspect.
-
-### 0.7.6 Onboarding and Continued Development
-
-Per the user-specified "Onboarding & Continued Development" rule, the `docs/onboarding-guide.md` enables a new developer to go from a clean machine to a running application without asking questions.
-
-**Onboarding Guide Contents:**
-
-- Prerequisites: JDK 25, Maven 3.9+, Docker, AWS CLI
-- Clone and build: `git clone ... && mvn clean verify`
-- Local environment: `docker-compose up -d` (PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana)
-- Run application: `mvn spring-boot:run -Dspring.profiles.active=local`
-- Verify health: `curl http://localhost:8080/actuator/health`
-- Run full test suite: `mvn verify -Pintegration`
-- Domain context: CardDemo business overview, entity relationships, batch pipeline explanation
-- Common pitfalls: BigDecimal precision traps, LocalStack S3 path-style access, Testcontainers Docker socket permissions, Flyway migration ordering
-- How to extend: Adding a new entity, adding a batch job, adding an API endpoint
-- Suggested next tasks (discovered during development, out of scope):
-  - Add Swagger/OpenAPI documentation generation
-  - Implement pagination cursor-based API (COBOL uses offset-based)
-  - Add Redis caching for reference data (transaction types, categories)
-  - Implement async batch job submission via REST API
-  - Add database connection pooling tuning documentation
-
-### 0.7.7 LocalStack Verification Analysis
-
-Per the user-specified "LocalStack Verification" rule, every AWS service interaction must be verifiable against LocalStack with zero live AWS dependencies.
-
-**LocalStack Integration Points:**
-
-| AWS Service | CardDemo Usage | LocalStack Test Strategy |
+| Legacy marker | Screen literal | Target response semantics |
 |---|---|---|
-| S3 | Batch file staging (GDG replacement), statement output, report output, rejection files | Integration tests create buckets in `@BeforeAll`, upload test fixtures, verify output objects, delete in `@AfterAll` |
-| SQS | Report submission queue (TDQ replacement) | Tests create FIFO queue, publish message via `ReportSubmissionService`, verify message receipt |
-| SNS | Alert/notification publishing | Tests create topic, subscribe SQS endpoint, publish, verify fan-out |
+| `COULD-NOT-LOCK-ACCT-FOR-UPDATE` | "Could not lock account record for update" | Lock acquisition failed on the account |
+| `COULD-NOT-LOCK-CUST-FOR-UPDATE` | "Could not lock customer record for update" | Lock acquisition failed on the customer |
+| `DATA-WAS-CHANGED-BEFORE-UPDATE` | "Record changed by some one else. Please review" | Snapshot mismatch — the concurrency conflict proper |
+| `LOCKED-BUT-UPDATE-FAILED` | "Update of record failed" | Locks held, write rejected |
+| `DID-NOT-FIND-ACCT-IN-CARDXREF` | "Did not find this account in cards database" | Cross-reference miss |
+| `XREF-READ-ERROR` | "Error reading Card Data File" | Cross-reference I/O failure |
 
-**Docker Compose Configuration:**
+The literals are reproduced verbatim because they are compared byte-for-byte by the parity comparison. Note the legacy grammar in the third literal; it is preserved rather than corrected.
 
-The `docker-compose.yml` includes:
-- `localstack/localstack-pro:latest` with `SERVICES=s3,sqs,sns`
-- `LOCALSTACK_AUTH_TOKEN` passed via environment variable
-- Init hook: `localstack-init/init-aws.sh` creates S3 buckets (`carddemo-batch-input`, `carddemo-batch-output`, `carddemo-statements`) and SQS queues (`carddemo-report-jobs.fifo`)
+#### 0.7.1.4 Two Distinct Comparison Paragraphs: Do Not Conflate Them
 
-**Test Resource Lifecycle:**
+The program contains **two** comparison paragraphs with different jobs. Conflating them is the single most likely source of a wrong implementation here.
 
-Every integration test that touches AWS services follows this pattern:
-- `@BeforeAll`: Create AWS resources (buckets, queues, topics)
-- Test execution: Exercise the real service code against LocalStack
-- `@AfterAll`: Delete all created resources — no dependency on pre-existing state
+- **`1205-COMPARE-OLD-NEW` at `[app/cbl/COACTUPC.cbl:L1681-L1777]`** compares the `ACUP-NEW-*` screen image against `ACUP-OLD-*` to decide whether the user actually changed anything on the screen. It applies `FUNCTION UPPER-CASE(FUNCTION TRIM(…))` to text fields, `FUNCTION LOWER-CASE(FUNCTION TRIM(…))` to the group identifier, raw equality to the six phone sub-fields, the social security number, the electronic funds account identifier and the credit score, and a **whole-string** comparison of the two date-of-birth fields — which is correct *there*, because both sides are the compact `X(08)` form.
+- **`9700-CHECK-CHANGE-IN-REC` at `[app/cbl/COACTUPC.cbl:L4109-L4193]`** compares the **freshly read record** against the snapshot to detect a concurrent modification. This is the concurrency guard, and its comparison rules are materially different from those above.
 
-**Spring Profile Configuration:**
+**Verified against source:** earlier project prose located the concurrency guard at `L669-L756`. That range is in fact the working-storage declaration of `ACUP-OLD-DETAILS` `[L669]`, and `ACUP-NEW-DETAILS` is declared at `[L757]`. The guard paragraph is at `L4109-L4193`. Both the paragraph and the two declarations matter, but they are different things.
 
-The `application-local.yml` and `application-test.yml` profiles configure the AWS endpoint to `http://localhost:4566` (LocalStack). No test, local dev workflow, or CI step requires real AWS credentials.
+Three characteristics of the `9700` comparison are easy to translate wrongly:
+
+- **The account comparison is a chain of field-level predicates at `[L4115-L4140]`**, covering the active status, the current balance, the credit limit, the cash credit limit, the current-cycle credit and the current-cycle debit, then the three dates, then the group identifier. **Dates are compared as three separate substrings each, never as whole strings** — the open, expiry and reissue dates are each compared by `(1:4)`, then `(6:2)`, then `(9:2)` against discrete snapshot fields, which expands the ten field-level comparisons into sixteen comparison terms. On mismatch the paragraph sets `DATA-WAS-CHANGED-BEFORE-UPDATE` and branches to `9600-WRITE-PROCESSING-EXIT` `[L4144]`. **Verified against source:** earlier prose described this as "twelve account predicates"; the literal structure is ten field-level comparisons expanding to sixteen terms, so this document states the structure and cites the lines rather than repeating a count that does not match the code.
+- **The group identifier is compared through `FUNCTION LOWER-CASE` on both sides**, while the customer text fields are compared through `FUNCTION UPPER-CASE`. This asymmetry is deliberate and is described below.
+- **The customer comparison at `[L4152-L4186]` is split nine upper-cased against seven raw.** `FUNCTION UPPER-CASE` is applied to `CUST-FIRST-NAME`, `CUST-MIDDLE-NAME`, `CUST-LAST-NAME`, `CUST-ADDR-LINE-1`, `CUST-ADDR-LINE-2`, `CUST-ADDR-LINE-3`, `CUST-ADDR-STATE-CD`, `CUST-ADDR-COUNTRY-CD` and `CUST-GOVT-ISSUED-ID`. **No case function at all** is applied to `CUST-ADDR-ZIP`, `CUST-PHONE-NUM-1`, `CUST-PHONE-NUM-2`, `CUST-SSN`, `CUST-EFT-ACCOUNT-ID`, `CUST-PRI-CARD-HOLDER-IND` and `CUST-FICO-CREDIT-SCORE`. **Normalising this in either direction changes which updates are accepted**, so it is reproduced exactly. On mismatch the paragraph branches at `[L4190]`.
+
+#### 0.7.1.5 Why Optimistic Version Checking Alone Is Insufficient
+
+A JPA version column detects that *some* concurrent write occurred. The legacy program detects that *specific business field values* differ from what the user was shown. These are different guarantees, and only the second reproduces the legacy behaviour.
+
+The difference is not academic. A concurrent write that set a field to a new value and then back to its original value **passes** the legacy check and **fails** a version check. Conversely, a version check cannot tell the caller *which* field diverged, which is information the legacy screen surfaced.
+
+Because the target is stateless, the snapshot cannot live on the server between requests. **The request body must therefore carry both the old and the new detail groups**, which is why `AccountUpdateRequest` is shaped that way in [§0.5.1.4](#0514-data-transfer-objects). Two layers of concurrency control are consequently **mandatory**: the version column for the store-level guard, and the explicit field-by-field comparison for the business-level guard. Neither substitutes for the other, which is exactly what invariant 16 in [§0.1.2.3](#0123-transformation-rules-sixteen-binding-invariants) asserts.
+
+#### 0.7.1.6 The Date-of-Birth Offset Asymmetry
+
+This is the one detail that makes a naive implementation fail on **every single request**, so it is called out separately.
+
+Inside `9700-CHECK-CHANGE-IN-REC` the date of birth is compared at `[app/cbl/COACTUPC.cbl:L4174-L4179]` with **different offsets on each side**:
+
+| Component | Live customer record | Snapshot |
+|---|---|---|
+| Year | `CUST-DOB-YYYY-MM-DD (1:4)` | `ACUP-OLD-CUST-DOB-YYYY-MM-DD (1:4)` |
+| Month | `CUST-DOB-YYYY-MM-DD (6:2)` | `ACUP-OLD-CUST-DOB-YYYY-MM-DD (5:2)` |
+| Day | `CUST-DOB-YYYY-MM-DD (9:2)` | `ACUP-OLD-CUST-DOB-YYYY-MM-DD (7:2)` |
+
+The reason is that the live customer record holds a **dash-separated** `YYYY-MM-DD`, whereas the snapshot field is declared `PIC X(08)` at `[app/cbl/COACTUPC.cbl:L746]` with `REDEFINES` component parts at `[L749-L751]` and therefore holds the **compact** `YYYYMMDD`.
+
+**A whole-string comparison of the two would report a change on every request**, making the endpoint permanently unusable. The Java implementation must compare **components**, and the request DTO must carry the snapshot date in its **compact** form. Note the contrast with `1205-COMPARE-OLD-NEW`, where a whole-string comparison *is* correct because both sides are compact — which is precisely why the two paragraphs must not be conflated.
+
+#### 0.7.1.7 The Abend Path
+
+The abend routine populates a code, a culprit program name, a reason and a message; substitutes a default message when the message field is empty; sends the block to the terminal; and cancels the abend handler. The field names it uses confirm that the copybook catalogued in [§0.2.1.3](#0213-copybooks-appcpy) as `CSMSG02Y` is the **abend work-area** copybook `[app/cpy/CSMSG02Y.cpy:L21-L29]`, internally titled `CABENDD.CPY`. Those four fields become the constructor payload of `FatalProcessingException`.
+
+Separately, the presence of the procedural pushbutton copybook `CSSTRPFY` in this program's procedure division confirms that copybook's classification as procedural rather than as a data layout.
+
+### 0.7.2 Daily Transaction Posting: File Status Taxonomy and the Reject-Code Strategy
+
+`app/cbl/CBTRN02C.cbl` is 731 lines and defines the error taxonomy the whole batch tier inherits.
+
+#### 0.7.2.1 The Universal I/O Guard Idiom
+
+Every open, read, write, rewrite and close in every batch program follows one shape. A signed binary result field is declared with condition names for success and end-of-file at `[app/cbl/CBTRN02C.cbl:L142-L144]`:
+
+```cobol
+01  APPL-RESULT              PIC S9(9)   COMP.
+    88  APPL-AOK             VALUE 0.
+    88  APPL-EOF             VALUE 16.
+```
+
+The code then moves 8 into it, performs the verb, moves 0 if the status is `'00'` and 12 otherwise, and either continues or displays a message, moves the status into a display field, renders it, and abends.
+
+**Recognising this as one idiom rather than hundreds of individual checks is what makes a single central status-to-exception mapper the right design.** `FileStatusMapper` exists for exactly this reason.
+
+#### 0.7.2.2 The Per-Record Loop and the Exit-Code Contract
+
+The loop occupies `[app/cbl/CBTRN02C.cbl:L196-L234]`. Five input files are opened at `[L196-L200]`. Then, per record: `PERFORM 1000-DALYTRAN-GET-NEXT` `[L204]`; `ADD 1 TO WS-TRANSACTION-COUNT` `[L206]`; clear the reason code `[L208]` and its description `[L209]`; `PERFORM 1500-VALIDATE-TRAN` `[L210]`; then either post `[L211-L212]` or `ADD 1 TO WS-REJECT-COUNT` and `PERFORM 2500-WRITE-REJECT-REC` `[L214-L215]`.
+
+After six closes `[L221-L226]` the program displays the two counters `[L227-L228]` and then sets the exit code:
+
+```cobol
+IF WS-REJECT-COUNT > 0
+    MOVE 4 TO RETURN-CODE
+END-IF
+```
+
+at `[L229-L231]`, followed by the end-of-execution display `[L232]` and `GOBACK` `[L234]`.
+
+**Return code 4 is set if and only if the reject count exceeds zero. There is no other determinant.** The completed-with-rejects exit status therefore keys on exactly that condition and nothing else.
+
+#### 0.7.2.3 The Abend Contract
+
+`9999-ABEND-PROGRAM` at `[app/cbl/CBTRN02C.cbl:L707-L711]` displays an abend message `[L708]`, zeroes a timing field `[L709]`, moves **999** into the abend code `[L710]` and calls the language-environment abend service `[L711]`.
+
+In Java this becomes `FatalProcessingException` carrying code **999**, a failed exit status, and process return code **12**.
+
+#### 0.7.2.4 The Status Display Format Is a Contract
+
+`9910-DISPLAY-IO-STATUS` at `[app/cbl/CBTRN02C.cbl:L714-L727]` renders the status as exactly four characters:
+
+- When the status is **non-numeric or its first byte is `'9'`**, the first byte is copied through to position 1, a binary field is zeroed, the second status byte is moved into its right half, and the result is expanded into positions 2 to 4.
+- **Otherwise** the field is set to four zeros and the two status characters are placed at positions 3 and 4.
+
+Both branches display the literal prefix `'FILE STATUS IS: NNNN'` followed by the four-character field, at `[L721]` and `[L725]` respectively.
+
+**Java must emit the identical four-character rendering and the identical literal prefix**, because the end-to-end gate compares log output against the legacy baseline and a differently formatted status is a diff.
+
+#### 0.7.2.5 The Reject Record Resolves the Declared Length Exactly
+
+```cobol
+01  REJECT-RECORD.
+    05  REJECT-TRAN-DATA            PIC X(350).
+    05  VALIDATION-TRAILER          PIC X(80).
+
+01  WS-VALIDATION-TRAILER.
+    05  WS-VALIDATION-FAIL-REASON       PIC 9(04).
+    05  WS-VALIDATION-FAIL-REASON-DESC  PIC X(76).
+```
+
+declared at `[app/cbl/CBTRN02C.cbl:L176-L182]`. That is **430 bytes = 350 + (4 + 76)**, independently confirmed by the declared record length on the reject dataset in `app/jcl/POSTTRAN.jcl`.
+
+The writer is `2500-WRITE-REJECT-REC` at `[app/cbl/CBTRN02C.cbl:L446-L465]`. **Verified against source:** earlier prose cited `L442-L465`; `L442` is in fact `PERFORM 2900-WRITE-TRANSACTION-FILE` inside the posting routine, and the reject writer's paragraph label is at `L446`.
+
+Emitting anything other than 430 bytes breaks the parity comparison.
+
+#### 0.7.2.6 The Validation Cascade Is Two Paragraphs, Not Four
+
+`1500-VALIDATE-TRAN` at `[app/cbl/CBTRN02C.cbl:L370-L378]` is, in full: perform the cross-reference lookup `[L371]`; perform the account lookup **only if** the reason code is still zero `[L372-L376]`; then a literal comment inviting further validations `[L377]`; then `EXIT` `[L378]`. **There are exactly two lookup paragraphs.**
+
+- **`1500-A-LOOKUP-XREF`** at `[L380-L392]`. On `INVALID KEY` it assigns code **100** `[L385]` with the description `'INVALID CARD NUMBER FOUND'` `[L386-L387]`.
+- **`1500-B-LOOKUP-ACCT`** at `[L393-L422]`. On `INVALID KEY` it assigns code **101** `[L397]` with `'ACCOUNT RECORD NOT FOUND'` `[L398-L399]`. Otherwise it computes
+
+  ```cobol
+  COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT
+                      - ACCT-CURR-CYC-DEBIT
+                      + DALYTRAN-AMT
+  ```
+
+  at `[L403-L405]`, then assigns code **102** with `'OVERLIMIT TRANSACTION'` when `ACCT-CREDIT-LIMIT >= WS-TEMP-BAL` is false `[L407-L413]`. It then **immediately** compares `ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)` and assigns code **103** with `'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'` when that is false `[L414-L420]`.
+
+Three consequences follow, and all three are commonly got wrong:
+
+1. **The over-limit and expiry checks are sequential and unguarded.** There is no alternative branch and no early exit between `[L413]` and `[L414]`. When both conditions fail, **code 103 overwrites code 102** and a **single** reject record bearing 103 is written. Any implementation that guards the second check, or that emits two reject records, diverges.
+2. **The expiry check is a string comparison against the originating timestamp**, using its first ten characters — not the processing timestamp. The account expiry field name is **misspelled in the copybook as `ACCT-EXPIRAION-DATE`**, and the misspelling is part of the field contract.
+3. **The over-limit formula must be transcribed exactly.** The cycle-debit accumulator legitimately holds **negative** values (see [§0.7.2.10](#07210-the-sign-branch-that-must-not-be-normalised)), which is precisely why subtracting it behaves correctly. Rewriting the expression in a form that looks algebraically equivalent changes the result.
+
+#### 0.7.2.7 Reject Code 109 Is Assigned But Never Consumed
+
+Code **109** is assigned inside `2800-UPDATE-ACCOUNT-REC` on the rewrite-failure path at `[app/cbl/CBTRN02C.cbl:L556]`, carrying the literal `'ACCOUNT RECORD NOT FOUND'` `[L557-L558]` — **the same literal as code 101**.
+
+But that paragraph runs inside the posting routine, which is only entered when the reason code was already zero — that is, on the already-validated path. Consequently: **no reject record is written, the reject count is not incremented**, execution continues to the transaction write, and the value is cleared on the next iteration `[L208]`.
+
+Two things follow.
+
+- Code 109 is **effectively dead as a reject outcome, yet it must still exist as a constant** because the assignment is real code on a reachable path. This is exactly why `RejectCode` has **five** constants — 100, 101, 102, 103, 109 — and not four.
+- Its failure path in the legacy system **leaves an orphaned category-balance row and an orphaned transaction row**, because the three writes of [§0.7.2.8](#0728-posting-order-and-the-timestamp-format) are three independent commits. The Java transactional boundary closes that hazard as a side effect. **This is a genuine behavioural improvement rather than parity, so it is to be labelled explicitly as a deviation** in `../DECISION_LOG.md` — which does not exist yet, making this bullet the interim record — rather than passed off as equivalence.
+
+#### 0.7.2.8 Posting Order and the Timestamp Format
+
+The posting routine `2000-POST-TRANSACTION` occupies `[app/cbl/CBTRN02C.cbl:L424-L444]`. It moves eleven fields directly from the input record to the transaction record `[L425-L435]`, copies the originating timestamp `[L436]`, generates a formatted timestamp `[L437]` and moves it to the processing timestamp `[L438]` — thirteen target fields in total. It then updates the category balance `[L440]`, updates the account `[L441]` and writes the transaction `[L442]`, **in that order**.
+
+**Three independent commits in the source become one atomic unit in Java.**
+
+The timestamp generator `Z-GET-DB2-FORMAT-TIMESTAMP` at `[app/cbl/CBTRN02C.cbl:L692]` moves `FUNCTION CURRENT-DATE` into a working field `[L693]` and then, critically, executes `MOVE '0000' TO DB2-REST` at `[L701]`, where `DB2-REST` is the trailing `PIC X(04)` of the 26-character `DB2-FORMAT-TS` `[L159, L174]`.
+
+**The final four digits of every generated timestamp are therefore always zeros, and the two digits before them are hundredths of a second — not milliseconds.** The source publishes its own format string in a comment at `[app/cbl/CBTRN02C.cbl:L149]`, `EEEE-MM-DD-UU.MM.SS.HH0000`, in which `HH` in the fractional position is the hundredths pair. The redefinition proves it: `DB2-FORMAT-TS PIC X(26)` at `[:L159]` decomposes at `[:L161-L174]` into `DB2-YYYY X(004)`, a hyphen, `DB2-MM X(002)`, a hyphen, `DB2-DD X(002)`, a hyphen, `DB2-HH X(002)`, a dot, `DB2-MIN X(002)`, a dot, `DB2-SS X(002)`, a dot, **`DB2-MIL PIC 9(002)`** at `[:L173]` and `DB2-REST X(04)` at `[:L174]` — 4+1+2+1+2+1+2+1+2+1+2+1+2+4 = 26. `DB2-MIL` is two digits wide and is filled by `MOVE COB-MIL TO DB2-MIL` at `[:L700]` from `COB-MIL PIC X(02)` at `[:L157]`, which is the **hundredths** pair of the twenty-one-character `FUNCTION CURRENT-DATE` result, positions 17 and 18.
+
+**Java must therefore format to hundredths-of-a-second (centisecond) precision and then append four literal zeros**, giving the pattern `yyyy-MM-dd-HH.mm.ss.SS0000`. Nanosecond precision is wrong, and so is millisecond precision: three fractional digits followed by four zeros produces a twenty-seven-character string, which neither fits `CHAR(26)` nor matches the baseline. Hundredths are **truncated, not rounded**, because the source copies the pair verbatim rather than computing it.
+
+**Corrected 1 August 2026.** Earlier generations of this document, and of the Javadoc derived from it, said "millisecond precision followed by four zeros". The name `DB2-MIL` invites that reading, but the field is `PIC 9(002)` and its own source comment spells the position `HH`. The correction is recorded here, and every derived statement in `src/` has been brought into line.
+
+#### 0.7.2.9 Two Places Where a Not-Found Status Is Success
+
+`2700-UPDATE-TCATBAL` at `[app/cbl/CBTRN02C.cbl:L467-L501]` is an **upsert**. On an invalid key it displays a "creating" message `[L476-L477]` and sets a create flag `[L478]`. Then — critically — it accepts **either `'00'` or `'23'`** as success:
+
+```cobol
+IF TCATBALF-STATUS = '00' OR '23'
+```
+
+at `[L481]`, before dispatching to the create branch `[L496]` or the rewrite branch `[L498]`. Both branches add the transaction amount to the category balance.
+
+The interest program contains the second such site, described in [§0.7.3.3](#0733-control-break-the-unreachable-final-flush-and-the-two-paragraph-default-fallback). Everywhere else, a not-found status is an error.
+
+**A blanket rule that maps not-found to an exception will abend both of these paths**, so the status mapper must be aware of the exceptions rather than applying the general rule uniformly.
+
+#### 0.7.2.10 The Sign Branch That Must Not Be Normalised
+
+`2800-UPDATE-ACCOUNT-REC` at `[app/cbl/CBTRN02C.cbl:L545-L560]` adds the transaction amount to the current balance `[L547]`, then:
+
+```cobol
+IF DALYTRAN-AMT >= 0
+    ADD DALYTRAN-AMT TO ACCT-CURR-CYC-CREDIT
+ELSE
+    ADD DALYTRAN-AMT TO ACCT-CURR-CYC-DEBIT
+END-IF
+```
+
+at `[L548-L552]`.
+
+Note what this means: **a negative amount is added to the debit accumulator**, so the debit accumulator holds negative values. This is exactly why the over-limit formula of [§0.7.2.6](#0726-the-validation-cascade-is-two-paragraphs-not-four) subtracts it.
+
+**No absolute-value normalisation is permitted anywhere in this path.** The fixture data exercises this branch genuinely: `app/data/ASCII/dailytran.txt` contains both `{` and `}` overpunch characters, so it carries genuinely negative amounts.
+
+#### 0.7.2.11 The Resulting Status-to-Exception Map
+
+| File Status | Meaning | Target |
+|---|---|---|
+| `'00'` | Success | Continue |
+| `'04'` | Success with a secondary condition | Continue — **but only at the file-service call sites** of [§0.7.6.6](#0766-the-file-service-call-contract) |
+| `'10'` | End of file | Loop termination, **not** an error |
+| `'23'` | Record not found | `RecordNotFoundException` — **except** at the two sites of [§0.7.2.9](#0729-two-places-where-a-not-found-status-is-success), where it is an accepted control path |
+| `'22'` | Duplicate key | `DuplicateRecordException` |
+| `'35'` | File unavailable | `FileUnavailableException` |
+| `'9x'` | Physical or logical I/O error | `FileAccessException` carrying the four-character expanded status of [§0.7.2.4](#0724-the-status-display-format-is-a-contract) |
+| Anything else | Unexpected | `FatalProcessingException`, abend code 999, return code 12 |
+
+A single successful status, plus the two named not-found exceptions and the accepted secondary status at the file-service call sites, are the only values that avoid the abend guard.
+
+### 0.7.3 Interest Calculation: Output Target, Default Fallback, Cycle Reset and the Reachable Stub
+
+`app/cbl/CBACT04C.cbl` is 652 lines.
+
+#### 0.7.3.1 The Date Parameter Is a Linkage Parameter, Not a Dataset
+
+The program declares a linkage group of a binary length field plus a ten-character date and receives it through the procedure division header:
+
+```cobol
+LINKAGE SECTION.
+01  EXTERNAL-PARMS.
+    05  PARM-LENGTH             PIC S9(04) COMP.
+    05  PARM-DATE               PIC X(10).
+
+PROCEDURE DIVISION USING EXTERNAL-PARMS.
+```
+
+at `[app/cbl/CBACT04C.cbl:L175-L180]`. The value is supplied on the `EXEC` statement in `app/jcl/INTCALC.jcl`.
+
+**That value is eight date digits followed by two zeros — ten numeric characters with no separators, not an ISO date.** This matters because the value is concatenated directly into generated transaction identifiers (see [§0.7.3.5](#0735-synthetic-transaction-construction)).
+
+#### 0.7.3.2 The Job Does Not Write to the Transaction Cluster
+
+The transaction output file is declared with **sequential** organisation and **sequential** access at `[app/cbl/CBACT04C.cbl:L53-L56]`, and its dataset statement in `app/jcl/INTCALC.jcl` allocates a **brand-new generation of a sequential generation group on every run**. Interest transactions reach the keyed cluster only later, through the combine job's sort and bulk load.
+
+**Verified against source:** earlier prose cited this file control entry as `L30-L57`; that range spans the whole `SELECT` block including the four indexed files. The transaction output `SELECT` is specifically `L53-L56`.
+
+Four design consequences follow, and they are easy to get wrong in sequence:
+
+- The interest job writes to an **object-storage output, not to the transaction table**.
+- There is **no duplicate-key detection inside the interest program**, because its output is a fresh sequential file.
+- Duplicate-key exposure materialises in the **combine** job's load step, where a repeated date parameter would produce colliding identifiers. Java must surface that as a `DuplicateRecordException` and a failed exit status, **never as a silent upsert**.
+- The combine job consumes only the **most recent** generation, so only the latest interest run is merged.
+
+The cross-reference file in this job is read through its alternate key, declared `ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID` at `[app/cbl/CBACT04C.cbl:L38]`. A missing cross-reference record displays a friendly message `[L396-L397]` **but then hits the standard guard, which means the job abends** `[L400-L412]`. **Java must translate an empty lookup into a fatal exception, not a skip.**
+
+#### 0.7.3.3 Control Break, the Unreachable Final Flush and the Two-Paragraph Default Fallback
+
+The category-balance file is browsed sequentially in key order, and the key is account plus type plus category — which is exactly why an **account-level** control break works, and exactly why the composite key must preserve COBOL field order.
+
+The loop occupies `[app/cbl/CBACT04C.cbl:L188-L222]`. On each break `[L194]` the previous account is flushed `[L196]`, **unless it is the first record** `[L195-L199]`; the running total resets `[L200]`; the account `[L203]` and cross-reference `[L205]` records are read. The rate is fetched `[L213]`, and a non-zero rate `[L214]` drives interest computation `[L215]` and the fee paragraph `[L216]`.
+
+**The source's final flush is unreachable, so the last account's interest is silently lost.** This is the single most consequential correction in this sub-section, and earlier generations of this document asserted the opposite — that "when the loop detects end of file it performs the account update one final time" at `[L219-L220]`. It does not. The loop is written as follows:
+
+```cobol
+PERFORM UNTIL END-OF-FILE = 'Y'                <- :L188
+    IF  END-OF-FILE = 'N'                      <- :L189
+        PERFORM 1000-TCATBALF-GET-NEXT         <- :L190
+        IF  END-OF-FILE = 'N'                  <- :L191
+          ... control break and per-record body ...
+        END-IF                                 <- :L218
+    ELSE                                       <- :L219
+         PERFORM 1050-UPDATE-ACCOUNT           <- :L220
+    END-IF                                     <- :L221
+END-PERFORM.                                   <- :L222
+```
+
+`PERFORM UNTIL` in COBOL is **test-before** unless `WITH TEST AFTER` is written, and it is not written here. The `ELSE` at `[:L219]` therefore belongs to `IF END-OF-FILE = 'N'` at `[:L189]`, and it can only be taken when `END-OF-FILE` already equals `'Y'` — which is precisely the condition under which the enclosing `PERFORM UNTIL` at `[:L188]` has already terminated and the body is never entered. **The `ELSE` branch is dead code as written.** What actually happens is: the read at `[:L190]` reaches end of file, `1000-TCATBALF-GET-NEXT` sets `END-OF-FILE` to `'Y'` at `[app/cbl/CBACT04C.cbl:L340]` on file status `'10'`, the inner `IF` at `[:L191]` fails, the iteration ends, the loop re-tests its condition, and control passes straight to the five closes at `[:L224-L228]`.
+
+The damage is specific and doubles up, because `1050-UPDATE-ACCOUNT` at `[app/cbl/CBACT04C.cbl:L350-L370]` does three things and not one: it adds the accumulated interest to the balance at `[:L352]`, **zeroes both cycle counters** at `[:L353-L354]`, and rewrites the account record at `[:L356]`. For the last account in key order, none of the three happens. So that account loses its accrued interest *and* carries its previous cycle's credit and debit accumulators into the next posting run, which then corrupts the over-limit arithmetic of [§0.7.2.6](#0726-the-validation-cascade-is-two-paragraphs-not-four) for that one account. Accounts one through *N*−1 are unaffected: they are flushed by the control break at `[:L196]`, guarded by the first-record test at `[:L195-L199]`.
+
+**Disposition — the loss is preserved, and no end-of-data flush may be added.** Parity is the contract of this engagement, and this is behaviour rather than a bounds hazard, so it is reproduced exactly: **there is no final flush in the Java implementation and none may be added.** `com.cardemo.batch.processors.InterestCalculationProcessor` states it in as many words — "No final flush is implemented anywhere in this class" — and retains `updateAccountAtEndOfFile()` as an explicitly marked, never-invoked no-op so the paragraph map of [§0.5.1.8](#0518-batch) stays mechanically provable. The category-balance repository's Javadoc, `InterestCalculationJob`, `TransactionCategoryBalanceId` and this section all state that single reading.
+
+This is deliberately **not** treated like the removed capacity ceiling of [§0.7.6.3](#0763-a-hard-capacity-ceiling-with-no-bounds-check), and the distinction is the reason the two are dispositioned differently. That ceiling is an unguarded storage overrun — reproducing it would corrupt memory and silently truncate output, so removing it is a safety fix that is labelled as a deviation. The missing flush corrupts nothing: it produces a specific, deterministic, reproducible arithmetic outcome that the system of record produces too. Adding a flush would make Java disagree with the oracle on every run, which is precisely what Gate 1 exists to detect. **A parity comparison against unmodified legacy output therefore agrees on all *N* accounts, including the last, and no expected difference is encoded in the baseline.** The consequence for the following posting cycle — that one account carries its previous cycle's credit and debit accumulators into the over-limit arithmetic of [§0.7.2.6](#0726-the-validation-cascade-is-two-paragraphs-not-four) — is likewise reproduced rather than repaired, and is recorded in `DECISION_LOG.md` as a preserved legacy defect.
+
+The rate lookup spans **two** paragraphs, and both halves matter:
+
+- **`1200-GET-INTEREST-RATE` at `[L415-L440]`** reads the disclosure-group file `[L416]`, displays a message on invalid key `[L417-L419]`, and then accepts **either** success **or** not-found:
+
+  ```cobol
+  IF DISCGRP-STATUS = '00' OR '23'
+  ```
+
+  at `[L422]`. When the status was `'23'` it substitutes the literal default group identifier and retries: `MOVE 'DEFAULT' TO FD-DIS-ACCT-GROUP-ID` `[L437]` then `PERFORM 1200-A-GET-DEFAULT-INT-RATE` `[L438]`.
+- **`1200-A-GET-DEFAULT-INT-RATE` at `[L443-L460]`** accepts **only** `'00'` at `[L446]`, so **a missing default row abends the job** `[L452-L459]`.
+
+**Verified against source:** the fallback is **two distinct paragraphs**, `1200-GET-INTEREST-RATE` at `[L415-L440]` and `1200-A-GET-DEFAULT-INT-RATE` at `[L443-L460]`, with different acceptance rules — and the difference between them *is* the fallback semantics. Any single umbrella range spanning both hides it.
+
+Two further details: a **zero rate produces no interest transaction and no accumulation** `[L214]`; and on an invalid key the read leaves the previous iteration's record contents in place until the default read overwrites them, so **Java must not carry stale rate state across iterations**. The fixture set makes both outcomes testable — `app/data/ASCII/discgrp.txt` contains 17 rows whose group identifier is the literal `DEFAULT`, out of 51 total, including zero-rate combinations.
+
+#### 0.7.3.4 The Formula
+
+```cobol
+COMPUTE WS-MONTHLY-INT =
+        ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200
+ADD WS-MONTHLY-INT TO WS-TOTAL-INT
+```
+
+at `[app/cbl/CBACT04C.cbl:L464-L467]`, with the divisor on `[L465]`.
+
+In Java: **multiply first, then divide by the literal 1200** with two-decimal `HALF_EVEN` rounding. **Never rewrite it** as a division by 100 followed by a division by 12, and never substitute a decimal multiplier — both change the rounding, and the rounding is what the parity comparison measures.
+
+#### 0.7.3.5 Synthetic Transaction Construction
+
+`1300-B-WRITE-TX` at `[app/cbl/CBACT04C.cbl:L473-L515]` builds the generated transaction. **Verified against source:** earlier prose cited `L473-L515`; the paragraph's `EXIT` is at `L515` and `L518` opens `1400-COMPUTE-FEES`.
+
+- `ADD 1 TO WS-TRANID-SUFFIX` `[L474]` increments a **global** counter declared with `VALUE 0` at `[L173]` and **not reset per account**, so identifiers are run-sequential.
+- `STRING PARM-DATE, WS-TRANID-SUFFIX DELIMITED BY SIZE INTO TRAN-ID` `[L476-L480]` concatenates the ten-character date with the six-digit suffix to form a **sixteen-digit** identifier.
+- Fixed literals, all preserved exactly: `MOVE '01' TO TRAN-TYPE-CD` `[L482]`; `MOVE '05' TO TRAN-CAT-CD` `[L483]`; `MOVE 'System' TO TRAN-SOURCE` `[L484]`.
+- `STRING 'Int. for a/c ' , ACCT-ID DELIMITED BY SIZE INTO TRAN-DESC` `[L485-L489]` — **the prefix literal includes its trailing space** and is compared byte-for-byte.
+- The amount `[L490]`; merchant identifier zero `[L491]`; merchant name, city and postal code spaces `[L492-L494]`; the card number copied from the cross-reference `[L495]`.
+- One generated timestamp `[L496]` moved into **both** `TRAN-ORIG-TS` `[L497]` and `TRAN-PROC-TS` `[L498]` — the same value in both fields.
+
+Note the consequence of the identifier format: because the ten-character date **leads**, generated identifiers are numerically large and **dominate the descending-key browse** used elsewhere for identifier generation ([§0.7.4.1](#0741-the-descending-browse-maximum-key-idiom)) once an interest run has occurred.
+
+#### 0.7.3.6 The Cycle Reset That Is Easily Missed
+
+`1050-UPDATE-ACCOUNT` at `[app/cbl/CBACT04C.cbl:L350-L370]` adds the accumulated interest to the current balance `[L352]` and then **zeroes both cycle counters** before rewriting:
+
+```cobol
+MOVE 0 TO ACCT-CURR-CYC-CREDIT
+MOVE 0 TO ACCT-CURR-CYC-DEBIT
+```
+
+at `[L353-L354]`, with the rewrite at `[L356]`.
+
+**Omitting that reset breaks the over-limit arithmetic of [§0.7.2.6](#0726-the-validation-cascade-is-two-paragraphs-not-four) on the following posting cycle** — a defect that would not surface until a second batch run, which is precisely the kind of latent divergence the parity gates exist to catch.
+
+#### 0.7.3.7 The Reachable Empty Paragraph
+
+`1400-COMPUTE-FEES` at `[app/cbl/CBACT04C.cbl:L518-L520]` consists of exactly a comment reading that it is to be implemented `[L519]` and an `EXIT` `[L520]`.
+
+**It is reachable.** It is performed unconditionally inside the non-zero-rate branch at `[L216]`.
+
+**Resolution:** Java retains an empty private method with documentation citing the source lines and an explicit marker stating that the no-op is **intentional and preserved for control-flow parity**. This is the one place where Rule 1 Clause B's no-dead-code requirement yields to the parity mandate, because deleting the call site would break the paragraph map that the coverage gate verifies. The conflict and its resolution are developed in [§0.8.2](#082-the-one-documented-conflict-and-its-resolution).
+
+
+### 0.7.4 Identifier Generation and Numeric Parsing Asymmetry
+
+Two online programs — `app/cbl/COTRN02C.cbl` (783 lines) and `app/cbl/COBIL00C.cbl` (572 lines) — share an identifier-generation idiom and diverge in how they parse numbers.
+
+#### 0.7.4.1 The Descending-Browse Maximum-Key Idiom
+
+Both programs generate identifiers the same way: move high values into the key, start a browse, read the **previous** record, end the browse, then add one.
+
+In `ADD-TRANSACTION` at `[app/cbl/COTRN02C.cbl:L442-L458]`: `MOVE HIGH-VALUES TO TRAN-ID` `[L444]`, `STARTBR` `[L445]`, `READPREV` `[L446]`, `ENDBR` `[L447]`, `MOVE TRAN-ID TO WS-TRAN-ID-N` `[L448]`, `ADD 1` `[L449]`. The same sequence appears at `[app/cbl/COBIL00C.cbl:L212-L217]`.
+
+The empty-file path is explicit in `READPREV-TRANSACT-FILE` at `[app/cbl/COBIL00C.cbl:L472-L496]`: a `DFHRESP(ENDFILE)` response moves zeros into the identifier `[L487-L488]`, so **the first generated identifier is 1**. Any other response produces a specific screen message `[L492]` and repositions the cursor.
+
+In Java this becomes a **top-one descending-ordered query**, parsed on hit and defaulted to zero on empty, incremented, then zero-padded to sixteen characters.
+
+**The algorithm is inherently racy under concurrency, exactly as the browse was.** The parity-preserving choice is to **keep it** and let the primary-key constraint surface a collision as a `DuplicateRecordException`, rather than substituting a database sequence — which would change generated values and break comparison against the baseline. **To be recorded** as a deliberate retention in `../DECISION_LOG.md`; until that file exists this paragraph is the record.
+
+#### 0.7.4.2 Two Different Numeric Intrinsics, Used Deliberately
+
+`app/cbl/COTRN02C.cbl` uses **two different** numeric conversion intrinsics, and the choice is not incidental:
+
+| Site | Intrinsic | Field |
+|---|---|---|
+| `[app/cbl/COTRN02C.cbl:L204]` | plain numeric conversion | account identifier |
+| `[app/cbl/COTRN02C.cbl:L218]` | plain numeric conversion | card number |
+| `[app/cbl/COTRN02C.cbl:L383]` | **currency-aware** conversion | transaction amount, on validation |
+| `[app/cbl/COTRN02C.cbl:L456]` | **currency-aware** conversion | transaction amount, on write |
+
+The currency-aware form additionally tolerates currency symbols and thousands separators; the plain form does not.
+
+The display round-trip is equally specific. The parsed amount is moved into an edited field and back into the screen field at `[app/cbl/COTRN02C.cbl:L383-L386]`, where the edited field is declared
+
+```cobol
+05  WS-TRAN-AMT-N               PIC S9(9)V99  VALUE ZERO.
+05  WS-TRAN-AMT-E               PIC +99999999.99 VALUE ZEROS.
+```
+
+at `[app/cbl/COTRN02C.cbl:L58-L59]` — a **mandatory sign, exactly eight integer digits and two decimals** in the edited mask, over a signed nine-integer, two-decimal numeric field.
+
+Java therefore needs **two distinct parsers** — a strict digits-only parser for identifiers and card numbers, and a currency-tolerant parser for amounts — plus a formatter matching the edited mask for the response echo. **Using one parser for both either accepts input the legacy system rejects, or rejects input it accepts.**
+
+#### 0.7.4.3 Bill Payment Semantics
+
+`app/cbl/COBIL00C.cbl` has four load-bearing behaviours:
+
+- A **two-phase confirmation gate** precedes everything `[L173-L191]`, with cursor repositioning on re-prompt.
+- The current balance is captured `[L193]`, and the program **rejects when the balance is at or below zero** `[L198]` with the literal `'You have nothing to pay...'` `[L201]`.
+- The payment is **always the full balance, never partial**: `MOVE ACCT-CURR-BAL TO TRAN-AMT` `[L224]`.
+- The balance is then driven to **exactly zero**: `COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT` `[L234]`, after the transaction write `[L233]` and before the account update `[L235]`.
+
+The generated transaction's fixed literals are preserved exactly: type `'02'` `[L220]`, category `2` `[L221]`, source `'POS TERM'` `[L222]`, description `'BILL PAYMENT - ONLINE'` `[L223]`, merchant identifier `999999999` `[L226]`, merchant name `'BILL PAYMENT'` `[L227]` and `'N/A'` for city and postal code `[L228-L229]`.
+
+### 0.7.5 Report Submission, Sort Specifications and Generation-Group Key Strategy
+
+`app/cbl/CORPT00C.cbl` is 649 lines and is the online-to-batch bridge.
+
+#### 0.7.5.1 An Entire Job Deck Embedded as Literal Constants
+
+The program carries the submission job as a run of eighty-byte literal constants in `01 JOB-DATA.` at `[app/cbl/CORPT00C.cbl:L81-L127]`, redefined as an array of up to a thousand card images:
+
+```cobol
+02  JOB-DATA-2 REDEFINES JOB-DATA-1.
+    05  JOB-LINES OCCURS 1000 TIMES  PIC X(80).
+```
+
+at `[L126-L127]`, over a single-card staging field `05 JCL-RECORD PIC X(80) VALUE ' '.` at `[L79]`. The deck contains the job card `[L83-L84]`, a notify continuation `[L85-L86]`, a procedure-library statement `[L89-L90]`, the execute statement, the sort symbol definitions, the date-parameter card, and a terminating `"/*EOF"` marker `[L124-L125]`. The two date values are injected through named subfields positioned inside filler groups whose lengths are chosen so each card totals eighty bytes.
+
+**The deck is exactly seventeen eighty-byte cards, and the arithmetic below is what proves the figure rather than eighteen.** `02 JOB-DATA-1.` at `[L82]` declares seventeen `05` members over `[L83-L125]`: **fourteen simple `PIC X(80)` items** — the job card, the notify continuation, three `//*` comment cards, the procedure-library statement, the execute statement, the `SYMNAMES` DD card, the two sort symbol definitions, two `/*` delimiters, the `DATEPARM` DD card and the `/*EOF` terminator — and **three grouped items whose subfield widths each sum to eighty**: `05 FILLER-1.` at `[L103]` as `18 + 10 + 52`, `05 FILLER-2.` at `[L108]` as `16 + 10 + 54`, and `05 FILLER-3.` at `[L117]` as `10 + 1 + 10 + 59`. Fourteen plus three is seventeen, and the arithmetic on each grouped item is what proves it is one card rather than three or four. The `OCCURS 1000 TIMES` redefinition bounds the array, not the deck: only the first seventeen entries carry content, which is why the loop's blank-and-low-values termination test is reachable at all. `com.cardemo.service.report.ReportSubmissionService` states the same figure, so the two agree.
+
+The submission loop at `[L496-L508]` sets a loop flag `[L496]`, iterates the array `[L498-L499]`, copies each card into the staging field `[L501]`, sets the termination flag when the card is the terminating marker, blank or low values `[L502-L505]`, and then — **critically** — performs the queue write at `[L507]`, **after** the flag has been set and before the loop exits. **The terminating card is therefore written to the queue.**
+
+The write paragraph is `WIRTE-JOBSUB-TDQ` at `[L515]` — **the paragraph name is misspelled in the source**, and the misspelling is retained as a documented source fact. It issues `EXEC CICS WRITEQ TD QUEUE ('JOBS')` `[L517-L523]` and produces the specific screen message `'Unable to Write TDQ (JOBS)...'` on failure `[L531]`.
+
+**Java translation:** the card images collapse into a **single** queue message carrying the report name and the two dates; the sort symbol offsets become a typed predicate; the date-parameter card becomes job parameters. **Failure to enqueue must reproduce the exact legacy screen message, because that string is part of the observable contract.**
+
+#### 0.7.5.2 Three Report Periods and the Monthly Correction
+
+The period selection is an `EVALUATE TRUE` at `[app/cbl/CORPT00C.cbl:L212]`.
+
+- **Monthly** `[L213-L238]`. The start date is the current year and month with day `'01'` `[L217-L219]`. The end date is computed as **the last day of the current month**: `MOVE 1 TO WS-CURDATE-DAY` `[L223]`, `ADD 1 TO WS-CURDATE-MONTH` `[L224]`, a year-rollover guard `[L225-L228]`, then
+
+  ```cobol
+  COMPUTE WS-CURDATE-N = FUNCTION DATE-OF-INTEGER(
+          FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1)
+  ```
+
+  at `[L229-L230]` — first of next month minus one day — before the components are moved into the end date `[L232-L234]`.
+
+  > **Verified against source — this corrects an earlier description.** Earlier project prose described the monthly period as **month-to-date**, with the end date being the current day. The source computes a **full calendar month**. An implementation built on the month-to-date reading would silently exclude every transaction between today and month end, and the divergence would not be visible in any single-day test. The source governs.
+
+- **Yearly** `[L239-L255]`. The first through the last day of the current year: month `'01'` and day `'01'` for the start `[L245-L246]`, month `'12'` `[L250]` and day `'31'` `[L251]` for the end.
+- **Custom** `[L256]`, with validation at `[L258]` onward and `[L381-L410]`. Six discrete screen fields are composite-validated through the date utility against the explicit format string `'YYYY-MM-DD'` `[L72]`, with the two dates assembled with dash separators `[L60-L71]`.
+
+The date utility's parameter block is declared at `[app/cbl/CORPT00C.cbl:L129-L136]` and has **five** fields — the date `[L130]`, the format `[L131]`, and a result group `[L132]` of severity code `[L133]`, filler `[L134]`, message number `[L135]` and **message `PIC X(61)` `[L136]`**. **Verified against source:** earlier prose described a three-part result of severity, filler and message number, omitting the message field. `DateValidationService` must return all five, because the message is what the screen displays.
+
+The confirmation handshake distinguishes blank, affirmative, negative and invalid input, each with its own message and cursor behaviour; the invalid-input message quotes the offending value back to the user.
+
+#### 0.7.5.3 The Three Sort Specifications and the Transaction Offset Map
+
+All three DFSORT specifications must be reproduced as `Comparator` plus repository ordering. **No external sort process is spawned.**
+
+**Report sort — `app/proc/TRANREPT.prc` (82 lines).** `//REPROC PROC` at `[L1]`; the backup step `[L21]` with `LRECL=350` `[L29]`; `//STEP05R EXEC PGM=SORT` `[L35]`; `//SYMNAMES DD *` `[L38]` defining `TRAN-CARD-NUM,263,16,ZD` `[L39]` and `TRAN-PROC-DT,305,10,CH` `[L40]` with literal date defaults `[L41-L42]`; `SORT FIELDS=(TRAN-CARD-NUM,A)` `[L44]`; `INCLUDE COND` with an inclusive date range `[L45-L46]`; `//STEP10R EXEC PGM=CBTRN03C` `[L57]`; the report `LRECL=133` `[L76]`. In Java: order by card number ascending plus an **inclusive** predicate on the ten-character prefix of the processing timestamp.
+
+> A legacy quirk worth recording: the member's internal procedure name is `REPROC` `[app/proc/TRANREPT.prc:L1]` while the member name that `EXEC PROC=TRANREPT` resolves is `TRANREPT`. Both procedure members in `app/proc/` declare `//REPROC PROC` on their first line. This is logged, not fixed.
+
+**Combine sort — `app/jcl/COMBTRAN.jcl` (52 lines).** `//STEP05R EXEC PGM=SORT` `[L22]` over a **concatenated** input of two datasets `[L23-L26]`; its own `//SYMNAMES DD *` `[L27]` defining `TRAN-ID,1,16,CH` `[L28]`; `SORT FIELDS=(TRAN-ID,A)` `[L30]`; the output inheriting the input DCB `[L35]`; then `//STEP10 EXEC PGM=IDCAMS` `[L41]` with `REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)` `[L48]`. **No COBOL program exists for this job**, so the JCL is the Java source of truth.
+
+**Statement sort — `app/jcl/CREASTMT.JCL` (97 lines).** A two-key sort plus a record projection at `[L53-L54]`, analysed separately in [§0.7.5.4](#0754-the-statement-projection-that-silently-truncates-two-bytes).
+
+The **350-byte transaction offset map**, proven consistent with both sets of symbol definitions above, is:
+
+| Field | Offset | Length |
+|---|---:|---:|
+| Transaction identifier | 1 | 16 |
+| Type code | 17 | 2 |
+| Category code | 19 | 4 |
+| Source | 23 | 10 |
+| Description | 33 | 100 |
+| Amount | 133 | 11 |
+| Merchant identifier | 144 | 9 |
+| Merchant name | 153 | 50 |
+| Merchant city | 203 | 50 |
+| Merchant postal code | 253 | 10 |
+| Card number | 263 | 16 |
+| Originating timestamp | 279 | 26 |
+| Processing timestamp | 305 | 26 |
+| Filler | 331 | 20 |
+
+The card number at offset 263 and the processing timestamp at offset 305 are exactly what the two `SYMNAMES` declarations assert, which is what makes this map proven rather than inferred.
+
+#### 0.7.5.4 The Statement Projection That Silently Truncates Two Bytes
+
+`app/jcl/CREASTMT.JCL` `[L53-L54]`:
+
+```text
+SORT FIELDS=(263,16,CH,A,1,16,CH,A)
+OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)
+```
+
+The `OUTREC` projection emits a 16-byte card number at offset 1, then 262 bytes of the original record head at offset 17, then **50 bytes taken from offset 279** placed at offset 279.
+
+Read against the offset map above, those 50 bytes are the full **26**-byte originating timestamp plus only the **first 24** of the 26 processing-timestamp bytes. **The projection therefore truncates the last two bytes of the processing timestamp and drops the 20-byte trailing filler entirely.** The projected processing timestamp arrives as a twenty-four-character value padded to twenty-six.
+
+**Java's in-job projection must reproduce this truncation exactly**, or statement output will differ from the baseline in a way that looks like a Java defect and is not.
+
+#### 0.7.5.5 Generation Groups to Object Keys
+
+Seven generation-group bases exist ([§0.2.1.6](#0216-vsam-catalogue-appcatlglistcattxt)). Relative generation references translate as follows:
+
+- A **next-generation write** `(+1)` becomes writing a new object under a monotonically increasing prefix.
+- A **current-generation read** `(0)` becomes reading the lexicographically greatest existing prefix.
+- **Retention limits become lifecycle rules that are documented rather than enforced**, and the conflicting retention declarations for the report group are resolved to the larger value, **10**, with the conflict logged.
+- Record lengths are preserved exactly per [§0.5.2.2](#0522-dataset-and-dd-name-to-object-storage-mapping).
+
+### 0.7.6 Statement Generation: Self-Modifying Dispatch and the Capacity Ceiling
+
+`app/cbl/CBSTM03A.CBL` (924 lines) with `app/cbl/CBSTM03B.CBL` (230 lines) is the hardest translation target in the corpus, and the received wisdom about it is wrong in an important way. **Note the uppercase `.CBL` extension on both files** — a `*.cbl` glob omits them entirely.
+
+#### 0.7.6.1 The Dispatch Is a Static Initialisation Pipeline, Not a Strategy Table
+
+The program uses run-time paragraph alteration. The dispatch paragraph's entire body is an unconditional branch:
+
+```cobol
+8100-FILE-OPEN.
+    GO TO 8100-TRNXFILE-OPEN
+    .
+```
+
+at `[app/cbl/CBSTM03A.CBL:L726-L728]`. The entry point rewrites that branch's target before taking it, in an `EVALUATE` at `[L298-L314]` selecting on a data-division field whose initial value is fixed as `'TRNXFILE'` at `[L67]`. The four `ALTER` statements sit at `[L300]`, `[L303]`, `[L306]` and `[L309]`.
+
+**But the state transitions are hard-coded in each handler's tail**, so the machine is deterministic and collapses to straight-line code:
+
+| Step | Handler tail | Next state |
+|---|---|---|
+| 1 | open and read the transaction file | `'READTRNX'` `[L760-L761]` |
+| 2 | build the in-memory table | `'XREFFILE'` `[L851-L852]` |
+| 3 | open the cross-reference file | `'CUSTFILE'` `[L779-L780]` |
+| 4 | open the customer file | `'ACCTFILE'` `[L797-L798]` |
+| 5 | open the account file | **`GO TO 1000-MAINLINE`** `[L815]` — leaves the state machine permanently |
+
+**The Java equivalent is an ordered initialisation sequence of five calls followed by the mainline.**
+
+**The DD-keyed strategy map belongs at the file-service layer**, where `CBSTM03B`'s file-and-operation dispatch genuinely varies — not here. This corrects an earlier design note that placed a dispatch table at this level, which would have introduced indirection modelling a variability that does not exist. **To be recorded** in `../DECISION_LOG.md` as *self-modifying code eliminated by static flow analysis with observable order preserved*; until that file exists this paragraph is the record.
+
+#### 0.7.6.2 A Self-Recursive Loop Building an In-Memory Table
+
+`8500-READTRNX-READ` at `[app/cbl/CBSTM03A.CBL:L818-L847]` branches to **itself** to continue. Per record it either increments the per-card counter `[L820]` or closes out the current card and starts the next `[L822-L824]`; stores the card number, transaction identifier and remainder `[L827-L830]`; then calls the file service `[L832-L835]` and evaluates the result `[L837-L847]` — continuing via `GO TO 8500-READTRNX-READ` on `'00'` `[L840]`, exiting on `'10'` `[L842]`, abending otherwise `[L843-L846]`.
+
+The exit paragraph `8599-EXIT` at `[L849-L853]` flushes the final counter `[L850]` before the state transition.
+
+#### 0.7.6.3 A Hard Capacity Ceiling With No Bounds Check
+
+```cobol
+01  WS-TRNX-TABLE.
+    05  WS-CARD-TBL OCCURS 51 TIMES.
+        10  WS-CARD-NUM             PIC X(16).
+        10  WS-TRAN-TBL OCCURS 10 TIMES.
+            15  WS-TRAN-NUM         PIC X(16).
+            15  WS-TRAN-REST        PIC X(318).
+01  WS-TRN-TBL-CNTR.
+    05  WS-TRN-TBL-CTR OCCURS 51 TIMES.
+```
+
+declared at `[app/cbl/CBSTM03A.CBL:L225-L232]`, with the card table at `[L226]`, the nested transaction table at `[L228]` and the counter table at `[L232]`.
+
+**That is a maximum of 510 transactions per run**, and the building loop increments both indices at `[L820]`, `[L823]` and `[L824]` **with no guard whatsoever** — a latent storage-overrun defect. Note also that the 16-byte identifier plus the 318-byte remainder `[L230]` plus the 16-byte card number reproduce the 350-byte statement record exactly, matching `app/cpy/COSTM01.CPY`.
+
+Java uses **unbounded collections**. This removes a silent truncation and corruption hazard, so it is a **deliberate, labelled deviation rather than parity**: **logged** in `DECISION_LOG.md`, with the legacy ceiling **recorded** in `TRACEABILITY_MATRIX.md` as the historical capacity limit. **Both files carry those records.** Pretending the ceiling was preserved would be false; pretending its removal is invisible would be worse.
+
+#### 0.7.6.4 A Lookup Whose Correctness Depends on the Upstream Sort
+
+`4000-TRNXFILE-GET` at `[app/cbl/CBSTM03A.CBL:L416-L456]` is a linear scan `[L417-L418]` with an **early exit** that triggers when the stored card number exceeds the sought one:
+
+```cobol
+OR (WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM)
+```
+
+at `[L419]`.
+
+**That early exit is only correct because the table is ascending by card number**, which the upstream sort of [§0.7.5.3](#0753-the-three-sort-specifications-and-the-transaction-offset-map) guarantees. Java must either preserve the ordering guarantee or make the lookup order-independent — and if it does the latter, **that is a divergence worth recording**, because it changes which records are found when the input is not sorted.
+
+Note also a redundancy preserved verbatim for fidelity: the mainline sets the outer index with `MOVE 1 TO CR-JMP` at `[L324]` before the `PERFORM VARYING` at `[L417]` re-initialises it anyway.
+
+#### 0.7.6.5 HTML Emission as a Constant Table
+
+Statement HTML is emitted from a single hundred-character field:
+
+```cobol
+01  HTML-LINES.
+    05  HTML-FIXED-LN               PIC X(100).
+        88  HTML-L01  VALUE '<!DOCTYPE html>'.
+        88  HTML-L02  VALUE '<html lang="en">'.
+```
+
+at `[app/cbl/CBSTM03A.CBL:L148-L151]`, with **34** such 88-level condition names each carrying one markup fragment as a literal. The pattern is: set the condition name true, write the field. In Java this becomes a constant map of fragments written through a fixed-width writer.
+
+**The hundred-character field width at `[L149]` independently confirms the declared 100-byte record length** on the HTML output dataset `[app/jcl/CREASTMT.JCL:L94]` — which is also why the 80-versus-100 mismatch of [§0.7.6.7](#0767-the-creastmtjcl-five-steps) is a legacy defect to log rather than a signal to change the width.
+
+#### 0.7.6.6 The File-Service Call Contract
+
+`CBSTM03B` is called through a shared area declared at `[app/cbl/CBSTM03A.CBL:L71-L83]`: a DD name `PIC X(08)`, a single-character operation with six condition names, a two-character return code, a 25-byte key, a signed key length and a thousand-byte payload. The mirror declaration in the subprogram is at `[app/cbl/CBSTM03B.CBL:L100-L112]`, received via `PROCEDURE DIVISION USING LK-M03B-AREA` `[L114]` and dispatched by DD name in an `EVALUATE` at `[L118-L127]`.
+
+**`CBSTM03B.CBL` contributes exactly fourteen `PROCEDURE DIVISION` paragraph labels, and fourteen is the paragraph-to-method figure.** They are `0000-START.` `[:L116]`, `9999-GOBACK.` `[:L130]`, `1000-TRNXFILE-PROC.` `[:L133]`, `1900-EXIT.` `[:L151]`, `1999-EXIT.` `[:L154]`, `2000-XREFFILE-PROC.` `[:L157]`, `2900-EXIT.` `[:L175]`, `2999-EXIT.` `[:L178]`, `3000-CUSTFILE-PROC.` `[:L181]`, `3900-EXIT.` `[:L200]`, `3999-EXIT.` `[:L203]`, `4000-ACCTFILE-PROC.` `[:L206]`, `4900-EXIT.` `[:L225]` and `4999-EXIT.` `[:L228]`, every one of them at or after `PROCEDURE DIVISION USING` `[:L114]`, and every one of them owned by `FileService`. **A fifteenth Area-A label exists and is not one of them:** `FILE-CONTROL.` at `[app/cbl/CBSTM03B.CBL:L30]` sits in the `ENVIRONMENT DIVISION` `[:L28]`, inside the input-output section, so it is a division-level paragraph header and **not a paragraph-to-method target**. Fifteen is therefore the Area-A total and nothing else; wherever a paragraph count for this program is quoted anywhere in this repository, the figure is **14** and the convention is stated alongside it. Publishing 15 as the label figure would silently count the environment-division header as translatable code, which is the error the convention exists to prevent.
+
+Two further facts about this contract were established by direct inspection and both change the implementation:
+
+- **Only twelve of the twenty-four declared matrix cells are implemented.** Six operations are declared as condition names `[app/cbl/CBSTM03B.CBL:L103-L108]`, but the four file handlers test only open, read (or keyed read) and close — `[L135, L140, L146]`, `[L159, L164, L170]`, `[L183, L188, L195]` and `[L208, L213, L220]` — and each moves the raw `FILE STATUS` into the return code at `[L152]`, `[L176]`, `[L201]` and `[L226]`. **`IF M03B-WRITE` and `IF M03B-REWRITE` appear nowhere in the subprogram.** `FileService` therefore implements the twelve reachable cells and must not invent the twelve that the source never exercises. **Verified against source:** earlier prose described a "four-file by six-operation matrix", which is the *declared* shape, not the implemented one.
+- **The `'00' OR '04'` acceptance is at four opens, one priming read and four closes — nine sites in total, and the decomposition matters.** The pattern `IF WS-M03B-RC = '00' OR '04'` occurs at exactly nine lines in the caller, and each one can be attributed to a named paragraph: the `TRNXFILE` open in `8100-TRNXFILE-OPEN` at `[app/cbl/CBSTM03A.CBL:L736]`; **the priming read that sits inside that same paragraph** at `[:L748]`, reached after `SET M03B-READ TO TRUE` at `[:L744]`; the `XREFFILE` open in `8200-XREFFILE-OPEN` at `[:L771]`; the `CUSTFILE` open in `8300-CUSTFILE-OPEN` at `[:L789]`; the `ACCTFILE` open in `8400-ACCTFILE-OPEN` at `[:L807]`; and the four closes in `9100-TRNXFILE-CLOSE` at `[:L862]`, `9200-XREFFILE-CLOSE` at `[:L879]`, `9300-CUSTFILE-CLOSE` at `[:L895]` and `9400-ACCTFILE-CLOSE` at `[:L911]`. The four **remaining** read sites use an `EVALUATE WS-M03B-RC` that accepts only `'00'`, treats `'10'` as end of file and abends on anything else — the `XREFFILE` sequential read at `[:L353-L362]`, the `CUSTFILE` keyed read at `[:L379-L382]`, the `ACCTFILE` keyed read at `[:L403-L406]` and the `TRNXFILE` continuation read in the table-building loop at `[:L837-L847]`. Of those four, only two carry a `WHEN '10'` branch: the two sequential reads at `[:L353-L362]` and `[:L837-L847]`. The two keyed reads have `WHEN '00'` and `WHEN OTHER` only, so for them a not-found status abends. **Verified against source, and twice corrected:** the earliest prose said `'04'` was accepted "at every open and read site", which over-generalises to reads it is not accepted at; a subsequent revision called all nine "open and close sites", which loses the priming read at `[:L748]` and contradicts the very next sentence about read sites. A search for `WHEN '04'` in the caller returns **zero** occurrences, confirming the split is exactly `IF`-versus-`EVALUATE`. Because the return code is the raw `FILE STATUS` moved verbatim, `'04'` is a legitimate open-time condition, which is why it is tolerated at the open, at the read immediately bound to that open, and at the closes — and nowhere else.
+
+That accepted secondary status is the third exception to the general status mapping of [§0.7.2.11](#07211-the-resulting-status-to-exception-map).
+
+The statement record's composite key is a sixteen-character card number plus a sixteen-character identifier — `TRNX-KEY` at `[app/cpy/COSTM01.CPY:L21-L23]`, **exactly the 32-byte key length declared on the work cluster** `[app/jcl/CREASTMT.JCL:L30]` — with a 318-byte remainder `[app/cpy/COSTM01.CPY:L24-L36]` for a 350-byte total, matching the declared record size `[app/jcl/CREASTMT.JCL:L32]`.
+
+#### 0.7.6.7 The `CREASTMT.JCL` Five Steps
+
+All five steps of `app/jcl/CREASTMT.JCL` are reproduced, and the file must be reached through a **case-insensitive** pattern or it is not in scope at all.
+
+| Step | Locator | Purpose |
+|---|---|---|
+| `DELDEF01` | `[L22]` | Deletes `[L25-L26]` and defines the work cluster `[L29]` with `KEYS(32 0)` `[L30]` and `RECORDSIZE(350 350)` `[L32]` |
+| `STEP010` | `[L44]` | Sorts input at `LRECL=350` `[L50]` with the sort and projection at `[L53-L54]` |
+| `STEP020` | `[L56]` | `IDCAMS` with `COND=(0,NE)`, `REPRO`ing the sorted sequential file into the cluster `[L61]` |
+| `STEP030` | `[L66]` | `IEFBR14` with `COND=(0,NE)`, pre-deleting the two outputs. **Both DCBs here are `LRECL=80`** — `HTMLFILE` at `[L69]` and `STMTFILE` at `[L73]` |
+| `STEP040` | `[L79]` | Runs `CBSTM03A` with `COND=(0,NE)`; `STMTFILE` at `LRECL=80` `[L89]` and `HTMLFILE` at `LRECL=100` `[L94]` |
+
+Two legacy defects live in this member and are **logged, not fixed**:
+
+- **The 80-versus-100 `HTMLFILE` record-length mismatch sits between `[L69]` and `[L94]`.** **Verified against source:** earlier prose located the mismatch between `L73` and `L94`; `L73` is in fact the `STMTFILE` pre-delete DCB at `LRECL=80`, which correctly matches `[L89]`. The mismatch is on the **HTML** dataset. The emitting field is `PIC X(100)` `[app/cbl/CBSTM03A.CBL:L149]`, so **100 governs** and the pre-delete declaration is the erroneous one.
+- **A corrupted DD continuation line at `[app/jcl/CREASTMT.JCL:L90]`**, in which a `SPACE=` parameter, a fragment of a `RECFM=FB` clause and a fragment of a dataset name have been spliced onto one line. It is recorded with its locator and left untouched.
+
+### 0.7.7 Observability Implementation
+
+The legacy system has **no instrumentation** beyond `DISPLAY` statements and the four-character status renderer of [§0.7.2.4](#0724-the-status-display-format-is-a-contract). Everything in this sub-section is therefore **new capability rather than a translation**, which is why it is designed explicitly rather than derived — and why it ships **with** the initial implementation rather than as follow-up work.
+
+- **Structured logging.** JSON encoding with the trace identifier, span identifier and correlation identifier carried through the logging context. Batch steps additionally propagate the **job-instance identifier**, which is what makes per-run object prefixes and per-run logs correlatable — the two are otherwise impossible to join.
+- **Correlation as the replacement thread of identity.** `CorrelationIdFilter` generates or accepts a correlation identifier, places it in the logging context, attaches it to spans, and propagates it on outbound cloud-service calls. What it replaces is **not** `EIBTRNID`: a repository-wide search for that name across `app/` returns **zero occurrences**, so no earlier claim that the legacy system carried a per-request identity in `EIBTRNID` can be sustained. The identity the legacy system actually carried is threefold, and none of the three is a request identifier in the modern sense. **(1) A program-owned transaction literal.** Each of the seventeen online programs declares its own four-character identifier in `WORKING-STORAGE` — twelve as an inline literal, for example `05 WS-TRANID PIC X(04) VALUE 'CT02'` at `[app/cbl/COTRN02C.cbl:L37]`, and five as `PIC X(4) VALUE SPACES` populated at run time from a `LIT-THISTRANID` constant, for example `[app/cbl/COCRDLIC.cbl:L181]` declared and `[app/cbl/COCRDLIC.cbl:L307]` assigned. It identifies the *program*, and is constant for every execution of it. **(2) The COMMAREA transaction pair.** `CDEMO-FROM-TRANID` and `CDEMO-TO-TRANID` at `[app/cpy/COCOM01Y.cpy:L21, :L23]`, with 41 and 8 references respectively across `app/cbl`, carry *navigation* identity across `EXEC CICS XCTL` — where the conversation came from and where it is going — not a per-request handle. **(3) Two EXEC interface block fields, and only two.** `EIBCALEN` with 49 references distinguishes first entry from re-entry, and `EIBAID` with **44** references reports which key the operator pressed — 16 of them in the twelve programs that test it and 28 in the procedural copybook `app/cpy/CSSTRPFY.cpy` those programs copy into their procedure division, so a figure of 16 is the program-file count rather than the corpus count. `EIBDATE`, `EIBTIME`, `EIBTRMID` and `EIBTASKN` each have zero references. Reproduce every figure above with a recursive fixed-string search of `app/` for the token concerned. The correlation identifier is therefore **new capability**: the legacy system had no value that was unique to one request and propagated across every log line and downstream call, which is exactly the gap this filter closes.
+- **Masking, and the precise limit of what it guarantees.** `logback-spring.xml` masks credentials, bearer tokens, password hashes, card numbers and social security numbers in log output, which Rule 1 Clause D requires and which is **not optional** given that the customer layout carries a nine-digit national identifier and the user layout carries a password field. **The masking is not universal, and describing it as universal would be a false assurance.** Every rule is anchored on a field name, an adjacent label or an unambiguous prefix rather than on shape alone, and that is forced by the data rather than chosen: a sixteen-digit card number is indistinguishable from a sixteen-digit `TRAN-ID` (`app/cpy/CVTRA05Y.cpy:5` and `:15` both declare `PIC X(16)`), a bare nine-digit national identifier is indistinguishable from the `PIC 9(09)` end-of-run counters that Gate 1 compares (`app/cbl/CBTRN02C.cbl:227-228`), and a JWT has the same three-dot shape as every dotted logger name. A blanket shape rule would therefore redact the very values the parity comparison is keyed on. **The consequence, stated plainly: a card number or national identifier embedded unlabelled in free text is not caught.** Severity Medium. **The primary control is therefore never emitting the value at all** - masking is a backstop for the case where something slips through, not the mechanism the design relies on. The reasoning and the rule-by-rule parity carve-out are documented in `logback-spring.xml` itself, and `model/entity/CardCrossReference.java` records the same conclusion from the entity side.
+- **Tracing.** Trace context bridged to the OpenTelemetry protocol and exported to a tracing backend running in the compose stack.
+- **Metrics — four named counters** replacing the legacy end-of-run displays `[app/cbl/CBTRN02C.cbl:L227-L228]`: records processed; records rejected **tagged by reject code**; authentication attempts; and total transaction amount. **The reject-code tag is what turns the five constants of [§0.7.2.7](#0727-reject-code-109-is-assigned-but-never-consumed) into an operable signal** — an untagged rejection counter cannot distinguish an invalid card number from an over-limit transaction. Timers are complementary and additive, not substitutes.
+- **Health.** A composite endpoint covering the database, object storage and queue, with separate liveness and readiness groups. This replaces `app/jcl/OPENFIL.jcl` and `app/jcl/CLOSEFIL.jcl`, whose purpose was to make datasets available to the online region.
+- **Provisioning.** The scrape configuration, datasource definition and dashboard definition are **checked in**, so the integration sign-off gate needs no manual configuration step to produce a populated dashboard.
+
+### 0.7.8 Security Implementation
+
+- **The JWT signing key is resolved from an environment variable in all four profiles**, with fail-fast on absence and **no committed default**; `.env.example` ships the key blank. This closes the High-severity prior defect at `[docs/project-guide.md:L52]` and `[docs/project-guide.md:L215]`.
+- **BCrypt strength 10** for the ten seeded users. The seed migration stores **only** hashes.
+- **Masking** of credentials, bearer tokens, password hashes, card numbers and national identifiers in log output - as a **backstop**, with the label-anchoring limitation and the not-emitting-it primary control stated in full in [§0.7.7](#077-observability-implementation).
+- **Total dependency pinning**, made verifiable rather than merely asserted by the OWASP scan — whose current failing state is reported honestly in [§0.6.2.5](#0625-version-drift-and-residual-risk) and [§0.7.9](#079-validation-gates-evidence-and-prerequisites).
+- **Least privilege** is the reason `application-prod.yml` is **in scope** at all; the requirement names three profiles and the fourth is added for this clause. **All four profile files now exist** ([§0.4.5](#045-building-running-and-testing-the-target)), each resolving the signing key from the environment with no committed default, and `EnvironmentTemplateContractTest` asserts the correspondence with `.env.example` in both directions.
+- **All cloud-service interaction targets LocalStack with zero live credentials anywhere**, and no code path may reach a live endpoint — so there is no credential to over-privilege in the first place.
+- **This document itself contains no secret, no token and no usable credential.** The legacy user records carry an identical plaintext password value in inline JCL data `[app/jcl/DUSRSECJ.jcl:L35-L44]`; that fact is stated with its locator as source evidence and **is never presented as a usable, default or example credential**, and the value itself is not reproduced here.
+
+### 0.7.9 Validation Gates, Evidence and Prerequisites
+
+#### 0.7.9.1 The Eight Gates
+
+`validation-gates.md` is the **authoritative ledger** for gate status and evidence, and it is present under `docs/`. The ledger carries, per gate, the objective, prerequisites, exact command, input, enumerated assertions, evidence paths, failure severity, remediation and execution date. The table below defines the gates and states their prerequisites; it deliberately does not duplicate the ledger's results. [§0.7.9.2](#0792-gate-status-stated-honestly) remains this document's summary of gate status, reconciled against the ledger, and where the two are read together **the ledger governs**. Neither reports any gate as signed off as passed.
+
+| Gate | Assertion | Evidence Required | Container runtime needed |
+|---:|---|---|:---:|
+| 1 | End-to-end boundary parity | The 300-record `app/data/ASCII/dailytran.txt` driven through the posting job, with a field-level comparison report against the legacy baseline | Yes |
+| 2 | Zero-warning build | A clean `./mvnw clean verify` with warnings escalated to errors exiting zero, **and** the vulnerability scan reporting nothing at or above CVSS 7, the range the CVSS specification labels high and critical findings | No |
+| 3 | Performance baseline | Measured throughput in records per second, per-endpoint latency at the 95th percentile, and peak heap. **A measured baseline, not a target** | Partly |
+| 4 | Named fixture validation | All nine ASCII fixtures loaded through the seed migration and driven through the pipeline, including overpunch decode assertions and the ten seeded users | Yes |
+| 5 | API contract verification | Every one of the seventeen sourced operations exercised by integration tests against a real application context | Yes |
+| 6 | Security audit | No floating-point type in any financial field, every password BCrypt-hashed, no literal secret anywhere | No |
+| 7 | Scope coverage | All twenty-eight programs mapped, with the traceability matrix demonstrating complete paragraph coverage | No |
+| 8 | Integration sign-off | The full compose stack up, health reporting up, all three migrations applying cleanly | Yes |
+
+#### 0.7.9.2 Gate Status: Stated Honestly
+
+**This is the one authoritative gate-status statement in the repository, and the table below is the whole of it.** Its cells previously attributed every closure to commit `4a4ad1c9`, which resolves to no object in this repository; that citation is withdrawn throughout and replaced by an attribution a reader can actually resolve — the tree this change publishes, reproduced by the command each row names — and the results were re-measured rather than re-attributed. An earlier generation of this sub-section opened by asserting that no gate was reported as passed and then, further down, reported Gate 2's two halves as cleared and Gate 8's persistence element as executed and passed in full. Both statements could not be true together; the blanket denial is withdrawn and is replaced by a three-state reading, **re-dated 7 August 2026** per the convention in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention). The column heading still names 4 August because that is when most rows were last measured; every row that has moved since carries its own later date in the cell, which is how a mixed-date table stays honest. **The authoritative ledger is now [`docs/validation-gates.md`](validation-gates.md), which is authored; where this table and that ledger disagree, the ledger governs and this table is stale.** Nothing elsewhere in this document restates a gate status, and where any other passage appears to, this table governs.
+
+| Gate | Status, 7 August 2026 at the commit this change publishes | Evidence held | What is still needed |
+|---:|---|---|---|
+| 1 — End-to-end boundary parity | **PASS &mdash; two independent expectations, and the run matches both** | Two expectations exist and the run is compared against both, which is why neither can drift unnoticed. **(a) Captured legacy execution:** `app/cbl/CBTRN02C.cbl` compiles unmodified under GnuCOBOL 3.2.0 and its output against the frozen fixtures is captured under `src/test/resources/parity/gate1/` with its provenance and a regeneration harness &mdash; **38 of 38** reject records byte-identical including the space-padded description, **262 of 262** postings equal on all twelve copied fields, **50 of 50** account images equal on balance and both cycle accumulators, **100 of 100** category balances equal, counters and return code 4 equal. **(b) Source-derived expectation:** `src/test/java/com/cardemo/e2e/PostingParityOracle.java`, which imports no production type, re-derives the outcome from the same frozen source and fixtures and commits it as six reviewable files under `src/test/resources/expected/posttran`; the run matches it field for field and byte for byte &mdash; 300 processed, 262 posted, 38 rejected all bearing code 102, return code 4, 50 account rows, 100 category balances of which 50 created, 38 reject records of exactly 430 bytes. The two agree on every figure they both cover, and `BatchPipelineE2ETest` asserts the reject count against **both** so a change to either expectation alone fails. Proved causal by four negative controls, including injecting the forbidden absolute-value normalisation into the posting processor, which moves the reject count to 23 and fails the diff | **One item, disclosed rather than closed, and reduced from Blocker to Medium:** a run of IBM Enterprise COBOL under CICS and VSAM on z/OS, to corroborate the two expectations against the real legacy runtime. Expectation (a) was executed with GnuCOBOL on Linux rather than on z/OS, and two spans are excluded by name &mdash; the run-generated processing timestamp and the never-assigned trailing filler. *Historical, 4 August 2026:* this row read **`Not available`** with no evidence held, on the argument that no expectation could be derived because two models of the source disagreed. That argument was withdrawn &mdash; `2800-UPDATE-ACCOUNT-REC` ends in `REWRITE FD-ACCTFILE-REC` at `app/cbl/CBTRN02C.cbl:L561` and a VSAM `REWRITE` replaces the record in the cluster, so the stateless reading was a misreading rather than a second model |
+| 2 — Zero-warning build | **PASSES &mdash; all three halves measured in one invocation, re-measured 14 August 2026** | Closed by the run of **14 August 2026** on the tree this change publishes, `./mvnw -B -ntp clean verify` with **no skips of any kind**, exit code 0 over 19 goals, started `2026-08-14T15:37:36Z` and finishing `2026-08-14T15:48:56Z`. Zero-warning half: 0 compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, and no `[WARNING]` Maven line from the compiler &mdash; those the log does carry come from the vulnerability-scan plugin, being the sub-threshold advisories below plus a missing-NVD-key advisory on runs where it refreshes its feed, and this run emitted exactly **one** &mdash; with **15,162** unit and **922** Failsafe cases green. Coverage half: **0.914882** against the 0.80 floor, `All coverage checks have been met`, no override. Vulnerability half: the scan **ran**, over **168** dependencies, report timestamp `2026-08-14T15:48:48Z`, reporting **two** active findings &mdash; `CVE-2026-40977` on `spring-boot-3.5.11.jar` at CVSS **6.7 MEDIUM** and `CVE-2026-64607` on `docker-java-transport-zerodep-3.7.0.jar` at CVSS **5.3 MEDIUM** &mdash; and therefore **0** findings at or above CVSS 7 | Nothing. *Historical, the 9 August 2026 run finishing `2026-08-09T16:42:50Z`:* the same three halves passed &mdash; 19 goals, 0 warnings, 0 doclint errors, coverage 0.914594 over 350 classes, 168 dependencies with **one** 6.7 finding &mdash; at **15,098** unit and 919 Failsafe cases. This revision's QA-remediation hardening added sixty-four unit and three integration cases, so that run's tier figures describe the tree before it. *Historical, the earlier 9 August 2026 run finishing `2026-08-09T09:50:02Z`:* the same three halves passed identically &mdash; 19 goals, 0 warnings, 0 doclint errors, coverage 0.914594, 168 dependencies with one 6.7 finding &mdash; at **15,092** unit and 919 Failsafe cases. It is superseded rather than wrong: this revision's boundary-refusal hardening added six unit cases, so that run's tier figures describe the tree before it. *Historical, 7 August 2026 (earlier run of the same date):* the same three halves passed at 14,477 unit and 850 integration cases with coverage 0.9142, finishing `2026-08-07T03:43:04Z` with the scan reporting 166 dependencies and zero findings at or above CVSS 7. *Historical, 4 August 2026:* the run of that date used `-Ddependency-check.skip=true`, which prints `Skipping dependency-check`, so this row read PARTIAL at 14,308 unit / 744 integration and coverage 0.8952 &mdash; a skipped scan was never evidence of a pass, which is why the gate stayed partial until a no-skip run existed. *Historical, 1 August 2026:* an online scan exited 0 with 0 findings at CVSS &ge; 7 across 167 dependencies |
+| 3 — Performance baseline | **Baselines measured and published, 7 August 2026** | Measured at the commit this change publishes: **1,538 records/second**, per-endpoint p95 from **21.5 ms** to **105.1 ms**, and peak heap published as a JVM-wide envelope rather than a working set, because seven readings of identical work span 170 MB to 847 MB. Two earlier measurements were **withdrawn** as real numbers measuring the wrong thing &mdash; a corpus-parse rate published as batch throughput, and a `SELECT count(*)` published as endpoint latency | **`Not available` by construction:** any service-level objective for the legacy system, because the COBOL publishes none. The gate therefore records a measurement and applies **no threshold**, and no figure here may be read as a target |
+| 4 — Named fixture validation | **PASSES** | Closed by the exact-HEAD run of 7 August 2026 at the commit this change publishes ([§0.7.8](#078-security-implementation)): 300 daily-transaction rows seeded with **50** carrying a negative overpunch, all 50 account rows compared against values decoded from `acctdata.txt` during the test, `discgrp.txt` partitioned 17/17/17 across three group identifiers, and all **10** inline user records present as BCrypt cost-10 digests | Nothing. *Historical:* this row read `Not available` while the assertions were attached to the migration rather than to a pipeline run |
+| 5 — API contract verification | **PASSES, measured 7 August 2026** | All **17** mapped operations across the **8** named controllers, exercised over real HTTP against a real application context by `OnlineTransactionE2ETest` &mdash; not only in isolation under `unit/controller`. The census is discovered from the mapped request handlers rather than transcribed, and the suite asserts the exact set of 17 `METHOD path` pairs, so moving or renaming a route fails it. Role refusal, statelessness and failure mapping are asserted by the same run | **None.** An earlier revision of this row read `Not available` on the ground that only the isolated controller tier existed; that reading is withdrawn |
+| 6 — Security audit | **PASSES** | Closed by the exact-HEAD run of 9 August 2026 at the commit this change publishes ([§0.7.8](#078-security-implementation)): **0** floating-point types in any financial field, **10** BCrypt cost-10 digests with **0** of 83 credential candidates authenticating, **0** committed secrets, **0** risky execution / deserialization / injection patterns, and a dependency scan that **ran** over 168 dependencies reporting **0** findings at or above CVSS 7 | Nothing, beyond one disclosed exclusion: `docs/project-guide.md` is frozen and its sign-on example carries the seeded plaintext, so the credential walk skips it and reports the skip |
+| 7 — Scope coverage | **Assertions hold, measured 7 August 2026** | `TRACEABILITY_MATRIX.md` is authored and populated to paragraph granularity — **537 rows across all 28 programs, 19,254 lines** — and it is what the harness reads. `GateVerificationTest` runs 58 assertions at exit code 0, including the bidirectional program-to-method edges, so coverage is *computed* rather than asserted. The per-program mapping of [§0.5.1.12](#05112-coverage-proof) is realised row by row | **None.** An earlier revision of this row read `Not available` on the ground that the matrix was not yet populated; that reading is withdrawn |
+| 8 — Integration sign-off | **PASSES — persistence and topology elements both measured** | Persistence element **PASSES**: all three migrations applied in order into a throwaway database on the running PostgreSQL 16.10 container. `V1__create_schema.sql` produced **11 tables, 10 foreign keys and 5 check constraints**; `V2__create_indexes.sql` produced the **three** non-unique B-tree indexes `idx_card_acct_id`, `idx_card_cross_reference_acct_id` and `idx_transaction_proc_ts`; `V3__seed_data.sql` seeded **636 rows** across ten tables with the `transaction` table deliberately empty | Nothing. The full compose stack was signed off in this working tree at the commit under test: **seven** services `healthy` — the topology gained a Prometheus Pushgateway so the batch-fed counters have a collection path, see `DECISION_LOG.md` DL-CR-11 — `/actuator/health` returning 200 `UP` over HTTP, the Flyway history read from the running database, the emulator listings read from the running emulator, and a second `up` converging in 1.11 seconds. The earlier six-service reading is withdrawn: the topology it counted no longer exists |
+
+**Reading the four states.** **MEASURED** means a harness executed and recorded figures, by the command and at the commit named above — it is deliberately **not** the word "passed", because the artefacts live under `target/`, which is build output and is not committed, so a reader re-runs the command rather than opening a stored file, and because no verdict has been signed off on any gate. **PARTLY MEASURED** means one half produced figures and the other did not, and the row states both halves rather than averaging them into one word. **FAILS** is used of a half that executed and returned a red result, which is a different and more informative thing than an absence. **`Not available`** means the artefact a reviewer would open does not exist; it names what would supply it, and it is never a claim that the implementation is missing. **An absence is closed by producing evidence, never by rewording it** — which is why five rows moved here and one did not.
+
+| State | Date / commit | Java tree |
+|---|---|---|
+| **Anchor era** | commit `7756d89` | **No `src/` at all.** This is the state the absence proofs of [§0.3.1.1](#0311-create-java-application-source) and [§0.6.2.1](#0621-change-posture) describe, and every one of those proofs is explicitly scoped to this commit |
+| **Historical, Boundary 1** | measured 1 August 2026 | **`src/` exists and compiles.** 67 main Java sources across nine packages - `exception`, `model/dto`, `model/entity`, `model/enums`, `model/key`, `repository`, `service/menu`, `service/shared` and `batch/processors`, each with its package doc. Retained as history only |
+| **Historical, Boundary 2** | measured 2 August 2026 | 141 main Java sources - 117 types plus 24 package docs - and 202 test sources. Retained as history only |
+| **Historical, Boundary 3** | measured 4 August 2026, commit `56c16fd0` | 149 main Java sources - 124 types plus 25 package docs - and 229 test sources, with four classes still owed. Retained as history only; superseded by the row below |
+| **Current** | measured 7 August 2026 at the commit this change publishes | **159 main Java sources - 133 types plus 26 package docs - and 264 test sources across all three tiers, `e2e/` included. Nothing is still to be authored.** *The 6 August reading at `1363f491` - 158 sources, 132 types, 256 test sources - is historical.* Full per-package census in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) |
+| **Target** | end state of this plan | The tree of [§0.3.1.1](#0311-create-java-application-source) with all fourteen packages, four profiles, three migrations and the three test tiers. **Reached:** the 132 authored types are 14 above the 118-type target because DTO and observability decomposition produced more types than the target enumerated, and the reason is given in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) |
+
+**What is present, per tier, measured 7 August 2026.** **No class is missing.** The bootstrap and the `config`, `security`, `controller` and `observability` packages, all four `application*.yml` profiles, `logback-spring.xml`, `V2__create_indexes.sql` and `V3__seed_data.sql` all exist; so do all 21 services, all 8 controllers, **all six** `batch/jobs` — `CombineTransactionsJob`, `TransactionReportJob` and `BatchPipelineOrchestrator` among them — and all seven `batch/readers`. On the test side, `src/test/java/com/cardemo/integration/` holds 35 concrete Failsafe classes that execute, and `src/test/java/com/cardemo/e2e/` holds all three of its suites and executes. **The one item Gate 1 still discloses is therefore narrow: a capture of the frozen COBOL running on z/OS or a licensed emulator**, to corroborate the committed source-derived oracle — not a missing tree, not a missing class, not a missing configuration layer, and not an unavailable container runtime.
+
+**Test evidence, stated as a census rather than as a claim.** The test tree holds **269** sources — 253 suite-named plus 16 shared support types, of which 3 suite-named files are top-level abstract bases, leaving **250** concrete suites. That census is a property of this tree and is re-measured from it on every build rather than copied from this page. The run of 14 August 2026 on the tree this change publishes ran **15,162** unit cases across 212 Surefire suites and **922** Failsafe cases across 38 suites — **807** integration and **115** end-to-end — all with 0 failures, 0 errors and 0 skipped; the pair read 15,098 and 919 on 9 August, and 15,092 before that, across the same 212 and 35 suites, since no suite was added in any of those moves. Merged line coverage is **0.914882** — `missed=2122 covered=22808 total=24930` over a 351-class bundle — against the 0.80 floor. *Historical, 9 August 2026:* 15,098 unit and 919 Failsafe cases at 0.914594 over 350 classes. *Historical, 7 August 2026:* 14,914 unit and 907 Failsafe cases at 0.916413 over 340 classes, with the end-to-end split then stated as 107, one short of the counted 108. A case total is still **not**, on its own, evidence for any gate, which is why each gate below cites the artefact it rests on rather than this census. **Both items this paragraph previously listed as `Not available` are now closed:** the end-to-end tier exists and runs, and the parity baseline is committed under `src/test/resources/expected/posttran/` and diffed field-for-field and byte-for-byte against a real posting run. *Historical, 4 August 2026:* 250 sources, 14,308 unit and 744 integration methods, coverage 0.8952. *Historical, 1 August 2026:* the tier was 12 model test classes running 1,651 methods, with a by-type-family census of 0 of 3 keys, 1 of 11 entities, 3 of 4 enums, 8 of 17 DTOs and 0 of 9 exceptions. *Historical, 2 August 2026:* 202 sources, 10,919 unit methods, 8 concrete integration classes running 115 methods, coverage 0.9438 over the smaller bundle of that date. Both are retained only to date the progression.
+
+What is needed, per gate, in full. **All eight now need nothing**, having been closed by
+the exact-HEAD run of 7 August 2026 at the commit this change publishes — `./mvnw -B -ntp clean verify`, no skips, exit code 0. Each bullet keeps the record of what it once required, because a list that simply deleted its
+own outstanding items would leave no way to see what changed:
+
+- **Gate 1** — **nothing further.** The end-to-end tier exists and the expected outcome is derived from the frozen source rather than awaited from a stakeholder; the run diffs real output against it on every field and every byte. One item remains **`Not available`** and is disclosed rather than closed: a captured legacy run, to corroborate the reading of the COBOL. The blocker formerly recorded here &mdash; that no legacy baseline output artefact exists in the repository &mdash; was closed on 7 August 2026 by producing one: the frozen `app/cbl/CBTRN02C.cbl` compiles unmodified under GnuCOBOL 3.2.0, and executing it against the frozen fixtures yielded 300 read, 38 rejected, 262 posted and return code 4, captured under `src/test/resources/parity/gate1/` with its provenance and a regeneration harness. That captured run and the source-derived expectation under `src/test/resources/expected/posttran` are compared against each other as well as against the run, so neither can drift alone. *Historical, 4 August 2026:* this bullet paired Gate 1 with Gate 4 and recorded a baseline blocker.
+- **Gate 2** — **nothing further.** All three halves passed in one invocation, re-measured 14 August 2026: 0 compiler warnings and 0 doclint errors, coverage **0.914882** against the 0.80 minimum, and a vulnerability scan that **ran** over 168 dependencies with **0** findings at or above CVSS 7. *Historical:* this bullet required "resolution of the one remaining obstacle" — the vulnerability half — because the 4 August run supplied `-Ddependency-check.skip=true`, and coverage then read 0.8952, superseding 0.8665, 0.7815 and 0.12, each accurate for the tree of its own date. **No half of this gate was made to pass by lowering a threshold or removing a check:** the CVSS threshold is unchanged at 7, the coverage floor unchanged at 0.80, and the one advisory at or above the threshold was answered by evidence that the flagged component is absent from every artefact on the graph, carrying an expiry so it returns.
+- **Gate 3** — **nothing obtainable.** The measurement exists: 1,538 records/second, per-endpoint p95 from 21.5 ms to 105.1 ms, and peak heap published as a JVM-wide envelope rather than a working set. **`Not available` by construction:** any service-level objective for the legacy system, because the COBOL publishes none, so the gate records a measurement and never a fabricated threshold.
+- **Gate 4** — **nothing further.** The overpunch-decode and ten-seeded-user assertions are now attached to a pipeline run rather than to the migration, which is exactly what this bullet asked for.
+- **Gate 5** — **nothing further.** All 17 operations are exercised against a real application context over real HTTP, not only in isolation under `unit/controller`.
+- **Gate 6** — **nothing further.** The mechanical assertions pass and the scan report exists. One exclusion is disclosed: `docs/project-guide.md` is frozen and its sign-on example carries the seeded plaintext, so the credential walk skips it and says so.
+- **Gate 7** — **nothing further.** `TRACEABILITY_MATRIX.md` is authored to paragraph granularity — 537 rows over 528 paragraphs plus 9 synthetic entry rows — and the harness re-derives its censuses from the corpus on every build.
+- **Gate 8** — **nothing further, and the figures are re-taken rather than carried forward.** The application assembles against a real containerised database and emulator, with 3 migrations applied, 11 domain tables, 3 alternate indexes and 8 health contributors reporting; and the two clauses this bullet used to carry — the **compose topology brought up as a unit**, and its **convergence on a second `up`** — were produced in **this** working tree at the commit under test. The topology is now **seven** services rather than six, a Prometheus Pushgateway having been added so the three batch-fed counters have a collection path at all: `docker compose down -v` then `docker compose up -d --build --wait --wait-timeout 900` exited 0 with all **seven** containers `healthy` and both Prometheus scrape targets up, and a second `up` returned in about a second having recreated nothing. **The earlier reading of this bullet is withdrawn as present state:** it named a command containing `--build` at a commit whose build stage exited 1, so the figure could not have come from the command it cited — a published result must be reproducible by the command beside it. That build stage now exits 0, which is what makes the clause reproducible.
+
+**Where the measured build evidence lives.** It is published **once**, in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention), and is deliberately not duplicated here — a second copy is exactly how this sub-section came to carry a coverage figure of 0.6731 and a test count of 8,693 while [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) carried 0.9438 and 10,919, and later how a 0.9171 figure and a 0.8952 figure came to stand as current simultaneously in one document. **All of those sets are withdrawn as present state**: each was accurate for the tree of its own date and none is current. The current set, measured **14 August 2026 on the tree this change publishes** by the full no-skip `./mvnw -B -ntp clean verify` finishing `2026-08-14T15:48:56Z`, is 0 compiler warnings, 0 doclint errors, **15,162** unit test cases, **922** integration and end-to-end cases, **0.914882** merged line coverage over a 351-class bundle, and 19 goals **with the vulnerability scan executed rather than skipped** — 168 dependencies, 166 suppressed matches, report timestamp `2026-08-14T15:48:48Z`, two active findings with a ceiling of CVSS 6.7 and zero at or above the threshold of 7 (the reading was one active finding on 7 and 9 August, and a standalone scan at `2026-08-14T14:48:43Z` the same day read the same two). **The 9 August set finishing `2026-08-09T16:42:50Z` is withdrawn as present state on the ordinary ground:** it reported **15,098** unit cases, **919** Failsafe cases and **0.914594** over a 350-class bundle, and this revision's QA-remediation hardening added sixty-four unit and three integration cases, so the whole set is re-taken rather than any one figure patched. **The earlier same-day set finishing `2026-08-09T09:50:02Z` is withdrawn as present state on the ordinary ground, and it is worth naming because everything in it except one figure is unchanged:** it reported **15,092** unit cases against the identical 919, 0.914594, 350-class bundle, 19 goals and 168-dependency scan. Six unit cases landed after it, so the whole set is re-taken rather than the one figure patched — patching one field of a set measured in a single run is precisely how two readings come to stand as current at once, which is the defect this paragraph exists to prevent. **The 8 August set is withdrawn as present state on the same ordinary ground:** it reported 14,917 unit and 907 Failsafe cases at 0.915384 over 343 classes across 18 goals, accurate for that tree and not this one. **The 7 August set is withdrawn as present state too**, and for the ordinary reason rather than a defect in it: it reported 14,914 cases at 0.916413 over 340 classes, which was accurate for that tree and is not this one. **The 6 August reading at `1363f491` is withdrawn as present state along with the rest:** it reported 14,465 unit and 845 integration cases at 0.9173 over a 330-class bundle, with the scan skipped by override in that invocation and run separately, and a skipped scan was never evidence of a pass.
+
+One consequence follows and is stated rather than left implicit. **No gate is blocked by the build**: it is repeatable, warning-free, doclint-clean, scanned, and all three tiers are green. Neither of the two conditions that would make the end-to-end gates **`Not available`** holds: `src/test/java/com/cardemo/e2e/` runs 3 suites whose case count is published in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention), and the parity baseline is committed under `src/test/resources/expected/posttran/` and compared field-for-field and byte-for-byte against a real posting run. What is still not claimed is corroboration of that baseline against the **real z/OS runtime**, which no artefact in this repository can supply.
+
+One artefact property deserves explicit note, because it invites a false staleness reading. `target/carddemo-1.0.0.jar` carries the timestamp `2026-01-01T00:00:00Z`, which is *older* than the commits it was built from. That is deliberate and required: `project.build.outputTimestamp` is set to that value so the build is byte-for-byte reproducible, and it normalises every entry in the archive to a single date — verified as exactly one distinct entry date across the whole JAR. The archive's *contents* are current. Treating that fixed timestamp as evidence of a stale build inverts its purpose, and changing it to satisfy a freshness check would break the reproducibility that Rule 1 clause C requires.
+
+#### 0.7.9.3 The Toolchain and Container Position, Stated Accurately
+
+- **A container runtime is available, and the container-dependent gates have been run on it.** Docker Engine and Compose were verified working on 30 July, 1 August and again on **7 August 2026, at Docker Engine 29.7.0** ([§0.2.1.10](#02110-environment-evidence)). **All four container-dependent gates have been executed on it.** One caveat worth carrying: a host-only build can be green while the **image** build is broken, and the mechanism is specific — the `Dockerfile` must copy the two root evidence registers its in-image unit tier reads, or that tier fails inside the image while passing on the host.
+- **The Java and Maven toolchain is available** at the pinned versions, so host-native `./mvnw` execution is possible.
+- **`mkdocs` is available and measured as of 7 August 2026.** *Historical, 1 August 2026:* `mkdocs build --strict` was measured twice on that date, aborting with 79 warnings before the de-linking remediation and exiting 0 with 0 warnings after it, so the two figures are the before and after states of one change rather than a disagreement about the repository. Currently: MkDocs 1.6.1 with `techdocs-core` and `mermaid2` is installed on this host and `mkdocs build --strict` was executed, exiting **0** with **0 warnings and 0 errors** - read, as this bullet requires, as exit status *together with* the warning count and never the count alone, because `0` is also what a warning count prints when MkDocs was never importable. **And not even both together are sufficient:** an unresolved intra-page **anchor** is reported at `INFO` and passes `--strict` regardless, which is why the anchor audit in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) is run separately rather than left to the strict build.
+- **The emulator provisioning script is idempotent**, so repeated stack cycles converge rather than failing on already-existing resources. Emulator state is ephemeral and is re-provisioned on each bring-up, which is why the seed migration rather than the emulator is the source of truth for data.
+
+#### 0.7.9.4 Legacy Defects to Log Rather Than Fix
+
+Repairing these would change behaviour that the parity comparison is measured against, so each is recorded with its locator and left untouched.
+
+| Defect | Locator | Disposition |
+|---|---|---|
+| Corrupted DD continuation line in the statement job's execution step | `[app/jcl/CREASTMT.JCL:L90]` | Logged |
+| 80-versus-100 `HTMLFILE` record-length mismatch between the pre-delete and execution steps | `[app/jcl/CREASTMT.JCL:L69]` versus `[L94]` | Logged; 100 governs because the emitting field is `PIC X(100)` |
+| Procedure whose internal name `REPROC` differs from the member name `EXEC PROC=TRANREPT` resolves | `[app/proc/TRANREPT.prc:L1]` | Logged |
+| Misspelled paragraph name `WIRTE-JOBSUB-TDQ` | `[app/cbl/CORPT00C.cbl:L515]` | Logged; the Java method is idiomatically named and the source name is cited in its Javadoc |
+| Misspelled field name `ACCT-EXPIRAION-DATE` | `app/cpy/CVACT01Y.cpy`, used at `[app/cbl/CBTRN02C.cbl:L414]` | Logged; **the misspelling is part of the field contract** and is preserved in the mapping |
+| Reject codes 101 and 109 carry an identical description literal | `[app/cbl/CBTRN02C.cbl:L398-L399]` and `[L557-L558]` | Logged; both constants retain the literal |
+| Orphan cluster definition that no program opens | `[app/jcl/DEFCUST.jcl:L35-L38]` | Logged; no table is created for it |
+| Dangling CSD program definition with no source | `[app/csd/CARDDEMO.CSD:L211]`, `[L390]` | Logged; no endpoint invented |
+
+**The only legacy inconsistency actually resolved is the `TRANREPT` retention-limit conflict**, and only because a single S3 lifecycle value must be chosen.
+
+#### 0.7.9.5 Deliberate Deviations: Labelled as Such, Never as Parity
+
+Three changes improve on the source. Each **is logged** in `../DECISION_LOG.md` as a **deviation**, because presenting an improvement as equivalence would be a false parity claim. That register now exists, so the three entries below are the record.
+
+| Deviation | Source behaviour | Target behaviour | Why it is not parity |
+|---|---|---|---|
+| Transactional boundary closes the orphan-write hazard | Three independent commits; reject code 109's failure path leaves an orphaned category-balance row and an orphaned transaction row `[app/cbl/CBTRN02C.cbl:L556]` | One atomic unit across all three writes | The legacy system can produce partial state that the target cannot |
+| 510-transaction ceiling removed | Fixed table with no bounds check `[app/cbl/CBSTM03A.CBL:L225-L232]` | Unbounded collections with streaming | Behaviour differs at scale, above 510 transactions per run |
+| Statement working set streamed | Whole working set held in memory | Streamed | Removes a silent truncation and corruption hazard the source has |
 
 
 ## 0.8 Refactoring Rules
 
-### 0.8.1 User-Specified Preservation Requirements
+### 0.8.1 User-Specified Rules Inventory
 
-The following rules are explicitly stated by the user and are non-negotiable:
+**Exactly one rule is provided for this project: "Rule 1: Build Verify."** It is a global coding and design standard, framed as instructions to a senior engineer acting also as a code auditor, and organised into six lettered clauses A through F.
 
-- **100% Behavioral Parity** — All business logic semantics must be preserved with zero behavioral regressions. Every COBOL program paragraph must produce identical output for identical input.
+Two points of accounting matter before the clauses themselves.
 
-- **External Interface Contract Preservation** — All external system interfaces (file drops, batch triggers, message queue contracts) must maintain identical contracts. File formats, field layouts, record lengths, and delimiters are preserved exactly.
+- **The full text of the rule is available through the project's rules document and is deliberately not transcribed here.** Each clause below is summarised in this plan's own words, with short quotations used only where prescriptive precision matters, together with the specific artefacts through which this plan honours it and any file the clause forces into scope that the migration requirements alone would not have produced.
+- **Earlier project prose described six separate user-specified rules. That is incorrect** — there is **one** rule with six clauses. The five items previously listed as rules two through six are **prompt-level requirements**, not rules. The distinction is not pedantry: treating prompt requirements as project rules would misattribute their authority and obscure which constraints originate from the project's own standards. This is corrected in [§0.2.2.1](#0221-corrections-to-the-prior-specification).
 
-- **No Hardcoded Credentials** — Secrets via environment variables or vault references only. The COBOL source uses plaintext passwords in `USRSEC` (constraint C-003); the Java target upgrades to BCrypt while maintaining login flow semantics.
+#### 0.8.1.1 Clause A: Engineering Principles
 
-- **No Feature Expansion** — Migrate what exists, do not add new business features. The 22 features (F-001 through F-022) defined in the Feature Catalog are the complete scope. No new API endpoints, no new business rules, no new data entities beyond what COBOL implements.
+**What it requires.** Correctness, determinism and explicit behaviour ahead of cleverness; security-conscious defaults with untrusted input; maintainability through readable naming, modular design, minimal complexity and clear separation of concerns; observability through structured logs, meaningful errors and measurable behaviour; and avoidance of obvious inefficiency, with tradeoffs justified rather than assumed.
 
-- **COBOL Sources Not Copied** — COBOL source files are not copied into the target repository. The traceability matrix and decision log reference the original COBOL repository by commit SHA (`27d6c6f`).
+**How this plan honours it.** Determinism is the organising principle of the whole migration: the target reproduces the source's behaviour exactly, and every place where an outcome could differ is either preserved verbatim or labelled as a deviation ([§0.7.9.5](#0795-deliberate-deviations-labelled-as-such-never-as-parity)). **Explicit behaviour is why [§0.7](#07-special-analysis) exists at all** — the six programs analysed there are precisely the ones where an implicit assumption would produce silently different results. Separation of concerns is realised as the fourteen-package layering of [§0.4.1.2](#0412-application-source-srcmainjavacomcardemo), with one service bean per program and one private method per paragraph. Observability is realised through the three classes in `com.cardemo.observability`, the structured logging configuration and the four named counters of [§0.7.7](#077-observability-implementation) — capability the legacy system does not have at all. Measurable behaviour is realised as Gate 3, deliberately framed as a **measurement** rather than a target, because no service level exists anywhere in the source to be reproduced.
 
-### 0.8.2 Decimal Precision Rules
+The efficiency clause resolves one specific tension. The statement program holds its working set in a fixed table with a hard ceiling and no bounds check ([§0.7.6.3](#0763-a-hard-capacity-ceiling-with-no-bounds-check)). Streaming is both more efficient and safer, so the ceiling is removed — but because that changes behaviour at scale, **the tradeoff is to be justified in writing in `../DECISION_LOG.md` rather than taken silently.** [§0.7.6.3](#0763-a-hard-capacity-ceiling-with-no-bounds-check) carries that justification in the interim, since the decision log does not exist yet.
 
-- **Zero Floating-Point Substitution** — Every COBOL `COMP-3` (packed decimal) and `COMP` (binary) field maps to `java.math.BigDecimal`. The use of `float`, `double`, or `Float`/`Double` is prohibited for any field that originates from a COBOL PIC clause with decimal positions.
+**Files forced into scope.** `observability/prometheus.yml`, `observability/grafana/provisioning/datasources/datasource.yml`, `observability/grafana/dashboards/carddemo-dashboard.json`, `src/main/resources/logback-spring.xml`, and the three classes under `com.cardemo.observability`. **None of these follows from any functional requirement.**
 
-- **Scale Preservation** — The `BigDecimal` scale must match the COBOL PIC clause. Example: `PIC S9(7)V99` → `BigDecimal` with scale 2. Interest calculation formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` must use `BigDecimal.divide()` with `RoundingMode.HALF_EVEN` (banker's rounding, matching COBOL default).
+#### 0.8.1.2 Clause B: Code Quality
 
-- **Comparison Semantics** — COBOL numeric comparisons are value-based; Java `BigDecimal` comparisons must use `compareTo()`, never `equals()` (which is scale-sensitive).
+**What it requires.** No dead code, no unused imports and no deferred work without an owner or tracking reference; explicit validation of inputs and boundary conditions including null and empty cases; avoidance of global mutable state in favour of dependency injection; error handling that never swallows exceptions and always preserves context and root cause; tests for core logic; and documented public interfaces covering purpose, inputs, outputs, side effects and error modes.
 
-### 0.8.3 Control Flow Preservation Rules
+**How this plan honours it.**
 
-- **PERFORM THRU Semantics** — COBOL `PERFORM paragraph-A THRU paragraph-Z` executes all paragraphs from A through Z sequentially. Java equivalent: a single method that calls the corresponding methods in order, or a single method containing the consolidated logic.
+- **Global mutable state is eliminated wholesale.** The COMMAREA, the working-storage flags and the self-modifying dispatch field `[app/cbl/CBSTM03A.CBL:L67]` all become request-scoped or injected state, per [§0.5.2.4](#0524-commarea-to-token-and-dto-split) and [§0.7.6.1](#0761-the-dispatch-is-a-static-initialisation-pipeline-not-a-strategy-table).
+- **Error handling** is the nine-class hierarchy of [§0.5.1.9](#0519-exceptions-observability-and-resources), in which every legacy file status and response code becomes a typed exception carrying its originating status. Nothing is swallowed, and `FatalProcessingException` preserves the abend code, culprit program, reason and message `[app/cpy/CSMSG02Y.cpy:L21-L29]`.
+- **Boundary conditions are handled explicitly at the exact points the source handles them** — not generically, and not by inheriting a boundary the source gets wrong. The empty-file path that yields a first identifier of 1 `[app/cbl/COBIL00C.cbl:L487-L488]`; the not-found statuses that are success at three named sites; and the unguarded sequential checks that make one reject code overwrite another `[app/cbl/CBTRN02C.cbl:L407-L420]`. The end-of-data account flush is the one boundary the source **fails** to handle: its `ELSE PERFORM 1050-UPDATE-ACCOUNT` at `[app/cbl/CBACT04C.cbl:L219-L220]` is unreachable under the test-before `PERFORM UNTIL` at `[:L188]`, so the last account's interest is lost. *An earlier revision of this bullet said Java performs that flush on the end-of-data condition as a labelled deviation; that is withdrawn.* **Java performs no final flush, and none may be added** — the loss is a deterministic arithmetic outcome rather than a corruption hazard, so parity governs and the boundary is carried across exactly as the source gets it wrong. See [§0.7.3.3](#0733-control-break-the-unreachable-final-flush-and-the-two-paragraph-default-fallback).
+- **Tests** are to cover core logic across the unit, integration and end-to-end trees of [§0.4.1.4](#0414-tests). **Present state: all three tiers exist and execute.** The unit tier holds 219 sources across eleven sub-packages; `integration/` holds 40, of which 35 are concrete Failsafe classes over Testcontainers PostgreSQL 16 and LocalStack; and `e2e/` holds its three suites beside two oracle support types, `GateVerificationTest` among them declaring 64 cases. The executed case counts are published once, by the run in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention), and are not restated here. **The `Not available` reading an earlier revision of this bullet gave for the end-to-end tree in its entirety is withdrawn.** What remains `Not available` is narrower: a capture of the frozen COBOL on z/OS or a licensed emulator, which would corroborate the two committed expectations rather than replace either. Merged line coverage is 0.914882 against the 0.80 floor. The full census is in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint), the measured evidence in [§0.4.5.3](#0453-the-current-evidence-ledger-and-its-dating-convention) and the gate consequences in [§0.7.9.2](#0792-gate-status-stated-honestly).
+- **Public interfaces** are documented through `package-info.java` in every package that holds a type, plus `api-contracts.md`. **Present state, measured 6 August 2026: all 26 exist**, enumerated in [§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint) — one root, two aggregators, nine service leaves, four batch, four model and six flat packages. The invariant Clause E demands is one package document per package that holds a type, and it **is** met and mechanically asserted by `PackageDocumentationInventoryTest`: the packages without one hold no type at all, and `com/cardemo/service` carries a layer document above the bijection as a bounded, allow-listed exception because it spans nine leaves and 21 beans. *Historical, 4 August 2026:* 25 documents. *Historical, 1 August 2026:* only six existed and three then-existing packages lacked one. **`api-contracts.md` now exists**, is registered in the `mkdocs.yml` nav, and publishes every one of the 17 operations with its request and response shapes derived from the DTO accessors and record components; an earlier revision of this bullet said it "remains outstanding, so that half of this bullet is still open", and that is **withdrawn** — both halves are met.
+- **No unused imports** is enforced **mechanically, as of 4 August 2026**, by `com.cardemo.unit.infrastructure.ImportHygieneTest`, which scans both Java trees and fails on any import whose simple name never appears after the final import statement. A Javadoc reference counts as a use, so the rule cannot demand the removal of an import the doclint gate needs. *Historical:* this was enforced by review alone, and the reason it had to be is unchanged and still worth stating - `-Xlint:all -Werror` cannot do it: the pinned `javac` 25.0.3 publishes no `unused` lint key, as `javac --help-lint` shows, so neither an unused import nor a dead private member produces any diagnostic. `-Werror` does harden every category javac *does* publish — `deprecation` and `removal` most consequentially here, since they are what make the Testcontainers 2.x import rule of [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename) a hard failure rather than a warning. **Closed 4 August 2026 for imports, still open for dead code:** the unused-import half is now mechanical (above), reached with a JUnit source scan rather than by adding Checkstyle or Error Prone to the dependency set - which keeps the pinned dependency graph unchanged. A general dead-code check remains **Not available** and would still need one of those tools.
 
-- **GO TO Semantics** — COBOL `GO TO` transfers control unconditionally. Java equivalent: early return, labeled break, or method restructuring to eliminate the need for unconditional transfer.
+**The no-untracked-deferred-work requirement is honoured by the residual-risk register**: every deferred item listed in [§0.3.2](#032-explicitly-out-of-scope) and [§0.6.2.5](#0625-version-drift-and-residual-risk) **appears** in `../DECISION_LOG.md` and `validation-gates.md` with an owner-facing description, **rather than as an inline marker in code**. **Both of those files now exist**, so the earlier statement that neither did as of 1 August 2026 — and the consequence drawn from it, that the two sections named above were the whole of the register — are withdrawn; those sections remain as in-document cross-references to a register that lives outside this document. That is the mechanism intended to let the one retained no-op of [§0.8.2](#082-the-one-documented-conflict-and-its-resolution) satisfy the clause.
 
-- **Fall-Through Behavior** — COBOL paragraphs fall through to the next paragraph unless terminated by `STOP RUN`, `GOBACK`, or a `PERFORM` boundary. Java methods do not fall through; explicit invocation chains replace implicit fall-through.
+**Files forced into scope.** Fourteen `package-info.java` files, `api-contracts.md`, and the decision-log entries that are **to give** every intentionally-retained no-op a tracking reference. Six of the fourteen package documents exist as of 1 August 2026 and the other two artefacts do not, so this is a scope list rather than an inventory of delivered evidence.
 
-- **EVALUATE / IF Nesting** — Condition evaluation order is preserved exactly. COBOL `EVALUATE TRUE` maps to Java `switch` expressions or chained `if-else`. Nested `IF` structures maintain identical condition evaluation order.
+#### 0.8.1.3 Clause C: Repository Hygiene
 
-- **STRING / UNSTRING / INSPECT** — Delimiter behavior, pointer semantics, and tallying logic are replicated identically using Java `String` utility methods. COBOL pointer (offset) variables map to index tracking in Java.
+**What it requires.** Follow existing repository conventions — formatters, linters, tests — **where present**, and never fight existing style; keep builds deterministic and free of environment-specific assumptions; use a consistent directory structure and avoid duplication.
 
-### 0.8.4 Transaction and Concurrency Rules
+**How this plan honours it.** The conventions were established **by inspection, not assumption**, and the findings are recorded in [§0.2.1.8](#0218-repository-conventions-discovered). Two matter here.
 
-- **SYNCPOINT → @Transactional** — The sole `SYNCPOINT ROLLBACK` in the system (in `COACTUPC.cbl` for dual ACCTDAT+CUSTDAT update) maps to Spring `@Transactional` with rollback-on-exception semantics.
+First, **a universal Apache-2.0 source banner convention exists**, present on every file in four of the five legacy source directories. This plan extends it: every new Java, SQL, YAML, Dockerfile and shell file opens with the equivalent header, and because the legacy banner names the component and its function, **the Java equivalent additionally names the originating COBOL program, copybook or JCL member.** That single convention discharges style consistency, Clause E's per-module documentation requirement, Clause F's evidence-citation requirement, and the coverage gate's provability requirement **simultaneously** — which is why it is treated as load-bearing rather than cosmetic.
 
-- **Optimistic Locking** — `COACTUPC.cbl` and `COCRDUPC.cbl` implement optimistic concurrency by comparing before/after record images. Java equivalent: JPA `@Version` annotation on entity classes with `OptimisticLockException` handling.
+Second, **no formatter, linter or style-tool configuration exists anywhere in the repository at the anchor commit** — verified by listing the anchor tree for `.editorconfig`, Prettier, Checkstyle, Spotless, `Makefile`, `*.toml` and `*.cfg` patterns, which returns nothing. The clause's **"where present"** condition is therefore **not triggered**: there is no existing style to fight. But it also means deterministic build and format configuration must be **established** rather than inherited. That distinction is precisely why `.editorconfig` and the pinned build configuration are **creations, not edits**. The existing contribution guidance supports this reading directly: contributors are asked to focus on the specific change, with the warning that wholesale reformatting makes the change hard to review `[CONTRIBUTING.md:L33]`, and to ensure local tests pass `[CONTRIBUTING.md:L34]`.
 
-- **FILE STATUS Error Mapping** — Every COBOL FILE STATUS code is mapped to a custom Java exception hierarchy. Status `00` = success, `23` = `RecordNotFoundException`, `35` = `FileNotFoundException`, `22` = `DuplicateKeyException`, etc.
+Determinism and freedom from environment-specific assumptions are honoured by pinning every plugin and non-managed dependency to an exact version ([§0.6.1](#061-key-private-and-public-packages)), shipping a version-pinned build wrapper with a distribution checksum, asserting the toolchain floor through the enforcer plugin, and providing the whole runtime stack declaratively through the compose file with pinned image tags. Directory consistency is the Maven standard layout mirrored between the main and test trees. Duplication is avoided by the three collapse rules of [§0.6.2.3](#0623-import-rules), by resolving the two customer layouts to a single entity, and — at the documentation level — by **citing** `README.md`, `architecture-before-after.md` and `validation-gates.md` by path rather than restating their content here. Citation rather than hyperlinking is deliberate: two of the three do not exist, and a link to an absent target fails `mkdocs build --strict` ([§0.3.1.5](#0315-create-evidence-and-documentation)).
 
-### 0.8.5 Batch Pipeline Rules
+**Files forced into scope.** `.editorconfig`, `.gitignore`, `.gitattributes`, `.dockerignore`, `mvnw`, `mvnw.cmd`, `.mvn/wrapper/maven-wrapper.properties`, the enforcer configuration inside `pom.xml`, and — critically — **the `mkdocs.yml` navigation update, without which none of the new documentation publishes at all.**
 
-- **Sequential Dependency Chain** — The 5-stage pipeline (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT) must preserve sequential dependencies. A stage does not begin until its predecessor completes successfully.
+#### 0.8.1.4 Clause D: Security Standards
 
-- **Condition Code Logic** — JCL `COND` parameters map to Spring Batch `ExitStatus` and `JobExecutionDecider`. A non-zero condition code from POSTTRAN (partial failures) still allows downstream stages to proceed if the condition is met.
+**What it requires.** No secrets in code, logs, tests or configuration; dependencies pinned where possible, with risky patterns flagged; least privilege for tokens, credentials and configuration.
 
-- **DFSORT Replacement** — `COMBTRAN.jcl` uses `DFSORT` (SORT + REPRO) with no COBOL program. Java equivalent: `Collections.sort()` with a `Comparator` matching the SORT FIELDS specification, followed by bulk JPA insert.
+**How this plan honours it.** In full in [§0.7.8](#078-security-implementation). In summary: the token signing key is resolved from the environment in **every** profile, never as a literal, closing a defect carried by the prior implementation `[docs/project-guide.md:L52]`; secrets are kept out of logs **primarily by never emitting them**, with the masking configuration as a label-anchored backstop whose limits are stated in [§0.7.7](#077-observability-implementation); tests carry no secret material, because the ten seed users come from the source's own inline data and their plaintext password value is BCrypt-hashed by the seed migration rather than stored as given; dependency pinning is total, and the vulnerability scan is what makes the pinning **verifiable** rather than merely stated — including, honestly, its **currently failing** state ([§0.6.2.5](#0625-version-drift-and-residual-risk)).
 
-- **Parallel Stages 4a/4b** — `CREASTMT` (stage 4a) and `TRANREPT` (stage 4b) may execute in parallel after `COMBTRAN` completes. Spring Batch `FlowBuilder` with `split()` enables concurrent step execution.
+Least privilege is the reason `application-prod.yml` is in scope. The requirements name three profiles; a production profile with narrowed permissions and no development conveniences is added because this clause requires it, and because its absence was an open defect `[docs/project-guide.md:L51]`. All cloud-service interaction targets the local emulator with **zero live credentials anywhere**, so there is no credential to over-privilege in the first place.
 
-- **Interest Formula Fidelity** — The exact formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` with `DEFAULT` group fallback logic must be preserved without algebraic simplification or rearrangement.
+**Files forced into scope.** `application-prod.yml`, `.env.example`, environment-variable indirection in all four profile files, the masking rules in `logback-spring.xml`, and the vulnerability-scan plugin configuration in `pom.xml`.
 
-### 0.8.6 Implementation Rules (User-Specified)
+#### 0.8.1.5 Clause E: Documentation Standards
 
-The user provided six implementation rules that apply as cross-cutting constraints:
+**What it requires.** Every module or component must carry a short readme or docstring explaining what it does, how to run, build and test it, its key configurations and defaults, and its common failure modes and troubleshooting.
 
-- **Observability** — Ship with initial implementation. Structured logging with correlation IDs, distributed tracing, metrics endpoint, health/readiness checks, and dashboard template. All verified locally.
+**How this plan honours it.**
 
-- **Visual Architecture Documentation** — All diagrams use Mermaid. Before/after architecture views required. Every diagram has a title and legend. Referenced by name in documentation.
+- **What it does** — the per-package `package-info.java` files satisfy this at module granularity, each naming the COBOL artefacts its package derives from.
+- **How to build, run and test** — appended to `README.md`. **Appended, not substituted**, so the legacy transaction, program and JCL inventory tables survive intact. The build entry point is `./mvnw clean verify` using the pinned wrapper; the runtime topology is `docker compose up -d`; the test tiers are the unit, integration and end-to-end trees of [§0.4.1.4](#0414-tests). Developer setup detail lives in `docs/onboarding-guide.md`.
+- **Key configurations and defaults** — documented across the four profile files and `.env.example`. The one value with **no default by design** is the JWT signing key, which fails fast when absent.
+- **Common failure modes and troubleshooting** — documented in three complementary places: the exception hierarchy documents them in code; `docs/api-contracts.md` documents them per endpoint; and `docs/validation-gates.md` documents the gate-level failure modes together with the tooling prerequisites of [§0.7.9.3](#0793-the-toolchain-and-container-position-stated-accurately). The three failure modes most likely to be met first are named explicitly: the Testcontainers coordinate blocker of [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename), the vulnerability-gate failure of [§0.6.2.5](#0625-version-drift-and-residual-risk), and a missing `JWT_SIGNING_KEY` at first boot.
 
-- **Explainability** — Decision log as Markdown table for all non-trivial decisions. Bidirectional traceability matrix with 100% COBOL paragraph coverage. No rationale in code comments — decision log is the single source of truth.
+**Files forced into scope.** Fourteen `package-info.java` files, `docs/onboarding-guide.md`, `docs/validation-gates.md`, `docs/architecture-before-after.md`, `docs/executive-presentation.html`, and the `README.md` update.
 
-- **Executive Presentation** — reveal.js HTML artifact for non-technical leadership. Covers business value, risk, architectural changes, and onboarding. Every slide has at least one visual element. Mermaid diagrams embedded directly.
+#### 0.8.1.6 Clause F: Output Requirements
 
-- **Onboarding & Continued Development** — Documentation enables clean-machine-to-running-app without questions. Includes setup, domain context, pitfalls, extension guides, and suggested next tasks.
+**What it requires.** Be evidence-based, citing file paths, symbols and examples; classify findings by severity as Blocker, High, Medium or Low; provide clear remediation steps; and where information is missing, state that plainly and list what is needed.
 
-- **LocalStack Verification** — Every AWS interaction verifiable against LocalStack. Zero live AWS dependencies. Tests create/destroy their own resources. No pre-existing LocalStack state dependency.
+**How this plan honours it.**
 
-### 0.8.7 Build and Quality Rules
+- **Evidence-based citation is the discipline this entire section operates under.** Every claim about the existing system carries an inline `[<path>:<locator>]` citation, and every figure in [§0.2](#02-source-analysis) was established by direct inspection rather than inherited from prose. Where inspection contradicted earlier prose, the source governs and the divergence is flagged with a **verified against source** note.
+- **Severity classification** is applied in the findings register at [§0.2.2.2](#0222-findings-register): the Testcontainers coordinate rename is a **Blocker**; the hardcoded signing key, the absent production profile, the absent CI workflow, the unexecuted and now-failing vulnerability scan, and the silent-publication risk are **High**; the retention conflict, the migration-filename aliasing, the coverage-plugin drift and the framework support horizon are **Medium**; the inaccurate service catalogue metadata is **Low**, noted with its remediation but deliberately **not** forced into scope because the file that carries it is not one of the three this change may modify.
+- **Remediation accompanies each finding**, including the two-part remedy for the Blocker, where applying either part alone still fails.
+- **The missing-information requirement is honoured in four places rather than glossed over**, each using the literal wording **"Not available"** with what is needed: the source program behind CSD transaction `CDV1`; any service-level objective for the legacy system; an expected legacy baseline output artefact for Gate 1; and a verified present-tense framework support status. **The third has since been closed the same way the fifth was — by producing the evidence.** The legacy program was compiled unmodified and executed against the frozen fixtures on 7 August 2026 and its output committed as the oracle, so Gate 1 now compares field by field instead of reporting an absence; what remains disclosed there is the Low residual that the execution environment was GnuCOBOL rather than z/OS. A fifth item — execution of the documentation build — was originally recorded as unavailable and has since been **resolved by provisioning the tooling, running the build and then auditing the rendered page in a browser**. That closure was not cosmetic: it surfaced four defects that no source-level review could have found — a fenced diagram that renders as a code block, a strict-mode gate that cannot pass while repository-root artefacts are linked, a console error in the documentation toolchain, and an empty in-page table of contents caused by a second level-one heading, which was **fixed in this document**. Three are recorded as findings with remediation in [§0.2.2.2](#0222-findings-register) and the fourth is documented in [§0.2.1.10](#02110-environment-evidence) so it cannot be reintroduced. That is the intended outcome of the clause: the purpose of naming a gap is to have it closed rather than catalogued.
 
-- **Zero-Warning Build** — `mvn clean verify` passes with zero warnings and zero suppressed warnings except for framework-generated code (Gate 2).
+**Files forced into scope.** `../DECISION_LOG.md`, `../TRACEABILITY_MATRIX.md` — both repository-root evidence artefacts outside the MkDocs source directory — and the residual-risk register inside `validation-gates.md`.
 
-- **≥80% Line Coverage** — JaCoCo reports unit + integration test coverage at or above 80% line coverage across all source packages (Gate 8).
+### 0.8.2 The One Documented Conflict and Its Resolution
 
-- **OWASP Zero Critical/High CVEs** — `dependency-check-maven` plugin reports zero critical or high-severity CVEs in all direct and transitive dependencies (Gate 8).
+**One conflict exists**, and it is material.
 
-- **Unsafe Code Audit** — Raw SQL concatenation, `Runtime.exec`, reflection, unchecked casts, and suppressed warnings are counted. Any count above 50 requires per-site justification (Gate 6).
+**The conflict.** Clause B requires that there be no dead code. The requirements mandate preserving control flow one-to-one so that paragraph-level traceability is provable. These collide at a specific, identifiable site: `1400-COMPUTE-FEES` at `[app/cbl/CBACT04C.cbl:L518-L520]` is empty apart from a comment stating it is to be implemented, yet it is **genuinely reachable and genuinely performed** from `[app/cbl/CBACT04C.cbl:L216]`. Under Clause B it should be deleted. Under the parity mandate it must be retained, because deleting its call site would break the paragraph map that Gate 7 verifies.
+
+**The resolution: the parity mandate governs, and Clause B is satisfied by a different mechanism.** The empty method is retained with documentation citing its source lines and an explicit marker stating that the no-op is **intentional and preserved for control-flow parity**. This satisfies Clause B's actual intent — the clause forbids *untracked* dead code and deferred work **without an owner or tracking reference**, and this code **is to be tracked, referenced and justified in `../DECISION_LOG.md`**, with [§0.7.3.7](#0737-the-reachable-empty-paragraph) carrying that reference until the decision log exists. It is not abandoned residue; it is a documented faithful reproduction of a reachable no-op that exists in the system of record.
+
+**Justification for choosing this direction.** Behavioural parity is the contract of the engagement, and Gate 7 makes paragraph coverage a pass-or-fail condition. Deleting the paragraph would produce a system that is marginally cleaner and **demonstrably less traceable**, failing a stated acceptance criterion in order to satisfy a stylistic one. That trade is not available.
+
+The same reasoning applies, for the same reason, to two further artefacts that also look like dead code and are not:
+
+- **The redundant index assignment** at `[app/cbl/CBSTM03A.CBL:L324]`, re-initialised by the `PERFORM VARYING` at `[L417]`.
+- **The never-consumed reject code 109** at `[app/cbl/CBTRN02C.cbl:L556]`, which is assigned on a reachable path but can never produce a reject record ([§0.7.2.7](#0727-reject-code-109-is-assigned-but-never-consumed)).
+
+All three are preserved, marked and logged. **No other conflict exists.** Every other clause of Rule 1 is either directly satisfied by the plan or satisfied by a file the plan adds specifically for that purpose.
+
+There is also a **research-versus-requirement** tension, distinct from the rule conflict above and resolved in [§0.4.2](#042-web-search-research-conducted): industry modernisation guidance warns against literal transliteration that reproduces `GO TO` and `PERFORM` structure in Java, which conflicts with the one-to-one control-flow mandate. That conflict is resolved in favour of the requirement, with source-citing Javadoc and a navigable traceability matrix as the compensating mechanisms against unreadable transliteration.
+
+### 0.8.3 Behavioural Preservation Rules
+
+These are the invariants that make the difference between a working system and a **faithful** one. Each is stated as a rule because each has at least one plausible implementation that violates it.
+
+| # | Rule | The violation it prevents |
+|---:|---|---|
+| P1 | **Preserve validation order and outcome, including its defects.** The two-paragraph cascade, the unguarded sequential checks, and the overwrite of code 102 by 103 are behaviour, not bugs to fix `[app/cbl/CBTRN02C.cbl:L370-L420]` | Guarding the second check, or emitting two reject records |
+| P2 | **Preserve exact literal text.** Reject descriptions, screen messages, the queue-failure message `[app/cbl/CORPT00C.cbl:L531]`, the interest description prefix `'Int. for a/c '` `[app/cbl/CBACT04C.cbl:L485]` and the `'FILE STATUS IS: NNNN'` prefix `[app/cbl/CBTRN02C.cbl:L721]` are compared byte-for-byte | Paraphrasing a message, or fixing legacy grammar |
+| P3 | **Preserve formula shape, not merely value.** Interest multiplies then divides by the literal 1200 `[app/cbl/CBACT04C.cbl:L465]`; the over-limit temporary balance subtracts a debit accumulator that legitimately holds negative values `[app/cbl/CBTRN02C.cbl:L403-L405]` | Algebraic rewriting that changes rounding |
+| P4 | **Preserve sign semantics.** No absolute-value normalisation anywhere in the posting path `[app/cbl/CBTRN02C.cbl:L548-L552]`; zoned-decimal overpunch signs decoded **position-aware** from the field definitions | Normalising a debit to positive; decoding overpunch characters found inside text fields |
+| P5 | **Use decimal arithmetic exclusively**, at the precision each field definition dictates — including the two precisions that differ from the common case: `NUMERIC(11,2)` for the category balance and `NUMERIC(6,2)` for the interest rate. **No floating-point type appears in any financial field**, which Gate 6 asserts | Binary floating point silently changing a cent |
+| P6 | **Preserve record geometry.** 430 = 350 + 80; 133; 100; 80; 350 with the proven offset map — **including the statement projection's two-byte truncation** ([§0.7.5.4](#0754-the-statement-projection-that-silently-truncates-two-bytes)) | Emitting a "corrected" full-length timestamp |
+| P7 | **Preserve timestamp formatting.** Twenty-six characters, `yyyy-MM-dd-HH.mm.ss.SS0000`, at **hundredths-of-a-second precision** — a two-digit truncated fractional field from `DB2-MIL PIC 9(002)` `[app/cbl/CBTRN02C.cbl:L173]`, then the four literal zeros of `DB2-REST` `[app/cbl/CBTRN02C.cbl:L701]`. The source's own format comment reads `EEEE-MM-DD-UU.MM.SS.HH0000` `[app/cbl/CBTRN02C.cbl:L149]` | Nanosecond precision from the modern date-time API; or millisecond precision, which yields three fractional digits and a twenty-seven-character string |
+| P8 | **Preserve case-handling asymmetry** ([§0.7.1.4](#0714-two-distinct-comparison-paragraphs-do-not-conflate-them)), **and upper-case both the identifier and the password at sign-on**, not just the identifier | Uniform normalisation changing which updates are accepted |
+| P9 | **Preserve pagination sizes** — 7 for the card list, 10 for the transaction and user lists | A "sensible" default page size |
+| P10 | **Preserve absent guards.** No self-delete guard is added to user deletion, because `app/cbl/COUSR03C.cbl` has none. No bounds check is added where the source has none **unless removing the resulting hazard is explicitly labelled a deviation** | Helpfully adding a guard the source lacks |
+| P11 | **Preserve transaction atomicity boundaries.** The dual-dataset account write and the three-dataset posting write each become one atomic unit; the rollback asymmetry is reproduced **by scoping rather than by conditional logic** ([§0.7.1.2](#0712-why-the-rollback-asymmetry-is-correct-not-a-defect)) | Writing an explicit conditional rollback, or distributing the writes |
+| P12 | **Preserve batch exit-code semantics.** Return code 4 **if and only if** the reject count exceeds zero; abend code 999 with return code 12 on unexpected status | Returning non-zero for any rejection-adjacent condition |
+| P13 | **Preserve control-break keys as written**, including the `app/cbl/CBTRN03C.cbl` break that triggers on the **card number** under a label reading "Account Total" | Breaking on the account to match the label |
+
+### 0.8.4 Special Instructions and Constraints
+
+- **The legacy corpus is frozen.** No file under `app/` is deleted, edited, reformatted or relocated. The migration is purely additive, with the new tree beside the old **in the same repository**. `app/` is simultaneously the parity oracle, the field-contract source and the traceability anchor, and it loses all three roles the moment it is edited.
+- **Behavioural parity across all twenty-two catalogued features F-001 through F-022 is the acceptance contract**, not a goal. Where a deviation is unavoidable or beneficial, it is labelled, justified and logged ([§0.7.9.5](#0795-deliberate-deviations-labelled-as-such-never-as-parity)) — never absorbed silently.
+- **Field contracts are bidirectional.** Every field length, type and precision derives from a copybook or a symbolic map, and every derived Java type must round-trip to the same bytes.
+- **No live cloud credentials anywhere.** All cloud interaction targets the local emulator. No code path may reach a live endpoint, and no credential material appears in any file.
+- **Pinned versions are honoured as given.** Where an external source suggests a different version — the framework support horizon, or a newer coverage plugin release — the pinned value governs and the divergence is **recorded** rather than resolved unilaterally ([§0.6.2.5](#0625-version-drift-and-residual-risk)).
+- **One phase, no staging**, for the reasons given in [§0.5.4](#054-one-phase-execution).
+- **Case-insensitive matching on `app/jcl` and `app/cbl`.** Otherwise the sole source for statement generation and both statement programs silently disappear from scope ([§0.5.3](#053-wildcard-pattern-policy)).
+- **Only three existing files may change:** `README.md`, `mkdocs.yml` and this document. No fourth existing file is touched — in particular `docs/index.md`, `docs/project-guide.md` and `catalog-info.yaml` remain byte-for-byte unchanged, which is why the Low-severity catalogue findings are reported but not actioned.
+- **Deferred hardening is disclosed, not dropped:** table partitioning, read replicas, connection-pool tuning, TLS termination, request rate limiting, URI-based API versioning, generated OpenAPI documentation, and encryption at rest for personally identifiable data. Each is a residual-risk entry under Clause F.
+- **The prior implementation's open defects are addressed by this plan**, each with a named file: absent continuous integration, an unexecuted vulnerability scan, a hardcoded signing key, and a missing production profile ([§0.2.2.2](#0222-findings-register)). **Two of the four are closed as of 1 August 2026 and two are not**; the per-defect state is tabulated in [§0.9.1.3](#0913-the-prior-run-evidence-disclaimer) rather than asserted in aggregate here.
+- **Where information is genuinely unavailable, it is stated as unavailable** — the sourceless program behind one transaction definition, the absent documentation tooling and the absent service-level objectives. **None is filled with an invention.** The Gate 1 baseline was a fourth item on this list until 7 August 2026, when it was closed by **producing** the evidence rather than by continuing to catalogue its absence: `app/cbl/CBTRN02C.cbl` was compiled unmodified with GnuCOBOL 3.2.0 and executed against the frozen fixtures, and its output was captured under `src/test/resources/parity/gate1/`. That is the intended end state of the clause — naming a gap in order to close it.
 
 
 ## 0.9 References
 
-### 0.9.1 Repository Files and Folders Searched
+This sub-section records every source consulted in producing this Agent Action Plan, so that any downstream reader can retrace the evidence. **All repository paths below were validated by direct inspection at commit `7756d895ffeb65f7ea72aaa609e356d9899afcec`.** **No `.blitzyignore` file exists anywhere in the repository**, so no path was excluded from analysis on that basis.
 
-The following files and folders were systematically explored to derive all conclusions in this Agent Action Plan.
+### 0.9.1 Repository Files and Folders Examined
 
-**Root-Level Files:**
+#### 0.9.1.1 Legacy Source Directories
 
-| File | Purpose |
-|---|---|
-| `README.md` | Project overview, installation instructions, dataset descriptions, JCL execution order |
-| `CODE_OF_CONDUCT.md` | Community guidelines |
-| `CONTRIBUTING.md` | Contribution guidelines |
-| `LICENSE` | Apache 2.0 license |
+| Path | Members | Lines | Role in this plan |
+|---|---:|---:|---|
+| `app/cbl/` | 28 | **19,254** | Primary behavioural authority — every service, job and processor derives from these. **Must be matched case-insensitively:** `CBSTM03A.CBL` and `CBSTM03B.CBL` carry an uppercase extension, and a `*.cbl` glob yields only **18,100** lines |
+| `app/cpy/` | 28 | 2,614 | Field contracts for all entities, keys, enums, shared state and message tables. Includes the uppercase `COSTM01.CPY` and the zero-reference `UNUSED1Y.cpy` |
+| `app/cpy-bms/` | 17 | 5,632 | **441** input-field contracts driving DTO shape and validation |
+| `app/bms/` | 17 | 4,472 | Screen geometry, attributes and pagination sizes — reference for field semantics, not translated |
+| `app/jcl/` | **29** | 1,894 | Batch orchestration, dataset definitions, cluster geometry, inline seed data, job parameters. **Must be matched case-insensitively:** `CREASTMT.JCL` carries an uppercase extension |
+| `app/proc/` | 2 | 114 | `REPROC.prc` and `TRANREPT.prc` — report and combine step semantics, sort specifications, symbol definitions |
+| `app/ctl/` | 1 | 15 | `REPROCT.ctl` — the single load-utility control statement |
+| `app/csd/` | 1 | 505 | `CARDDEMO.CSD` — transaction-to-program map, eight file definitions, one queue definition |
+| `app/catlg/` | 1 | 3,956 | `LISTCAT.txt` — cluster key lengths, record sizes, three alternate indexes, three paths, seven generation groups |
+| `app/data/ASCII/` | 9 | 626 | Seed and test fixtures with byte-exact record widths and overpunch signs |
+| `app/data/EBCDIC/` | 12 `.PS` + `.gitkeep` | — | **Reference only; not decoded, not loaded, never parsed by the build** |
+| `diagrams/` | 6 | 3,067 | Existing architecture illustrations, reference only |
+| `samples/` | 8 | — | Legacy compile templates, build procedures and two binary runtime archives — **explicitly out of scope** |
 
-**COBOL Source Programs (`app/cbl/`):**
+Programs read in depth for control flow, status handling, formulas and literals: the account-update, card-update, card-list, card-detail, account-view, transaction-add, transaction-list, transaction-view, bill-payment, report-submission, sign-on, menu, admin-menu and four user-administration programs; the daily-posting, interest-calculation, transaction-report, statement-generation and statement-file-service batch programs; the four simple sequential readers; and the date-validation utility.
 
-| File | Lines | Migration Role |
-|---|---|---|
-| `COACTUPC.cbl` | 4,236 | Account update — largest program, SYNCPOINT ROLLBACK, optimistic concurrency |
-| `COCRDUPC.cbl` | 1,560 | Card update — optimistic concurrency |
-| `COCRDLIC.cbl` | 1,459 | Card list — paginated browse (7 rows/page) |
-| `COTRN02C.cbl` | 1,300 | Transaction add — auto-ID, confirmation flow |
-| `COTRN00C.cbl` | 1,254 | Transaction list — paginated browse (10 rows/page) |
-| `CBTRN02C.cbl` | 1,149 | Batch: daily transaction posting — 4-stage validation |
-| `COSGN00C.cbl` | 1,100 | Sign-on — authentication entry point |
-| `COACTVWC.cbl` | 995 | Account view — multi-dataset read |
-| `COUSR02C.cbl` | 960 | User update |
-| `COCRDSLC.cbl` | 955 | Card detail — single keyed read |
-| `COUSR01C.cbl` | 880 | User add |
-| `COBIL00C.cbl` | 765 | Bill payment |
-| `COUSR00C.cbl` | 732 | User list |
-| `COTRN01C.cbl` | 697 | Transaction detail |
-| `CORPT00C.cbl` | 645 | Report submission — TDQ WRITEQ |
-| `COUSR03C.cbl` | 588 | User delete |
-| `COMEN01C.cbl` | 468 | Main menu — 10-option routing |
-| `COADM01C.cbl` | 361 | Admin menu — 4-option routing |
-| `CBSTM03A.CBL` | 329 | Batch: statement generation main |
-| `CBTRN03C.cbl` | 285 | Batch: transaction report |
-| `CBSTM03B.CBL` | 268 | Batch: statement generation sub |
-| `CBTRN01C.cbl` | 235 | Batch: daily transaction reader |
-| `CBACT04C.cbl` | 229 | Batch: interest calculation |
-| `CBACT01C.cbl` | 195 | Batch: account file reader |
-| `CBACT02C.cbl` | 190 | Batch: card file reader |
-| `CBACT03C.cbl` | 186 | Batch: cross-reference file reader |
-| `CBCUS01C.cbl` | 182 | Batch: customer file reader |
-| `CSUTLDTC.cbl` | 157 | Date validation subprogram (CEEDAYS) |
+Copybooks decoded for field contracts: all eleven record layouts, the additional user, customer and statement layouts, the six shared-state and table copybooks, and the eight constant, abend and procedural copybooks — including the four whose disposition earlier prose had misread ([§0.2.1.3](#0213-copybooks-appcpy)).
 
-**Copybooks (`app/cpy/`):**
+#### 0.9.1.2 Documentation and Convention Files
 
-| File | Purpose |
-|---|---|
-| `CVACT01Y.cpy` | Account record layout (300 bytes) |
-| `CVACT02Y.cpy` | Card record layout (150 bytes) |
-| `CVACT03Y.cpy` | Card cross-reference record layout (50 bytes) |
-| `CVCUS01Y.cpy` | Customer record layout (500 bytes) |
-| `CUSTREC.cpy` | Alternative customer record structure |
-| `CVTRA01Y.cpy` | Transaction category balance record (50 bytes) |
-| `CVTRA02Y.cpy` | Disclosure group record (50 bytes) |
-| `CVTRA03Y.cpy` | Transaction type record (60 bytes) |
-| `CVTRA04Y.cpy` | Transaction category record (60 bytes) |
-| `CVTRA05Y.cpy` | Transaction record (350 bytes) |
-| `CVTRA06Y.cpy` | Daily transaction staging record (350 bytes) |
-| `CVTRA07Y.cpy` | Transaction report record |
-| `COCOM01Y.cpy` | COMMAREA — central session state structure |
-| `CSUSR01Y.cpy` | User security record layout (80 bytes) |
-| `COMEN02Y.cpy` | Main menu option table (10 entries) |
-| `COADM02Y.cpy` | Admin menu option table (4 entries) |
-| `CSLKPCDY.cpy` | Validation lookup: NANPA area codes, state codes, ZIP prefixes |
-| `CSUTLDPY.cpy` | Date validation parameters |
-| `CSUTLDWY.cpy` | Date validation work area |
-| `CSSTRPFY.cpy` | String/field processing helpers |
-| `CSSETATY.cpy` | Screen attribute setting helpers |
-| `COTTL01Y.cpy` | Report title line definitions |
-| `COSTM01Y.cpy` | Statement output format |
-| `CVACT04Y.cpy` | Account file descriptor |
-| `CVACT05Y.cpy` | Card file descriptor |
-| `CVCRD01Y.cpy` | Card record descriptor |
-| `CVCRD02Y.cpy` | Card detail descriptor |
-| `UNUSED1Y.cpy` | Unused copybook |
+Sizes are byte counts at the anchor commit.
 
-**BMS Mapsets (`app/bms/`):** 17 files — COACTVW.bms, COACTUP.bms, COBIL00.bms, COCRDLI.bms, COCRDSL.bms, COCRDUP.bms, COADM01.bms, COMEN01.bms, CORPT00.bms, COSGN00.bms, COTRN00.bms, COTRN01.bms, COTRN02.bms, COUSR00.bms, COUSR01.bms, COUSR02.bms, COUSR03.bms
+| Path | Size | Why it was consulted |
+|---|---:|---|
+| `docs/technical-specifications.md` | 94,043 B | The document this section belongs to. Its prior generation supplied the `0.1`–`0.9` numbering that downstream artefacts cite, and its factual claims are corrected in [§0.2.2.1](#0221-corrections-to-the-prior-specification) |
+| `docs/project-guide.md` | 30,421 B | Prior-run implementation evidence and the open-defect list this plan closes. **See the disclaimer in [§0.9.1.3](#0913-the-prior-run-evidence-disclaimer)** |
+| `docs/index.md` | 99 B | Documentation entry point; **retained byte-for-byte unchanged** |
+| `README.md` | 14,639 B | The authoritative legacy transaction, program and JCL inventory tables that the update must preserve verbatim. Independently corroborates the 17-sourced-program count with no `CDV1` row |
+| `CONTRIBUTING.md` | 3,160 B | Direct textual backing for Rule 1 Clause C at `[CONTRIBUTING.md:L33-L34]` |
+| `mkdocs.yml` | 187 B | Three-entry navigation and the `techdocs-core` plus `mermaid2` plugin set; **load-bearing for documentation publication** |
+| `catalog-info.yaml` | 1,051 B | Component registration and the `techdocs-ref` annotation at `[catalog-info.yaml:L22]`; source of the four Low-severity findings |
+| `CODE_OF_CONDUCT.md` | 309 B | Repository convention |
+| `LICENSE` | 10,142 B | Apache 2.0 — the licence behind the universal source-header convention |
+| `NOTICE` | 67 B | The copyright line the header convention carries forward |
+| `diagrams/` | 6 files | Legacy architecture illustrations feeding `architecture-before-after.md` |
+| `samples/` | 8 files | Legacy z/OS build tooling, dispositioned out of scope rather than assumed irrelevant |
 
-**BMS Copybooks (`app/cpy-bms/`):** 17 files — Symbolic map AI/AO views matching each BMS mapset
+#### 0.9.1.3 The Prior-Run Evidence Disclaimer
 
-**JCL Jobs (`app/jcl/`):** 29 files — VSAM provisioning (ACCTFILE, CARDFILE, CUSTFILE, XREFFILE, TRANFILE, DUSRSECJ, TCATBALF, DISCGRP, TRANCATG, TRANTYPE), GDG definitions (DEFGDGB), batch business processing (POSTTRAN, INTCALC, COMBTRAN, CREASTMT, TRANREPT), CICS admin, and other utility JCL
+**`docs/project-guide.md` is retained byte-for-byte unchanged as prior-run evidence.** It is a REFERENCE input to this plan, not a statement about the current implementation, and this distinction is binding:
 
-**Data Files (`app/data/ASCII/`):** 9 files — acctdata.txt, carddata.txt, custdata.txt, cardxref.txt, dailytran.txt, discgrp.txt, tcatbal.txt, trancatg.txt, trantype.txt
+> **Its completion, hours, test-count, coverage-percentage, gate-pass and performance claims are NOT evidence for the current implementation and are neither reproduced nor endorsed anywhere in this document.** In particular, its coverage figure, its gate results and its service-count figure `[docs/project-guide.md:L194]` are stale. Where this document needed a figure that the guide also carries, the figure was re-established from primary source.
 
-**Data Files (`app/data/EBCDIC/`):** 13 binary files + .gitkeep
+What the guide **is** used for is its disclosure of four open defects, each of which this plan closes with a named file. The final column states the state of each **as of 2 August 2026**; three of the four are now fully closed, and the fourth is closed as to execution and open as to outcome.
 
-**IDCAMS Catalog (`app/catlg/`):** LISTCAT.txt — 209-entry IDCAMS catalog report documenting all VSAM clusters, AIX, PATH, and GDG entries
+| Prior defect | Locator | Closing artefact | State, 2 August 2026 |
+|---|---|---|---|
+| No CI/CD pipeline | `[docs/project-guide.md:L49]` | `.github/workflows/build.yml` | **Closed.** The workflow file exists |
+| OWASP dependency scan not executed | `[docs/project-guide.md:L50]` | `dependency-check-maven` wired into `verify` and CI | **Closed on both counts, measured 7 August 2026.** The scan runs, and it now passes: one no-skip `./mvnw -B -ntp clean verify`, report timestamp `2026-08-07T17:39:05Z`, 166 dependencies, **zero findings at or above CVSS 7**, `BUILD SUCCESS` with `failBuildOnCVSS` unchanged at 7. The outcome was open until that reading and is reported at [§0.6.2.5](#0625-version-drift-and-residual-risk) rather than assumed resolved |
+| No production profile | `[docs/project-guide.md:L51]` | `src/main/resources/application-prod.yml` | **Closed.** The file exists ([§0.4.5.1](#0451-checkpoint-inventory-and-canonical-commands-measured-at-this-checkpoint)) and externalises every secret |
+| JWT secret hardcoded in configuration | `[docs/project-guide.md:L52]`, `[docs/project-guide.md:L215]` | Environment-variable indirection in all four profiles, fail-fast on absence, blank in `.env.example` | **Closed.** All four profiles exist and bind the signing key from `${JWT_SIGNING_KEY}` with **no default**; `com.cardemo.security.JwtTokenProvider` fails fast when it is absent; `.env.example` ships it blank and required; and no literal secret appears anywhere in the tree |
 
-**Sample JCL (`samples/jcl/`):** 3 files — BATCMP.jcl, BMSCMP.jcl, CICCMP.jcl (build job samples)
+#### 0.9.1.4 Absence Verification
 
-### 0.9.2 Tech Spec Sections Retrieved
+The following were confirmed **absent at the anchor commit**, which is why every one of them is a **creation** rather than an edit: the build descriptor and wrapper; the entire `src/` tree; the container and compose definitions; `localstack-init/`; `observability/`; `.github/`; all five ignore and attribute files; `.env.example`; `../DECISION_LOG.md`; and `../TRACEABILITY_MATRIX.md`.
 
-| Section | Key Information Extracted |
-|---|---|
-| 1.1 EXECUTIVE SUMMARY | CardDemo v1.0-15-g27d6c6f-68, Apache 2.0, mainframe modernization reference, default credentials |
-| 2.1 FEATURE CATALOG | 22 features (F-001 through F-022): 17 online + 5 batch, dependency chains |
-| 3.1 TECHNOLOGY STACK OVERVIEW | Pure IBM z/OS stack (COBOL, CICS TS v5.6, VSAM, JCL, BMS, JES, LE) |
-| 4.5 BATCH PROCESSING PIPELINE | 5-stage sequential dependency, POSTTRAN validation cascade, interest formula, DFSORT usage |
-| 5.1 HIGH-LEVEL ARCHITECTURE | Three-tier z/OS, 18 online + 10 batch programs, 11 VSAM datasets, 4 communication mechanisms |
-| 6.2 Database Design | Complete VSAM schema (10 KSDS + 1 PS + 2 AIX/PATH + 7 GDG bases), field-level record layouts, composite keys, entity relationships |
+At the anchor the repository root held only `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `README.md`, `catalog-info.yaml`, `mkdocs.yml` and the directories `app/`, `diagrams/`, `docs/` and `samples/`. A search of the top three directory levels for `.editorconfig`, Prettier, Checkstyle, Spotless, `Makefile`, `*.toml` and `*.cfg` configuration returned nothing, which is the evidence behind Clause C's "where present" condition not being triggered ([§0.8.1.3](#0813-clause-c-repository-hygiene)).
+
+### 0.9.2 Technical Specification Sections Consulted
+
+Three sections of the pre-existing specification were consulted directly:
+
+- **Feature Catalog** — the twenty-two feature identifiers F-001 through F-022 that define parity scope.
+- **Database Design** — the relational target, indexing intent and migration structure, **reconciled against `app/catlg/LISTCAT.txt` and the record-layout copybooks**, which govern where the two disagree.
+- **Integration Architecture** — the object-storage and messaging integration surface, and the timer metrics that complement the four counters this plan mandates.
+
+The remaining catalogued sections were not consulted separately. Their content is reachable transitively through cross-references, and — more importantly — **every load-bearing claim in this plan is sourced from the primary artefacts** in `app/cbl`, `app/cpy`, `app/cpy-bms`, `app/jcl`, `app/proc`, `app/csd` and `app/catlg` rather than from prose. Where the prose and the source disagreed, **the source governed** and the discrepancy is recorded in [§0.2.2.1](#0221-corrections-to-the-prior-specification).
 
 ### 0.9.3 Web Research Conducted
 
-| Topic | Source | Key Finding |
-|---|---|---|
-| Java 25 LTS release | Oracle / OpenJDK announcements | Released September 16, 2025; 18 JEPs; 8+ years Oracle support |
-| Spring Boot 3.5.11 | spring.io/blog | Released February 19, 2026; latest stable 3.x; 35 bug fixes |
-| PostgreSQL 16.13 | postgresql.org | Released February 26, 2026; latest 16.x patch release |
-| Testcontainers Java | testcontainers.org / GitHub | Version 2.0.3 latest; BOM-based dependency management |
-| Spring Cloud AWS | awspring/spring-cloud-aws GitHub | Version 3.3.0 for Spring Boot 3.4/3.5 compatibility; S3/SQS/SNS starters |
-| Flyway PostgreSQL module | Redgate documentation | Version 11.x/12.x; modularized PostgreSQL support via `flyway-database-postgresql` |
-| Micrometer Tracing | GitHub releases / mvnrepository | Version 1.6.4 (March 9, 2026); OpenTelemetry bridge available |
-| OWASP Dependency Check | owasp.org | Maven plugin for CVE scanning |
+Four questions were researched. Each outcome and its effect on the design is reported in [§0.4.2](#042-web-search-research-conducted); they are listed here for completeness of the reference record:
+
+1. **Toolchain readiness** — whether the pinned framework line runs on the pinned language runtime, and whether any language preview feature is required. Outcome: the compiler release level is set to the pinned runtime and **no preview feature is enabled**.
+2. **Support horizon of the pinned framework line** — outcome: the pinned version is honoured as given, and the end-of-support position is recorded as a residual risk with a decision-log entry rather than being resolved by unilaterally advancing the version. **Verified as of 1 August 2026:** Spring Boot 3.5 reached **end of open-source support on 30 June 2026**, and the final open-source patch on that line was **3.5.16**, released 25 June 2026. No further open-source patches will be published for 3.5.x, so the pinned **3.5.11 is both out of open-source support and five patch releases behind the last free one**; newly disclosed vulnerabilities in the 3.5 line will not receive a free fix. Only the 4.0 and 4.1 lines remain in open-source support, and commercial extended support for 3.5 is available separately. **The pin is nevertheless retained**, because [§0.8.4](#084-special-instructions-and-constraints) makes pinned versions binding and forbids advancing one unilaterally; an upgrade requires an approved plan change. This is therefore an **accepted, disclosed residual risk**, not an open action.
+3. **Build-tool generation guidance** — outcome: the current stable 3.9 generation is retained and asserted through the enforcer floor, because the plugin ecosystem this build depends on is validated against it.
+4. **Legacy-to-object-oriented modernisation practice** — the tension between idiomatic restructuring and one-to-one fidelity. Outcome: **the fidelity mandate governs**, with source-citing Javadoc and the traceability matrix as the compensating mechanisms against unreadable transliteration, and the guidance honoured wherever it does not touch control flow. The reasoning is set out in [§0.4.2](#042-web-search-research-conducted) and the conflict is acknowledged in [§0.8.2](#082-the-one-documented-conflict-and-its-resolution).
+
+Additionally, **every pinned coordinate in [§0.6.1](#061-key-private-and-public-packages) was verified against the public package registry, which is how the Testcontainers module-artefact rename of [§0.6.2.2](#0622-blocker-a-build-breaking-coordinate-rename) was discovered before it could fail a build.** Fixed-width and decimal parity hazards were researched alongside, and all three recurring failure modes are pre-empted by design.
 
 ### 0.9.4 Attachments and External Metadata
 
-- **No Figma attachments** were provided for this project
-- **No file attachments** were found in `/tmp/environments_files/`
-- **Environment variables provided:** `AWS_ACCESS_KEY_ID`, `AWS_DEFAULT_REGION`
-- **Secrets provided:** `AWS_SECRET_ACCESS_KEY`, `LOCALSTACK_AUTH_TOKEN`
-- **Source repository commit SHA:** `27d6c6f` (referenced in tech spec version string v1.0-15-g27d6c6f-68)
+**No attachments were provided.** The attachment review returned no attachments for this project. There are consequently:
 
-### 0.9.5 Implementation Rules Provided
+- **No design files and no design-tool frames or URLs.** There are no frame names or links to enumerate. This, together with the absence of any browser-rendered user interface in the target ([§0.4.4](#044-user-interface-design-applicability)), is why the design-system alignment protocol is not applicable and **no Design System Compliance sub-section is produced**.
+- **No supplementary images, diagrams or specification documents** beyond what the repository itself contains.
 
-| Rule Name | Summary |
+External endpoints and artefacts referenced by this plan, **none of which carries credentials or is contacted at runtime by application code**:
+
+| Reference | Purpose |
 |---|---|
-| Observability | Ship logging, tracing, metrics, health checks with initial implementation |
-| Visual Architecture Documentation | Mermaid diagrams with before/after views, titles, and legends |
-| Explainability | Decision log + bidirectional traceability matrix, 100% coverage |
-| Executive Presentation | reveal.js HTML for non-technical leadership, every slide has visuals |
-| Onboarding & Continued Development | Clean-machine-to-running-app documentation, suggested next tasks |
-| LocalStack Verification | Zero live AWS dependencies, test resource create/destroy lifecycle |
+| The public Maven package registry | Verification of every pinned coordinate and version |
+| The emulator command-line release artefact at version 4.14.0 | Provisioned per the supplied setup instructions |
+| The local emulator service endpoint `http://localhost.localstack.cloud:4566` | The single endpoint used by all cloud-service integration. It resolves to the loopback interface, carries no credential, and is reachable only from the compose network or the authoring host. **No live cloud endpoint is ever contacted by any code path**, which is why there is no live credential in this repository to over-privilege ([§0.7.8](#078-security-implementation)) |
+| The Apache licence text URL | Referenced by the source-header convention carried forward onto every new file |
+| Local observability endpoints — metrics scrape, dashboards, trace collector and UI | Declared in the compose and provisioning files |
+
+### 0.9.5 User-Specified Rules Provided
+
+**Exactly one rule was provided: "Rule 1: Build Verify"** — a global coding and design standard organised into six lettered clauses covering engineering principles, code quality, repository hygiene, security, documentation and output requirements. It is inventoried clause by clause in [§0.8.1](#081-user-specified-rules-inventory), with the single conflict it raises resolved in [§0.8.2](#082-the-one-documented-conflict-and-its-resolution).
+
+**Its full text is available through the project's rules document and is deliberately not transcribed here**, in keeping with the principle that the on-disk document is the source of full text.
+
+Earlier project prose described six user-specified rules. **That claim is a defect**, corrected in [§0.2.2.1](#0221-corrections-to-the-prior-specification) and [§0.8.1](#081-user-specified-rules-inventory): the other five items are prompt-level requirements, not project rules.
+
+### 0.9.6 Environment and Setup Instructions Executed
+
+The supplied environment instructions were executed in order. Outcomes, with the container-runtime evidence dated as recorded in [§0.2.1.10](#02110-environment-evidence):
+
+| Step | Outcome |
+|---|---|
+| Install the cloud command-line client | **Completed.** Installed into an isolated virtual environment, because the system Python is externally managed and a direct install is refused |
+| Pull the emulator container image | **Completed**, with a deviation worth recording: the **community** emulator image at the pinned tag is used rather than the licensed variant, because the three services this plan needs — object storage, queue and notification — are all available in it |
+| Download and install the emulator command-line tool at the specified version | **Completed** |
+| Verify the emulator tool version | **Completed** — reports the specified version 4.14.0 |
+| Configure the emulator authorisation token | **Completed.** The token is supplied through the environment and **appears in no file in this repository** |
+| Start the emulator | **Completed**, as part of the compose stack rather than as a standalone process, so that the database and observability services come up with it |
+| Object-storage bucket smoke test against the local endpoint | **Completed.** The three buckets, the FIFO queue and the single notification topic are provisioned idempotently by `localstack-init/init-aws.sh` on every bring-up |
+
+Independently of the supplied script, the language runtime and build tool were provisioned at the versions this plan pins, and both were verified by invoking them ([§0.6.1.3](#0613-runtime-and-toolchain)).
+
+**Two environment facts are recorded because they cause confusing failures if unknown**, and they belong in the troubleshooting surface Clause E requires:
+
+- **Emulator state is ephemeral** and is re-provisioned on each bring-up. The seed migration, not the emulator, is the source of truth for data; a bucket that existed before a restart will not exist after one unless the initialisation script recreates it — which is exactly why that script is idempotent.
+- **A global cloud-endpoint environment override must not be exported.** The cloud SDK honours it, which would silently redirect containerised test clients onto the shared local emulator instance instead of the per-test container they provisioned, producing cross-test interference that looks like flakiness rather than misconfiguration.
+
+**The documentation-build prerequisite was closed on 1 August 2026 and is open again on the current host. Both states are recorded.** *Historical, 1 August 2026:* MkDocs 1.6.1 with `techdocs-core` 1.7.0 and `mermaid2` was provisioned on that authoring host and run against the repository configuration; `mkdocs build` exited 0 and rendered this document in full, and `mkdocs build --strict` aborted on **79** warnings - 41 links to repository-root artefacts outside the MkDocs `docs_dir` plus 38 to documentation-set members that later checkpoints create - which were then all converted to plain code spans, after which `--strict` exited 0. The rendered page was also loaded in a headless browser and audited element by element, which is what established that the tables, code blocks and anchors are correct in the *rendered* output and not merely in the source; that pass found two defects the build log does not reveal, an empty in-page table of contents caused by a second level-one heading, **fixed** and documented in [§0.2.1.10](#02110-environment-evidence) so it cannot be reintroduced, and a console error originating in the documentation toolchain's search assets. *Superseded, 2 August 2026:* `mkdocs` was `Not available` on that host - no executable, not importable - so none of the 1 August measurements could be reproduced there. **Current, Friday 7 August 2026: the prerequisite is closed again, and this time on a reproducible reading.** MkDocs 1.6.1 with both declared plugins is installed at `/usr/local/bin/mkdocs` on this host and was executed against the repository configuration: `mkdocs build --strict --site-dir <path outside the repository>` exits **0** with **0 `WARNING` lines and 0 `ERROR` lines**. The site now publishes **all eight files in `docs/`** through the `nav`, and `validation.nav.omitted_files: warn` was added so a future omission fails the build rather than passing at INFO level. The source-side remediations the 1 August pass produced remain in the repository and remain verifiable without MkDocs: the single level-one heading, the code-span link form, and the `markdown_extensions` block in `mkdocs.yml`. *What would still close the remaining part:* the **Backstage-hosted** TechDocs pipeline has never been exercised from any of these hosts, and that needs a documentation step in the Backstage environment itself, or the equivalent output from a CI job that has one.

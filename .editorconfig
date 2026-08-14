@@ -1,0 +1,154 @@
+# ******************************************************************
+# Program     : .editorconfig
+# Application : CardDemo
+# Type        : Editor formatting contract (repository hygiene)
+# Function    : Deterministic whitespace, charset and line-ending
+#               conventions for the Java 25 / Spring Boot tree added
+#               alongside the frozen legacy corpus, stopping at the
+#               boundary of app/, samples/ and diagrams/.
+# Source      : app/cbl/CBACT04C.cbl:1-21 (fixed-column COBOL whose
+#               banner is space-padded to column 72 and body text to
+#               column 80 - spacing that is load bearing) +
+#               app/data/EBCDIC/** (records with no line terminator at
+#               all) @ 7756d89
+# ******************************************************************
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ******************************************************************
+#
+# EditorConfig is a hint protocol honoured by editors on save. It is not
+# a formatter and not a build step: it never rewrites a file on its own,
+# never runs in CI and has no effect on compilation. Its only job is to
+# stop two contributors' editors from disagreeing about whitespace, and
+# to keep every editor away from the frozen corpus.
+#
+# Sections run general -> specific and the LAST matching section wins per
+# property, so the frozen-corpus blocks sit at the bottom. The defaults
+# mirror .gitattributes exactly - LF for sources and config, CRLF for
+# *.cmd and *.bat - so the editor and Git cannot disagree about a line
+# ending. To see what one path resolves to: `editorconfig <abs-path>`.
+
+root = true
+
+# Baseline. 2 spaces suits the YAML, XML, JSON, SQL, shell and Markdown
+# that dominate the tree; Java widens it below.
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Java sources. A hint only - the compiler ignores it.
+[*.java]
+indent_size = 4
+max_line_length = 120
+
+# Build descriptors, resources, migrations, container and CI definitions.
+# The width hint is confined to these structured formats.
+[*.{xml,yml,yaml,json,sql,sh,properties,html}]
+max_line_length = 120
+
+# Markdown keeps its trailing whitespace: two trailing spaces are a hard
+# line break, and trimming them would silently reflow README.md and the
+# docs/ set. No width hint either - prose legitimately runs long.
+[*.md]
+trim_trailing_whitespace = false
+
+# ==================================================================
+# README.md - PRE-EXISTING AND CRLF, SO THE [*] BASELINE MUST NOT REACH IT
+#
+# README.md is not a migration artefact. It existed at the traceability anchor
+# 7756d89 and is the ONLY file outside app/ and samples/ that is CRLF-terminated
+# there: 324 lines, 14639 bytes. The [*.md] block above narrows only
+# trim_trailing_whitespace, so `end_of_line = lf` from [*] still reached this
+# file - and that is exactly the setting whose Git counterpart stripped all 324
+# CR bytes and produced a 324-line diff with ZERO content change.
+#
+# crlf is asserted rather than unset, deliberately. `unset` would express no
+# opinion, which leaves an editor free to append LF lines to a CRLF file and
+# create mixed terminators. Stating crlf keeps any appended content - including
+# the Java build and run sections the plan requires - consistent with the 324
+# lines already present. It converts nothing, because the file is already
+# entirely CRLF.
+#
+# This mirrors `README.md -text !eol` in .gitattributes. Change the two together
+# or the editor and Git will disagree about this file.
+# ==================================================================
+[README.md]
+end_of_line = crlf
+
+# ---- Windows launchers. cmd.exe needs CRLF to parse a batch file
+# ---- reliably; this matches .gitattributes, which sets eol=crlf for
+# ---- both extensions. Covers mvnw.cmd.
+[*.{bat,cmd}]
+end_of_line = crlf
+
+# Fixed-width test fixtures and parity baselines: byte-exact copies of
+# the legacy datasets, whose trailing padding is significant. Trimming or
+# reindenting them would corrupt the record geometry the parity
+# comparison depends on. LF and UTF-8 are kept because CRLF would add a
+# byte per record.
+[src/test/resources/**.txt]
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+
+# Frozen legacy corpus - last blocks, so they override everything above.
+# app/, samples/ and diagrams/ are read-only reference material that must
+# survive byte-for-byte, so every property is unset: the editor is given
+# no opinion to act on.
+#
+# trim_trailing_whitespace is the one exception, pinned to false rather
+# than unset, because trimming is a one-directional destructive edit that
+# many editors perform by default whereas `unset` merely declines to
+# express a preference. Trailing-space padding to the fixed columns 72
+# and 80 is pervasive in the corpus, so the stronger, explicit
+# prohibition is the correct choice.
+#
+# Each block unsets every property this file sets anywhere, including
+# max_line_length, which no section above currently applies to these
+# paths. That is deliberate rather than redundant: it keeps the block a
+# complete firewall, so widening an earlier section later cannot leak an
+# opinion into the frozen trees. tab_width is absent because unsetting
+# indent_size already clears the derived tab_width.
+
+[app/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+max_line_length = unset
+
+[samples/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+max_line_length = unset
+
+[diagrams/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+max_line_length = unset

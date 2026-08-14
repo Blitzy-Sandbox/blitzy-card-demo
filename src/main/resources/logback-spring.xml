@@ -1,0 +1,1798 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ******************************************************************
+  * Program     : logback-spring.xml
+  * Application : CardDemo
+  * Type        : Logback configuration (structured JSON logging, trace
+  *               correlation, secret and PII masking)
+  * Function    : Sole logging configuration for the CardDemo modular
+  *               monolith. It replaces the only instrumentation the legacy
+  *               corpus has, which is DISPLAY to SYSOUT plus a four
+  *               character file status renderer, with one line delimited
+  *               JSON event stream on stdout carrying a stable field set,
+  *               the traceId / spanId / correlationId trio out of MDC and,
+  *               on batch events, the Spring Batch job instance identifier.
+  *               It is simultaneously the log side secret control:
+  *               credentials, BCrypt hashes, JWTs, AWS key material, social
+  *               security numbers, card numbers, CVVs and the remaining
+  *               customer PII are redacted before an event can reach an
+  *               appender, in every profile without exception.
+  *               One parity obligation constrains all of it: the literal
+  *               'FILE STATUS IS: NNNN' followed by four characters must
+  *               pass through byte for byte, because Gate 1 compares this
+  *               stream against the legacy baseline.
+  * Source      : app/cbl/CBTRN02C.cbl @ 7756d89 - paragraph
+  *               9910-DISPLAY-IO-STATUS at :L714-L727, whose
+  *               DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 at :L721 and
+  *               :L725 is the parity literal, over IO-STATUS-04 at
+  *               :L138-L140 (PIC 9 then PIC 999, four characters exactly);
+  *               paragraph 9999-ABEND-PROGRAM at :L707-L711 (abend code
+  *               999); the end of run counters at :L227-L228 and the
+  *               RETURN-CODE 4 rule at :L229-L231; the reject record
+  *               geometry at :L176-L182 (350 + 80 = 430 bytes);
+  *               app/cbl/CBACT04C.cbl:L181,L230, app/cbl/CBTRN03C.cbl:L160,
+  *               L215, app/cbl/CBSTM03A.CBL:L360,L384,L408,L740 and
+  *               app/cbl/CBTRN01C.cbl:L156,L195 @ 7756d89 - the remaining
+  *               DISPLAY based batch instrumentation this file supersedes;
+  *               app/cpy/CSUSR01Y.cpy:L21 @ 7756d89 (SEC-USR-PWD PIC X(08),
+  *               whose Java counterpart is a BCrypt hash that must never be
+  *               logged);
+  *               app/cpy/CVCUS01Y.cpy:L6-L20 @ 7756d89 (CUST-SSN PIC 9(09)
+  *               at :L17, CUST-GOVT-ISSUED-ID PIC X(20) at :L18,
+  *               CUST-DOB-YYYY-MM-DD PIC X(10) at :L19,
+  *               CUST-EFT-ACCOUNT-ID PIC X(10) at :L20, CUST-PHONE-NUM-1
+  *               and CUST-PHONE-NUM-2 PIC X(15) at :L15-L16, the customer
+  *               names at :L6-L8 and the address at :L9-L14);
+  *               app/cpy/CSMSG02Y.cpy:L22-L28 @ 7756d89 - internally titled
+  *               CABENDD.CPY, the abend work area holding ABEND-CODE X(4),
+  *               ABEND-CULPRIT X(8), ABEND-REASON X(50) and ABEND-MSG X(72);
+  *               app/cpy/COCOM01Y.cpy:L25-L28 @ 7756d89 (CDEMO-USER-ID
+  *               PIC X(08) and CDEMO-USER-TYPE PIC X(01) with its 'A' and
+  *               'U' 88 levels, the identity the correlation trio replaces);
+  *               app/cpy/CVACT02Y.cpy:L5,L7,L8 @ 7756d89 (CARD-NUM X(16),
+  *               CARD-CVV-CD 9(03), CARD-EMBOSSED-NAME X(50));
+  *               app/cpy/CVACT03Y.cpy:L5 and app/cpy/CVTRA05Y.cpy:L15
+  *               @ 7756d89 (XREF-CARD-NUM and TRAN-CARD-NUM, both X(16))
+  ******************************************************************
+  * Copyright Amazon.com, Inc. or its affiliates.
+  * All Rights Reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License").
+  * You may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  *    http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing,
+  * software distributed under the License is distributed on an
+  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  * either express or implied. See the License for the specific
+  * language governing permissions and limitations under the License
+  ******************************************************************
+-->
+<!--
+  ==================================================================
+  WHAT IT DOES
+  ==================================================================
+  Emits every log event as ONE line of JSON on standard output, with a
+  field set that is identical in every profile so downstream processing is
+  deterministic:
+
+    timestamp  level  thread  logger  message  application  profile
+    traceId  spanId  correlationId
+    jobInstanceId    (batch events only, when the batch layer sets it)
+    exceptionClass  rootCauseClass  rootCauseMessage  stackTrace
+                    (throwable bearing events only)
+
+  traceId and spanId are read from the active span, which Micrometer tracing
+  bridged to OpenTelemetry supplies, and are placed in MDC by
+  CorrelationIdFilter.applyTraceContext - the bridge does not write these keys
+  itself, which the filter's own ORDER documentation records: before its order
+  was corrected to run behind the span opener, both keys were never populated.
+  That matters beyond accuracy. Because one method writes both keys from one
+  TraceContext, finding M-03 could put the sampling decision beside them under
+  a fourth key, traceFlags, and rely on all three describing the same span.
+  That key is a propagation carrier for the outbound W3C traceparent header and
+  is deliberately NOT a log field: it is absent from the pattern template below
+  and from the <mdc> allow list, so it appears in no record.
+  correlationId is also placed in MDC by CorrelationIdFilter,
+  which is an ADDITIVE capability rather than a translation of EIBTRNID. The
+  specification motivates the filter by analogy with that field, but the
+  analogy is not a replacement relationship: EIBTRNID is supplied by the
+  transaction monitor rather than declared by the application, and it occurs
+  ZERO times in app/cbl, so there is no citable source line and none may be
+  fabricated. What the corpus actually carries is no per request instrumentation
+  at all beyond DISPLAY, which is precisely why this trio is new capability.
+  jobInstanceId is the Spring
+  Batch job instance identifier, which is what makes a run's log events
+  correlatable with the deterministic per run S3 object prefixes that replace
+  the seven GDG bases: TransactionWriter and RejectWriter build those keys
+  from jobExecution.getJobInstance().getInstanceId(), so the same number that
+  names the object also tags the log.
+
+  Before any of that reaches an appender it passes through a masking layer.
+  Rule 1 Clause D says "No secrets in code, logs, tests, or config", and it
+  names logs and tests explicitly, so the masking rules are IDENTICAL in
+  every profile and are not weakened anywhere.
+
+  ==================================================================
+  HOW TO RUN / BUILD / TEST
+  ==================================================================
+  RUN. Nothing to wire up. Spring Boot auto detects this file from the
+  classpath purely because of its name. The '-spring' suffix is required and
+  is not cosmetic: only logback-spring.xml is loaded through
+  SpringBootJoranConfigurator, which is what registers the <springProfile>
+  and <springProperty> handlers used below. A plain logback.xml is read by
+  Logback before the Spring Environment exists, so both of those elements
+  would be unknown and silently skipped. There is deliberately no
+  logging.config property in any profile YAML, and there is deliberately no
+  second Logback file: no logback.xml, no logback-test.xml, no include file.
+
+  BUILD. This file is a resource, not a compilation unit, so it has no
+  compile step of its own. It is copied to target/classes by
+  process-resources and validated at runtime by Joran.
+
+  TEST. Logback prints its own status report to the console automatically
+  whenever a configuration WARNING or ERROR occurs, and stays silent when
+  the configuration is clean, so a healthy startup is silent and a broken
+  one is loud. To see the full report even when clean, add
+  -Dlogback.debug=true or
+  -Dlogback.statusListenerClass=ch.qos.logback.core.status.OnConsoleStatusListener
+  to the JVM. No status listener is committed here, because printing a clean
+  report on every boot would be noise in the JSON stream this file exists to
+  produce.
+
+  To verify the masking, log a synthetic non real value that matches a rule
+  and assert the emitted JSON does not contain it. The three checks that
+  matter most, because each one is a boundary rather than a happy path:
+
+    1. PARITY. A message containing FILE STATUS IS: NNNN0023 and one
+      containing FILE STATUS IS: NNNN9001 must come out byte for byte
+      unchanged in the message field. Both branches of
+      9910-DISPLAY-IO-STATUS are covered by those two cases.
+    2. POSITIVE MASKING. A password, a BCrypt hash, an SSN, a JWT, a bearer
+      token, an AWS key, a card number, a CVV and the remaining PII fields
+      must all be redacted.
+    3. NEGATIVE MASKING. The nine digit counters from
+      app/cbl/CBTRN02C.cbl:L227-L228 and a sixteen digit TRAN-ID must NOT
+      be redacted, and a dotted logger name must not be mistaken for a JWT.
+      See the note on contextual masking in the decorator below for why
+      these three cases are the ones that constrain the rule shapes.
+
+  ==================================================================
+  KEY CONFIGS AND DEFAULTS
+  ==================================================================
+  NO sensitive value is configurable here, and none is present. This file
+  reads no credential, no endpoint and no hostname. Every tunable it has is
+  listed below with its default.
+
+    APPLICATION_NAME          <- spring.application.name, default carddemo
+    ACTIVE_PROFILES           <- spring.profiles.active, default "default"
+    CONSOLE_LEVEL_CEILING     verbosity ceiling on the appender.
+                              local TRACE, test DEBUG, prod INFO,
+                              default TRACE when none of the three is active.
+    REDACTION_*               the fixed redaction tokens. Constants, not
+                              knobs: changing one changes what a log
+                              consumer greps for.
+
+  OWNERSHIP BOUNDARY, so that nothing is stated twice. Rule 1 Clause C says
+  "avoid duplication", and the logging.level section of
+  src/main/resources/application.yml
+  already draws the line from its side: it owns logging.level and states that
+  "no encoder, appender or pattern is restated here". So:
+
+    application.yml owns  ->  per logger operational verbosity
+    this file owns        ->  encoder, appender, JSON field set, MDC
+                              selection, masking, and the appender level
+                              ceiling
+
+  That split is not a convention, it is a mechanical consequence of the
+  order Spring Boot initialises in. LoggingApplicationListener loads this
+  file FIRST and applies logging.level AFTERWARDS, so a <logger> level
+  declared here for a logger that application.yml also names is overwritten
+  a moment later and would be dead configuration. The only <logger> elements
+  below are therefore a narrow secret leak floor, and the reason each one is
+  NOT dead is recorded on the block itself.
+
+  Spring Boot's own defaults.xml is deliberately NOT included. It exists to
+  supply the console and file PATTERN properties that this file replaces
+  outright, and it also sets logger levels that application.yml owns.
+  Including it would duplicate both.
+
+  ==================================================================
+  COMMON FAILURE MODES AND TROUBLESHOOTING
+  ==================================================================
+  Every symptom below has been seen in this class of configuration. The
+  cause is given first because the symptom is usually indirect.
+
+  1. Output is plain text, not JSON, and the status report says
+    "Could not create component [encoder]" or
+    "no applicable action for [jsonGeneratorDecorator]".
+    CAUSE: net.logstash.logback:logstash-logback-encoder is not on the
+    runtime classpath. It is pinned to 8.0 by the root pom.xml and is a
+    compile scoped dependency there, so this only happens if the dependency
+    was removed or the JAR failed to resolve. Severity: Blocker.
+    FIX: restore the dependency in the root pom.xml. Do not add a
+    dependency here; this file declares none and must not.
+
+  2. A provider or masking rule is silently absent from the output.
+    CAUSE: a misspelled element name. Joran reports it as
+    "no applicable action for [xyz]" at WARN and then carries on, so the
+    configuration loads and only the output is wrong. This is the single
+    most likely failure and it does not stop startup. Severity: High.
+    FIX: run once with -Dlogback.debug=true and read the report. Every
+    element used below is bound to a real setter on a real class in
+    logstash-logback-encoder 8.0.
+
+  3. traceId and spanId are present but always empty.
+    CAUSE: no tracing bridge is active, or sampling dropped the trace.
+    This is NOT a fault in this file. The fields are emitted from the
+    pattern provider with an empty default precisely so the field set stays
+    stable when tracing is off, which keeps a log consumer's schema valid.
+    Severity: Low.
+    FIX: check management.tracing and management.otlp.tracing in the active
+    profile YAML.
+
+  4. correlationId is always empty.
+    CAUSE: the request did not pass through CorrelationIdFilter, or the
+    work is happening on a thread the MDC was not propagated to. MDC is
+    thread local: an @Async hand off, a parallel stream or a Spring Batch
+    worker thread loses it unless it is copied across.
+    Severity: Medium, because it breaks request correlation without
+    breaking anything visible.
+    FIX: propagate MDC across the hand off. Do not fix it here.
+
+  5. jobInstanceId is missing on batch events.
+    CAUSE: the batch layer did not put it in MDC for that step. This file
+    deliberately emits it only when present rather than emitting an empty
+    one, so that its presence means "this is a batch event".
+    Severity: Low.
+
+  6. A secret appears in the log anyway.
+    CAUSE, in order of likelihood: (a) the value was embedded inside a
+    larger unlabelled string, so no rule could recognise it; (b) it was
+    logged under a field name not in the path list; (c) a rule matched but
+    the value continued past the character class boundary.
+    Severity: Blocker in all three cases.
+    FIX: stop emitting the value at source. That is the primary control and
+    this masking layer is explicitly the second: as
+    model/entity/Account.java:874 puts it, withholding a value at source is
+    strictly stronger than relying on a rule to recognise it downstream,
+    because masking must know the shape of what it is looking for and an
+    unlabelled decimal has no distinguishing shape. Add the field name to
+    the path list below as well, so the same accident is caught next time.
+
+  7. The parity comparison in Gate 1 reports a diff on a FILE STATUS line.
+    CAUSE: a masking rule matched inside the parity literal, or an encoder
+    setting reformatted the message.
+    Severity: Blocker.
+    FIX: see the parity carve out documented on the decorator below. No
+    rule here may match that line; every rule is anchored so that it
+    cannot.
+
+  8. Startup fails with a Joran error mentioning springProfile or
+    springProperty.
+    CAUSE: the file was loaded by plain Logback rather than through Spring
+    Boot, which happens if it is renamed to logback.xml or read directly by
+    a bare LoggerContext in a test harness.
+    Severity: High.
+    FIX: keep the name logback-spring.xml, and in a harness initialise
+    through org.springframework.boot.logging.LoggingSystem so the Spring
+    handlers are registered.
+
+  9. Logs are missing entirely under load.
+    CAUSE: not this file. There is no AsyncAppender and no discarding
+    filter anywhere below, so no event can be dropped by the logging
+    configuration. See the reliability note on the appender.
+    Severity: n/a.
+
+  10. Startup fails with java.util.regex.PatternSyntaxException, and the
+    application then runs with NO logging at all.
+    CAUSE: a value rule below reached the regex compiler truncated, because
+    Logback substitutes variables in element text first and its tokenizer
+    consumed part of the pattern. There are exactly two sequences that do
+    this, both documented in full on the decorator: an unbalanced closing
+    brace, which is why four rules write \x7d, and a '?' immediately
+    followed by ':-', which is why the ARN rule writes its hyphen as [-].
+    Severity: Blocker. One uncompilable rule fails the decorator, which
+    fails the encoder, which fails the appender.
+    FIX: read the reported index against the AUTHORED pattern text - the
+    exception's own getPattern() shows the truncated remnant, which is the
+    fastest way to see where the body was cut. Then run
+    LogbackMaskingGuardTest, which compiles every rule extracted from this
+    file and names the offending sequence.
+  ==================================================================
+-->
+<!--
+  scan="false": no configuration reload thread. Reloading would make logging
+  behaviour depend on wall clock time, and Rule 1 Clause A puts determinism
+  first. debug="false": Logback still auto prints its status report on any
+  WARNING or ERROR, so a broken configuration is loud while a clean one stays
+  out of the JSON stream. Both are the defaults, stated explicitly because
+  both are behavioural.
+-->
+<configuration scan="false" debug="false">
+
+  <!--
+    Context properties resolved from the Spring Environment. Available only
+    because this file is named logback-spring.xml. Neither carries anything
+    sensitive: one is a fixed application name, the other a profile list.
+    spring.application.name is set to carddemo in
+    src/main/resources/application.yml; the defaultValue keeps the field
+    populated if this file is ever initialised before that YAML is bound.
+  -->
+  <springProperty scope="context" name="APPLICATION_NAME" source="spring.application.name"
+                  defaultValue="carddemo"/>
+  <springProperty scope="context" name="ACTIVE_PROFILES" source="spring.profiles.active"
+                  defaultValue="default"/>
+
+  <!--
+    Redaction tokens. Constants rather than tunables: a log consumer greps
+    for these, so changing one is a breaking change to the log contract.
+    They are typed so that triage can tell WHAT was withheld without the
+    value ever being emitted, and none contains a '$', which in a masking
+    replacement would be read as a capture group reference.
+  -->
+  <property name="REDACTION" value="[REDACTED]"/>
+  <property name="REDACTION_BCRYPT" value="[REDACTED_BCRYPT_HASH]"/>
+  <property name="REDACTION_SSN" value="[REDACTED_SSN]"/>
+  <property name="REDACTION_JWT" value="[REDACTED_JWT]"/>
+  <property name="REDACTION_AWS" value="[REDACTED_AWS_KEY]"/>
+  <property name="REDACTION_CARD" value="[REDACTED_CARD_NUMBER]"/>
+  <property name="REDACTION_CVV" value="[REDACTED_CVV]"/>
+  <property name="REDACTION_PII" value="[REDACTED_PII]"/>
+  <property name="REDACTION_ACCOUNT_KEY" value="[REDACTED_ACCOUNT]"/>
+
+  <!--
+    ==============================================================
+    PROFILE VARIATION: verbosity ceiling, and nothing else
+    ==============================================================
+    This is the ONLY thing that differs between profiles. The appender, the
+    encoder, the field set and every masking rule are deliberately identical
+    everywhere, for two reasons: Rule 1 Clause D names "tests" alongside
+    logs and config, so masking may not be relaxed for a test run; and what
+    is exercised in test is then bit for bit what runs in production.
+
+    The ceiling is applied on the APPENDER, not on a logger, which is
+    precisely why it belongs here. application.yml owns logger levels and is
+    applied after this file, so a logger level set here would be overwritten.
+    An appender filter has no YAML equivalent and cannot be overridden by
+    logging.level at all, which makes this a real control rather than a
+    restatement: even if logging.level.org.hibernate is raised to TRACE by
+    an environment variable in production, TRACE is where
+    org.hibernate.orm.jdbc.bind prints bound parameter values, and in prod
+    those events cannot reach the appender.
+
+    Ordering is load bearing. When several of these profiles are active at
+    once every matching block runs and the LAST one wins, so they are
+    written most permissive first and strictest last. prod therefore always
+    wins over test, and test over local. Rule 1 Clause A: avoid unsafe
+    defaults.
+  -->
+  <springProfile name="local">
+    <property name="CONSOLE_LEVEL_CEILING" value="TRACE"/>
+  </springProfile>
+  <springProfile name="test">
+    <property name="CONSOLE_LEVEL_CEILING" value="DEBUG"/>
+  </springProfile>
+  <springProfile name="prod">
+    <property name="CONSOLE_LEVEL_CEILING" value="INFO"/>
+  </springProfile>
+
+  <!--
+    ==============================================================
+    CONSOLE: the one and only appender
+    ==============================================================
+    JSON on standard output is the whole output strategy. The root Dockerfile
+    runs a single non root JAR as PID 1 and the root docker-compose.yml
+    collects its stdout, so the container runtime is the log shipper and this
+    process does not need to be.
+
+    THERE IS DELIBERATELY NO FILE APPENDER. Rule 1 Clause C forbids
+    environment specific assumptions, and a file appender has to name a
+    writable directory, which is an assumption about the filesystem that
+    neither the image nor a developer machine nor a CI runner shares. It
+    would also have to duplicate the entire encoder and masking block below,
+    since there is no way to share one encoder instance between two
+    appenders, and a duplicated masking block is a masking block that can
+    drift out of step. The legacy equivalents of a log file were SYSOUT and
+    the DISPLAY statements at app/cbl/CBTRN02C.cbl:L194,L227-L228,L232 and
+    their counterparts in the other four batch programs, all of which went to
+    the job's spool, not to a managed dataset.
+
+    RELIABILITY, and the tradeoff, per Rule 1 Clause A and Clause B.
+    There is NO AsyncAppender. A synchronous ConsoleAppender cannot lose an
+    event and cannot reorder one: there is no queue to overflow, so there is
+    no discarding threshold to get wrong and no neverBlock behaviour to
+    document. The cost is that the logging call blocks for the duration of
+    the write. That cost is accepted deliberately, because the alternative
+    trades a guarantee for throughput, and the single most important event
+    this application emits is the last one before an abend: paragraph
+    9999-ABEND-PROGRAM at app/cbl/CBTRN02C.cbl:L707-L711 displays
+    'ABENDING PROGRAM', moves 999 into the abend code and calls CEE3ABD, and
+    the Java equivalent raises FatalProcessingException carrying abend code
+    999 with process return code 12. An asynchronous queue is exactly the
+    mechanism that would drop that line on the way down. immediateFlush is
+    left at its default of true for the same reason.
+  -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+
+    <!--
+      Verbosity ceiling. ThresholdFilter returns NEUTRAL at or above the
+      level and DENY below it, so this caps how verbose the log can get
+      regardless of any logger level. This is intentional filtering and is
+      NOT the event discarding Rule 1 Clause B forbids: nothing accepted for
+      output is thrown away, and no exception is swallowed, since a
+      throwable bearing event is logged at WARN or ERROR and clears every
+      ceiling this file sets. The default of TRACE applies when none of
+      local, test or prod is active, which matches local: permissive, so a
+      bare context or a harness sees everything.
+
+      Troubleshooting: if a DEBUG log line is missing in prod, this is why,
+      and raising logging.level will not bring it back. That is the intent.
+    -->
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>${CONSOLE_LEVEL_CEILING:-TRACE}</level>
+    </filter>
+
+    <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+
+      <!--
+        ==========================================================
+        MASKING. The security core of this file.
+        ==========================================================
+        Rule 1 Clause D, verbatim: "No secrets in code, logs, tests, or
+        config." This decorator is that sentence applied to the log stream.
+        It runs inside the JSON generator, so it sees every value the
+        encoder writes and there is no path around it.
+
+        TWO LAYERS, because they fail in different directions.
+
+        (1) FIELD NAME masking, the <paths> lists. A single name with no '/'
+            masks a field of that name at ANY depth, so it covers a
+            structured argument, an MDC entry and a nested object alike.
+            This layer is exact and cheap, a hash lookup on the field name,
+            and it is the layer that catches a whole object being logged.
+
+        (2) VALUE masking, the <valueMask> rules. A regular expression over
+            the value itself, for a secret embedded in free text such as an
+            interpolated message. Note that a masker sees ONLY the value,
+            never the surrounding "key":"value" JSON, so the ':' that a rule
+            looks for must occur INSIDE the value. That is why the field
+            name layer exists and why these rules cannot false positive on
+            JSON punctuation.
+
+        WHY THE RULES ARE CONTEXTUAL AND NOT SHAPE ONLY. This is the single
+        most important design decision here and it is forced by the data.
+        Three shapes in this corpus are ambiguous:
+
+          - A sixteen digit card number is INDISTINGUISHABLE from a sixteen
+            digit TRAN-ID. app/cpy/CVTRA05Y.cpy:L5 declares TRAN-ID PIC
+            X(16) and :L15 declares TRAN-CARD-NUM PIC X(16), and the fixture
+            data proves the shapes overlap: every TRAN-ID in
+            app/data/ASCII/dailytran.txt is sixteen digits beginning '00',
+            while CARD-NUM in app/data/ASCII/carddata.txt is synthetic and
+            NOT conformant to any issuer prefix, taking leading pairs from
+            05 through 98 including 05 and 09. An issuer prefix test is
+            therefore impossible, and a blanket sixteen digit rule would
+            redact the transaction identifiers that Gate 1's parity
+            comparison is keyed on.
+          - A bare nine digit SSN is indistinguishable from the end of run
+            counters. CUST-SSN is PIC 9(09) at app/cpy/CVCUS01Y.cpy:L17 and
+            WS-TRANSACTION-COUNT and WS-REJECT-COUNT are PIC 9(09) at
+            app/cbl/CBTRN02C.cbl, displayed at :L227-L228. A blanket nine
+            digit rule would redact the counters.
+          - A JWT is three dot delimited segments, which is also the shape
+            of every dotted logger name. A generic x.y.z rule would redact
+            the logger field on every single event.
+
+        So each of those three is anchored: on a field name, on a label
+        adjacent to the value, or on an unambiguous prefix. The consequence
+        is stated plainly rather than hidden: a card number embedded
+        UNLABELLED in free text is not caught. Severity Medium, and the
+        remediation is the one the entity classes already implement, namely
+        never emitting it. model/entity/CardCrossReference.java:490 records
+        the same conclusion from the other side: masking here is a backstop,
+        and not emitting the value at all is the primary defence.
+
+        THE PARITY CARVE OUT. No rule below can match
+        'FILE STATUS IS: NNNN' followed by four characters. Verified rule by
+        rule: every credential and PII rule requires a label word, and none
+        of FILE, STATUS or IS is one; the SSN rule requires either dashes or
+        an SSN label; the card rule requires a card label; the JWT rule
+        requires an 'eyJ' prefix; the AWS rule requires an AKIA family
+        prefix; the BCrypt rule requires a '$2x$' prefix. The line carries
+        no personal or financial value at all, so masking it would break the
+        Gate 1 comparison while protecting nothing. This restates, from the
+        configuration side, the carve out already documented at
+        service/shared/FileStatusMapper.java:204-210 and the obligation at
+        exception/package-info.java:206.
+
+        A CLOSING BRACE MUST NEVER APPEAR LITERALLY IN A PATTERN BELOW.
+        Severity if violated: Blocker, and it fails silently at first glance.
+        Logback resolves ${...} in element bodies by tokenizing the body, and
+        that tokenizer treats a closing brace as a structural token. A brace
+        that closes a quantifier such as {0,40} is balanced and survives, but
+        an UNBALANCED one, which is what a brace inside a negated character
+        class is, TRUNCATES the body at that point. Four rules here need to
+        exclude a closing brace so a match stops at the end of a JSON object,
+        and each writes it as the hex escape \x7d for that reason. Do not
+        "tidy" \x7d back to a literal brace, and do not try a backslash escape
+        either: both were measured through Logback's own substitution and both
+        truncate. The failure is not subtle in its effect, only in its cause.
+        The pattern arrives at the regex compiler cut off mid class, the
+        compiler throws PatternSyntaxException, the masking decorator fails to
+        start, and the WHOLE logging configuration fails to load, so the
+        application starts with no logging rather than with unmasked logging.
+        This was found by running the configuration, not by reading it: the XML
+        is well formed and each regex is valid in isolation, so no static check
+        catches it. Verified by re-running the harness after the fix: all 15
+        pattern bodies now survive substitution byte for byte.
+
+        NOR MAY A '?' BE FOLLOWED IMMEDIATELY BY ':-'. Severity if violated:
+        Blocker, by the identical mechanism and with the identical silent cause.
+        The same tokenizer reads ':-' as the default-value separator of a
+        ${...} construct, so it treats '?:-' as a variable reference carrying a
+        default and DELETES everything from the ':-' onward. This bites the most
+        natural spelling of a non-capturing group whose first literal is a
+        hyphen. Measured, not surmised, while authoring R14:
+            authored   (arn:aws(?:-[a-z]{2,8})*:...
+            compiled   (arn:aws(?
+            result     PatternSyntaxException: Unknown inline modifier at
+                       index 10, decorator start fails, no masking layer
+        The remedy is to write the hyphen as the character class [-], which is
+        identical in meaning and removes the ':-' adjacency. '(?:' followed by
+        anything else is unaffected, which is why R1 and R11 through R13 have
+        never hit it, and ordinary '${var:-default}' substitution elsewhere in
+        this file keeps working - the hazard is specifically the sequence '?:-'.
+        Both hazards are now guarded by an executed test rather than by this
+        comment alone: LogbackMaskingGuardTest compiles every rule extracted
+        from this file and fails on either sequence, so a reintroduction is a
+        red build rather than a silent loss of masking in production.
+
+        REGEX COST, per Rule 1 Clause A, measured rather than asserted. No rule
+        contains a quantifier nested inside another quantifier, which is the
+        shape that backtracks catastrophically. Where a rule has to allow a
+        compound identifier around a keyword the surrounding class is BOUNDED
+        to 40 characters rather than left open ended, which caps the work per
+        start position instead of letting it grow with the line length.
+        Confirmed empirically on fifteen adversarial seeds at 25,000 and
+        200,000 characters, one rule per clean JVM, minimum of thirteen warm
+        runs, and the whole gate repeated five times. For that 8x increase in
+        line length the rules grow by 8.1x to 9.9x, which is linear;
+        quadratic growth would have shown 64x. One rule per run drifts higher,
+        to 18.5x at worst, but WHICH rule drifts changes between runs, which
+        is the signature of host noise rather than of pattern behaviour. The
+        whole thirteen rule set costs 12 to 16 microseconds on a realistic 76
+        character CardDemo event, and the most expensive rule costs 0.09 to
+        0.10 microseconds per character on its worst adversarial seed, with
+        0.216 the highest single observation across the five runs. Two rules
+        needed structural
+        work to reach that figure and both are documented at their own
+        definition: R10 was anchored on the literal '://' (about 45x faster),
+        and R1, R4, R11, R12 and R13 were anchored on their keyword
+        alternation rather than on a broad leading character class (3.3x to
+        4.1x faster each). The common lesson is that a leading class which
+        matches nearly every character is a per character cost multiplier,
+        because it denies the engine the chance to reject a start position
+        cheaply.
+
+        Three caveats for whoever measures this next, each learned the hard
+        way here. Warm the JIT first: an unwarmed run reported 1704 ms for a
+        rule that actually costs single digit milliseconds. Do not gate on a
+        single ratio at 2N, which was observed swinging between 2.0x and 9.9x
+        for the same pattern and the same input; take the minimum of repeated
+        timings across a size series instead. And measure ONE rule per JVM:
+        a harness that had already run hundreds of assertions and allocated
+        heavily reported 1.035 microseconds per character for a rule that
+        measures 0.025 in a clean JVM, a 40x inflation that is entirely
+        measurement artefact.
+
+        LINE LENGTH. The pattern bodies below are the only lines in this file
+        that exceed the 120 column hint the root .editorconfig sets for XML,
+        and they do so deliberately. A regular expression is an atomic
+        token: Logback trims only the leading and trailing whitespace of an
+        element body, so wrapping a pattern across lines would embed literal
+        newlines and spaces INTO the pattern and change what it matches.
+        Java's COMMENTS mode is not a way out either, because it also strips
+        the significant spaces inside a class such as [-_ ]. Correctness wins
+        over the hint, which .editorconfig itself describes as an editor hint
+        that never runs in CI.
+      -->
+      <jsonGeneratorDecorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
+        <defaultMask>${REDACTION}</defaultMask>
+
+        <!--
+          LAYER 1, FIELD NAMES. Each entry masks a field of that name at any
+          depth. Lists are single line and comma delimited with no spaces,
+          because the delimiter parser does not trim.
+
+          REACHABILITY OF THIS LAYER, measured. Severity: Low. This layer
+          cannot fire against the provider set declared further down, and
+          that is recorded here rather than left for a reader to discover.
+          The providers emit exactly fifteen field names, verified by
+          encoding a plain event, an event carrying MDC, an event carrying a
+          structured argument and an event carrying a throwable, then taking
+          the union of the emitted names:
+              application, correlationId, exceptionClass, jobInstanceId,
+              level, logger, message, profile, rootCauseClass,
+              rootCauseMessage, spanId, stackTrace, thread, timestamp,
+              traceId
+          Not one of them is a path below, because the mdc provider
+          allow lists a single key and the pattern provider writes a fixed
+          template. So no field named password or custSsn or cardNumber is
+          ever written, and a mask keyed on that name has nothing to match.
+
+          THE LAYER IS RETAINED DELIBERATELY, for three reasons that were
+          each checked rather than assumed.
+
+          First, the reason it cannot fire is itself the control. An MDC key
+          named password is not masked, it is DROPPED: the allow list keeps
+          it out of the JSON altogether, which is strictly stronger than
+          redacting it. Measured on an event whose MDC carried four
+          sensitive keys, none of the four names and none of the four values
+          appeared anywhere in the encoded line.
+
+          Second, for the SECRET groups layer 2 independently covers what
+          layer 1 would have caught, so removing those groups today would
+          lose nothing and keeping them costs nothing. A
+          StructuredArguments.keyValue("password", ...) emits no field, but
+          its text is interpolated into the message, where rule R1 catches
+          it: the encoded message reads 'arg event password=[REDACTED]'.
+          That is defence in depth doing its job, demonstrated rather than
+          hoped for.
+
+          That symmetry does NOT extend to the financial group added at the
+          end of this layer, and the difference matters enough to state
+          plainly rather than let a reader infer it from the sentence above.
+          Balances, limits, amounts and the interest rate have NO layer 2
+          counterpart and deliberately never will: any value pattern broad
+          enough to match a signed two decimal number would also rewrite the
+          preserved DISPLAY reproductions that R1 lists as benign look
+          alikes. For that group layer 1 is therefore not a redundant second
+          control but the ONLY control available at this level, with the
+          message text half of the exposure closed at the call sites named in
+          the group's own comment. Deleting the financial paths would leave a
+          real gap the moment a field writing provider is declared, which is
+          precisely the change the third reason below anticipates.
+
+          Third, the layer becomes live the moment anyone declares a
+          provider that writes caller supplied field names, which is a
+          plausible and small change: an arguments provider, a
+          logstashMarkers provider, or widening the mdc allow list. At that
+          instant every path below starts masking, with no security review
+          required. Deleting the layer now would silently move that review
+          burden onto whoever makes that change, and Rule 1 Clause D is
+          explicit that logs must carry no secrets.
+
+          On Clause B, which forbids dead code: the clause forbids
+          UNTRACKED dead code and deferred work with no owner. This layer is
+          neither unreferenced nor undocumented. It sits inside a decorator
+          that is referenced by the encoder, its inability to fire today is
+          stated above with the measurement that establishes it, and the
+          precise condition that activates it is named. The same resolution
+          shape the specification applies to the retained empty
+          1400-COMPUTE-FEES paragraph of app/cbl/CBACT04C.cbl:L518-L520
+          applies here: retain, mark, and justify in writing.
+
+          Credentials and password material. The legacy field is
+          SEC-USR-PWD PIC X(08) at app/cpy/CSUSR01Y.cpy:L21, stored plaintext
+          in the corpus and seeded from the inline SYSUT1 data of
+          app/jcl/DUSRSECJ.jcl; its Java counterpart is the sixty character
+          BCrypt hash held by model/entity/UserSecurity.java as
+          passwordHash. 'password' is also the live record component of
+          model/dto/SignOnRequest.java:202, derived from the eleven input
+          fields of app/cpy-bms/COSGN00.CPY.
+        -->
+        <paths>password,passwd,pwd,passphrase,oldPassword,newPassword,currentPassword,confirmPassword</paths>
+        <paths>passwordConfirmation,passwordHash,pwdHash,hashedPassword,encodedPassword,secUsrPwd</paths>
+        <paths>SEC-USR-PWD,sec_usr_pwd,credential,credentials,secret,clientSecret,client_secret</paths>
+
+        <!--
+          Bearer, JWT and session material. 'token' is the record component
+          of model/dto/SignOnResponse.java:251, which is what replaces the
+          COMMAREA identity of app/cpy/COCOM01Y.cpy:L25-L26 (CDEMO-USER-ID
+          PIC X(08), CDEMO-USER-TYPE PIC X(01)) now that navigation is
+          stateless.
+        -->
+        <paths>token,jwt,jwtToken,accessToken,access_token,refreshToken,refresh_token,idToken</paths>
+        <paths>id_token,bearerToken,sessionToken,session_token,securityToken,authToken,auth_token</paths>
+        <paths>authorization,Authorization,authorisation,proxyAuthorization,Proxy-Authorization</paths>
+
+        <!--
+          Signing keys and API keys. The JWT signing key is resolved from the
+          environment in every profile and has no committed default, so it
+          must never be echoed back into a log either.
+        -->
+        <paths>authHeader,signingKey,signing-key,jwtSigningKey,jwtSecret,secretKey,privateKey</paths>
+        <paths>apiKey,api_key,api-key,awsAccessKeyId,accessKeyId,aws_access_key_id</paths>
+
+        <!--
+          AWS credential material and presigned links. All cloud interaction
+          targets LocalStack and no live credential exists anywhere in the
+          repository, but a presigned URL carries its own signature and is a
+          secret in its own right.
+        -->
+        <paths>awsSecretAccessKey,secretAccessKey,aws_secret_access_key,awsSessionToken</paths>
+        <paths>presignedUrl,signedUrl</paths>
+
+        <!--
+          Social security number. CUST-SSN PIC 9(09) at
+          app/cpy/CVCUS01Y.cpy:L17, carried by model/entity/Customer.java as
+          ssn. Named explicitly by the AAP alongside credentials and
+          password hashes as the masking set this file must implement.
+        -->
+        <paths>ssn,custSsn,CUST-SSN,socialSecurityNumber,social_security_number</paths>
+
+        <!--
+          The remaining app/cpy/CVCUS01Y.cpy PII set, at the Java field names
+          model/entity/Customer.java actually uses:
+          CUST-GOVT-ISSUED-ID PIC X(20) at :L18 as governmentIssuedId,
+          CUST-DOB-YYYY-MM-DD PIC X(10) at :L19 as dateOfBirth,
+          CUST-EFT-ACCOUNT-ID PIC X(10) at :L20 as eftAccountId,
+          CUST-PHONE-NUM-1 and CUST-PHONE-NUM-2 PIC X(15) at :L15-L16 as
+          phoneNumber1 and phoneNumber2, the names at :L6-L8 and the three
+          address lines plus the postal code at :L9-L14.
+        -->
+        <paths>governmentIssuedId,govtIssuedId,custGovtIssuedId,CUST-GOVT-ISSUED-ID</paths>
+        <paths>dateOfBirth,dob,custDobYyyyMmDd,CUST-DOB-YYYY-MM-DD</paths>
+        <paths>eftAccountId,custEftAccountId,CUST-EFT-ACCOUNT-ID,phoneNumber,phone</paths>
+        <paths>phoneNumber1,phoneNumber2,custPhoneNum1,custPhoneNum2,CUST-PHONE-NUM-1</paths>
+        <paths>CUST-PHONE-NUM-2,firstName,middleName,lastName,custFirstName,custLastName</paths>
+        <paths>CUST-FIRST-NAME,CUST-LAST-NAME,addressLine1,addressLine2,addressLine3</paths>
+        <paths>custAddrLine1,custAddrLine2,custAddrLine3,CUST-ADDR-LINE-1,CUST-ADDR-LINE-2</paths>
+        <paths>CUST-ADDR-LINE-3,addressZip,custAddrZip,CUST-ADDR-ZIP</paths>
+
+        <!--
+          Card number, CVV and embossed name. CARD-NUM PIC X(16) at
+          app/cpy/CVACT02Y.cpy:L5, CARD-CVV-CD PIC 9(03) at :L7 and
+          CARD-EMBOSSED-NAME PIC X(50) at :L8; the same sixteen byte card
+          number recurs as XREF-CARD-NUM at app/cpy/CVACT03Y.cpy:L5 and as
+          TRAN-CARD-NUM at app/cpy/CVTRA05Y.cpy:L15. The Java names are
+          cardNumber, cvvCode and embossedName on model/entity/Card.java.
+          This field name layer is what makes the card rule reliable, given
+          that the sixteen digit SHAPE cannot be distinguished from a
+          TRAN-ID.
+        -->
+        <paths>cardNumber,cardNum,card_number,CARD-NUM,tranCardNum,TRAN-CARD-NUM</paths>
+        <paths>xrefCardNum,XREF-CARD-NUM,pan,primaryAccountNumber,cvvCode,cvv,cvc,cardCvvCd</paths>
+        <paths>CARD-CVV-CD,embossedName,cardEmbossedName,CARD-EMBOSSED-NAME</paths>
+
+        <!--
+          Financial values: balances, limits, cycle counters, amounts, the
+          interest rate and the merchant fields. Added for the Medium
+          severity finding that raw balances, limits, amounts and merchant
+          data reached shared logs.
+
+          THIS IS THE ONLY LAYER THE FINDING CAN BE ANSWERED IN, and that is
+          the whole reason the group sits here rather than below. A layer 2
+          rule wide enough to catch a bare decimal would also rewrite the six
+          benign look alikes enumerated in R1 above - the two counter DISPLAY
+          lines, the accountId/TRAN-AMT line, the sixteen digit TRAN-ID and
+          the FILE STATUS parity literal - because a signed two decimal
+          number is exactly the shape of all of them and there is no value
+          level feature that separates a cardholder balance from a run total
+          or from a four character status. Those five are reproductions of
+          COBOL DISPLAY statements whose text the specification makes a
+          preserved literal, so over redacting them would trade a documented
+          parity guarantee for no gain. Layer 1 has no such conflict: it keys
+          on a JSON FIELD NAME and never inspects the message text, so no
+          reproduction of any DISPLAY can be touched by anything listed here.
+
+          The message text half of the same finding is therefore fixed where
+          the value is produced, not here - see the redaction placeholders in
+          batch/readers/AccountReader.java,
+          batch/processors/TransactionReportProcessor.java,
+          batch/processors/InterestCalculationProcessor.java and
+          service/transaction/TransactionDetailService.java, each of which
+          substitutes a fixed width placeholder of the field's declared digit
+          width so that field geometry stays verifiable. The two layers are
+          complementary and neither is redundant: the call sites cover the
+          text those call sites emit, and this group covers any field name that a
+          future provider might emit.
+
+          Account money, all PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:
+          ACCT-CURR-BAL :L7, ACCT-CREDIT-LIMIT :L8,
+          ACCT-CASH-CREDIT-LIMIT :L9, ACCT-CURR-CYC-CREDIT :L13 and
+          ACCT-CURR-CYC-DEBIT :L14. The Java names are currentBalance,
+          creditLimit, cashCreditLimit, currentCycleCredit and
+          currentCycleDebit on model/entity/Account.java, repeated as record
+          components of model/dto/AccountDto.java,
+          model/dto/AccountUpdateRequest.java - which carries them twice,
+          once per snapshot group - and model/dto/BillPaymentRequest.java.
+
+          Transaction money and merchant data at app/cpy/CVTRA05Y.cpy:
+          TRAN-AMT PIC S9(09)V99 :L10, TRAN-MERCHANT-ID PIC 9(09) :L11,
+          TRAN-MERCHANT-NAME PIC X(50) :L12, TRAN-MERCHANT-CITY PIC X(50)
+          :L13 and TRAN-MERCHANT-ZIP PIC X(10) :L14; the staging twin is
+          DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10. The Java
+          names are amount, merchantId, merchantName, merchantCity and
+          merchantZip on model/entity/Transaction.java and
+          model/entity/DailyTransaction.java, with amount and amountValue
+          both present on model/dto/TransactionDto.java because the edited
+          mask and its arithmetic companion travel together.
+
+          The remaining two money pictures, both narrower than the account
+          fields and both easy to miss: TRAN-CAT-BAL PIC S9(09)V99 at
+          app/cpy/CVTRA01Y.cpy:L9, held as balance by
+          model/entity/TransactionCategoryBalance.java, and DIS-INT-RATE
+          PIC S9(04)V99 at app/cpy/CVTRA02Y.cpy:L9, held as interestRate by
+          model/entity/DisclosureGroup.java.
+
+          NOT LISTED, DELIBERATELY: the account identifier. ACCT-ID
+          PIC 9(11) is a pseudonymous key, it is the control break key of
+          app/cbl/CBACT04C.cbl:L194 and the reported key of the 133 byte
+          report line, and R1 above already records a bare
+          accountId/TRAN-AMT line among the look alikes that must survive
+          unaltered. Masking it would remove the only field that makes these
+          diagnostics reconcilable while protecting nothing that is not
+          already carried by the deliverable itself.
+        -->
+        <paths>currentBalance,creditLimit,cashCreditLimit,currentCycleCredit,currentCycleDebit</paths>
+        <paths>ACCT-CURR-BAL,ACCT-CREDIT-LIMIT,ACCT-CASH-CREDIT-LIMIT,ACCT-CURR-CYC-CREDIT</paths>
+        <paths>ACCT-CURR-CYC-DEBIT,acctCurrBal,acctCreditLimit,acctCashCreditLimit</paths>
+        <paths>acctCurrCycCredit,acctCurrCycDebit,amount,amountValue,tranAmt,TRAN-AMT</paths>
+        <paths>dalytranAmt,DALYTRAN-AMT,balance,tranCatBal,TRAN-CAT-BAL,categoryBalance</paths>
+        <paths>interestRate,disIntRate,DIS-INT-RATE,merchantId,merchantName,merchantCity</paths>
+        <paths>merchantZip,tranMerchantId,tranMerchantName,tranMerchantCity,tranMerchantZip</paths>
+        <paths>TRAN-MERCHANT-ID,TRAN-MERCHANT-NAME,TRAN-MERCHANT-CITY,TRAN-MERCHANT-ZIP</paths>
+
+        <!--
+          AWS resource locators, every one of which carries the twelve digit
+          account identifier in a positional segment. A queue URL is the
+          worst of them: SQS answers GetQueueUrl with
+          http://sqs.<region>.<host>/<account>/<queue>, so any code path that
+          logs a resolved URL publishes the account. ARNs are the same fault
+          in a different rendering,
+          arn:aws:<service>:<region>:<account>:<resource>.
+
+          These names are the DEFENCE IN DEPTH half of the fix, not the fix.
+          The primary control is at source, because the two places that could
+          have emitted these values no longer do:
+            - observability/HealthIndicators.java consumes the resolved queue
+              URL in-process only, hands no throwable to the logger, and
+              reports through a closed reason vocabulary plus an exception
+              class name and numeric status;
+            - service/report/ReportSubmissionService.java logs a symbolic
+              reason and exception class and never
+              MessagingOperationFailedException.getEndpoint().
+          Source is the primary control because a field name layer can only
+          act where a NAME exists. It cannot reach a value interpolated into
+          a message, and it cannot reach a positional value inside a rendered
+          stack frame - which is exactly why neither of those two classes
+          renders a throwable at all. The value rules R14 and R15 below cover
+          the interpolated case; this list covers the structured case.
+
+          accountId is DELIBERATELY ABSENT from this list. In this codebase
+          that name means ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5, the
+          eleven digit business key that batch logs and health details publish
+          on purpose and that parity comparison depends on. Masking it would
+          break diagnosability to protect nothing. Only awsAccountId, which is
+          the twelve digit AWS account, appears here.
+        -->
+        <paths>queueUrl,queue_url,queueURL,topicArn,topic_arn,queueArn,queue_arn,bucketArn</paths>
+        <paths>resourceArn,resource_arn,arn,ARN,awsAccountId,aws_account_id,awsAccount</paths>
+        <paths>endpoint,endpointUrl,endpoint_url,serviceEndpoint,endpointOverride</paths>
+
+        <!--
+          LAYER 2, VALUES. Regular expressions over the value itself, for a
+          secret interpolated into free text where no field name exists to
+          key on. Every pattern is wrapped in CDATA so it reads verbatim,
+          including the '&lt;' of a lookbehind. Replacement is by
+          Matcher.replaceAll, so a mask may carry $n backreferences and only
+          the matched span is rewritten; the rest of the value survives.
+
+          R1. A credential presented as label then separator then value. The
+          label allows up to 40 TRAILING identifier characters so that
+          passwordHash is caught, and that bound is FINITE on purpose: an
+          open ended class next to an alternation is the shape that
+          backtracks badly.
+
+          THE PATTERN DELIBERATELY DOES NOT MATCH THE TEXT THAT PRECEDES THE
+          KEYWORD, and that is a measured optimisation, not an oversight.
+          R1, R4, R11, R12 and R13 each began life as
+              \b([\w.\-]{0,40}(?:KEYWORD|...)[\w.\-]{0,40})(SEP)(VALUE)
+          so that dbPassword and custSsn matched with the leading run inside
+          capture group 1. But group 1 is re emitted verbatim by the mask
+          ($1$2), so text merely PRECEDING the keyword is unchanged whether
+          it is matched or not: leaving it outside the match produces a
+          byte identical result. Anchoring instead on the keyword
+          alternation lets the engine reject most input positions on the
+          first character, where the leading class forced it to try 41
+          prefix lengths at every position. Measured on 200 000 characters
+          of digits and dashes, which is exactly the shape a CardDemo log
+          line has (account identifiers, card numbers, dates, timestamps,
+          amounts), min of 13 warm runs in a clean JVM:
+              R1  0.082 -> 0.025 us/char   3.3x faster
+              R4  0.062 -> 0.015 us/char   4.1x faster
+              R11 0.072 -> 0.019 us/char   3.8x faster
+              R12 0.088 -> 0.023 us/char   3.8x faster
+              R13 0.105 -> 0.029 us/char   3.6x faster
+          Across the whole fifteen seed gate the effect is larger still,
+          because the digits and dashes seed stops being pathological at all:
+          the worst per character cost of any rule fell from 1.035 to 0.095
+          microseconds, and the worst growth ratio over an 8x size range fell
+          from 55.2x to 9.9x, which is linear.
+          Output equivalence was PROVEN, not assumed, over 24 probes
+          covering every keyword in all five rules plus six benign
+          look alikes that must not be over redacted (the two counter
+          DISPLAY lines, an accountId/TRAN-AMT line, a 16 digit TRAN-ID, the
+          FILE STATUS parity literal, passwordless= and tokenizer=): all 24
+          identical before and after. Detection also WIDENS, in the safe
+          direction: the old form could not match when more than 40
+          identifier characters preceded the keyword, and the new form has
+          no such ceiling.
+
+          Legacy origin: SEC-USR-PWD PIC X(08), app/cpy/CSUSR01Y.cpy:L21.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)((?:passphrase|password|passwd|pwd|credential|secret|signing[-_]?key|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token|security[-_]?token|auth[-_]?token|bearer[-_]?token|token)[\w.\-]{0,40})(["']?\s*[:=]\s*["']?)([^\s"',;\x7d]+)]]></value>
+          <mask>$1$2${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R2. A BCrypt hash, which is what replaces the corpus's plaintext
+          password. The '$2a$', '$2b$' and '$2y$' prefixes plus a two digit
+          cost and a 53 character salt and digest are unambiguous, so this
+          rule needs no label. Bounded at 60 so it cannot run away. The ten
+          seeded users of app/jcl/DUSRSECJ.jcl are stored only as hashes.
+        -->
+        <valueMask>
+          <value><![CDATA[\$2[abxy]\$\d{2}\$[A-Za-z0-9./]{20,60}]]></value>
+          <mask>${REDACTION_BCRYPT}</mask>
+        </valueMask>
+
+        <!--
+          R3. A social security number in dashed presentation. Unambiguous,
+          so no label is required. The lookaround stops it matching inside a
+          longer digit run, and it cannot match an ISO date or the 26
+          character DB2 style timestamp of app/cbl/CBTRN02C.cbl:L149,
+          because the middle group must be exactly two digits followed by a
+          dash and both of those carry four and two digit groups instead.
+          Legacy origin: CUST-SSN PIC 9(09), app/cpy/CVCUS01Y.cpy:L17.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)]]></value>
+          <mask>${REDACTION_SSN}</mask>
+        </valueMask>
+
+        <!--
+          R4. A social security number in BARE nine digit presentation,
+          which requires a label because the shape alone collides with
+          WS-TRANSACTION-COUNT and WS-REJECT-COUNT, both PIC 9(09),
+          displayed at app/cbl/CBTRN02C.cbl:L227-L228. Redacting those would
+          corrupt the counter lines Gate 1 compares.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)((?:ssn|social[-_ ]?security(?:[-_ ]?number)?)[\w.\-]{0,40})(["']?\s*[:=]\s*["']?)(\d{3}-?\d{2}-?\d{4})(?!\d)]]></value>
+          <mask>$1$2${REDACTION_SSN}</mask>
+        </valueMask>
+
+        <!--
+          R5. A JWT in compact serialisation, anchored on the 'eyJ' header
+          prefix. The anchor is mandatory, not decorative: the generic three
+          dot delimited shape also describes every fully qualified logger
+          name, so an unanchored rule would redact the logger field of every
+          event this file emits.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<![\w.\-])eyJ[A-Za-z0-9_\-]{10,512}\.[A-Za-z0-9_\-]{5,512}\.[A-Za-z0-9_\-]{0,512}]]></value>
+          <mask>${REDACTION_JWT}</mask>
+        </valueMask>
+
+        <!--
+          R6. An Authorization or Proxy-Authorization header value, whatever
+          the scheme. The scheme name is consumed along with the credential
+          rather than preserved, because a partial disclosure buys nothing
+          here and one rule is easier to reason about than two.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)\b(proxy[-_]?authorization|authorization)(["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|digest|negotiate|aws4-hmac-sha256)\s+)?[^\s"',;\x7d]*]]></value>
+          <mask>$1$2${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R7. A bearer token with no Authorization label in front of it. The
+          scheme word is captured and replayed so the original casing
+          survives and the line still reads sensibly after redaction.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)\b(bearer)\s+[A-Za-z0-9._~+/=\-]{8,1024}]]></value>
+          <mask>$1 ${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R8. An AWS access key identifier. All ten documented key type
+          prefixes are covered, not just AKIA, because a temporary ASIA
+          credential is equally sensitive. No live AWS credential exists in
+          this repository at all, since every integration targets
+          LocalStack, so a match here means something unexpected happened
+          and redacting it is strictly correct.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA)[A-Z0-9]{16}(?![A-Z0-9])]]></value>
+          <mask>${REDACTION_AWS}</mask>
+        </valueMask>
+
+        <!--
+          R9. The signature bearing query parameters of a presigned S3 URL.
+          These appear on the object keys that replace the seven GDG bases
+          of app/jcl/DEFGDGB.jcl, so an S3 diagnostic is a realistic place
+          for one to surface. The parameter NAME is kept so the line stays
+          diagnosable; only its value is withheld.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)([?&](?:x-amz-signature|x-amz-credential|x-amz-security-token|awsaccesskeyid|signature)=)[^&\s"',;\x7d]+]]></value>
+          <mask>$1${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R10. Basic auth credentials embedded in a URL userinfo segment,
+          which is how a JDBC or endpoint URL leaks a password. The scheme
+          is kept so the connection target remains identifiable.
+
+          Two deliberate performance choices here, both measured. Neither is
+          cosmetic and neither should be "simplified" away.
+
+          1. The rule is anchored on the LITERAL "://" rather than on the URL
+          scheme. The obvious form starts with a character class for the scheme,
+          [A-Za-z][A-Za-z0-9+.\-]{0,31}, but that matches at very nearly every
+          position in ordinary text, so the engine enters the bounded run
+          everywhere and the rule ends up costing far more per character than
+          any other rule in this file. Anchoring on a literal lets the matcher
+          skip to the next candidate instead. Measured on 200,000 character
+          adversarial lines: scheme first cost 57.0 ms and 149.8 ms on two
+          different shapes, literal first cost 1.4 ms and 3.2 ms, a factor of
+          42 to 46, and a realistic line went from 23 us to 3 us.
+          A bounded lookbehind for the scheme was also measured and was WORSE
+          than the scheme first form, at 105.0 ms, because a leading lookbehind
+          defeats the literal prefix scan. It was therefore rejected.
+          Dropping the scheme from the match does not change the output: the
+          scheme text sits before the match and is left in place, so a URL is
+          still rendered as https://[REDACTED]@host. Output was verified
+          identical on every realistic probe. It differs on exactly one input,
+          a scheme-less separator followed directly by userinfo and an at sign,
+          which this form masks and the scheme first form leaked. That is a
+          widening in the safe direction: a
+          masking rule should fail closed, and no legitimate log token needs a
+          bare "://credentials@" preserved.
+
+          2. The two remaining quantifiers are POSSESSIVE ({1,128}+). This is
+          semantics preserving, not a relaxation: both character classes
+          already exclude ":" and "@", so a shorter run can never place the
+          required delimiter at the boundary. The greedy match is the only one
+          that can succeed, so there is nothing for the engine to gain by
+          backtracking. Equivalence was verified against the greedy form on
+          every probe, including a userinfo longer than the 128 bound.
+
+          Clause A, avoid obvious inefficiencies, and a log line can carry
+          attacker influenced text.
+        -->
+        <valueMask>
+          <value><![CDATA[(://)[^/\s:@"']{1,128}+:[^/\s:@"']{1,128}+@]]></value>
+          <mask>$1${REDACTION}@</mask>
+        </valueMask>
+
+        <!--
+          R11. A card number carrying a card label. The label is REQUIRED,
+          for the reason set out at length above: CARD-NUM PIC X(16) at
+          app/cpy/CVACT02Y.cpy:L5 and TRAN-ID PIC X(16) at
+          app/cpy/CVTRA05Y.cpy:L5 are the same shape, and the fixtures prove
+          it, so a bare sixteen digit rule would redact every transaction
+          identifier in the log.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)((?:card[-_ ]?num(?:ber)?|primary[-_ ]?account[-_ ]?number|pan)[\w.\-]{0,40})(["']?\s*[:=]\s*["']?)(\d{4}[ \-]?\d{4}[ \-]?\d{4}[ \-]?\d{4})(?!\d)]]></value>
+          <mask>$1$2${REDACTION_CARD}</mask>
+        </valueMask>
+
+        <!--
+          R12. A card verification value. CARD-CVV-CD PIC 9(03) at
+          app/cpy/CVACT02Y.cpy:L7. Three or four bare digits cannot be
+          recognised on shape at all, so the label is the only possible
+          anchor.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)((?:cvv[-_ ]?cd|cvv|cvc|csc|card[-_ ]?verification[-_ ]?value)[\w.\-]{0,40})(["']?\s*[:=]\s*["']?)(\d{3,4})(?!\d)]]></value>
+          <mask>$1$2${REDACTION_CVV}</mask>
+        </valueMask>
+
+        <!--
+          R13. The remaining labelled customer PII of
+          app/cpy/CVCUS01Y.cpy:L15-L20 plus the embossed name of
+          app/cpy/CVACT02Y.cpy:L8: telephone numbers, the government issued
+          identifier, date of birth and the electronic funds transfer
+          account identifier. Each is label anchored because none has a
+          shape that distinguishes it from an ordinary business value.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)((?:phone[-_ ]?num(?:ber)?|govt[-_ ]?issued[-_ ]?id|government[-_ ]?issued[-_ ]?id|date[-_ ]?of[-_ ]?birth|eft[-_ ]?account[-_ ]?id|embossed[-_ ]?name|dob)[\w.\-]{0,40})(["']?\s*[:=]\s*["']?)([^\s"',;\x7d]+)]]></value>
+          <mask>$1$2${REDACTION_PII}</mask>
+        </valueMask>
+
+        <!--
+          R14. The account segment of an AWS ARN, wherever an ARN reaches a
+          value - interpolated into a message, carried in rootCauseMessage, or
+          sitting inside a rendered stack frame argument where no field name
+          exists to key on.
+
+          Only the ACCOUNT segment is masked, not the whole ARN. The service,
+          the region and the resource name are the parts an operator needs in
+          order to act, and none of them is sensitive here: the resources this
+          project names are three buckets, one FIFO queue and one topic, all
+          created by localstack-init/init-aws.sh from literals. Redacting the
+          whole ARN would remove the only actionable content to protect the one
+          field that is not actionable.
+
+          Anchored on the literal 'arn:', which is the R10 lesson applied: a
+          fixed prefix lets the matcher skip to the next candidate instead of
+          entering a bounded run at nearly every position. The partition group
+          admits aws, aws-cn and aws-us-gov. The two bounded classes are
+          possessive because neither admits ':', so a shorter run can never
+          place the required delimiter at the boundary - the greedy match is the
+          only one that can succeed and there is nothing to backtrack for.
+
+          THE PARTITION HYPHEN IS WRITTEN AS THE CHARACTER CLASS [-] AND MUST
+          NOT BE SIMPLIFIED TO A BARE HYPHEN. The natural spelling of that group
+          is (?:-[a-z]{2,8})*, and it does not survive this file.
+          Logback substitutes variables in element text BEFORE the value reaches
+          Pattern.compile, and it reads ':-' as the default-value separator of a
+          ${...} construct. A '?' immediately followed by ':-' is therefore
+          consumed as if it were a variable reference with a default, and
+          everything from the ':-' onward is DELETED. Measured, not surmised:
+              authored   (?:-x)
+              compiled   (?
+              result     PatternSyntaxException: Unknown inline modifier,
+                         index 2
+          and with the real rule text the compiled remnant was '(arn:aws(?'.
+          The consequence is severe and silent in the wrong direction: a single
+          uncompilable value rule fails MaskingJsonGeneratorDecorator.start(),
+          which fails the encoder, which fails the appender - so the outcome of
+          this typo is not a weaker mask but NO MASKING LAYER AT ALL. Putting
+          the hyphen inside a character class removes the ':-' adjacency and the
+          rule compiles unchanged in meaning. '(?:' followed by anything other
+          than '-' is unaffected, which is why R1 and R11 through R13 have never
+          hit this, and ordinary '${var:-default}' substitution elsewhere in
+          this file continues to work normally - the hazard is specifically the
+          sequence '?:-'. Every rule in this file was re-verified through a real
+          Joran configuration pass after this was found, and the two rules added
+          since - R16 and R17 - were written and checked against the same
+          hazard: neither contains '?:-' and neither references a property
+          inside its pattern.
+
+          The account segment is optional in a legitimate ARN - an S3 bucket ARN
+          is arn:aws:s3:::bucket - so \d{12} is required by this rule rather than
+          the segment merely being present. An ARN with an empty account segment
+          simply does not match, which is correct: there is nothing to redact.
+
+          Why this matters concretely: LocalStack issues account 000000000000,
+          so a developer reading a local log sees an obviously synthetic value
+          and learns nothing. The rule exists for the shape, not for that value,
+          and it must hold identically in every profile, because Rule 1 Clause D
+          forbids a masking layer whose strength depends on the environment.
+        -->
+        <valueMask>
+          <value><![CDATA[(arn:aws(?:[-][a-z]{2,8})*:[a-z0-9\-]{1,32}+:[a-z0-9\-]{0,32}+:)\d{12}]]></value>
+          <mask>$1${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R15. A twelve digit path segment, which is how an AWS account
+          identifier appears in a service URL: SQS answers GetQueueUrl with
+          http://sqs.<region>.<host>/<account>/<queue-name>, so the account sits
+          between two solidi with no label anywhere near it. This is the
+          "positional account row" that a field name layer provably cannot
+          reach, and R1 through R13 cannot reach it either, because every one of
+          them needs either a label or an unambiguous shape.
+
+          The rule is anchored on shape and delimiters ALONE, which makes
+          over-redaction the only real risk, so the bound is exactly twelve
+          digits between two solidi. That was checked against every numeric this
+          project puts in a path or a key, and none of them can collide:
+            - ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5 is ELEVEN digits, and
+              it is the value the statements key interpolates as
+              statements/<accountId>/<yyyy-MM>/;
+            - TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5 and CARD-NUM PIC
+              X(16) at app/cpy/CVACT02Y.cpy:L5 are SIXTEEN digits;
+            - the writers' key number width is NINETEEN digits (%019d), used for
+              the job instance and generation segments that replace the GDG
+              generations of app/jcl/DEFGDGB.jcl;
+            - a statement month segment is yyyy-MM, which contains a hyphen.
+          Twelve is therefore an unused width in this project's own key space,
+          which is what makes a shape-only rule safe here when it would not be
+          safe for a sixteen digit run.
+
+          The lookbehind and lookahead are single characters, so they are
+          fixed-width and cost nothing, and together they guarantee the segment
+          is EXACTLY twelve digits: a nineteen digit segment offers no position
+          where twelve digits are followed by a solidus, so it cannot match a
+          prefix of itself. \d{12} also fails on its first character at every
+          non-digit position, so the scan is cheap on ordinary log text of the
+          kind this file's other rules were measured against.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<=/)\d{12}(?=/)]]></value>
+          <mask>${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R16. The value of a single-quoted literal sitting in a parenthesised
+          SQL parameter position, which is how a JDBC driver renders a whole
+          record image when it reports a rejected statement.
+
+          FINDING F-6, SEVERITY HIGH (PCI). This is the rule the runtime
+          assessment asked for and the reason it is needed is that no rule above
+          could reach the disclosure. A refused insert surfaced through
+          org.hibernate.engine.jdbc.spi.SqlExceptionHelper as, with the account
+          number and the transaction identifier masked here so this comment does
+          not itself carry the disclosure the rule exists to stop:
+
+            Batch entry 0 insert into transaction (tran_amt,tran_card_num,...,
+            tran_id) values (('2.34'::numeric),('################'),
+            ('1'::numeric),...,('QAG2      '),('01'),('0'::int8),
+            ('################')) was aborted: ERROR: duplicate key value ...
+
+          The sixteen digits in the second value position are CARD-NUM
+          PIC X(16) at app/cpy/CVACT02Y.cpy:L5 in full cleartext. R11 cannot
+          see it: R11 requires a card LABEL adjacent to the digits, and here the
+          column list sits dozens of characters away with no ':' or '=' anywhere
+          near the value, which is exactly the adjacency R11 is built on. The
+          <paths> layer cannot see it either, because that layer keys on JSON
+          field names and this whole statement is the VALUE of one field.
+
+          WHY THIS RULE IS NOT A BARE PAN SHAPE RULE. The assessment suggested a
+          keyless thirteen to nineteen digit rule gated by a Luhn check. A
+          regular expression cannot compute Luhn, and a bare digit-run rule is
+          precisely what the R11 note forbids, because TRAN-ID PIC X(16) at
+          app/cpy/CVTRA05Y.cpy:L5 is the same shape and our own diagnostics name
+          transaction identifiers deliberately. The gate used instead is
+          CONTEXTUAL and stronger than a checksum: the two characters (' occur
+          in driver statement text and in nothing else this application emits.
+          Verified by census over src/main/java at this commit: no log message,
+          format string or exception message anywhere in the tree contains the
+          sequence (' - so this rule cannot fire on anything the application
+          itself writes, and it therefore cannot touch a parity line.
+
+          WHY THE WHOLE LITERAL IS REDACTED AND NOT JUST THE DIGITS. The finding
+          names two disclosures, the card number and the RECORD IMAGE, and the
+          image is the wider of the two: the same statement shape on
+          app/cpy/CVCUS01Y.cpy carries CUST-SSN PIC 9(09) at :L15 and the three
+          address lines, and on app/cpy/CSUSR01Y.cpy it carries the password
+          hash. Masking only a digit shape would leave every one of those in
+          place. What survives is the part an operator needs and none of the
+          part they must not have: the table name, the column list and the
+          statement's structure are outside the quotes and are untouched.
+
+          The bound of 4096 is the same defensive ceiling every other bounded
+          class in this file uses; the widest record this project can render is
+          the 500-byte CUSTDATA image. The class is possessive and negated on
+          the quote character, so the match ends at the first closing quote and
+          there is nothing to backtrack for - the lookbehind and lookahead are
+          both fixed width and cost nothing.
+
+          THIS RULE IS THE NET, NOT THE PRIMARY CONTROL. Emission is stopped at
+          source by logging.level.org.hibernate.engine.jdbc.spi.SqlExceptionHelper
+          in the application configuration resource, which is where the finding's
+          third remedy lives. This rule exists because the same statement text
+          also reaches a rendered stack frame whenever the application logs a
+          store failure with its cause, and no logger level can reach that.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<=\(')[^']{1,4096}+(?=')]]></value>
+          <mask>${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R17. The key value of a PostgreSQL constraint-violation detail, the
+          companion shape to R16 from the same finding and the same captured log:
+
+            duplicate key value violates unique constraint "pk_transaction"
+              Detail: Key (tran_id)=(0000000996722789) already exists.
+
+          Here the value carries no quotes at all, so R16 cannot see it, and the
+          column name is a label the driver writes in its own syntax rather than
+          in the "name": "value" shape every labelled rule above keys on. The key
+          of a constraint on this schema can be a card number - the cross
+          reference and the card cluster are both keyed on CARD-NUM PIC X(16) at
+          app/cpy/CVACT02Y.cpy:L5 - so the disclosure is the same class as R16's.
+
+          The gate is the three characters )=( which, like R16's, occur in driver
+          text and nowhere in anything this application writes: verified by the
+          same census over src/main/java. The COLUMN NAME is deliberately left
+          visible, because knowing WHICH constraint was violated is the whole
+          diagnostic value of the line and a column name discloses nothing.
+
+          THE WIDTH FLOOR OF NINE IS DELIBERATE. Every key value this schema can
+          disclose is at least nine characters wide: CUST-SSN PIC 9(09) at
+          app/cpy/CVCUS01Y.cpy:L17, CUST-ID PIC 9(09) at :L5, ACCT-ID PIC 9(11)
+          at app/cpy/CVACT01Y.cpy:L5, and CARD-NUM and TRAN-ID both PIC X(16).
+          A referential detail, by contrast, reports the code that was not
+          found - TRAN-TYPE-CD PIC X(02) at app/cpy/CVTRA03Y.cpy:L5 and
+          TRAN-CAT-CD PIC 9(04) at app/cpy/CVTRA04Y.cpy:L6 - and that half of a
+          foreign key diagnosis is the most useful half there is. Two characters
+          cannot be an identifier, an account number or a social security
+          number, so withholding it would cost the diagnosis everything and
+          protect nothing. The floor keeps both properties at once.
+
+          Our own typed diagnostic is unaffected and remains the sanctioned
+          channel for the colliding key: DuplicateRecordException carries it, and
+          the four write sites report it through their own message rather than
+          through the driver's.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<=\)=\()[^)]{9,4096}+(?=\))]]></value>
+          <mask>${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R18. THE FAILING ROW IMAGE OF A POSTGRESQL CONSTRAINT VIOLATION.
+
+          PostgreSQL attaches a DETAIL line to a check, not null and unique
+          violation that reproduces the ENTIRE offending tuple:
+
+            Detail: Failing row contains (1, Immanuel, Madeline, Kessler,
+              618 Deshaun Route, ..., 020973888, ..., 274, 1).
+
+          The values are positional and unlabelled, so no label based rule can
+          reach them and no shape based rule can distinguish the social
+          security number from the account identifier beside it. The whole
+          image is therefore withheld from the marker to the end of the line.
+
+          What survives is everything a diagnosis needs: the constraint name,
+          the relation name and the SQLState all sit BEFORE this marker in the
+          same message. Anchored on the literal phrase, so the scan rejects
+          ordinary text immediately.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)(Failing row contains)[^\n]*]]></value>
+          <mask>$1 ${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R19. THE ACCOUNT SEGMENT OF A STATEMENT OBJECT KEY, finding m-03.
+
+          A statement key is composed by
+          batch/writers/StatementWriter.java objectKey as
+
+            statements/account=<11 digits>/month=<uuuu-MM>
+              /generation=<19 digits>/statement=<19 digits>/STATEMNT.PS
+
+          so the key is itself an account-and-month disclosure wherever it is
+          rendered. Neither StatementWriter nor StatementGenerationJob ever
+          names a key in a message or a log line - the job renders
+          STMTFILE[3] instead, see its statementObjectReference - but an
+          object store failure carries the bucket, the key and often the
+          request URL inside ITS OWN message, and that throwable reaches this
+          appender whenever the framework logs a failed step.
+
+          WHY THIS DOES NOT CONTRADICT THE PARAGRAPH ABOVE THAT REFUSES TO
+          MASK accountId. This rule is keyed on the literal
+          'statements/account=', so it fires only on a composed statement key.
+          A labelled 'accountId=<11 digits>' in a batch diagnostic, the
+          control break key of app/cbl/CBACT04C.cbl:L194, and the account
+          identifier of the 133 byte report line are all left exactly as they
+          are, which is what Gate 1's byte for byte comparison requires. The
+          eleven digit bound is the exact width of ACCT-ID PIC 9(11) at
+          app/cpy/CVACT01Y.cpy:L5, so this cannot grow into a general digit
+          redactor either.
+
+          WHAT SURVIVES: the root, the month, the generation, the statement
+          ordinal and the object name. A failed object stays findable by an
+          operator who can read the bucket, while the one segment that names a
+          customer's account does not travel.
+
+          THIS IS THE DEFENCE IN DEPTH HALF. The primary control is at source
+          and it reaches further than this rule can: Spring Batch renders the
+          same throwable into the EXIT_MESSAGE column of its own metadata,
+          which no appender rule can touch, so
+          StatementWriter.sanitizedCause rebuilds a key bearing cause chain
+          before it is ever thrown - preserving each type name, each message
+          and each stack trace, and replacing these digits with the same
+          literal this mask substitutes.
+        -->
+        <valueMask>
+          <value><![CDATA[(statements/account=)\d{1,11}]]></value>
+          <mask>$1${REDACTION_ACCOUNT_KEY}</mask>
+        </valueMask>
+      </jsonGeneratorDecorator>
+
+      <!--
+        ==========================================================
+        THE FIELD SET. Stable, bounded, identical in every profile.
+        ==========================================================
+        Rule 1 Clause A puts determinism first, so this list is fixed rather
+        than derived: a log consumer can rely on the same schema in test as
+        in production. Nothing here renders a whole object, an entity graph,
+        a request or response body, a database row or an AWS payload, and
+        nothing introduces a high cardinality structured key beyond the
+        correlation identifiers themselves.
+      -->
+      <providers>
+
+        <!--
+          Event time in UTC at millisecond resolution. Milliseconds are
+          deliberate rather than nanoseconds: the corpus itself renders a 26
+          character timestamp whose final four characters are the literal
+          '0000', built at app/cbl/CBTRN02C.cbl:L697-L698 by moving COB-MIL
+          into DB2-MIL PIC 9(002) and '0000' into DB2-REST PIC X(04), so
+          sub millisecond precision would claim an accuracy the system of
+          record never had.
+        -->
+        <timestamp>
+          <fieldName>timestamp</fieldName>
+          <pattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</pattern>
+          <timeZone>UTC</timeZone>
+        </timestamp>
+
+        <logLevel>
+          <fieldName>level</fieldName>
+        </logLevel>
+        <threadName>
+          <fieldName>thread</fieldName>
+        </threadName>
+        <loggerName>
+          <fieldName>logger</fieldName>
+        </loggerName>
+
+        <!--
+          THE PARITY FIELD. The message is emitted whole and unabbreviated.
+          There is no truncation length, no shortening converter and no
+          rewriting pattern on it, because this is the field that must carry
+          'FILE STATUS IS: NNNN' plus four characters byte for byte.
+
+          How that value is produced, so the contract is legible from here:
+          9910-DISPLAY-IO-STATUS at app/cbl/CBTRN02C.cbl:L714-L727 has two
+          branches over IO-STATUS-04, a PIC 9 followed by a PIC 999 at
+          :L138-L140 and therefore exactly four characters. When the status
+          is non numeric or its first byte is '9' the first byte is copied
+          through and the second is expanded from a binary field into three
+          digits, so status '9' with X'01' renders 9001. Otherwise the field
+          is set to '0000' and the two status characters are placed at
+          positions three and four, so status '23' renders 0023. NNNN is a
+          LITERAL inside the quoted string rather than a substitution
+          placeholder, and COBOL DISPLAY concatenates its operands with no
+          separator, so the whole line reads FILE STATUS IS: NNNN0023. The
+          prefix is declared exactly once in Java, at
+          model/enums/FileStatus.java:323. Gate 1 compares this stream
+          against the legacy baseline, so any reformatting here is a parity
+          failure.
+
+          THE RUN SUMMARY LITERALS ride the same field and are diffed the
+          same way, so they are recorded here verbatim rather than by line
+          number alone. app/cbl/CBTRN02C.cbl displays, in order, 'START OF
+          EXECUTION OF PROGRAM CBTRN02C' at :L194, then after the file closes
+          'TRANSACTIONS PROCESSED :' with WS-TRANSACTION-COUNT at :L227,
+          'TRANSACTIONS REJECTED  :' with WS-REJECT-COUNT at :L228, and 'END
+          OF EXECUTION OF PROGRAM CBTRN02C' at :L232.
+
+          Read those two counter literals carefully. The PROCESSED literal
+          has ONE space before its colon and the REJECTED literal has TWO.
+          The asymmetry is in the system of record, it is not a transcription
+          slip here, and it is reproduced rather than tidied, because
+          collapsing it to one space is a byte level diff and therefore a
+          Gate 1 parity failure. Both counters are PIC 9(09) at :L185-L186,
+          so each renders as a zero padded nine digit field appended with no
+          separator, exactly as DISPLAY concatenates its operands.
+
+          Return code 4 is then set if and only if WS-REJECT-COUNT exceeds
+          zero at :L229-L231, which is the sole determinant of the completed
+          with rejects outcome. The four other batch programs carry the same
+          START and END OF EXECUTION shape, at app/cbl/CBACT04C.cbl,
+          app/cbl/CBTRN03C.cbl, app/cbl/CBSTM03A.CBL and
+          app/cbl/CBTRN01C.cbl. Every masking rule below is written so that
+          none of these literals, and none of the zero padded counts that
+          follow them, can be matched or redacted; the nine digit counts in
+          particular are why the SSN rules demand a label or dashes rather
+          than keying on nine consecutive digits.
+        -->
+        <message>
+          <fieldName>message</fieldName>
+        </message>
+
+        <!--
+          Static context and the correlation trio. These come from the
+          pattern provider rather than from <mdc> for one specific reason:
+          the trio must be PRESENT on every event even when its MDC entry is
+          absent. The ':-' default yields an empty string, so a consumer's
+          schema stays valid when tracing is disabled or a correlation
+          identifier never got set, instead of the key vanishing.
+
+          traceId and spanId are read from the active span - supplied by
+          Micrometer tracing bridged to OpenTelemetry - and placed in MDC by
+          CorrelationIdFilter, which also places correlationId there. The
+          filter writes a fourth key, traceFlags, from the same TraceContext;
+          it is absent from this template and from the <mdc> allow list below
+          on purpose, being a carrier for the outbound traceparent header
+          rather than anything an operator reads. It is ADDITIVE capability, not a translation of
+          EIBTRNID: that field is supplied by the transaction monitor rather
+          than declared by the application and occurs ZERO times in app/cbl,
+          so no source line citation for it exists. app/cbl/CBTRN02C.cbl and
+          its four sibling batch programs carry no per request instrumentation
+          beyond DISPLAY, which is what this trio adds.
+        -->
+        <pattern>
+          <omitEmptyFields>false</omitEmptyFields>
+          <pattern>
+            {
+              "application": "${APPLICATION_NAME}",
+              "profile": "${ACTIVE_PROFILES}",
+              "traceId": "%mdc{traceId:-}",
+              "spanId": "%mdc{spanId:-}",
+              "correlationId": "%mdc{correlationId:-}"
+            }
+          </pattern>
+        </pattern>
+
+        <!--
+          The batch correlation key, and the ONLY MDC entry passed through by
+          name. Emitted only when present, so its presence is itself the
+          signal that this is a batch event.
+
+          This is what makes a run's log correlatable with its output
+          objects: batch/writers/TransactionWriter.java:1000 and
+          batch/writers/RejectWriter.java:1250-1255 build their S3 keys from
+          jobExecution.getJobInstance().getInstanceId(), so the same number
+          that names the object prefix also tags the log. Those deterministic
+          per run prefixes are what replace the seven GDG bases of
+          app/jcl/DEFGDGB.jcl, where a relative generation reference such as
+          (+1) became a new object under a monotonically increasing prefix.
+
+          The allow list is deliberate. An unbounded MDC passthrough would
+          let any future MDC key reach the log unreviewed, which is both an
+          unbounded field set and an open secret leak path.
+        -->
+        <mdc>
+          <includeMdcKeyName>jobInstanceId</includeMdcKeyName>
+        </mdc>
+
+        <!--
+          Failure detail. Rule 1 Clause B: "no swallowing exceptions; wrap
+          with context and preserve root cause." Both halves are honoured.
+          The root cause class and message are lifted into their own
+          queryable fields, and <stackTrace> renders the trace through a
+          converter configured ROOT CAUSE FIRST with a bounded depth.
+
+          That combination is the point, and neither half works alone.
+          The default converter prints the complete trace with no depth or
+          length limit, which is unbounded output on a public channel; a naive
+          depth limit truncates from the top, which is precisely how a root
+          cause gets lost. Ordering the root cause FIRST inverts that: the
+          frames a bound discards are the outermost wrapper frames, which are
+          the least informative ones, and the root cause is guaranteed to be
+          inside the bound rather than merely likely to be. So the trace is
+          bounded AND the root cause is preserved, which is what Clause B
+          requires and what an unbounded trace only appears to give.
+
+          The bound is also a sensitive-data control. A rendered frame can
+          carry a value positionally, with no field name to key on, and the
+          deepest frames of an SDK failure are exactly where an endpoint or a
+          resolved URL appears. R14 and R15 above redact the ARN and URL
+          renderings of an account identifier inside this field, since value
+          rules apply to it like any other string; capping depth reduces how
+          much unlabelled library internals reach the channel in the first
+          place. The primary control remains at source - the two AWS-facing
+          classes hand no throwable to the logger at all - because a rendered
+          positional value is only ever partially redactable.
+
+          The legacy counterpart is the abend path: 9999-ABEND-PROGRAM at
+          app/cbl/CBTRN02C.cbl:L707-L711 displays 'ABENDING PROGRAM', moves
+          999 into ABCODE and calls CEE3ABD, carrying the four field work
+          area of app/cpy/CSMSG02Y.cpy:L22-L28, internally titled
+          CABENDD.CPY: ABEND-CODE X(4), ABEND-CULPRIT X(8), ABEND-REASON
+          X(50) and ABEND-MSG X(72). In Java that becomes
+          FatalProcessingException carrying abend code 999 with process
+          return code 12, and these four fields are how it lands in the log.
+
+          Note what does NOT belong on this path. The five reject codes of
+          app/cbl/CBTRN02C.cbl, namely 100 INVALID CARD NUMBER FOUND, 101
+          ACCOUNT RECORD NOT FOUND, 102 OVERLIMIT TRANSACTION, 103
+          TRANSACTION RECEIVED AFTER ACCT EXPIRATION and 109, are BUSINESS
+          OUTCOMES, not failures. They are counted and written to the 430
+          byte reject record of :L176-L182, never thrown, and they are
+          logged below ERROR with the reject code as a bounded tag. Return
+          code 4 is set if and only if the reject count exceeds zero
+          (:L229-L231); return code 12 comes from the abend path instead,
+          and the two are independent.
+        -->
+        <!--
+          useSimpleClassName is forced to false on both providers. The encoder
+          defaults it to true, which would emit "ValidationException" rather
+          than "com.cardemo.exception.ValidationException". The nine class
+          exception hierarchy in com.cardemo.exception carries names that
+          collide with library types of the same simple name. ValidationException
+          is the clearest case: a type of that simple name also exists in
+          jakarta.validation, so a simple name is ambiguous as an alerting key
+          and cannot be relied on for triage. The fully qualified name
+          also attributes the abend path unambiguously to
+          com.cardemo.exception.FatalProcessingException, which is the carrier
+          of the app/cpy/CSMSG02Y.cpy abend fields and of abend code 999 with
+          process return code 12.
+        -->
+        <throwableClassName>
+          <fieldName>exceptionClass</fieldName>
+          <useSimpleClassName>false</useSimpleClassName>
+        </throwableClassName>
+        <throwableRootCauseClassName>
+          <fieldName>rootCauseClass</fieldName>
+          <useSimpleClassName>false</useSimpleClassName>
+        </throwableRootCauseClassName>
+        <throwableRootCauseMessage>
+          <fieldName>rootCauseMessage</fieldName>
+        </throwableRootCauseMessage>
+        <!--
+          Bounded, root-cause-first stack rendering. Every figure is chosen and
+          justified rather than defaulted:
+
+          rootCauseFirst true      - the root cause is printed before its
+                                     wrappers, which is what makes any depth
+                                     bound safe. Without it a bound truncates
+                                     the root cause away.
+          maxDepthPerThrowable 30  - per throwable in the chain, not per event,
+                                     so a wrapped failure still shows 30 frames
+                                     of the root cause. Thirty comfortably spans
+                                     a com.cardemo call stack from a controller
+                                     or a batch step down to the failure point;
+                                     frames beyond it are servlet, Spring and
+                                     SDK plumbing that repeat on every trace.
+          maxLength 8192           - a whole-field character ceiling, so a deeply
+                                     nested chain cannot produce an unbounded
+                                     log record even though each throwable is
+                                     individually capped.
+          shortenedClassNameLength 40
+                                   - abbreviates PACKAGE segments inside FRAME
+                                     lines only. It does NOT touch the
+                                     exceptionClass or rootCauseClass fields
+                                     above, both of which keep
+                                     useSimpleClassName false and stay fully
+                                     qualified, because those two are the
+                                     alerting keys and
+                                     com.cardemo.exception.ValidationException
+                                     must remain distinguishable from
+                                     jakarta.validation.ValidationException.
+                                     Forty characters leaves a frame's class and
+                                     method legible while removing the repeated
+                                     package prefixes that dominate a Spring
+                                     trace.
+          inlineHash false         - no computed hash is added. A hash is a
+                                     derived value with no counterpart in the
+                                     system of record, and the parity gates
+                                     compare log content.
+
+          No <exclude> frame filters are configured. Dropping frames by pattern
+          would silently remove the very plumbing frames that identify which
+          layer failed, and unlike a depth bound the omission would be invisible
+          in the output.
+        -->
+        <stackTrace>
+          <fieldName>stackTrace</fieldName>
+          <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+            <rootCauseFirst>true</rootCauseFirst>
+            <maxDepthPerThrowable>30</maxDepthPerThrowable>
+            <maxLength>8192</maxLength>
+            <shortenedClassNameLength>40</shortenedClassNameLength>
+            <inlineHash>false</inlineHash>
+          </throwableConverter>
+        </stackTrace>
+
+      </providers>
+    </encoder>
+  </appender>
+
+  <!--
+    ==============================================================
+    SECRET LEAK FLOOR
+    ==============================================================
+    These are NOT the operational verbosity table. That belongs to
+    the logging.level section of src/main/resources/application.yml, and is
+    not restated here.
+    Every logger below is named because at DEBUG or TRACE it emits FIELD
+    VALUES, and each is a library that is genuinely on this project's
+    runtime classpath, so none of this is configuration for something that
+    cannot happen.
+
+    GROUP A: loggers application.yml does not name. A child level overrides
+    its parent, so these remain in force even if a parent is raised, for
+    instance by setting logging.level.org.hibernate to TRACE while
+    investigating. They are permanently effective and cannot be dead.
+  -->
+  <logger name="org.hibernate.type.descriptor.sql" level="WARN"/>
+  <logger name="org.hibernate.orm.jdbc.extract" level="WARN"/>
+  <!--
+    JdbcTemplate bind parameter values, at TRACE. Directly relevant rather
+    than theoretical: JdbcTemplate.batchUpdate is what replaces the IDCAMS
+    REPRO steps of app/jcl/COMBTRAN.jcl and app/ctl/REPROCT.ctl, so every
+    combined transaction row passes through it.
+  -->
+  <logger name="org.springframework.jdbc.core.StatementCreatorUtils" level="WARN"/>
+  <!--
+    Full request and response BODIES, at TRACE. These two are the web tier's
+    real body logging paths, and neither is covered by the
+    org.springframework.web entry in the YAML, which sets the parent only.
+  -->
+  <logger name="org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor"
+          level="INFO"/>
+  <logger name="org.springframework.web.filter.AbstractRequestLoggingFilter" level="INFO"/>
+  <!--
+    Raw HTTP wire and headers, at DEBUG, which includes the Authorization
+    header in full. org.apache.httpcomponents:httpclient 4.5.13 is on the
+    runtime classpath by way of software.amazon.awssdk:apache-client, so
+    these logger names resolve to real code.
+  -->
+  <logger name="org.apache.http.wire" level="WARN"/>
+  <logger name="org.apache.http.headers" level="WARN"/>
+  <!--
+    AWS SDK request and response detail, including signing material.
+  -->
+  <logger name="software.amazon.awssdk.request" level="WARN"/>
+
+  <!--
+    GROUP B: the value emitting loggers application.yml ALSO pins. The
+    overlap is deliberate and has a distinct purpose rather than being a
+    restatement. Spring Boot applies logging.level AFTER loading this file,
+    so during the initialisation window, and in any context that loads this
+    configuration WITHOUT that YAML, such as a bare LoggerContext or a
+    Logback only test harness, these declarations are the only floor there
+    is. Values pinned here match the YAML exactly so the two cannot
+    disagree.
+
+    What each one would emit: org.hibernate.SQL prints every statement at
+    DEBUG; org.hibernate.orm.jdbc.bind prints every bound parameter value at
+    TRACE, which for app/cpy/CVCUS01Y.cpy:L17 means CUST-SSN and for
+    app/cpy/CSUSR01Y.cpy:L21 means the password hash;
+    org.springframework.security renders authentication objects and tokens;
+    the two cloud loggers render canonical requests and headers.
+  -->
+  <logger name="org.hibernate.SQL" level="WARN"/>
+  <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>
+  <logger name="org.springframework.security" level="INFO"/>
+  <logger name="software.amazon.awssdk" level="WARN"/>
+  <logger name="io.awspring.cloud" level="WARN"/>
+  <!--
+    The parity output tree, and the only GROUP B entry that names this
+    project's own code rather than a library. It belongs in this group for
+    exactly the reason the group exists: it emits FIELD VALUES, and this
+    file is the only floor during the initialisation window and in any
+    LoggerContext that loads this configuration without application.yml -
+    which includes a Logback only test harness.
+
+    What it would emit, and why none of it is reachable by the masking
+    rules above: masking matches labelled credentials, password hashes and
+    social security numbers, and none of the three emissions is any of
+    those.
+      com.cardemo.parity.CBACT01C - app/cbl/CBACT01C.cbl:L78 renders the
+        whole 300 byte account record image, unlabelled, so there is
+        nothing for a masking rule to match; :L119-L129 then renders
+        eleven labelled values including the current balance, both credit
+        limits and both current-cycle totals.
+      com.cardemo.parity.CBTRN03C - app/cbl/CBTRN03C.cbl:L180 renders a
+        transaction, and :L198 and :L199 render TRAN-AMT and
+        WS-PAGE-TOTAL.
+      com.cardemo.parity.CBACT04C - app/cbl/CBACT04C.cbl:L193 pairs an
+        account identifier with TRAN-CAT-BAL.
+
+    OFF rather than WARN, unlike every entry above it: these loggers exist
+    solely to carry parity output, so they have no level at which an
+    operator wants anything from them. A parity comparison enables one
+    program deliberately, in an isolated run, by name. Pinned identically
+    in application.yml so the two cannot disagree.
+  -->
+  <logger name="com.cardemo.parity" level="OFF"/>
+
+  <!--
+    Root. The appender attachment is the substantive part: without it there
+    is no output at all. The level is structural rather than a policy
+    statement, because Logback's own default for the root logger is DEBUG,
+    which would be far too verbose for a context that has no Spring
+    Environment to consult. The logging.level.root property remains the
+    authority for root verbosity under Spring Boot and overrides this a moment after the
+    file is read.
+
+    CONSOLE is the only appender declared in this file and it is referenced
+    here, so there is no unreferenced appender, encoder, decorator or
+    provider anywhere above. Rule 1 Clause B: no dead configuration.
+  -->
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+
+</configuration>

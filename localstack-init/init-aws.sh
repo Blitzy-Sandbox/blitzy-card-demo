@@ -1,0 +1,2302 @@
+#!/usr/bin/env bash
+# ******************************************************************
+# * Program     : init-aws.sh
+# * Application : CardDemo
+# * Type        : LocalStack resource initializer (Compose ready-init hook)
+# * Function    : Idempotently provisions the S3, SQS FIFO and SNS resources
+# *               that replace the seven legacy generation data group bases,
+# *               the extrapartition transient data queue 'JOBS' and the JES2
+# *               internal reader.
+# * Source      : app/jcl/DEFGDGB.jcl (six GDG bases, LIMIT(5) SCRATCH),
+# *               app/jcl/DALYREJS.jcl (the seventh base),
+# *               app/jcl/REPTFILE.jcl (TRANREPT LIMIT(10)),
+# *               app/jcl/POSTTRAN.jcl, app/jcl/INTCALC.jcl,
+# *               app/jcl/COMBTRAN.jcl, app/jcl/CREASTMT.JCL and
+# *               app/proc/TRANREPT.prc (dataset record lengths), and
+# *               app/csd/CARDDEMO.CSD:L499-L503 (DEFINE TDQUEUE(JOBS),
+# *               RECORDSIZE(80) RECORDFORMAT(FIXED)) - all @ 7756d89
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+#
+# WHAT IT DOES
+#
+#   * 3 S3 buckets .......... input, output, statements
+#                             VERSIONING ON THE OUTPUT BUCKET ONLY
+#   * 3 SQS queues .......... carddemo-report-jobs.fifo, the report-job queue,
+#                             FifoQueue=true ContentBasedDeduplication=false,
+#                             carrying a RedrivePolicy;
+#                             carddemo-report-jobs-dlq.fifo, its dead-letter
+#                             target, provisioned FIRST because the policy names
+#                             it - see the SQS section below for why this exists;
+#                             and carddemo-notifications-inbox, a STANDARD queue
+#                             that exists solely to receive the topic's notices
+#   * 1 SNS topic ........... notifications
+#   * 1 SNS subscription .... the inbox queue, protocol sqs, raw delivery on;
+#                             exactly one, and see the SNS section below for why
+#                             zero is now the fatal state rather than the goal
+#   * 0 S3 lifecycle rules .. deliberately none; GDG retention is documented,
+#                             not enforced - see the S3 section below
+#
+# EXACTLY ONE SNS TOPIC, AND NO SECOND ONE MAY BE ADDED. An `alerts` topic, for
+# instance, is declared by nothing in the contract and consumed by nothing in the
+# application: least privilege forbids provisioning a delivery surface with no
+# consumer, and an unconsumed topic is a publish target that no code path audits.
+#
+# EXACTLY ONE SUBSCRIBER, WHICH IS A REVERSAL. Through finding M-04 this file
+# provisioned the topic with no subscriber at all and asserted that emptiness as
+# the contract. Least privilege was the stated reason, and it was the wrong
+# reason: a topic with no subscriber accepts every publish and discards it, so
+# the notification capability was inert while every publish reported success.
+# The inbox queue is the consumer that makes least privilege and a working
+# capability the same thing, and it is the faithful analogue of the mainframe
+# NOTIFY it replaces - a notice delivered to a queue and read later. The count
+# the script enforces therefore moved from "exactly zero" to "at least one", and
+# the second queue in the inventory above is that inbox rather than a second
+# report queue.
+#
+# Nothing else is provisioned - no IAM role, policy, KMS key, DynamoDB table,
+# Lambda or EventBridge rule: only s3, sqs and sns are enabled on the container
+# (docker-compose.yml `SERVICES: s3,sqs,sns`), and least privilege forbids
+# provisioning anything the application does not consume.
+#
+# The script creates CONTAINERS, never OBJECTS - no S3 key is written, no
+# message enqueued, no notification published. The legacy record lengths in the
+# provenance section below are therefore evidence for WHICH bucket each byte
+# stream belongs in; they are not enforced here.
+#
+# Idempotency is a hard requirement, not a convenience: LocalStack re-runs every
+# executable in its ready-init directory on each `docker compose up`, each
+# restart and each persistence-restore cycle. Re-running converges; it never
+# fails because a resource already exists, and it never destroys or reconfigures
+# state it did not create.
+#
+# HOW TO RUN AND TEST
+#
+# Normal operation is automatic: docker-compose.yml mounts this directory
+# READ-ONLY at /etc/localstack/init/ready.d and LocalStack runs this file once
+# the edge service reports ready.
+#
+#   docker compose up -d localstack
+#   docker compose logs localstack | grep '\[init-aws\]'
+#
+# To re-run and verify by hand. Every command runs INSIDE the container, because
+# the AWS CLI is not required on - and is generally absent from - the host,
+# while `awslocal` is bundled in the image:
+#
+#   docker compose exec localstack bash /etc/localstack/init/ready.d/init-aws.sh
+#   docker compose exec localstack awslocal s3api list-buckets
+#   docker compose exec localstack awslocal s3api get-bucket-versioning \
+#     --bucket carddemo-batch-output
+#   docker compose exec localstack awslocal sqs list-queues
+#   docker compose exec localstack awslocal sqs get-queue-attributes \
+#     --queue-url "$(docker compose exec -T localstack awslocal sqs get-queue-url \
+#     --queue-name carddemo-report-jobs.fifo --query QueueUrl --output text)" \
+#     --attribute-names FifoQueue ContentBasedDeduplication
+#   docker compose exec localstack awslocal sns list-topics
+#   docker compose exec localstack awslocal sns list-subscriptions
+#   docker compose exec localstack awslocal s3api get-bucket-lifecycle-configuration \
+#     --bucket carddemo-batch-output
+#
+# Expected on a clean volume: 3 CardDemo buckets; Status=Enabled on the output
+# bucket and no versioning configuration on the other two; TWO queues - the
+# report queue, whose name ends in `.fifo` and which has no unsuffixed twin, with
+# FifoQueue=true and ContentBasedDeduplication=false, plus the standard
+# carddemo-notifications-inbox; 1 topic, carddemo-notifications; EXACTLY ONE
+# subscription on it, whose Protocol is `sqs` and whose Endpoint is the inbox
+# queue's ARN; and `NoSuchLifecycleConfiguration` from every lifecycle read.
+#
+# `sns list-subscriptions` showing zero is a FAILURE, not a clean stack, and the
+# script exits nonzero rather than reporting it. Showing more than one for the
+# same inbox endpoint is duplicate delivery, and it means the read-before-write
+# in ensure_notification_subscription was bypassed; the .github/workflows/build.yml
+# inventory step asserts the exact count for that reason.
+#
+# On a LONG-LIVED volume the listings can legitimately show more than the script
+# provisions, and that is not a failure of either the script or the check:
+#   - `s3api list-buckets` may include buckets other tooling created.
+#   - `sns list-topics` may show a `carddemo-alerts` topic that other tooling
+#     created. This script neither creates nor deletes it; SNS offers no way to
+#     un-create a topic other than deleting it, which is not this script's to do.
+#     Only `carddemo-notifications` is provisioned.
+#   - the input or statements bucket may already carry versioning, which S3
+#     cannot un-configure - reported as DRIFT and survived, see EVIDENCE AND
+#     DRIFT below.
+#
+# Every property the summary asserts is READ BACK by the script itself, and the
+# summary is composed from the observed values rather than the intended ones, so
+# a divergence of the kind listed above is visible in the summary instead of
+# being flattened into a fixed string. The commands above therefore reproduce the
+# script's own evidence rather than supplying it.
+#
+# Static checks on the host are `bash -n` and `shellcheck` against this path.
+#
+# THIS FILE HAS A UNIT-TEST TIER, at
+# src/test/java/com/cardemo/unit/infrastructure/InitAwsScriptGuardTest.java. It
+# runs this script as a subprocess against hostile AWS_ENDPOINT_URL and retry
+# values to prove the guards fail closed before any API call, and it asserts the
+# structural properties that no subprocess run can reach - among them that the
+# emptiness assertion of finding M-04 is gone rather than bypassed, that the
+# subscription set is read before it is written, and that the captured inbox ARN
+# is validated as an ARN. Editing the SNS section without running that suite is
+# how the M-04 fix reintroduced M-04 once already.
+#
+# What that tier does NOT cover is provisioning against a live edge, because it
+# never reaches one. The AWS integration tests under
+# src/test/java/com/cardemo/integration/aws/ provision their own Testcontainers
+# resources and do not execute this script either. Provisioning is therefore
+# verified by the in-script self-verification (bucket existence, versioning
+# read-back on all three buckets, lifecycle-rule read-back on all three buckets,
+# FIFO attribute read-back, topic presence, and subscription count plus protocol
+# read-back), by the inventory and idempotence steps in
+# .github/workflows/build.yml, and by the Docker Compose execution evidence
+# recorded for Gate 8.
+#
+# ==============================================================================
+# EVIDENCE AND DRIFT - WHAT THE SUMMARY MEANS
+# ==============================================================================
+# The closing `summary` block is Gate 8 evidence, so it states only what the
+# script OBSERVED. Every value it prints was read back from the edge in the same
+# run; none is a restatement of intent. That distinction matters because a
+# summary asserting "unversioned" without looking would report a clean stack
+# while the opposite was true.
+#
+# Drift is handled in one of two ways, and which one applies is decided by
+# whether the drift is REVERSIBLE through an API call:
+#
+#   FATAL drift - the operator can undo it, so the script refuses to continue and
+#   names the exact command:
+#     * output-bucket versioning not reading back Enabled ......... exit 5
+#     * FIFO attribute drift on an existing queue ................. exit 6
+#     * NO subscription on the topic (contract says at least one).. exit 7
+#     * any S3 lifecycle rule on any bucket (contract says zero) .. exit 4
+#
+#   The subscription row above reads the opposite way round from the other three,
+#   and that is deliberate rather than a transcription slip. For versioning, FIFO
+#   attributes and lifecycle rules the drift is a resource that should not be
+#   there. For the subscription it is a resource that should: zero subscribers is
+#   the state finding M-04 reported, in which every publish is accepted and
+#   discarded. Excess subscriptions on the same endpoint are a real defect too -
+#   they are duplicate delivery - but they are not fatal HERE, because a
+#   subscription this script did not create may belong to a sibling clone sharing
+#   the edge, and destroying another clone's resource is outside this script's
+#   authority. The CI inventory step asserts the exact count instead, where the
+#   edge is known to be sole-tenant.
+#
+#   REPORTED, NON-FATAL drift - the operator CANNOT undo it without destroying a
+#   shared resource, which this script is forbidden to do:
+#     * versioning already Enabled or Suspended on the input or statements
+#       bucket. S3 has no API that removes a versioning configuration: once
+#       enabled it may only be Suspended, and Suspended is not the same as never
+#       configured. Undoing it would mean deleting the bucket, and deleting a
+#       bucket this script did not create - one that may hold another team's
+#       objects - is out of policy. The script therefore prints a loud DRIFT
+#       line naming the bucket and the observed status, reports that status in
+#       the summary instead of claiming "unversioned", and exits 0.
+#
+# THIS SCRIPT NEVER DELETES ANYTHING. There is no delete-bucket, delete-queue,
+# delete-topic, unsubscribe or delete-bucket-lifecycle call anywhere in it.
+#
+# ==============================================================================
+# KEY CONFIGS AND DEFAULTS
+# ==============================================================================
+# Every value below is read from the environment. Defaults are copied verbatim
+# from the committed `.env.example`; none is invented here. Resolution uses
+# ${VAR-default} rather than ${VAR:-default} on purpose, so that "not
+# configured" and "configured to an empty string" are DIFFERENT outcomes: an
+# unset variable takes the documented default, whereas an explicitly empty one
+# is a misconfiguration and exits 2. docker-compose.yml injects the four
+# bucket/queue variables; the topic variable is not injected, so for it the
+# documented default is the normal path.
+#
+# EVERY NAME BELOW IS THE NAME THIS SCRIPT ACTUALLY READS. The service-free
+# spellings CARDDEMO_BATCH_INPUT_BUCKET, CARDDEMO_BATCH_OUTPUT_BUCKET,
+# CARDDEMO_STATEMENTS_BUCKET, CARDDEMO_REPORT_QUEUE, CARDDEMO_NOTIFICATION_TOPIC
+# and CARDDEMO_ALERT_TOPIC are read by nothing here and must not be documented as
+# though they were. The live spellings carry the service they address, so
+# one spelling serves this file, .env.example and docker-compose.yml alike, and
+# the read sites are at the `readonly` block further down this file.
+#
+#   CARDDEMO_S3_BATCH_INPUT_BUCKET   default carddemo-batch-input
+#                                    DALYTRAN staging input, LRECL 350
+#   CARDDEMO_S3_BATCH_OUTPUT_BUCKET  default carddemo-batch-output
+#                                    the ONLY versioned bucket
+#   CARDDEMO_S3_STATEMENTS_BUCKET    default carddemo-statements
+#                                    STMTFILE 80, HTMLFILE 100
+#   CARDDEMO_SQS_REPORT_QUEUE        default carddemo-report-jobs.fifo
+#                                    logical name carddemo-report-jobs; a `.fifo`
+#                                    suffix is appended when absent and never
+#                                    doubled
+#   CARDDEMO_SNS_NOTIFICATION_TOPIC  default carddemo-notifications
+#                                    the ONLY topic created; there is no alert
+#                                    topic and no variable for one
+#   AWS_REGION                    no default; preferred when set
+#   AWS_DEFAULT_REGION            default us-east-1; used when AWS_REGION is
+#                                 unset, matching AWS CLI precedence
+#   AWS_ENDPOINT_URL              default http://localhost:4566; drives the
+#                                 readiness probe URL and the plain-`aws`
+#                                 fallback. ALLOWLISTED, not merely prefix
+#                                 checked: scheme http or https; no userinfo, no
+#                                 query, no fragment and no path beyond one
+#                                 optional trailing slash; host exactly one of
+#                                 localhost, 127.0.0.1, [::1],
+#                                 localhost.localstack.cloud, localstack or
+#                                 carddemo-localstack (optionally CLONE_INDEX
+#                                 suffixed); port mandatory and either 4566 or
+#                                 LOCALSTACK_PORT
+#   LOCALSTACK_PORT               default 4566; the published edge port, and the
+#                                 only port other than 4566 the endpoint may use
+#   INIT_MAX_ATTEMPTS             default 30   readiness poll attempts
+#   INIT_SLEEP_SECONDS            default 2    delay between attempts
+#   INIT_HEALTH_TIMEOUT_SECONDS   default 5    per-probe network timeout
+#
+# CREDENTIALS. No credential is ever read from the ambient environment. On the
+# bundled-`awslocal` path none is needed at all. On the plain-`aws` fallback path
+# the resolution chain is pinned to LocalStack's own placeholder values and every
+# other link in it - session token, named profile, shared credentials file,
+# config file, web identity token, assumed role, container credentials and the
+# EC2 instance metadata service - is unset or switched off before the first API
+# call. A real credential therefore cannot sign a request from this script even
+# if one is present in the environment. The two placeholder literals grant
+# nothing anywhere and are the documented LocalStack values; no live AWS account
+# or credential path is supported.
+#
+# PUBLIC API - EXIT CODES
+#
+# The public API is the environment contract above plus these codes. Every
+# nonzero exit prints, on stderr, the failing step, the underlying error
+# verbatim as the preserved root cause, and what to do about it.
+#
+#   0  success - every resource created or confirmed and verified
+#   1  unexpected failure - a command failed at a site with no specific handler;
+#      the ERR trap reports the failing line, command and raw status
+#   2  configuration error - a required variable is empty, or a bucket, name or
+#      region violates its charset rule, or a numeric setting is not a positive
+#      integer, or the endpoint points at live AWS. Raised BEFORE any API call,
+#      so no partial state can result
+#   3  readiness attempts exhausted - the edge never reported s3, sqs and sns
+#      usable within INIT_MAX_ATTEMPTS, and provisioning is not attempted
+#   4  bucket provisioning failure - head-bucket or create-bucket failed, or the
+#      name is owned by another account
+#   5  versioning verification failure - the output bucket did not read back
+#      Status=Enabled
+#   6  queue provisioning or verification failure - includes FIFO attribute
+#      drift on an existing queue, the post-deletion name-reuse window, and a
+#      notification inbox whose ARN does not read back as a bare sqs ARN
+#   7  topic provisioning or verification failure - includes a topic carrying NO
+#      subscription, which leaves every publish accepted and discarded, and a
+#      failure to create or read back the inbox subscription
+#
+# ==============================================================================
+# ENDPOINT VALIDATION
+# ==============================================================================
+# AWS_ENDPOINT_URL is untrusted input that, on the plain-`aws` fallback path,
+# decides where SIGNED REQUESTS CARRYING INHERITED CREDENTIALS are sent. It is
+# therefore parsed and canonicalised rather than pattern-matched, and it must
+# satisfy every one of the following before any API call is issued:
+#
+#   1. no control character, whitespace or backslash anywhere in the value
+#      (CWE-20: such bytes let a value that looks local resolve elsewhere, and
+#      let a log line be split)
+#   2. scheme is exactly `http` or `https`, lowercase after canonicalisation
+#   3. NO userinfo component. A `user:pass@host` form is rejected outright and
+#      the offending value is never echoed, because userinfo in an error line is
+#      a credential in a log file (CWE-532)
+#   4. NO path, query or fragment. A single trailing `/` is the only thing
+#      permitted after the authority (CWE-918: a path or query is how an endpoint
+#      override becomes a request-forgery primitive)
+#   5. the host, lowercased, is one of an explicit ALLOWLIST - the loopback
+#      literals, the LocalStack loopback DNS name, and the Compose service and
+#      container names of the pinned stack. Nothing else, in any case, with or
+#      without a trailing dot
+#   6. the port, if present, is one of an explicit approved set
+#
+# There is no deny-list. A deny-list is what the previous revision used - a
+# single case-sensitive substring test against the live AWS service domain - and
+# it admitted every other host on the internet, that same domain spelled in
+# capitals, raw IP addresses, CNAMEs, and `user:pass@` forms. An allowlist
+# inverts the default, so a host that was not thought about is refused instead of
+# accepted.
+#
+# The live AWS service domain is deliberately not spelled anywhere in this file,
+# not even in this post-mortem: an allowlist has no use for the literal, so its
+# absence is the observable difference between the two designs and is asserted by
+# InitAwsScriptGuardTest.theScriptNamesNoLiveAwsDomain.
+#
+# CLEARTEXT: `http` is accepted because every host on the allowlist is either a
+# loopback literal, a DNS name that resolves to loopback, or a name that only
+# resolves inside the Compose bridge network - so no accepted request leaves the
+# host, and TLS termination is explicitly deferred hardening in AAP 0.3.2. THAT
+# PROPERTY IS WHAT MAKES CLEARTEXT SAFE HERE, AND IT IS A PROPERTY OF THE
+# ALLOWLIST. Adding a host that is reachable off-box means requiring `https` for
+# it in the same change; the allowlist declaration below carries that obligation
+# as a comment beside the data it governs.
+#
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+#
+# Exit 3. Inspect `docker compose logs localstack`; confirm
+# docker-compose.yml still lists all three services; on a slow host raise
+# INIT_MAX_ATTEMPTS or INIT_SLEEP_SECONDS.
+#
+# Exit 2 on a variable. The message names it. Unset is fine and takes the
+# documented default; explicitly empty is rejected.
+#
+# Exit 2 or 4 on a bucket. S3 names are globally scoped, 3-63 characters,
+# lowercase alphanumeric plus dot and hyphen, starting and ending alphanumeric;
+# a charset violation is caught locally as exit 2. `BucketAlreadyExists` means
+# another account holds the name, so choose a different value, whereas
+# `BucketAlreadyOwnedByYou` is normal on a re-run and is treated as success.
+#
+# Exit 5. The observed value is printed. Versioning is applied to the output
+# bucket only and, once enabled, S3 permits Suspended but never removal - so
+# this script never suspends or clears versioning that a previous run or an
+# operator established, on any bucket. To assert that the input and statements
+# buckets are unversioned, test against a stack with a fresh volume.
+#
+# Exit 6 on attribute drift. Drift is caught by the read-back assertion in
+# verify_queue, NOT by a `QueueAlreadyExists` response: the check-then-create
+# path returns as soon as get-queue-url succeeds, so create-queue is never
+# called on an existing queue and can never raise. The message names the
+# drifting attribute and its observed value; either align the configuration or
+# delete the queue and let the hook recreate it. SQS also refuses to reuse a
+# deleted queue name for 60 seconds; the message says so, and the script does
+# not loop.
+#
+# Exit 7. `list-topics` did not report the topic after `create-topic` succeeded.
+# Check the sns service state on the health endpoint and the container logs.
+#
+# Exit 1. The ERR trap prints the line, command and raw status. Re-run with the
+# container logs open; a wedged edge service is the usual cause.
+
+# Strict mode. -E propagates the ERR trap into functions, so an unhandled
+# failure inside a helper is reported rather than silently returned. `set -x` is
+# deliberately never enabled: it would echo command lines that can carry
+# credential material.
+#
+# bash is not assumed: it was verified present in the pinned image
+# (docker-compose.yml pins localstack/localstack:4.14.0), as were awslocal, aws
+# and curl.
+set -Eeuo pipefail
+
+# LEGACY MAPPING - PROVENANCE, NOT EXECUTABLE LOGIC
+#
+# app/** is byte-for-byte immutable and this script reads nothing from it at
+# runtime; the locators below record where each provisioned resource comes from.
+#
+# 7 generation data group bases -> 3 buckets. app/jcl/DEFGDGB.jcl:L24-L58
+# declares SIX, each of the shape `DEFINE GENERATIONDATAGROUP - ( NAME(<dsn>) -
+# LIMIT(5) - SCRATCH - )`: TRANSACT.BKUP, TRANSACT.DALY, TRANREPT,
+# TCATBALF.BKUP, SYSTRAN and TRANSACT.COMBINED, all under the AWS.M2.CARDDEMO
+# prefix. app/jcl/DALYREJS.jcl:L24-L28 supplies the SEVENTH,
+# AWS.M2.CARDDEMO.DALYREJS. Seven, not six. They collapse onto three buckets by
+# direction of flow:
+#   input       DALYTRAN staging, LRECL 350, seeded from
+#               app/data/ASCII/dailytran.txt - the fixture is spelled
+#               `dailytran.txt`, never `dalytran.txt`
+#   output      DALYREJS 430, TRANREPT 133, TRANSACT.BKUP / .DALY / .COMBINED
+#               350, SYSTRAN 350, TCATBALF.BKUP - VERSIONED
+#   statements  STMTFILE 80 and HTMLFILE 100, under account and month prefixes
+#
+# Record lengths preserved byte-exactly at the S3 boundary:
+#   app/jcl/POSTTRAN.jcl:L34-L38  DALYREJS RECFM=F (fixed UNBLOCKED) LRECL=430,
+#                                 which is 350 data plus an 80-byte trailer of a
+#                                 4-digit reason code and a 76-char description
+#   app/jcl/INTCALC.jcl:L37-L41   the DD name is TRANSACT but the DSN is
+#                                 SYSTRAN(+1) at RECFM=F LRECL=350: the interest
+#                                 job writes a fresh sequential generation, not
+#                                 the keyed cluster
+#   app/proc/TRANREPT.prc:L76 and app/jcl/TRANREPT.jcl:L78   LRECL=133
+#   app/proc/TRANREPT.prc:L27-L31 TRANSACT.BKUP(+1) at LRECL=350
+#   app/jcl/CREASTMT.JCL:L89      STMTFILE LRECL=80
+#   app/jcl/CREASTMT.JCL:L94      HTMLFILE LRECL=100, while the STEP030
+#                                 pre-delete at :L69 declares the same DD at
+#                                 LRECL=80. The 100-byte form is authoritative
+#                                 for the statements bucket; the inconsistency
+#                                 is reproduced, not repaired, because parity is
+#                                 the contract
+#   app/jcl/CREASTMT.JCL:L29-L32  the TRXFL work cluster, KEYS(32 0)
+#                                 RECORDSIZE(350 350), is in-job only and NEVER
+#                                 persisted to S3, so it gets no bucket
+#
+# Generation references become deterministic prefixes: a (+1) write becomes a new
+# object under a monotonically increasing, zero-padded, lexicographically
+# sortable timestamp or job-instance prefix, and a (0) read becomes a read of the
+# greatest existing prefix (app/jcl/COMBTRAN.jcl:L26 reads SYSTRAN(0)). The
+# carry-forward hazard is why the output bucket must be VERSIONED: within one
+# legacy job a (+1) written by an earlier step is re-read as (+1) by a later one
+# - app/jcl/COMBTRAN.jcl:L33-L37 writes TRANSACT.COMBINED(+1) and :L43-L44 reads
+# it back, and app/proc/TRANREPT.prc:L27-L31 writes TRANSACT.BKUP(+1) and
+# :L36-L37 reads it back. Versioning is what lets those references denote the
+# same immutable generation instead of racing.
+#
+# Retention is DOCUMENTED, NEVER ENFORCED. app/jcl/DEFGDGB.jcl:L36-L40 declares
+# AWS.M2.CARDDEMO.TRANREPT with LIMIT(5) SCRATCH while
+# app/jcl/REPTFILE.jcl:L25-L28 RE-DECLARES the same dataset with LIMIT(10) and no
+# SCRATCH. The conflict is resolved in favour of 10, and it is the only legacy
+# inconsistency the migration resolves rather than reproduces. No
+# put-bucket-lifecycle-configuration call is made and no expiration rule is
+# created: object versioning supersedes GDG retention semantics, so the absence
+# of a lifecycle rule below is deliberate.
+#
+# DEFINE TDQUEUE(JOBS) becomes the FIFO queue. app/csd/CARDDEMO.CSD holds exactly
+# one DEFINE TDQUEUE in its 505 lines, at :L499-L503: TYPE(EXTRA)
+# DDNAME(INREADER) ERROROPTION(IGNORE) OPENTIME(INITIAL) TYPEFILE(OUTPUT)
+# RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).
+# RECORDSIZE(80) with FIXED and UNBLOCKED fixes the 80-byte parameter-card shape
+# that becomes a typed JSON message carrying the report name and the two dates;
+# TYPEFILE(OUTPUT) with DISPOSITION(MOD) is the append-only producer side;
+# DDNAME(INREADER) is the JES2 internal reader, replaced by an SQS listener. The
+# producer is app/cbl/CORPT00C.cbl:L517-L523, EXEC CICS WRITEQ TD QUEUE('JOBS')
+# FROM (JCL-RECORD) - :L515 is only the paragraph label, misspelled in the source
+# as `WIRTE-JOBSUB-TDQ.`. Because the publisher writes strictly sequentially,
+# card by card, ordering is reproduced with a deterministic message group id and
+# the queue is FIFO, not standard.
+#
+# ERROROPTION(IGNORE) at :L501 is a legacy quirk the target deliberately does NOT
+# reproduce: the mainframe was configured to ignore a queue I/O error outright.
+# That is precisely why this script never swallows a failure - every AWS call
+# below distinguishes "already exists" from a real error and surfaces the latter
+# with its root cause intact.
+#
+# Check-then-create is not a modern embellishment; the legacy stream does the
+# same. app/jcl/DEFGDGB.jcl follows every one of its six
+# DEFINE GENERATIONDATAGROUP statements with `IF LASTCC=12 THEN SET MAXCC=0`, at
+# L29, L35, L41, L47, L53 and L59, and app/jcl/CREASTMT.JCL:L28 reads
+# `SET       MAXCC = 0` immediately after its DELETE ... CLUSTER pre-delete. That
+# is the mainframe's own "already exists is not an error" guard.
+# app/jcl/DALYREJS.jcl carries no such guard.
+#
+# --- SNS ---------------------------------------------------------------------
+# SNS carries operator notification, replacing the mainframe operator-notify
+# path - historically the JOB card NOTIFY=&SYSUID convention at
+# app/jcl/DEFGDGB.jcl:L1. EXACTLY ONE topic is created, the notification topic
+# declared by the committed contract, together with EXACTLY ONE subscriber: a
+# standard queue that holds each notice until an operator reads it.
+#
+# FINDING M-04, SEVERITY MAJOR. This section previously created the topic with ZERO
+# subscriptions and asserted that count, which made the capability inert - a topic
+# with no subscriber accepts every publish and discards it, and the publisher cannot
+# tell the difference because acceptance is not delivery. The inbox queue is what
+# turns an accepted publish into a delivered notice, and it is the faithful
+# analogue: NOTIFY delivered to a user's message queue, to be read later.
+#
+# A second `alerts` topic would be pure surface: it appears in no requirement and
+# is published to by no code path, yet an unconsumed topic still accepts
+# publishes, and a resource nothing audits is a resource nothing notices. Least
+# privilege means the provisioned set matches the consumed set exactly - which is
+# why there is one topic, one subscriber, and nothing else.
+#
+# One further legacy defect is logged and repaired nowhere:
+# app/jcl/CREASTMT.JCL:L90 is a corrupted DD continuation,
+# `//         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS`.
+
+
+# Exit codes. Declared once, referenced by name everywhere, so the documented
+# taxonomy above and the runtime behaviour cannot drift apart.
+readonly EXIT_OK=0
+readonly EXIT_UNEXPECTED=1
+readonly EXIT_CONFIG=2
+readonly EXIT_NOT_READY=3
+readonly EXIT_BUCKET=4
+readonly EXIT_VERSIONING=5
+readonly EXIT_QUEUE=6
+readonly EXIT_TOPIC=7
+
+# Structured logging. One shape for every line: a fixed `[init-aws]` prefix, a
+# UTC timestamp, a stable step token naming the resource, and the message.
+# Progress goes to stdout; every failure goes to stderr.
+#
+# Nothing here may ever emit a secret. Access keys, secret keys, session tokens
+# and the LocalStack auth token are never read by this script. Queue URLs and
+# topic ARNs are never printed either, because both embed the AWS account
+# identifier; the logical and physical resource NAMES are logged instead.
+utc_now() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+log() {
+  local stamp
+  stamp="$(utc_now)"
+  printf '[init-aws] %s %-22s %s\n' "${stamp}" "$1" "$2"
+}
+
+# Emits the failing step, the preserved root cause and what to do about it, then
+# exits with the documented code. Never returns, and never converts a failure
+# into a success.
+fail() {
+  local code="$1" step="$2" detail="$3" remedy="$4"
+  local stamp
+  stamp="$(utc_now)"
+  printf '[init-aws] %s %-22s FAILED: %s\n' "${stamp}" "${step}" "${detail}" >&2
+  printf '[init-aws] %s %-22s REMEDIATION: %s\n' "${stamp}" "${step}" "${remedy}" >&2
+  printf '[init-aws] %s %-22s exiting with code %s\n' "${stamp}" "${step}" "${code}" >&2
+  exit "${code}"
+}
+
+# ERR trap. Reaches only sites with no specific handler, because every expected
+# failure below is detected inside an `if` condition - which bash exempts from
+# ERR - and routed through `fail`. The raw status is reported to preserve the
+# root cause, but the process exits with EXIT_UNEXPECTED so the documented code
+# taxonomy stays exact and a command's incidental status can never masquerade as,
+# say, a configuration error.
+# ShellCheck cannot see through the single-quoted trap string below, so it reports
+# this body as unreachable (SC2317). It is reached indirectly, via the ERR trap;
+# suppressing that one check here is the remedy ShellCheck itself documents for
+# indirect invocation, and it is scoped to this function alone.
+# shellcheck disable=SC2317
+on_unexpected_error() {
+  local raw_status=$?
+  local line="$1" command="$2"
+  local stamp
+  stamp="$(utc_now)"
+  printf '[init-aws] %s %-22s FAILED: unhandled error at line %s: "%s" returned %s\n' \
+    "${stamp}" 'internal' "${line}" "${command}" "${raw_status}" >&2
+  printf '[init-aws] %s %-22s REMEDIATION: %s\n' "${stamp}" 'internal' \
+    'Re-run with "docker compose logs -f localstack" open; a wedged edge service is the usual cause.' >&2
+  printf '[init-aws] %s %-22s exiting with code %s\n' "${stamp}" 'internal' "${EXIT_UNEXPECTED}" >&2
+  exit "${EXIT_UNEXPECTED}"
+}
+trap 'on_unexpected_error "${LINENO}" "${BASH_COMMAND}"' ERR
+
+# Configuration. Resolved exactly once, then frozen with `readonly`, so no later
+# line can mutate a resource name and every name is spelled in precisely one
+# place. See KEY CONFIGS AND DEFAULTS above for why ${VAR-default} is used in
+# preference to ${VAR:-default}.
+#
+# The five below are the mandated contract names, in the order the requirements
+# list them, and they are the whole public surface: there is no sixth. The plan
+# prose mentions "the SNS topics" in the plural, but exactly ONE topic is
+# provisioned, because no code in this repository publishes to or subscribes from
+# a second one, and inventing a variable that nothing reads would put a name in
+# this script that neither .env.example nor docker-compose.yml declares - the
+# precise drift this naming contract exists to prevent. Each variable is read in
+# exactly one place - here - so there is no second spelling for any of them to
+# drift from.
+# ------------------------------------------------------------------------------
+readonly INPUT_BUCKET="${CARDDEMO_S3_BATCH_INPUT_BUCKET-carddemo-batch-input}"
+readonly OUTPUT_BUCKET="${CARDDEMO_S3_BATCH_OUTPUT_BUCKET-carddemo-batch-output}"
+readonly STATEMENTS_BUCKET="${CARDDEMO_S3_STATEMENTS_BUCKET-carddemo-statements}"
+readonly REPORT_QUEUE="${CARDDEMO_SQS_REPORT_QUEUE-carddemo-report-jobs.fifo}"
+readonly NOTIFICATION_TOPIC="${CARDDEMO_SNS_NOTIFICATION_TOPIC-carddemo-notifications}"
+
+# AWS_REGION wins over AWS_DEFAULT_REGION, matching AWS CLI precedence, while
+# AWS_DEFAULT_REGION is what docker-compose.yml actually injects.
+readonly REGION="${AWS_REGION:-${AWS_DEFAULT_REGION-us-east-1}}"
+readonly ENDPOINT_URL="${AWS_ENDPOINT_URL-http://localhost:4566}"
+
+# Readiness budget. 30 attempts at 2s is a ~60s ceiling: comfortably longer than
+# a cold LocalStack edge needs, yet short enough that a genuinely broken stack
+# fails the compose run instead of hanging CI. Both are overridable rather than
+# hard-coded so a slow host needs no edit to this file.
+readonly MAX_ATTEMPTS="${INIT_MAX_ATTEMPTS-30}"
+readonly SLEEP_SECONDS="${INIT_SLEEP_SECONDS-2}"
+readonly HEALTH_TIMEOUT_SECONDS="${INIT_HEALTH_TIMEOUT_SECONDS-5}"
+
+# The logical name carries no suffix (`carddemo-report-jobs`); the physical name
+# is what AWS requires of a FIFO queue. Stripping any existing suffix
+# before appending exactly one guarantees the two can never diverge and that a
+# doubled `.fifo.fifo` is impossible.
+readonly QUEUE_LOGICAL="${REPORT_QUEUE%.fifo}"
+readonly QUEUE_PHYSICAL="${QUEUE_LOGICAL}.fifo"
+
+# The dead-letter target's name is DERIVED from the report queue's rather than
+# configured separately, and deliberately so: two independent variables could be
+# pointed at each other's queue, or at the same one, and a queue that is its own
+# dead-letter target quarantines nothing. Deriving it makes the pairing
+# structural. A FIFO queue's dead-letter target must itself be FIFO, hence the
+# suffix.
+readonly DLQ_PHYSICAL="${QUEUE_LOGICAL}-dlq.fifo"
+
+# How many deliveries a message may fail before SQS moves it to the dead-letter
+# queue. Four, not one and not the service maximum: one would quarantine a
+# submission on a single transient store outage, while a large count multiplied
+# by the 900-second visibility window is measured in hours of head-of-line
+# blocking. Four attempts across four windows is one hour of retry, which is long
+# enough to ride out a restart of the database or the emulator and short enough
+# that a genuinely unrunnable message stops blocking the group the same morning.
+readonly QUEUE_MAX_RECEIVE_COUNT='4'
+
+# Input validation. Inputs are untrusted and are checked BEFORE any AWS call, so
+# a misconfiguration can never leave a half-provisioned stack behind.
+#
+# THE APPLICATION ENFORCES THE SAME CONTRACT, AND THE TWO MUST AGREE EXACTLY.
+# com.cardemo.config.AwsConfig#requireResourceName transcribes every pattern,
+# every length bound and every hint below, and its constructor applies them to
+# the same six values before any client is built; the derived-DLQ ceiling
+# further down is mirrored by #requireDeadLetterNameDerivable. Two guards over
+# one variable have to agree or the pair is worse than either alone - a value one
+# accepts and the other refuses is a stack that provisions and will not start, or
+# starts and cannot publish - so a change to any pattern, bound or hint here must
+# be made in both places in the same commit. That guard exists because this one
+# only runs WHEN PROVISIONING RUNS: an application pointed at an
+# already-provisioned emulator, or a profile resolving these variables from
+# outside the compose environment, never executes this file, and before the Java
+# half existed such a deployment accepted a name like 'invalid/name', started
+# cleanly, reported itself ready and failed at the first object write.
+#
+# require_value <var-name> <resolved-value> <regex> <min-len> <max-len> <hint>
+require_value() {
+  local var_name="$1" value="$2" pattern="$3" min_len="$4" max_len="$5" hint="$6"
+  if [[ -z "${value}" ]]; then
+    fail "${EXIT_CONFIG}" "config:${var_name}" \
+      'resolved to an empty value (the variable is set but empty)' \
+      "Unset ${var_name} to accept its documented default, or set it to a valid name."
+  fi
+  if [[ "${#value}" -lt "${min_len}" || "${#value}" -gt "${max_len}" ]]; then
+    fail "${EXIT_CONFIG}" "config:${var_name}" \
+      "length ${#value} is outside the ${min_len}-${max_len} characters AWS permits" \
+      "Set ${var_name} to a name of ${min_len}-${max_len} characters."
+  fi
+  if [[ ! "${value}" =~ ${pattern} ]]; then
+    fail "${EXIT_CONFIG}" "config:${var_name}" \
+      "value '${value}' is not a valid name" \
+      "Set ${var_name} to a name matching: ${hint}"
+  fi
+}
+
+# S3: 3-63 characters, lowercase alphanumeric with dots and hyphens, first and
+# last character alphanumeric.
+readonly BUCKET_PATTERN='^[a-z0-9][a-z0-9.-]*[a-z0-9]$'
+readonly BUCKET_HINT='lowercase letters, digits, dots and hyphens, starting and ending alphanumeric'
+# SQS/SNS: alphanumerics, hyphens and underscores. The queue is validated on its
+# LOGICAL name, so the 80-character physical ceiling leaves 75 for the logical
+# part once `.fifo` is appended.
+readonly NAME_PATTERN='^[A-Za-z0-9_-]+$'
+readonly NAME_HINT='letters, digits, hyphens and underscores only'
+# Region: lowercase alphanumerics and hyphens, as every AWS region code is.
+readonly REGION_PATTERN='^[a-z0-9-]+$'
+readonly REGION_HINT='lowercase letters, digits and hyphens'
+
+require_value 'CARDDEMO_S3_BATCH_INPUT_BUCKET'  "${INPUT_BUCKET}"       "${BUCKET_PATTERN}" 3 63  "${BUCKET_HINT}"
+require_value 'CARDDEMO_S3_BATCH_OUTPUT_BUCKET' "${OUTPUT_BUCKET}"      "${BUCKET_PATTERN}" 3 63  "${BUCKET_HINT}"
+require_value 'CARDDEMO_S3_STATEMENTS_BUCKET'   "${STATEMENTS_BUCKET}"  "${BUCKET_PATTERN}" 3 63  "${BUCKET_HINT}"
+require_value 'CARDDEMO_SQS_REPORT_QUEUE'       "${QUEUE_LOGICAL}"      "${NAME_PATTERN}"   1 75  "${NAME_HINT}"
+require_value 'CARDDEMO_SNS_NOTIFICATION_TOPIC' "${NOTIFICATION_TOPIC}" "${NAME_PATTERN}"   1 256 "${NAME_HINT}"
+require_value 'AWS_REGION'                      "${REGION}"             "${REGION_PATTERN}" 2 32  "${REGION_HINT}"
+
+# The dead-letter name is composed, so its LENGTH has to be checked even though
+# the name it derives from already passed. AWS caps a queue name at 80
+# characters and the derived name adds nine ('-dlq' plus the mandatory '.fifo'),
+# so a report-queue name above 71 characters provisions a main queue and then
+# fails to provision its quarantine target. Refusing here, with the arithmetic
+# stated, is better than discovering it as a create-queue rejection halfway
+# through provisioning.
+if (( ${#DLQ_PHYSICAL} > 80 )); then
+  fail "${EXIT_CONFIG}" 'config:CARDDEMO_SQS_REPORT_QUEUE' \
+    "is ${#QUEUE_LOGICAL} characters, so '${DLQ_PHYSICAL}' is ${#DLQ_PHYSICAL} - over the 80 AWS allows" \
+    'Use a report-queue name of at most 71 characters, so the derived -dlq.fifo companion fits.'
+fi
+
+# The three bucket names must be distinct, or two logical streams would silently
+# share one container and the output bucket's versioning would leak across them.
+if [[ "${INPUT_BUCKET}" == "${OUTPUT_BUCKET}" || "${INPUT_BUCKET}" == "${STATEMENTS_BUCKET}" ||
+  "${OUTPUT_BUCKET}" == "${STATEMENTS_BUCKET}" ]]; then
+  fail "${EXIT_CONFIG}" 'config:buckets' \
+    "bucket names must be distinct: got '${INPUT_BUCKET}', '${OUTPUT_BUCKET}', '${STATEMENTS_BUCKET}'" \
+    'Give the three CARDDEMO_S3_*_BUCKET variables distinct values.'
+fi
+
+# There is no topic-distinctness check because there is exactly ONE topic. The
+# previous revision compared two names; removing the second topic removed the
+# comparison with it rather than leaving a tautology behind.
+
+# The readiness budget drives a loop and is then multiplied to display a total,
+# so each value must be a decimal integer within a FINITE range. Two properties
+# are enforced, and neither is optional:
+#
+#   1. NO LEADING ZERO. `^[0-9]+$` accepts `08`, which every arithmetic context
+#      in Bash then reads as octal and rejects: `$((30 * 08))` aborts with
+#      "value too great for base (error token is \"08\")". Because that
+#      multiplication lives inside the readiness-exhaustion message, the octal
+#      form did not merely mis-report a budget - it crashed the very branch that
+#      exists to explain a timeout. The pattern below admits a bare `0` and
+#      otherwise requires a non-zero leading digit, so no octal token survives
+#      validation. `10#` is additionally used at the one arithmetic site as
+#      belt-and-braces, so the base is explicit in the code and does not depend
+#      on this pattern staying as it is.
+#   2. A FINITE MAXIMUM. Digit-only validation accepted values that overflow a
+#      signed 64-bit product: `$((9223372036854775807 * 2))` evaluates to `-2`,
+#      so the script would have announced a negative time budget. Bounding the
+#      inputs is what makes the product provably safe rather than merely
+#      unlikely - see the arithmetic proof at the exhaustion message below.
+#
+# The ceilings are operational, not arbitrary: 3600 attempts at 60s apart is a
+# one-hour-plus ceiling, far beyond any cold start, and a 300s health timeout is
+# longer than any single curl to a local edge can justify.
+readonly MAX_ATTEMPTS_CEILING=3600
+readonly SLEEP_SECONDS_CEILING=60
+readonly HEALTH_TIMEOUT_CEILING=300
+
+# require_bounded_integer <var-name> <resolved-value> <min> <max> <example>
+#
+# One validator for all three, so the leading-zero and range rules cannot drift
+# apart between them - which is precisely how the octal hole opened: two of the
+# three used `^[1-9][0-9]*$` and the third used `^[0-9]+$`.
+require_bounded_integer() {
+  local var_name="$1" value="$2" min="$3" max="$4" example="$5"
+  if [[ ! "${value}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    local hint="Set ${var_name} to a plain base-10 integer such as ${example}."
+    hint+=' A leading zero (08) is read as octal and aborts arithmetic.'
+    fail "${EXIT_CONFIG}" "config:${var_name}" \
+      "value '${value}' is not a decimal integer without a leading zero" \
+      "${hint}"
+  fi
+  # Safe now: the pattern above has excluded both a non-numeric value and an
+  # octal token, and `10#` states the base at the point of use regardless.
+  if ((10#${value} < min || 10#${value} > max)); then
+    fail "${EXIT_CONFIG}" "config:${var_name}" \
+      "value ${value} is outside the permitted range ${min}-${max}" \
+      "Set ${var_name} within ${min}-${max}, for example ${example}."
+  fi
+}
+
+require_bounded_integer 'INIT_MAX_ATTEMPTS' "${MAX_ATTEMPTS}" \
+  1 "${MAX_ATTEMPTS_CEILING}" 30
+require_bounded_integer 'INIT_SLEEP_SECONDS' "${SLEEP_SECONDS}" \
+  0 "${SLEEP_SECONDS_CEILING}" 2
+require_bounded_integer 'INIT_HEALTH_TIMEOUT_SECONDS' "${HEALTH_TIMEOUT_SECONDS}" \
+  1 "${HEALTH_TIMEOUT_CEILING}" 5
+
+# --- Endpoint allowlist: fail-closed, never accept-by-default -----------------
+# AAP 0.3.2 forbids any code path that can reach a real AWS account, and the
+# whole topology is credential-free by design. This guard is what makes that
+# structural rather than aspirational, so it is an ALLOWLIST of the endpoints the
+# emulator is actually reachable at, not a denylist of endpoints to avoid.
+#
+# A denylist is wrong here in four independent ways, every one of them
+# reproducible:
+#
+#   * Its glob over the live AWS service domain was case sensitive, so the same
+#     domain spelled in capitals passed straight through it.
+#   * Its `*)` branch accepted BY DEFAULT, so `http://evil.example.com` passed.
+#   * `http://169.254.169.254` - the cloud instance metadata address, the classic
+#     credential-exfiltration target - passed for the same reason.
+#   * `http://user:pw@localhost:4566@evil.com` passed: a URL's host is the text
+#     after the LAST `@` in the authority, so a denylist reading the whole string
+#     sees a benign substring while the HTTP client resolves `evil.com`.
+#
+# Percent-encoding compounds the last point (`http://%6c%6f%63alhost:4566`
+# decodes to `localhost` at the client but not in a shell comparison), so the
+# authority is refused outright if it contains `%`. Decoding it here to compare
+# the decoded form would reintroduce exactly the parser-differential the refusal
+# closes.
+#
+# The real AWS service domain is deliberately NOT spelled anywhere in this file,
+# not even in these comments: with an allowlist it is not needed, because
+# everything unlisted is refused. That absence is asserted by
+# InitAwsScriptGuardTest.theScriptNamesNoLiveAwsDomain, so a future edit that
+# reintroduces a denylist alongside the allowlist fails the build rather than
+# quietly re-widening the guard.
+#
+# Every entry below is an endpoint this project genuinely uses. Adding to this
+# list is a security decision and must be justified in the same terms.
+readonly ALLOWED_ENDPOINT_HOSTS=(
+  'localhost'                  # from the developer host, and the compose
+  '127.0.0.1'                  # the same, spelled numerically
+  '::1'                        # the same, over IPv6
+  'localstack'                 # the compose service name, from a sibling container
+  'localhost.localstack.cloud' # the documented setup endpoint; resolves to loopback
+)
+
+# The compose container name carries an optional `-${CLONE_INDEX}` suffix
+# (its compose container_name), so it is matched by a bounded pattern rather
+# enumerated. The suffix is digits only, which is what CLONE_INDEX ever is.
+#
+# Subdomains of localhost.localstack.cloud are deliberately NOT matched, even
+# though they resolve to loopback and would therefore have been easy to justify
+# on reachability grounds. Two reasons, in order of weight. Least privilege: the
+# only endpoint this project documents is the bare host, so a wildcard would
+# widen the allowlist past anything in use. And it does not even work - probing
+# `http://s3.localhost.localstack.cloud:4566` passed readiness and then failed
+# provisioning at the SQS stage (exit 6), because a virtual-hosted S3 name is not
+# a general service edge. Allowing it would have admitted an endpoint that is
+# broken in a way the allowlist is well placed to refuse outright.
+readonly ALLOWED_ENDPOINT_HOST_PATTERN='^carddemo-localstack(-[0-9]+)?$'
+
+# The longest endpoint value this guard will consider, in characters.
+#
+# A service endpoint is a scheme, a host and a port. The longest legal DNS name is
+# 253 characters, and everything else here is a handful, so 300 is generous by any
+# measure while bounding what a single diagnostic can be made to carry. Checked
+# BEFORE the value is scanned, so an oversized value is refused without being
+# examined character by character.
+readonly MAX_ENDPOINT_LENGTH=300
+
+# Every character a URI may legally contain, MINUS the backslash and the space.
+#
+# FINDING H-10, SEVERITY HIGH. Item 1 of the ENDPOINT VALIDATION contract above
+# has always said that no control character, whitespace or backslash may appear
+# anywhere in the value. NOTHING IMPLEMENTED IT. The structural checks below all
+# match on syntax, so a value carrying a carriage return and a line feed passed
+# straight through them and into a diagnostic - which is a log-forging primitive
+# (CWE-117): the attacker-supplied bytes end one log line and begin another that
+# an operator, or a log shipper, reads as the script's own output. A backslash was
+# equally unchecked, and a backslash is how a value that looks local resolves
+# elsewhere in some parsers (CWE-20).
+#
+# Expressed as a POSITIVE rule, because a denylist of dangerous bytes is exactly
+# the shape of guard this file has already been burned by once. The set is the
+# unreserved, reserved and percent characters of RFC 3986 plus the brackets an
+# IPv6 literal needs; a control byte, a space, a tab, a newline, a backslash and
+# any non-ASCII byte are all outside it and are therefore refused. It is anchored
+# and applies to the WHOLE value.
+#
+# BRACKET-EXPRESSION ORDERING IS LOAD-BEARING, and getting it wrong fails in the
+# direction that matters. Inside a POSIX bracket expression a backslash is an
+# ORDINARY CHARACTER, not an escape - so writing the brackets as `\[\]` would
+# both fail to escape them and quietly ADMIT the backslash this rule exists to
+# refuse. The literal `]` is therefore placed first, where the syntax reads it as
+# a member rather than as the terminator, `[` sits in the middle, `-` is last so
+# it cannot form a range, and no backslash appears at all.
+readonly ENDPOINT_CHARACTER_PATTERN=$'^[]A-Za-z0-9._~:/?#@!$&\'()*+,;=%[-]+$'
+
+# require_local_endpoint <url>
+#
+# Parses rather than pattern-matches, in the order a URL is actually defined, and
+# refuses anything it cannot account for. Every rejection is terminal: there is
+# no branch that accepts an unrecognised value.
+#
+# FINDING H-10, SEVERITY HIGH: NO REJECTION MESSAGE ECHOES THE SUPPLIED VALUE.
+# Every message below used to interpolate it, including the userinfo arm - so a
+# value of the form `http://key:secret@localhost:4566` was refused for embedding
+# credentials and then written to the log complete with them (CWE-532), while the
+# comment above claimed the opposite. The value is untrusted; that is the whole
+# reason it is being rejected, and reflecting it is not diagnostically necessary.
+# What an operator needs is WHICH check failed and WHAT to set, and both are still
+# stated in full. The one exception is deliberate: the allowlist arm names the
+# LOWERCASED HOST, because that is the single fact needed to fix the problem, it
+# is the form the guard actually judged, and by that point the value has passed
+# both the character rule and the userinfo refusal, so it can carry neither a
+# forged line nor a credential.
+require_local_endpoint() {
+  local url="$1"
+  local remainder scheme authority host_port host
+
+  # WHAT THIS FUNCTION MAY SAY WHEN IT REFUSES A VALUE, AND WHY THAT IS NARROW.
+  #
+  # Finding, severity High - raised against the previous revision of this
+  # function and remediated here. Every refusal below used to interpolate the
+  # rejected input into its message: the whole URL, and in places the authority,
+  # the path or the port on their own. Two things were wrong with that, and the
+  # second is the serious one.
+  #
+  #   * USERINFO. `http://user:password@host` is refused a few lines down
+  #     precisely BECAUSE it may carry a credential - and the refusal then wrote
+  #     that credential to stderr, where CI collects it and keeps it. The guard
+  #     recognised the secret and published it in the same breath. The header of
+  #     this file states that nothing here may ever emit a secret; this function
+  #     was the one place that broke the claim.
+  #   * CONTROL CHARACTERS. The value is attacker-influenced in the sense that
+  #     matters here - it comes from the environment - and a CR or LF inside it
+  #     ended up inside a log line. Every line this script writes begins
+  #     `[init-aws] <timestamp> <step>`, so an embedded newline forges as many
+  #     further lines as it likes, in the exact shape a reader trusts. The port
+  #     branch made this trivially reachable: an unparsable port is echoed, and
+  #     `http://localhost:4566\r\nFORGED` fails the port test.
+  #
+  # The remedy is that a refusal names the VARIABLE and a reason drawn from a
+  # closed set, and never the value. That keeps the message actionable - the
+  # reader knows which variable to look at and what property was violated - while
+  # making it impossible for input to reach the log at all. Every reason token is
+  # a literal in this source, so the set of bytes this function can emit is fixed
+  # at authoring time rather than determined at runtime. The remediation strings
+  # are literals for the same reason.
+  #
+  # The one value still echoed is the ACCEPTED host, on the success path, and it
+  # is echoed only after it has been proved equal to one of the five literals in
+  # ALLOWED_ENDPOINT_HOSTS or to match the anchored ALLOWED_ENDPOINT_HOST_PATTERN.
+  # A string proved to be a member of a closed literal set is no longer input, and
+  # naming which endpoint was admitted is the single most useful thing this
+  # function logs.
+
+  # Control characters first, before any parsing, so no later branch can be the
+  # thing that discovers them. Refusing here also means the parsing below never
+  # has to reason about them. A tab is included: it is not a line breaker, but it
+  # has no business in a URL and column-aligned output is how these lines are read.
+  if [[ "${url}" == *$'\n'* || "${url}" == *$'\r'* || "${url}" == *$'\t'* ]]; then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      'AWS_ENDPOINT_URL contains a control character [reason=CONTROL_CHARACTER]' \
+      'Set AWS_ENDPOINT_URL to a single-line scheme://host:port, for example http://localhost:4566.'
+  fi
+
+  # Scoped to this function, so the character ranges above are compared byte-wise
+  # rather than by a locale's collation. In a UTF-8 locale `[A-Za-z]` can admit
+  # accented letters, which would put a non-ASCII byte back inside the accepted
+  # set on a developer host that happens to be configured that way.
+  local LC_ALL=C
+
+  # Immediately after the control-character refusal above and before every
+  # structural test: the byte rule and the length bound. Order is the property
+  # that matters here - a check that runs after a diagnostic has already been
+  # produced protects nothing, and the structural checks are the ones whose
+  # messages must not name a component of the value.
+  if ((${#url} > MAX_ENDPOINT_LENGTH)); then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      "the value is ${#url} characters, past the ${MAX_ENDPOINT_LENGTH}-character bound this guard accepts" \
+      'Set AWS_ENDPOINT_URL to a bare scheme://host:port, for example http://localhost:4566.'
+  fi
+  if [[ ! "${url}" =~ ${ENDPOINT_CHARACTER_PATTERN} ]]; then
+    # The offending byte is NOT named and NOT rendered. Naming it would mean
+    # emitting it, which is the injection this check exists to prevent.
+    #
+    # Composed into a local so the line stays within the 120-column limit
+    # .editorconfig sets for *.sh, without splitting `fail`'s 4 positional
+    # arguments (code, step, detail, remedy) across a 5th.
+    local byte_detail='the value carries a control character, whitespace, a backslash or a non-ASCII'
+    byte_detail="${byte_detail} byte, none of which a service endpoint may contain"
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' "${byte_detail}" \
+      'Set AWS_ENDPOINT_URL to a bare scheme://host:port, for example http://localhost:4566.'
+  fi
+
+  case "${url}" in
+    http://*) scheme='http'; remainder="${url#http://}" ;;
+    https://*) scheme='https'; remainder="${url#https://}" ;;
+    *)
+      fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+        'AWS_ENDPOINT_URL is not an http(s) URL [reason=SCHEME_NOT_HTTP]' \
+        'Set AWS_ENDPOINT_URL to the LocalStack edge, for example http://localhost:4566.'
+      ;;
+  esac
+
+  # A query or a fragment has no meaning on a service endpoint and is the usual
+  # vehicle for smuggling a second host past a naive matcher.
+  case "${url}" in
+    *'?'* | *'#'*)
+      local component_reason='AWS_ENDPOINT_URL carries a query or fragment component, '
+      component_reason+='which a service endpoint must not [reason=QUERY_OR_FRAGMENT]'
+      fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' "${component_reason}" \
+        'Set AWS_ENDPOINT_URL to a bare scheme://host:port, for example http://localhost:4566.'
+      ;;
+  esac
+
+  # Split authority from path at the first slash. The path must be empty or a
+  # single trailing slash: the readiness probe appends `/_localstack/health` to
+  # this value, so any other path would silently retarget that probe.
+  authority="${remainder%%/*}"
+  if [[ "${remainder}" == */* ]]; then
+    local path="/${remainder#*/}"
+    if [[ "${path}" != '/' ]]; then
+      fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+        'AWS_ENDPOINT_URL carries the path component; only a bare host[:port] is accepted [reason=PATH_PRESENT]' \
+        'Drop the path: the health probe appends /_localstack/health to this value itself.'
+    fi
+  fi
+
+  # Userinfo. The host is what follows the last `@`, which is why a denylist over
+  # the whole string is unsound; here its mere presence is refused instead. The
+  # message deliberately does not quote the value: this is the branch most likely
+  # to be holding a password.
+  if [[ "${authority}" == *'@'* ]]; then
+    local userinfo_reason='AWS_ENDPOINT_URL embeds userinfo before the host, '
+    userinfo_reason+='which is never required for the local edge [reason=USERINFO_PRESENT]'
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' "${userinfo_reason}" \
+      'Remove the user:password@ prefix; the emulator needs no credentials.'
+  fi
+
+  if [[ "${authority}" == *'%'* ]]; then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      'AWS_ENDPOINT_URL percent-encodes its authority, which this guard will not decode [reason=PERCENT_ENCODED]' \
+      'Spell the host literally, for example http://localhost:4566.'
+  fi
+
+  # Strip the port. A bracketed IPv6 literal keeps its colons inside brackets, so
+  # it is unwrapped before the port is removed.
+  host_port="${authority}"
+  if [[ "${host_port}" == '['*']'* ]]; then
+    host="${host_port%%]*}"
+    host="${host#[}"
+    local after="${host_port#*]}"
+    if [[ -n "${after}" && "${after}" != :* ]]; then
+      fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+        'AWS_ENDPOINT_URL has an unparsable IPv6 authority [reason=IPV6_AUTHORITY]' \
+        'Spell it as http://[::1]:4566.'
+    fi
+    validate_endpoint_port "${after#:}"
+  else
+    host="${host_port%%:*}"
+    if [[ "${host_port}" == *:* ]]; then
+      validate_endpoint_port "${host_port#*:}"
+    fi
+  fi
+
+  if [[ -z "${host}" ]]; then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      'AWS_ENDPOINT_URL has an empty host [reason=HOST_EMPTY]' \
+      'Set AWS_ENDPOINT_URL to the LocalStack edge, for example http://localhost:4566.'
+  fi
+
+  # DNS is case insensitive, so the comparison is made on a lowercased host. This
+  # single line is what an upper-cased live AWS host defeated in the previous
+  # guard, which compared the raw string against a lowercase glob.
+  host="${host,,}"
+
+  local allowed
+  for allowed in "${ALLOWED_ENDPOINT_HOSTS[@]}"; do
+    if [[ "${host}" == "${allowed}" ]]; then
+      log 'config' "endpoint host '${host}' allowlisted (${scheme}); live AWS is unreachable by construction"
+      return 0
+    fi
+  done
+  if [[ "${host}" =~ ${ALLOWED_ENDPOINT_HOST_PATTERN} ]]; then
+    log 'config' "endpoint host '${host}' allowlisted by pattern (${scheme})"
+    return 0
+  fi
+
+  local hint="Point AWS_ENDPOINT_URL at the local edge - one of:"
+  hint+=" ${ALLOWED_ENDPOINT_HOSTS[*]}, or the compose container name."
+  hint+=' Live AWS is never used.'
+  fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+    'AWS_ENDPOINT_URL host is not an allowlisted LocalStack endpoint [reason=HOST_NOT_ALLOWLISTED]' \
+    "${hint}"
+}
+
+# validate_endpoint_port <port>
+#
+# Kept separate only because it is reached from both the IPv6 and the IPv4 branch
+# above; inlining it twice is how the two would drift apart.
+#
+# It takes the port alone. It used to take the whole URL as well, purely so the
+# refusal could quote it, and that made this the most reachable log-injection site
+# in the script: an unparsable port is by definition a string that failed a strict
+# numeric test, so anything at all could be in it, and it went straight into a
+# line beginning `[init-aws]`. The port is not echoed either, for the same reason.
+validate_endpoint_port() {
+  local port="$1"
+  if [[ ! "${port}" =~ ^(0|[1-9][0-9]*)$ ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      'AWS_ENDPOINT_URL has an invalid port [reason=PORT_INVALID]' \
+      'Use a decimal port in 1-65535, for example 4566.'
+  fi
+}
+
+require_local_endpoint "${ENDPOINT_URL}"
+
+# CLI selection. `awslocal` is bundled in the pinned image and already targets
+# the local edge, so it needs neither an endpoint flag nor credential handling.
+# The plain-`aws` fallback keeps the script runnable from a developer host that
+# has the AWS CLI but not the wrapper - which is exactly how the documented
+# setup sequence drives it - so it is a portability branch, not dead code.
+#
+# WHY THE FALLBACK IS SAFE TO KEEP, AND WHAT MAKES IT SO.
+# Deleting the branch outright, on the grounds that it is the thing that carries a
+# hostile endpoint to a real API call, would be right under a denylist guard and is
+# not right under this one: this block
+# is reached ONLY after `require_local_endpoint` above has run, and that guard is
+# fail-closed - every path through it either returns 0 for an allowlisted host or
+# calls `fail`, which exits. `${ENDPOINT_URL}` is `readonly`, so nothing between
+# the guard and this line can change the value that was validated. The branch
+# therefore cannot target a non-allowlisted endpoint, and deleting a documented,
+# working developer path to re-state a guarantee the guard already provides would
+# remove capability without adding safety. THE ORDERING IS LOAD-BEARING: moving
+# this block above `require_local_endpoint` would reopen the hole.
+#
+# Two further least-privilege measures apply, because the host may carry real
+# ambient AWS configuration:
+#
+#   * AWS_EC2_METADATA_DISABLED=true stops the CLI probing an instance metadata
+#     service for credentials. On this host AWS_ACCESS_KEY_ID and
+#     AWS_SECRET_ACCESS_KEY are already present in the environment, so without
+#     this there is a credential chain no path here has any business exercising.
+#   * AWS_PROFILE is cleared so a developer's named profile - which may carry a
+#     real account and, worse, its own region and endpoint settings - cannot
+#     influence the call.
+#
+# Neither measure weakens the emulator path: LocalStack accepts any credential.
+# An array is used so the words can never be re-split by the shell.
+#
+# CREDENTIAL ISOLATION, AND WHY IT APPLIES TO BOTH BRANCHES. FINDING M-10,
+# SEVERITY MEDIUM. This isolation used to be applied inside the `aws` arm only,
+# on the reasoning that the bundled wrapper needs no credential handling. The
+# wrapper needs no ENDPOINT handling - that is what it exists for - but it is a
+# thin front end over the very same AWS CLI and resolves credentials through the
+# very same chain. So on the `awslocal` path a real ambient credential was still
+# resolved and every request was still signed with it; the one path the project
+# documents as the normal way to run this script was the path with no isolation.
+#
+# The chain is ambient at every link: environment keys, a session token, a named
+# profile, the shared credentials and config files, a web-identity token, an
+# assumed role, container credentials and finally the EC2 instance metadata
+# service. If any one of them resolves to a REAL credential, every request this
+# script issues is signed with it. That is unacceptable even against a loopback
+# endpoint, because a signed request leaks the access key id and, through the
+# metadata service, could mint a fresh session before anything is provisioned.
+#
+# It is therefore invoked ONCE, UNCONDITIONALLY, ABOVE the branch - so no arm can
+# be added later that quietly inherits the ambient chain, which is exactly how the
+# gap arose.
+#
+# The remedy is to make the resolution deterministic instead of ambient: pin the
+# two well-known LocalStack placeholder values, pin the region already validated
+# above, unset every other link in the chain, and switch the metadata service off
+# outright. LocalStack accepts any credential, so the placeholders are sufficient
+# and no real credential is ever needed - which is precisely why none may be used.
+# The two literals below are LocalStack's own documented placeholders and grant
+# nothing anywhere; they are the opposite of a committed secret.
+# ------------------------------------------------------------------------------
+isolate_local_credentials() {
+  export AWS_ACCESS_KEY_ID='test'
+  export AWS_SECRET_ACCESS_KEY='test'
+  export AWS_DEFAULT_REGION="${REGION}"
+  export AWS_REGION="${REGION}"
+  # Refuse the instance metadata service, so no link-local credential lookup can
+  # occur even if every unset below were somehow re-established.
+  export AWS_EC2_METADATA_DISABLED='true'
+  unset AWS_SESSION_TOKEN
+  unset AWS_SECURITY_TOKEN
+  unset AWS_PROFILE
+  unset AWS_DEFAULT_PROFILE
+  unset AWS_SHARED_CREDENTIALS_FILE
+  unset AWS_CONFIG_FILE
+  unset AWS_WEB_IDENTITY_TOKEN_FILE
+  unset AWS_ROLE_ARN
+  unset AWS_ROLE_SESSION_NAME
+  unset AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+  unset AWS_CONTAINER_CREDENTIALS_FULL_URI
+  unset AWS_CONTAINER_AUTHORIZATION_TOKEN
+  unset AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+}
+
+# Before the branch, so both arms are covered. See CREDENTIAL ISOLATION above.
+isolate_local_credentials
+
+if command -v awslocal >/dev/null; then
+  readonly AWS_CLI=(awslocal)
+  readonly CLI_LABEL='awslocal (bundled, self-targeting, credentials isolated to LocalStack placeholders)'
+elif command -v aws >/dev/null; then
+  readonly AWS_CLI=(aws --endpoint-url "${ENDPOINT_URL}")
+  readonly CLI_LABEL="aws --endpoint-url ${ENDPOINT_URL} (fallback, credentials isolated to LocalStack placeholders)"
+else
+  fail "${EXIT_CONFIG}" 'config:cli' \
+    'neither the awslocal wrapper nor the aws CLI is on PATH' \
+    'Run this script inside the LocalStack container, where awslocal is bundled; see HOW TO RUN / TEST above.'
+fi
+
+
+# Readiness gate.
+#
+# This script is launched from LocalStack's ready.d directory, so the edge has
+# already declared itself ready and the poll below is a DEFENSIVE bounded guard
+# rather than the primary synchronisation mechanism. It also makes the script
+# safe to invoke by hand against a stack that is still starting.
+#
+# THIS IS THE ONLY RETRY LOOP IN THE SCRIPT. A provisioning or verification call
+# that fails is a failure, not a transient, and is never retried.
+#
+# Only s3, sqs and sns are probed - the three services docker-compose.yml
+# enables. sts and every other service report `disabled` on this edge, so probing
+# them would guarantee a false negative.
+
+# Both probes below share one output contract: they print READY_TOKEN when all
+# three services are usable and otherwise print the reason they are not, and they
+# ALWAYS succeed. Control flow is therefore driven by the printed value rather
+# than by an exit status, which keeps `set -e` fully in force at every call site -
+# a probe reporting "not ready yet" is an expected observation, not an error.
+readonly READY_TOKEN='ready'
+
+# LocalStack reports `running` once a service is up and `available` before it has
+# been exercised; both mean usable, so both are accepted.
+probe_health_endpoint() {
+  local url="$1"
+  local body=''
+  if ! body="$(curl -fsS --max-time "${HEALTH_TIMEOUT_SECONDS}" "${url}" 2>&1)"; then
+    printf 'health endpoint unreachable: %s' "${body//$'\n'/ }"
+    return 0
+  fi
+  local service pattern
+  local pending=''
+  for service in s3 sqs sns; do
+    pattern="\"${service}\"[[:space:]]*:[[:space:]]*\"(running|available)\""
+    if [[ ! "${body}" =~ ${pattern} ]]; then
+      pending="${pending}${pending:+,}${service}"
+    fi
+  done
+  if [[ -n "${pending}" ]]; then
+    printf 'not yet usable: %s' "${pending}"
+    return 0
+  fi
+  printf '%s' "${READY_TOKEN}"
+}
+
+# Fallback used when curl is absent: one cheap read per service. A portability
+# branch rather than dead code - the pinned image ships curl, but a developer
+# host running the plain AWS CLI need not.
+probe_api_reads() {
+  local probe=''
+  if ! probe="$("${AWS_CLI[@]}" s3api list-buckets 2>&1 >/dev/null)"; then
+    printf 's3 list-buckets failed: %s' "${probe//$'\n'/ }"
+    return 0
+  fi
+  if ! probe="$("${AWS_CLI[@]}" sqs list-queues 2>&1 >/dev/null)"; then
+    printf 'sqs list-queues failed: %s' "${probe//$'\n'/ }"
+    return 0
+  fi
+  if ! probe="$("${AWS_CLI[@]}" sns list-topics 2>&1 >/dev/null)"; then
+    printf 'sns list-topics failed: %s' "${probe//$'\n'/ }"
+    return 0
+  fi
+  printf '%s' "${READY_TOKEN}"
+}
+
+wait_until_ready() {
+  local health_url="${ENDPOINT_URL%/}/_localstack/health"
+  local probe_kind='health endpoint'
+  local use_curl='yes'
+  if ! command -v curl >/dev/null; then
+    use_curl='no'
+    probe_kind='per-service API reads'
+  fi
+  log 'readiness' "probing via ${probe_kind}, up to ${MAX_ATTEMPTS} attempts every ${SLEEP_SECONDS}s"
+
+  local attempt=1
+  local observed=''
+  while [[ "${attempt}" -le "${MAX_ATTEMPTS}" ]]; do
+    if [[ "${use_curl}" == 'yes' ]]; then
+      observed="$(probe_health_endpoint "${health_url}")"
+    else
+      observed="$(probe_api_reads)"
+    fi
+    if [[ "${observed}" == "${READY_TOKEN}" ]]; then
+      log 'readiness' "s3, sqs and sns all usable after ${attempt} attempt(s)"
+      return 0
+    fi
+    log 'readiness' "attempt ${attempt}/${MAX_ATTEMPTS}: ${observed}"
+    attempt=$((attempt + 1))
+    if [[ "${attempt}" -le "${MAX_ATTEMPTS}" ]]; then
+      sleep "${SLEEP_SECONDS}"
+    fi
+  done
+
+  # `10#` states the base explicitly at the one place a validated value is
+  # multiplied. It is belt-and-braces rather than the fix: the leading-zero rule
+  # in `require_bounded_integer` already guarantees no octal token reaches here,
+  # and before that rule existed INIT_SLEEP_SECONDS=08 aborted THIS line with
+  # "value too great for base" - crashing the branch whose only job is to explain
+  # a timeout. OVERFLOW PROOF: both factors are bounded above by
+  # MAX_ATTEMPTS_CEILING (3600) and SLEEP_SECONDS_CEILING (60), so the product
+  # cannot exceed 216000 and cannot wrap a signed 64-bit integer. That is why the
+  # ceilings exist; without them this multiplication printed a negative budget.
+  local budget=$((10#${MAX_ATTEMPTS} * 10#${SLEEP_SECONDS}))
+  fail "${EXIT_NOT_READY}" 'readiness' \
+    "exhausted ${MAX_ATTEMPTS} attempts over ~${budget}s; last observed state: ${observed}" \
+    'Check the container logs, confirm SERVICES lists s3,sqs,sns, then raise INIT_MAX_ATTEMPTS on a slow host.'
+}
+
+# S3. Three buckets, check-then-create, mirroring the legacy
+# `IF LASTCC=12 THEN SET MAXCC=0` guard cited above.
+#
+# Every call captures stderr into a variable so that the three outcomes stay
+# distinguishable: created, already exists (idempotent success), or a real error
+# that is reported with its root cause and aborts. No ACL, no public-access
+# setting, no bucket policy and no encryption configuration is applied -
+# encryption at rest is deferred hardening, and least privilege forbids widening
+# anything by default.
+create_bucket() {
+  local bucket="$1"
+  local args=(s3api create-bucket --bucket "${bucket}")
+  # us-east-1 is the S3 global default and REJECTS an explicit LocationConstraint;
+  # every other region REQUIRES one. Handled explicitly rather than assumed.
+  if [[ "${REGION}" != 'us-east-1' ]]; then
+    args+=(--create-bucket-configuration "LocationConstraint=${REGION}")
+  fi
+  local result=''
+  if result="$("${AWS_CLI[@]}" "${args[@]}" 2>&1 >/dev/null)"; then
+    log "s3:${bucket}" 'created'
+    return 0
+  fi
+  case "${result}" in
+    *BucketAlreadyOwnedByYou*)
+      # Lost a create race with a concurrent run: the desired end state holds.
+      log "s3:${bucket}" 'already owned by this account - idempotent success'
+      ;;
+    *BucketAlreadyExists*)
+      fail "${EXIT_BUCKET}" "s3:${bucket}" \
+        "the name is already held by a different account: ${result//$'\n'/ }" \
+        "Choose an unused name for this bucket's CARDDEMO_* variable; S3 bucket names are globally scoped."
+      ;;
+    *)
+      fail "${EXIT_BUCKET}" "s3:${bucket}" \
+        "create-bucket failed: ${result//$'\n'/ }" \
+        'Confirm the s3 service is running on the health endpoint, then re-run the hook.'
+      ;;
+  esac
+}
+
+ensure_bucket() {
+  local bucket="$1"
+  local probe=''
+  if probe="$("${AWS_CLI[@]}" s3api head-bucket --bucket "${bucket}" 2>&1 >/dev/null)"; then
+    log "s3:${bucket}" 'already exists - idempotent success'
+    return 0
+  fi
+  case "${probe}" in
+    *404* | *NoSuchBucket* | *NotFound* | *'Not Found'*)
+      create_bucket "${bucket}"
+      ;;
+    *)
+      # Anything other than a not-found signal is a real error. Swallowing it
+      # here is exactly the ERROROPTION(IGNORE) behaviour the target rejects.
+      fail "${EXIT_BUCKET}" "s3:${bucket}" \
+        "head-bucket failed for a reason other than absence: ${probe//$'\n'/ }" \
+        'Resolve the reported error - commonly a stopped edge service or a permission problem - then re-run.'
+      ;;
+  esac
+}
+
+# VERSIONING POLICY - DECIDED, CITED, AND CONTRADICTED ELSEWHERE.
+#
+# Versioning is applied to the OUTPUT bucket alone. This is not an omission and
+# not an implementation detail: AAP 0.5.1.1 specifies that the seven generation
+# data group bases become "three S3 buckets with versioning on the output
+# bucket", and 0.5.2.2 assigns generation semantics to that bucket alone -
+# DALYREJS, TRANREPT, TRANSACT.BKUP, TRANSACT.DALY, TRANSACT.COMBINED, SYSTRAN
+# and TCATBALF.BKUP all resolve to output-bucket prefixes, where a relative
+# generation reference becomes an object version.
+#
+# The statements bucket is left unversioned BECAUSE IT HAS NO GENERATION
+# SEMANTICS TO MODEL. Its two streams are STMTFILE and HTMLFILE (AAP 0.5.2.2),
+# which app/jcl/CREASTMT.JCL:STEP030 pre-deletes and STEP040 rewrites under a
+# deterministic account-and-month prefix. There is no (+1)/(0) reference to
+# reproduce, so versioning it would add retained objects the legacy system never
+# had - and object retention is documented, never enforced, in this project.
+# The input bucket is unversioned for the same reason.
+#
+# A CONFLICTING CLAIM EXISTS AND IS RESOLVED HERE IN FAVOUR OF THE AAP. The
+# environment setup log for this project records the statements bucket as
+# "(versioned)", and docs/technical-specifications.md repeats that. Both are
+# wrong about this checkout: this script versions the output bucket only, and the
+# Gate 8 summary below logs the other two as unversioned so the provisioned state
+# is self-evident from the run. The AAP is the frozen contract, so the code
+# follows it and the documentation is corrected rather than the reverse.
+#
+# This function is deliberately never called for the input or statements bucket.
+
+# Set by enable_and_verify_versioning and by observe_versioning to the status the
+# edge actually reported for the bucket just examined. Read by main() when it
+# composes the summary, so that every versioning line in that summary is observed
+# rather than asserted. Not readonly: it is written once per bucket.
+OBSERVED_VERSIONING=''
+
+# Set by verify_notification_subscription to the subscription count the edge
+# reported for the notification topic. Read by main() for the same reason: the
+# summary states what was measured, never what was intended.
+OBSERVED_SUBSCRIPTIONS=''
+
+# Set by verify_queue to the visibility timeout the edge reported for the report
+# queue, so the Gate 8 summary states the window that is actually in force rather
+# than the one this script asked for. Finding M-02.
+OBSERVED_QUEUE_VISIBILITY=''
+
+# Set by ensure_redrive_policy to the maximum receive count the edge reported in
+# the report queue's RedrivePolicy. Read by main() on the same terms as every
+# other observed value: the summary states the containment that is in force, not
+# the one this script asked for.
+OBSERVED_QUEUE_REDRIVE=''
+
+# Set by verify_notification_subscription to the protocol of the subscription that
+# actually exists on the notification topic. Finding M-04: the summary must show a
+# notification has somewhere to be delivered, not merely that a topic exists.
+OBSERVED_SUBSCRIPTION_PROTOCOL=''
+
+# Versioning is applied to the OUTPUT bucket alone: it is the only one carrying
+# generation semantics, because only it receives the (+1)/(0) generation streams
+# documented above. The input and statements buckets are left unversioned, and
+# this function is deliberately never called for them.
+enable_and_verify_versioning() {
+  local bucket="$1"
+  local result=''
+  if ! result="$("${AWS_CLI[@]}" s3api put-bucket-versioning --bucket "${bucket}" \
+    --versioning-configuration Status=Enabled 2>&1 >/dev/null)"; then
+    fail "${EXIT_VERSIONING}" "s3:${bucket}" \
+      "put-bucket-versioning failed: ${result//$'\n'/ }" \
+      'Confirm the s3 service is running, then re-run the hook.'
+  fi
+  # Read-back assertion. LocalStack applies versioning synchronously, so a single
+  # read is authoritative and no retry loop is warranted. An unversioned bucket
+  # answers `None` here, which makes the observed value self-explanatory.
+  local observed=''
+  if ! observed="$("${AWS_CLI[@]}" s3api get-bucket-versioning --bucket "${bucket}" \
+    --query 'Status' --output text 2>&1)"; then
+    fail "${EXIT_VERSIONING}" "s3:${bucket}" \
+      "get-bucket-versioning failed: ${observed//$'\n'/ }" \
+      'Confirm the s3 service is running, then re-run the hook.'
+  fi
+  if [[ "${observed}" != 'Enabled' ]]; then
+    fail "${EXIT_VERSIONING}" "s3:${bucket}" \
+      "versioning read back as '${observed}' but must be 'Enabled'" \
+      'Investigate why put-bucket-versioning did not take effect on this edge, then re-run the hook.'
+  fi
+  log "s3:${bucket}" 'versioning verified Enabled by read-back'
+  OBSERVED_VERSIONING="${observed}"
+}
+
+# Reads a bucket's versioning status WITHOUT changing it, and prints what it saw.
+# `--output text` on an absent configuration yields the literal `None`, which is
+# reported verbatim so the summary can distinguish "never configured" from
+# "Suspended" - two states S3 keeps distinct and only one of which this contract
+# describes.
+#
+# This function never writes. It exists because the summary is evidence: a line
+# claiming the input and statements buckets are unversioned is worth nothing
+# unless something looked.
+observe_versioning() {
+  local bucket="$1"
+  local observed=''
+  if ! observed="$("${AWS_CLI[@]}" s3api get-bucket-versioning --bucket "${bucket}" \
+    --query 'Status' --output text 2>&1)"; then
+    fail "${EXIT_VERSIONING}" "s3:${bucket}" \
+      "get-bucket-versioning failed: ${observed//$'\n'/ }" \
+      'Confirm the s3 service is running, then re-run the hook.'
+  fi
+  if [[ "${observed}" != 'None' ]]; then
+    # DRIFT, reported and survived rather than repaired. S3 exposes no API that
+    # removes a versioning configuration - Enabled may only become Suspended -
+    # so the only route back is deleting the bucket, and this script does not
+    # delete shared resources it may not own. The run continues and the summary
+    # reports this observed value instead of asserting "unversioned".
+    log "s3:${bucket}" "DRIFT: versioning is '${observed}' but this contract leaves this bucket unversioned"
+    log "s3:${bucket}" 'DRIFT: not repaired - S3 cannot remove versioning; recreate the stack with a fresh volume'
+  else
+    log "s3:${bucket}" 'versioning verified absent by read-back (Status=None)'
+  fi
+  OBSERVED_VERSIONING="${observed}"
+}
+
+# Asserts a bucket carries NO lifecycle rule, which is what the summary claims.
+# Generation-data-group retention - LIMIT(5) in app/jcl/DEFGDGB.jcl and LIMIT(10)
+# in app/jcl/REPTFILE.jcl - is documented, not enforced, so a rule here would
+# mean something outside this contract is expiring objects.
+#
+# An absent configuration is reported by S3 as NoSuchLifecycleConfiguration, an
+# ERROR rather than an empty result, so the not-found response is the success
+# path and any other failure is a real one. Drift IS fatal here, unlike
+# versioning drift, because delete-bucket-lifecycle exists: the operator can undo
+# it without destroying the bucket.
+verify_no_lifecycle_rules() {
+  local bucket="$1"
+  local result=''
+  if ! result="$("${AWS_CLI[@]}" s3api get-bucket-lifecycle-configuration \
+    --bucket "${bucket}" 2>&1 >/dev/null)"; then
+    case "${result}" in
+      *NoSuchLifecycleConfiguration*)
+        log "s3:${bucket}" 'lifecycle rules verified absent (NoSuchLifecycleConfiguration)'
+        return 0
+        ;;
+      *)
+        fail "${EXIT_BUCKET}" "s3:${bucket}" \
+          "get-bucket-lifecycle-configuration failed for a reason other than absence: ${result//$'\n'/ }" \
+          'Resolve the reported error - commonly a stopped edge service - then re-run the hook.'
+        ;;
+    esac
+  fi
+  # The call SUCCEEDED, which means a configuration exists. Count the rules so
+  # the message says how many, then refuse.
+  local rules=''
+  if ! rules="$("${AWS_CLI[@]}" s3api get-bucket-lifecycle-configuration --bucket "${bucket}" \
+    --query 'length(Rules)' --output text 2>&1)"; then
+    rules='unknown'
+  fi
+  fail "${EXIT_BUCKET}" "s3:${bucket}" \
+    "carries ${rules} lifecycle rule(s); this contract provisions none and expires no object" \
+    "Inspect with 's3api get-bucket-lifecycle-configuration' and remove with 's3api delete-bucket-lifecycle'."
+}
+
+
+# SQS. One FIFO queue replacing DEFINE TDQUEUE(JOBS), plus its dead-letter target.
+#
+# A DEAD-LETTER QUEUE AND A REDRIVE POLICY ARE NOW PROVISIONED. THIS REVERSES
+# WHAT THIS SECTION SAID, so the reasoning is recorded rather than just the
+# conclusion. The earlier position was that neither was configured anywhere in
+# the consuming application and that least privilege forbids provisioning
+# capacity nothing consumes. The first half was true and the second misapplied.
+#
+# What it cost: a submission the producer accepts - and app/cbl/CORPT00C.cbl
+# accepts an inverted date range, because :L381-L410 validates the six custom
+# range components individually and never compares the two assembled dates -
+# could be permanently unrunnable at the consumer. With no redrive policy the
+# message was neither acknowledged nor moved anywhere, and because every
+# submission travels in ONE FIFO message group, an ordered group cannot deliver
+# past it: the poison message was redelivered every 900 seconds for the whole
+# four-day retention, roughly 384 times, starving every valid submission behind
+# it while POST /api/reports kept answering 202. A measured, reproduced outcome,
+# not a hypothesis.
+#
+# Why least privilege does not forbid it. That principle constrains what a
+# provisioned resource may REACH. A dead-letter queue reaches nothing: it is a
+# quarantine the transport writes to, with no subscriber, no publisher in this
+# application and no code path that reads it. It is the opposite case from the
+# unsubscribed SNS topic this file refuses to create, where acceptance is not
+# delivery and no operator can tell: a message in a dead-letter queue is
+# durable, countable and inspectable, which is exactly what makes containment
+# auditable instead of silent.
+#
+# The consumer still discards a message it knows can never run, rather than
+# letting it exhaust the redrive count first. Both controls are wanted and they
+# act at different scopes. com.cardemo.config.BatchConfig knows WHY a specific
+# submission is unrunnable and drops it on the first delivery, which costs the
+# group nothing; the redrive policy knows nothing about any submission and
+# bounds every case the consumer cannot classify - a deterministic job failure,
+# for instance, which the consumer correctly returns to the queue because it
+# might be transient.
+
+# FifoQueue=true is MANDATORY - AWS rejects a `.fifo` name on a standard queue
+# and rejects a FIFO queue whose name lacks the suffix, so the physical name and
+# this attribute have to agree.
+#
+# ContentBasedDeduplication=false: FINDING H-08, SEVERITY HIGH, RESOLVED. This
+# was provisioned as `true`, described as suiting a body that is
+# content-addressable. It is not: the body is the report name plus two dates, so
+# two legitimate submissions of the SAME period - exactly what an operator
+# re-submitting produces - hash identically and the second is silently dropped
+# inside the five-minute deduplication window. The legacy contract is the
+# opposite. `DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)` in app/csd/CARDDEMO.CSD
+# APPENDS, and app/cbl/CORPT00C.cbl:L515-L523 writes with no idempotency key at
+# all, so two identical writes produced two reader entries.
+#
+# With the attribute false, SQS REQUIRES an explicit MessageDeduplicationId on
+# every send, and com.cardemo.service.report.ReportSubmissionService generates a
+# fresh one per submission. So every distinct submission is delivered, while a
+# transport retry of one submission re-sends the same id and is collapsed.
+# com.cardemo.config.AwsConfig asserts both attributes at startup and refuses to
+# start against a queue that disagrees.
+#
+# Nothing further is set: DeduplicationScope and FifoThroughputLimit are
+# high-throughput-mode knobs the application does not use.
+# VisibilityTimeout: FINDING M-02, SEVERITY MAJOR, RESOLVED. The queue was
+# provisioned with no visibility timeout at all, so it took the service default of
+# 30 seconds. The consumer that replaces the JES2 internal reader does not merely
+# read a message - it LAUNCHES THE REPORT JOB and waits for it, and that job
+# backs up the transaction cluster, sorts a whole generation and writes a 133-byte
+# report. Thirty seconds is far shorter than that, so the message became visible
+# again while its own job was still running: a second consumer, or the same one on
+# its next poll, received the identical submission and either started a competing
+# execution or discarded it as a duplicate - and with the acknowledgement defect
+# of finding C-02 also present, a failed run could be acknowledged while a
+# duplicate of it was already in flight.
+#
+# 900 seconds is chosen as the processing interval, not as a guess: it is the
+# window com.cardemo.config.BatchConfig declares on its listener through
+# messageVisibilitySeconds, so the queue and the consumer state the same number
+# and neither can drift from the other. The value is well inside the service
+# maximum of 12 hours and well above the measured runtime of the report job on the
+# 300-record fixture. A run that legitimately needs longer extends its own
+# visibility from the listener rather than having this value raised, which is why
+# the consumer takes the Visibility handle.
+readonly QUEUE_VISIBILITY_TIMEOUT_SECONDS='900'
+readonly QUEUE_ATTRIBUTES="FifoQueue=true,ContentBasedDeduplication=false,VisibilityTimeout=${QUEUE_VISIBILITY_TIMEOUT_SECONDS}"
+
+create_queue() {
+  local physical="$1"
+  local result=''
+  if result="$("${AWS_CLI[@]}" sqs create-queue --queue-name "${physical}" \
+    --attributes "${QUEUE_ATTRIBUTES}" 2>&1 >/dev/null)"; then
+    log "sqs:${physical}" 'created FIFO queue'
+    return 0
+  fi
+  case "${result}" in
+    *QueueAlreadyExists*)
+      # create-queue is idempotent when the requested attributes match an
+      # existing queue, so this response means the attributes DIFFER. That is a
+      # real error: silently accepting it would leave the queue's ordering and
+      # deduplication semantics different from what the publisher expects.
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "exists with attributes differing from the required ${QUEUE_ATTRIBUTES}: ${result//$'\n'/ }" \
+        'Re-run the hook: verify_queue converges a mutable difference, and an immutable one needs a delete.'
+      ;;
+    *QueueDeletedRecently* | *'You must wait'*)
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "name not reusable yet - SQS enforces a 60s wait after deletion: ${result//$'\n'/ }" \
+        'Wait 60 seconds from the deletion, then re-run the hook. This is not retried automatically, by design.'
+      ;;
+    *InvalidParameterValue* | *InvalidParameterCombination* | *InvalidAttributeName*)
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "SQS rejected the FIFO parameters: ${result//$'\n'/ }" \
+        "A FIFO queue name must end in '.fifo' and carry FifoQueue=true; check CARDDEMO_SQS_REPORT_QUEUE."
+      ;;
+    *)
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "create-queue failed: ${result//$'\n'/ }" \
+        'Confirm the sqs service is running on the health endpoint, then re-run the hook.'
+      ;;
+  esac
+}
+
+# Resolves the queue URL and asserts the FIFO attributes actually took effect.
+# The URL is used but NEVER logged: it embeds the AWS account identifier. The
+# logical and physical names are logged instead, which is the same convention the
+# application's health details follow.
+verify_queue() {
+  local physical="$1"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${physical}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the queue URL did not resolve after provisioning: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  if [[ -z "${url}" || "${url}" == 'None' ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      'the queue URL resolved to an empty value' \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local attributes=''
+  if ! attributes="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names FifoQueue ContentBasedDeduplication \
+    --query 'Attributes.[FifoQueue,ContentBasedDeduplication]' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "get-queue-attributes failed: ${attributes//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  # `--output text` returns the two requested values tab separated on one line.
+  local fifo_flag="${attributes%%$'\t'*}"
+  local dedup_flag="${attributes##*$'\t'}"
+  if [[ "${fifo_flag}" != 'true' ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "FifoQueue read back as '${fifo_flag}' but must be 'true' - this is a standard queue, not a FIFO queue" \
+      'Delete the queue and re-run so it is recreated with FifoQueue=true (mind the 60s name-reuse window).'
+  fi
+  # ATTRIBUTE DRIFT IS A REAL ERROR, NEVER A SWALLOW. This read-back assertion -
+  # not the `QueueAlreadyExists` response - is what actually detects drift on a
+  # pre-existing queue, because the check-then-create path above returns as soon
+  # as get-queue-url succeeds and therefore never calls create-queue at all. A
+  # queue left over from an earlier configuration would otherwise be reported as
+  # an idempotent success while silently breaking the publisher's contract.
+  #
+  # Unlike FifoQueue, ContentBasedDeduplication is MUTABLE, so drift here is
+  # CONVERGED rather than merely reported. That matters for exactly the upgrade
+  # this revision is: every volume provisioned before finding H-08 carries
+  # `true`, and telling the operator to delete the queue and wait out the 60s
+  # name-reuse window would make an attribute change an outage. Converging keeps
+  # the script's contract - after a successful run the queue matches
+  # QUEUE_ATTRIBUTES - true on a long-lived volume as well as a clean one.
+  #
+  # An ABSENT attribute reads back as 'None' through `--output text`, and that is
+  # the service's own way of saying false, so it is accepted as compliant.
+  if [[ "${dedup_flag}" != 'false' && "${dedup_flag}" != 'None' && -n "${dedup_flag}" ]]; then
+    log "sqs:${physical}" \
+      "ContentBasedDeduplication read back as '${dedup_flag}'; converging to false (finding H-08)"
+    local converge=''
+    if ! converge="$("${AWS_CLI[@]}" sqs set-queue-attributes --queue-url "${url}" \
+      --attributes 'ContentBasedDeduplication=false' 2>&1)"; then
+      # Composed into a local so the line stays within the 120-column limit
+      # .editorconfig sets for *.sh, without splitting `fail`'s 4 positional
+      # arguments (code, step, detail, remedy) across a 5th.
+      local drift_detail="ContentBasedDeduplication is '${dedup_flag}' and could not be converged to 'false'"
+      drift_detail="${drift_detail}: ${converge//$'\n'/ }"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${drift_detail}" \
+        'Set ContentBasedDeduplication=false with sqs set-queue-attributes, or delete the queue and re-run.'
+    fi
+    # Re-read rather than trusting the mutation: the assertion, not the call, is
+    # what this function exists to make.
+    if ! attributes="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+      --attribute-names ContentBasedDeduplication \
+      --query 'Attributes.ContentBasedDeduplication' --output text 2>&1)"; then
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "get-queue-attributes failed after convergence: ${attributes//$'\n'/ }" \
+        'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+    fi
+    dedup_flag="${attributes}"
+    if [[ "${dedup_flag}" != 'false' && "${dedup_flag}" != 'None' && -n "${dedup_flag}" ]]; then
+      local unconverged="ContentBasedDeduplication still reads back as '${dedup_flag}' after convergence"
+      unconverged="${unconverged} - it must be 'false' so two identical submissions are both delivered"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${unconverged}" \
+        'Delete the queue and re-run so it is recreated with the required attributes (mind the 60s window).'
+    fi
+  fi
+  # VisibilityTimeout is read back and CONVERGED, for the same reason
+  # ContentBasedDeduplication is: it is mutable, and every volume provisioned
+  # before finding M-02 carries the service default of 30 seconds. Converging
+  # keeps this script's contract - after a successful run the queue matches
+  # QUEUE_ATTRIBUTES - true on a long-lived volume as well as on a clean one,
+  # without making an attribute change an outage.
+  local visibility=''
+  if ! visibility="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names VisibilityTimeout \
+    --query 'Attributes.VisibilityTimeout' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "get-queue-attributes failed for VisibilityTimeout: ${visibility//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  if [[ "${visibility}" != "${QUEUE_VISIBILITY_TIMEOUT_SECONDS}" ]]; then
+    log "sqs:${physical}" \
+      "VisibilityTimeout read back as '${visibility}'; converging to ${QUEUE_VISIBILITY_TIMEOUT_SECONDS} (finding M-02)"
+    local converge_visibility=''
+    if ! converge_visibility="$("${AWS_CLI[@]}" sqs set-queue-attributes --queue-url "${url}" \
+      --attributes "VisibilityTimeout=${QUEUE_VISIBILITY_TIMEOUT_SECONDS}" 2>&1)"; then
+      local visibility_detail="VisibilityTimeout is '${visibility}' and could not be converged"
+      visibility_detail="${visibility_detail} to '${QUEUE_VISIBILITY_TIMEOUT_SECONDS}'"
+      visibility_detail="${visibility_detail}: ${converge_visibility//$'\n'/ }"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${visibility_detail}" \
+        'Set VisibilityTimeout with sqs set-queue-attributes, or delete the queue and re-run.'
+    fi
+    if ! visibility="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+      --attribute-names VisibilityTimeout \
+      --query 'Attributes.VisibilityTimeout' --output text 2>&1)"; then
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "get-queue-attributes failed after visibility convergence: ${visibility//$'\n'/ }" \
+        'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+    fi
+    if [[ "${visibility}" != "${QUEUE_VISIBILITY_TIMEOUT_SECONDS}" ]]; then
+      local unconverged_visibility="VisibilityTimeout still reads back as '${visibility}' after convergence"
+      unconverged_visibility="${unconverged_visibility} - it must be ${QUEUE_VISIBILITY_TIMEOUT_SECONDS}"
+      unconverged_visibility="${unconverged_visibility} so a report job cannot outlive its own message"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${unconverged_visibility}" \
+        'Delete the queue and re-run so it is recreated with the required attributes (mind the 60s window).'
+    fi
+  fi
+  OBSERVED_QUEUE_VISIBILITY="${visibility}"
+  log "sqs:${physical}" \
+    "verified FifoQueue=${fifo_flag} ContentBasedDeduplication=${dedup_flag} VisibilityTimeout=${visibility}s (URL withheld)"
+}
+
+ensure_queue() {
+  local physical="$1"
+  local probe=''
+  if probe="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${physical}" 2>&1 >/dev/null)"; then
+    log "sqs:${physical}" 'already exists - idempotent success'
+  else
+    case "${probe}" in
+      *NonExistentQueue* | *QueueDoesNotExist*)
+        create_queue "${physical}"
+        ;;
+      *)
+        fail "${EXIT_QUEUE}" "sqs:${physical}" \
+          "get-queue-url failed for a reason other than absence: ${probe//$'\n'/ }" \
+          'Resolve the reported error, then re-run the hook.'
+        ;;
+    esac
+  fi
+  verify_queue "${physical}"
+}
+
+# Resolves the dead-letter queue's ARN and prints ONLY that.
+#
+# LOG-FREE ON PURPOSE, exactly like notification_inbox_arn and for the identical
+# reason: log() writes to STDOUT, so a value captured with $(...) from a function
+# that also logs carries the progress lines with it. The RedrivePolicy would then
+# name something that is not a queue, and SQS would accept it - producing a policy
+# that reads as configured and quarantines nothing.
+dead_letter_queue_arn() {
+  local queue="$1"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${queue}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the dead-letter queue URL did not resolve: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local arn=''
+  if ! arn="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names QueueArn --query 'Attributes.QueueArn' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the dead-letter queue ARN did not resolve: ${arn//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  # Asserted to BE an ARN before it is used, not merely to be non-empty. The URL
+  # is never printed or logged: it embeds the account identifier.
+  case "${arn}" in
+    arn:aws:sqs:*) ;;
+    *)
+      fail "${EXIT_QUEUE}" "sqs:${queue}" \
+        'the captured dead-letter value is not an sqs ARN, so it must not be used as a redrive target' \
+        'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+      ;;
+  esac
+  printf '%s' "${arn}"
+}
+
+# Applies the RedrivePolicy to the report queue and PROVES it took effect.
+#
+# CONVERGED, NOT MERELY SET, for the same reason ContentBasedDeduplication and
+# VisibilityTimeout are: RedrivePolicy is mutable, every volume provisioned before
+# this revision carries none at all, and telling an operator to delete the queue
+# and wait out the 60-second name-reuse window would make a containment fix an
+# outage. It is set unconditionally rather than only when absent, because setting
+# it is idempotent and the read-back below is what the function actually asserts.
+#
+# The read-back is normalised before it is compared - quotes and spaces removed -
+# because the service is free to render maxReceiveCount as a JSON number or as a
+# quoted string, and an assertion that depended on which would be an assertion
+# about the emulator rather than about the policy.
+ensure_redrive_policy() {
+  local physical="$1" dlq_arn="$2"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${physical}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the queue URL did not resolve before applying the redrive policy: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local policy=''
+  policy="$(printf '{"deadLetterTargetArn":"%s","maxReceiveCount":"%s"}' \
+    "${dlq_arn}" "${QUEUE_MAX_RECEIVE_COUNT}")"
+  # --attributes takes a comma-separated key=value list, which the commas inside
+  # the policy would split, so the JSON form of the parameter is used instead.
+  local attributes=''
+  attributes="$(printf '{"RedrivePolicy":"%s"}' "${policy//\"/\\\"}")"
+  local applied=''
+  if ! applied="$("${AWS_CLI[@]}" sqs set-queue-attributes --queue-url "${url}" \
+    --attributes "${attributes}" 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the redrive policy could not be applied: ${applied//$'\n'/ }" \
+      'Confirm the dead-letter queue exists and is FIFO, then re-run the hook.'
+  fi
+  local observed=''
+  if ! observed="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names RedrivePolicy --query 'Attributes.RedrivePolicy' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "get-queue-attributes failed for RedrivePolicy: ${observed//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local normalised="${observed//\"/}"
+  normalised="${normalised// /}"
+  if [[ "${normalised}" != *"deadLetterTargetArn:${dlq_arn}"* ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      'the redrive policy read back without naming the dead-letter queue, so nothing would be quarantined' \
+      'Delete the report queue and re-run so it is recreated (mind the 60s name-reuse window).'
+  fi
+  if [[ "${normalised}" != *"maxReceiveCount:${QUEUE_MAX_RECEIVE_COUNT}"* ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the redrive policy read back without maxReceiveCount ${QUEUE_MAX_RECEIVE_COUNT}" \
+      'Delete the report queue and re-run so it is recreated (mind the 60s name-reuse window).'
+  fi
+  OBSERVED_QUEUE_REDRIVE="${QUEUE_MAX_RECEIVE_COUNT}"
+  log "sqs:${physical}" \
+    "verified RedrivePolicy maxReceiveCount=${QUEUE_MAX_RECEIVE_COUNT} to ${DLQ_PHYSICAL} (ARN withheld)"
+}
+
+# SNS. Exactly the one topic the committed contract declares, and exactly ONE
+# subscription on it: the standard inbox queue, protocol sqs, raw delivery on.
+#
+# EXACTLY ONE SUBSCRIPTION IS CREATED, AND ITS PROTOCOL IS SQS. No email, HTTP,
+# HTTPS or Lambda subscription is created, because each of those would introduce
+# a delivery target outside this topology - an SMTP path, an external URL, or a
+# function this repository does not contain. A durable in-topology queue is the
+# only subscriber that both consumes what is published and adds no external
+# dependency, which is why it is the one that exists.
+#
+# This inverts what this section said through finding M-04, so the reasoning is
+# worth stating rather than merely the conclusion. The earlier position was that
+# creating no subscription satisfied least privilege and satisfied the "repeated
+# runs must not duplicate subscriptions" requirement BY CONSTRUCTION, there being
+# nothing to duplicate. Both halves were wrong. Least privilege constrains what a
+# provisioned resource may reach; it does not license provisioning a topic whose
+# every publish is accepted and thrown away, which is what a subscriberless topic
+# does - and the publisher cannot detect it, because acceptance is not delivery.
+# And satisfying the no-duplicates requirement by having nothing to duplicate
+# satisfied the letter of it while leaving the capability inert.
+#
+# The requirement is now met the harder way, in ensure_notification_subscription:
+# the existing subscription set is READ before the subscribe call is made, and
+# the call is made only when this endpoint is absent from it.
+#
+# On WHY that ordering is kept, the honest answer is narrower than an earlier
+# revision of this comment claimed, and the difference is worth recording because
+# the claim is checkable. That revision stated that the LocalStack edge creates a
+# SECOND subscription for a repeated topic/protocol/endpoint triple, so that
+# trusting the documented idempotency accumulated one copy per compose cycle. On
+# the pinned localstack/localstack:4.14.0 image that does NOT reproduce: a
+# repeated triple returns the EXISTING subscription ARN and the count stays at
+# one, both with and without --attributes, which is what the AWS API documents.
+# The claim is therefore not restated here. It may have held on another image or
+# another version; what can be verified on the version this repository pins is
+# the opposite.
+#
+# The read-before-write stays regardless, for two reasons that do not depend on
+# which behaviour the edge has. It makes this hook idempotent under BOTH
+# behaviours rather than under only the documented one, and an emulator's
+# conformance on this point is a property of the image tag, not of the API - so
+# an image bump could change it without changing anything here. It also costs one
+# list call on a path that runs once per compose cycle. The upper bound is
+# asserted from outside, in the inventory step of .github/workflows/build.yml,
+# where the edge is freshly created and sole-tenant; see the note on
+# verify_notification_subscription for why this script does not enforce it.
+
+# Prints 'present' or 'absent'. A list-topics failure is a real error and exits
+# through `fail`; it is never reported as absence, because that would silently
+# turn a broken edge into a spurious create attempt.
+#
+# Matching on the `:<name>` ARN suffix rather than on the bare name prevents a
+# false positive against a longer topic that merely ends with the same
+# characters, because the colon anchors the match to the start of the name
+# segment of the ARN.
+topic_state() {
+  local name="$1"
+  local listing=''
+  if ! listing="$("${AWS_CLI[@]}" sns list-topics --query 'Topics[].TopicArn' --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "list-topics failed: ${listing//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  case "${listing}" in
+    *":${name}" | *":${name}"[[:space:]]*) printf 'present' ;;
+    *) printf 'absent' ;;
+  esac
+}
+
+create_topic() {
+  local name="$1"
+  local result=''
+  # create-topic is itself idempotent and returns the existing ARN, but the ARN
+  # is discarded rather than logged because it embeds the account identifier.
+  if ! result="$("${AWS_CLI[@]}" sns create-topic --name "${name}" 2>&1 >/dev/null)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "create-topic failed: ${result//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  log "sns:${name}" 'created'
+}
+
+ensure_topic() {
+  local name="$1"
+  local state=''
+  state="$(topic_state "${name}")"
+  if [[ "${state}" == 'present' ]]; then
+    log "sns:${name}" 'already exists - idempotent success'
+  else
+    create_topic "${name}"
+  fi
+  state="$(topic_state "${name}")"
+  if [[ "${state}" != 'present' ]]; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      'the topic is still absent from list-topics after provisioning' \
+      'Inspect the sns service state in the container logs, then re-run the hook.'
+  fi
+  log "sns:${name}" 'presence verified by list-topics'
+}
+
+# Prints the ARN of the named topic. The ARN is needed as an API argument and is
+# deliberately NEVER logged, because it embeds the account identifier - the same
+# reason create_topic discards it. An unresolvable ARN is a hard error rather
+# than an empty string, so a later API call cannot be issued against nothing.
+#
+# The `:<name>` suffix anchor is the same one topic_state uses, and for the same
+# reason: it pins the match to the start of the ARN's name segment so a longer
+# topic merely ending in these characters cannot match.
+topic_arn() {
+  local name="$1"
+  local listing=''
+  if ! listing="$("${AWS_CLI[@]}" sns list-topics --query 'Topics[].TopicArn' --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "list-topics failed: ${listing//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  # `--output text` returns the ARNs tab-separated on a single line; flattening
+  # any newline first makes the single `read` sufficient for either shape.
+  local flat="${listing//$'\n'/ }"
+  local -a arns=()
+  IFS=$' \t' read -r -a arns <<<"${flat}"
+  local arn=''
+  for arn in "${arns[@]}"; do
+    if [[ "${arn}" == *":${name}" ]]; then
+      printf '%s' "${arn}"
+      return 0
+    fi
+  done
+  fail "${EXIT_TOPIC}" "sns:${name}" \
+    'the topic ARN could not be resolved from list-topics' \
+    'Re-run the hook so the topic exists before its subscriptions are read.'
+}
+
+# The notification INBOX, and the subscription that makes a notification arrive
+# somewhere.
+#
+# FINDING M-04, SEVERITY MAJOR, RESOLVED. This script used to create the topic and
+# then FAIL if any subscription existed, ending by asserting a count of zero. The
+# consequence was that operator notification - the capability that stands in for
+# the job card's NOTIFY operand - was structurally present and functionally inert:
+# every publish was accepted by the service and discarded, because a topic with no
+# subscriber has nowhere to deliver to. The publisher could not detect it either,
+# since publish acceptance is not delivery.
+#
+# A durable queue is the right subscriber, and it is the faithful one. The
+# mainframe's NOTIFY delivered to a user's message queue - an inbox that holds the
+# notice until someone reads it - so a queue reproduces both the durability and the
+# read-when-you-like semantics, where an electronic-mail or web endpoint would
+# introduce an external dependency this topology forbids. RawMessageDelivery is
+# enabled so the body a subscriber reads is exactly the JSON the publisher sent,
+# with no envelope wrapped around it.
+#
+# The queue is a STANDARD queue on purpose: notification is not ordered with
+# respect to anything, and the report submission queue's first-in-first-out
+# guarantee exists for a different reason entirely.
+readonly NOTIFICATION_INBOX_QUEUE="${NOTIFICATION_TOPIC}-inbox"
+
+# Creates the notification inbox queue if it is absent, and prints its ARN.
+#
+# The ARN is needed as the subscription endpoint and is never logged, for the same
+# reason a topic ARN is not: it embeds the account identifier.
+# Creates the inbox queue if it is absent. Logs, and returns nothing on stdout.
+#
+# The split between this function and notification_inbox_arn below is deliberate and
+# load-bearing. log() writes to STDOUT, so any function whose value is captured with
+# `$(...)` must not log - its log lines would be captured as part of the value. That
+# is not a hypothetical. Creating the queue and resolving its ARN in one logging
+# function makes the captured "ARN" the progress line followed by the ARN, and SNS
+# accepts that as the endpoint - so the topic ends up
+# with a subscription pointing at a value that is not a queue, the hook reports
+# success and notifications go nowhere, which is the exact failure finding M-04 is
+# about, reintroduced by a careless fix for it. The topic_arn helper is
+# log-free for the same reason; this pair follows it.
+ensure_notification_inbox() {
+  local queue="$1"
+  local probe=''
+  if ! probe="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${queue}" 2>&1 >/dev/null)"; then
+    case "${probe}" in
+      *NonExistentQueue* | *QueueDoesNotExist*)
+        local created=''
+        if ! created="$("${AWS_CLI[@]}" sqs create-queue --queue-name "${queue}" 2>&1 >/dev/null)"; then
+          fail "${EXIT_QUEUE}" "sqs:${queue}" \
+            "create-queue failed for the notification inbox: ${created//$'\n'/ }" \
+            'Confirm the sqs service is running on the health endpoint, then re-run the hook.'
+        fi
+        log "sqs:${queue}" 'created standard queue as the notification inbox'
+        ;;
+      *)
+        fail "${EXIT_QUEUE}" "sqs:${queue}" \
+          "get-queue-url failed for a reason other than absence: ${probe//$'\n'/ }" \
+          'Resolve the reported error, then re-run the hook.'
+        ;;
+    esac
+  else
+    log "sqs:${queue}" 'already exists - idempotent success'
+  fi
+}
+
+# Resolves the inbox ARN and prints ONLY that. Never logs; see ensure_notification_inbox.
+notification_inbox_arn() {
+  local queue="$1"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${queue}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the notification inbox URL did not resolve: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local arn=''
+  if ! arn="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names QueueArn --query 'Attributes.QueueArn' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the notification inbox ARN did not resolve: ${arn//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  if [[ -z "${arn}" || "${arn}" == 'None' ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      'the notification inbox ARN resolved to an empty value' \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  printf '%s' "${arn}"
+}
+
+# Subscribes the inbox to the topic, but only when it is not subscribed already.
+#
+# The existing subscription set is READ FIRST and the subscribe call is made only when
+# this inbox is absent from it. That ordering is the whole substance of the function.
+#
+# It does NOT rest on the edge misbehaving, and an earlier revision of this comment
+# said that it did: it stated that the LocalStack edge creates a second subscription
+# for a repeated topic/protocol/endpoint triple, so that a second run of this hook
+# produced two subscriptions and a third produced three. That does not reproduce on
+# the pinned localstack/localstack:4.14.0 image, where a repeated triple returns the
+# existing subscription ARN and leaves the count at one - the behaviour AWS documents
+# for Subscribe. The claim has been withdrawn rather than restated; the SNS section
+# header above records what was checked and on which image.
+#
+# What the ordering does buy is independence from that question. Whether a repeated
+# subscribe is idempotent is a property of the emulator image, so it can change under
+# an image bump with nothing here changing; reading first makes this hook converge
+# under either behaviour, at the cost of one list call per compose cycle. The
+# .github/workflows/build.yml inventory step asserts the resulting count from outside,
+# which is where a regression on this point would surface.
+#
+# Duplicates that already exist are deliberately left alone; see the note on
+# verify_notification_subscription for why this script does not unsubscribe.
+ensure_notification_subscription() {
+  local name="$1"
+  local topic=''
+  topic="$(topic_arn "${name}")"
+  ensure_notification_inbox "${NOTIFICATION_INBOX_QUEUE}"
+  local endpoint=''
+  endpoint="$(notification_inbox_arn "${NOTIFICATION_INBOX_QUEUE}")"
+  # The value is used as an SNS endpoint, so prove it is an ARN and nothing else. A
+  # captured log line would have satisfied a mere non-empty check.
+  if [[ "${endpoint}" != arn:aws:sqs:* || "${endpoint}" == *[[:space:]]* ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${NOTIFICATION_INBOX_QUEUE}" \
+      'the notification inbox ARN did not resolve to a bare sqs ARN' \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+
+  # A count rather than an ARN: the identity that matters is the topic/protocol/endpoint
+  # triple, not which subscription ARN happens to carry it.
+  local existing=''
+  if ! existing="$("${AWS_CLI[@]}" sns list-subscriptions-by-topic --topic-arn "${topic}" \
+    --query "length(Subscriptions[?Protocol=='sqs' && Endpoint=='${endpoint}'])" \
+    --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "list-subscriptions-by-topic failed while checking for the inbox subscription: ${existing//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  # The same integer shape the retry parameters are held to, for the same reason: it
+  # refuses a leading zero, so nothing that reaches the base-10 comparison below can
+  # be read as octal.
+  if [[ "${existing}" =~ ^(0|[1-9][0-9]*)$ ]] && ((10#${existing} > 0)); then
+    log "sns:${name}" \
+      "the ${NOTIFICATION_INBOX_QUEUE} inbox is already subscribed - idempotent success"
+    return 0
+  fi
+
+  local subscribed=''
+  if ! subscribed="$("${AWS_CLI[@]}" sns subscribe --topic-arn "${topic}" --protocol sqs \
+    --notification-endpoint "${endpoint}" --attributes 'RawMessageDelivery=true' \
+    --return-subscription-arn 2>&1 >/dev/null)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "subscribe failed for the notification inbox: ${subscribed//$'\n'/ }" \
+      'Confirm the sns and sqs services are running on the health endpoint, then re-run the hook.'
+  fi
+  log "sns:${name}" "subscribed the ${NOTIFICATION_INBOX_QUEUE} inbox (raw delivery, ARNs withheld)"
+}
+
+# Fatal check that a notification has somewhere to be delivered.
+#
+# The count is READ BACK rather than assumed, exactly as the versioning status is,
+# and the requirement is now at least one subscription rather than none. Zero is
+# fatal: it is precisely the state in which every publish is accepted and silently
+# discarded, which is the defect finding M-04 reported.
+#
+# This function never unsubscribes anything. A subscription found here may belong
+# to a sibling clone sharing this edge, and destroying a resource this script did
+# not create is outside its authority.
+verify_notification_subscription() {
+  local name="$1"
+  local arn=''
+  arn="$(topic_arn "${name}")"
+  local count=''
+  if ! count="$("${AWS_CLI[@]}" sns list-subscriptions-by-topic --topic-arn "${arn}" \
+    --query 'length(Subscriptions)' --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "list-subscriptions-by-topic failed: ${count//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  if [[ -z "${count}" || "${count}" == 'None' || "${count}" == '0' ]]; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      'the topic reports no subscription, so every notification would be accepted and discarded' \
+      'Re-run the hook: ensure_notification_subscription creates the inbox subscription idempotently.'
+  fi
+  local protocol=''
+  if ! protocol="$("${AWS_CLI[@]}" sns list-subscriptions-by-topic --topic-arn "${arn}" \
+    --query 'Subscriptions[0].Protocol' --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "the subscription protocol could not be read: ${protocol//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  OBSERVED_SUBSCRIPTIONS="${count}"
+  OBSERVED_SUBSCRIPTION_PROTOCOL="${protocol}"
+  log "sns:${name}" \
+    "subscription count verified ${count} (protocol ${protocol}) by list-subscriptions-by-topic"
+}
+
+# Renders an observed versioning status for the summary. The rendering presents
+# the observed value and never substitutes for it: a status other than the one
+# this contract expects for the bucket is spelled out verbatim and tagged DRIFT,
+# so no summary line can read as a clean pass over a divergent edge.
+render_versioning() {
+  local observed="$1"
+  local expected="$2"
+  if [[ "${observed}" == "${expected}" ]]; then
+    case "${observed}" in
+      None) printf 'unversioned - verified' ;;
+      *) printf 'versioning %s - verified' "${observed}" ;;
+    esac
+  else
+    printf 'versioning %s - DRIFT, expected %s' "${observed}" "${expected}"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Main sequence. Ordered so that nothing is provisioned before configuration has
+# been validated and the edge has been confirmed usable.
+main() {
+  log 'start' "provisioning CardDemo AWS resources in region ${REGION} via ${CLI_LABEL}"
+
+  wait_until_ready
+
+  ensure_bucket "${INPUT_BUCKET}"
+  ensure_bucket "${OUTPUT_BUCKET}"
+  ensure_bucket "${STATEMENTS_BUCKET}"
+
+  # Versioning. Enabled and verified on the output bucket; OBSERVED on the other
+  # two, because this contract leaves them unversioned and a claim of that shape
+  # has to be measured to be worth making. Each call publishes what the edge
+  # reported through OBSERVED_VERSIONING, so each value is captured immediately -
+  # the following call overwrites it.
+  local output_versioning=''
+  local input_versioning=''
+  local statements_versioning=''
+  enable_and_verify_versioning "${OUTPUT_BUCKET}"
+  output_versioning="${OBSERVED_VERSIONING}"
+  observe_versioning "${INPUT_BUCKET}"
+  input_versioning="${OBSERVED_VERSIONING}"
+  observe_versioning "${STATEMENTS_BUCKET}"
+  statements_versioning="${OBSERVED_VERSIONING}"
+
+  # Lifecycle rules. Fatal on any rule found, on every bucket - reaching the
+  # summary therefore proves all three read backs returned
+  # NoSuchLifecycleConfiguration.
+  verify_no_lifecycle_rules "${INPUT_BUCKET}"
+  verify_no_lifecycle_rules "${OUTPUT_BUCKET}"
+  verify_no_lifecycle_rules "${STATEMENTS_BUCKET}"
+
+  log 'sqs:mapping' "logical '${QUEUE_LOGICAL}' -> physical '${QUEUE_PHYSICAL}' (FIFO suffix required by AWS)"
+
+  # ORDER MATTERS. The dead-letter queue is provisioned FIRST, because the report
+  # queue's RedrivePolicy names it by ARN and an ARN cannot be resolved for a
+  # queue that does not exist. Each ensure_queue publishes what the edge reported
+  # through OBSERVED_QUEUE_VISIBILITY, so the report queue is provisioned second
+  # and its value is the one the summary carries.
+  log 'sqs:mapping' "dead-letter target '${DLQ_PHYSICAL}' (derived from the report queue name)"
+  ensure_queue "${DLQ_PHYSICAL}"
+  ensure_queue "${QUEUE_PHYSICAL}"
+  ensure_redrive_policy "${QUEUE_PHYSICAL}" "$(dead_letter_queue_arn "${DLQ_PHYSICAL}")"
+
+  ensure_topic "${NOTIFICATION_TOPIC}"
+  ensure_notification_subscription "${NOTIFICATION_TOPIC}"
+  verify_notification_subscription "${NOTIFICATION_TOPIC}"
+
+  # Gate 8 evidence. EVERY line below is composed from a value this run read back
+  # off the edge, never from the contract this script set out to apply, so a
+  # divergence the script survives by design is visible here instead of being
+  # papered over by a fixed string. Names only - no URL, no ARN, no account
+  # identifier.
+  log 'summary' '--------------------------------------------------------------'
+  log 'summary' "s3 input bucket ......... ${INPUT_BUCKET} ($(render_versioning "${input_versioning}" 'None'))"
+  log 'summary' "s3 output bucket ........ ${OUTPUT_BUCKET} ($(render_versioning "${output_versioning}" 'Enabled'))"
+  log 'summary' \
+    "s3 statements bucket .... ${STATEMENTS_BUCKET} ($(render_versioning "${statements_versioning}" 'None'))"
+  log 'summary' \
+    "sqs queue ............... ${QUEUE_LOGICAL} -> ${QUEUE_PHYSICAL} (FIFO, ${OBSERVED_QUEUE_VISIBILITY}s visibility)"
+  log 'summary' \
+    "sqs dead-letter queue ... ${DLQ_PHYSICAL} (FIFO, maxReceiveCount ${OBSERVED_QUEUE_REDRIVE}, read-back)"
+  log 'summary' "sqs notification inbox .. ${NOTIFICATION_INBOX_QUEUE} (standard queue)"
+  log 'summary' "sns topic ............... ${NOTIFICATION_TOPIC} (presence verified)"
+  log 'summary' \
+    "sns subscriptions ....... ${OBSERVED_SUBSCRIPTIONS} via ${OBSERVED_SUBSCRIPTION_PROTOCOL} (read-back)"
+  log 'summary' 's3 lifecycle rules ...... 0 on all three buckets (verified by read-back)'
+  log 'summary' '--------------------------------------------------------------'
+  log 'done' 'all resources provisioned and verified'
+
+  exit "${EXIT_OK}"
+}
+
+main

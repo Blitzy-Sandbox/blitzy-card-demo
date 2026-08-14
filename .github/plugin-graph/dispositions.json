@@ -1,0 +1,341 @@
+{
+  "_header": [
+    "*****************************************************************",
+    "File        : dispositions.json",
+    "Application : CardDemo",
+    "Type        : CI SUPPLY-CHAIN EVIDENCE",
+    "Function    : Per-advisory dispositions for the Maven BUILD PLUGIN graph,",
+    "              consumed by scan_plugin_graph.py. Every HIGH or CRITICAL",
+    "              finding either appears here with evidence and an expiry, or",
+    "              it fails the build.",
+    "Derived from : pom.xml gap entry (2), which prescribes enumerating the",
+    "              plugin graph and scanning it outside the build; and the",
+    "              four-tier evidence discipline already established by",
+    "              owasp-suppressions.xml for the APPLICATION graph.",
+    "*****************************************************************",
+    "Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.",
+    "Licensed under the Apache License, Version 2.0 (the 'License').",
+    "You may not use this file except in compliance with the License.",
+    "You may obtain a copy of the License at",
+    "    http://www.apache.org/licenses/LICENSE-2.0",
+    "Unless required by applicable law or agreed to in writing, software",
+    "distributed under the License is distributed on an 'AS IS' BASIS,",
+    "WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.",
+    "See the License for the specific language governing permissions and",
+    "limitations under the License.",
+    "*****************************************************************"
+  ],
+  "_whatThisFileIsNot": [
+    "It is NOT a suppression list. A suppression hides a finding; each entry here",
+    "states why the flagged code cannot execute in THIS build, names the evidence",
+    "that establishes it, and carries an expiry date after which the claim must be",
+    "re-argued or the dependency raised. An entry that matches nothing FAILS the",
+    "gate, so the file shrinks as the graph moves rather than accumulating.",
+    "",
+    "It is also NOT the lever to reach for when the scan turns red. The scanner",
+    "reports the alternatives in its own failure message, in order of preference:",
+    "raise the plugin, or add an exact plugin-scoped dependency override of the",
+    "kind pom.xml already applies to the scanner's own HTTP transport. Adding an",
+    "entry here is the last option, not the first."
+  ],
+  "overrides": [
+    {
+      "group": "org.apache.httpcomponents.client5",
+      "artifact": "httpclient5",
+      "declaredVersion": "5.4.2",
+      "effectiveVersion": "5.5.2",
+      "declaredIn": "pom.xml (dependency-check-maven plugin <dependencies>)",
+      "advisoryClosed": "CVE-2025-27820 / GHSA-73m2-qfq3-56cx, CVSS 8.1",
+      "evidence": [
+        "dependency:resolve-plugins reports httpclient5:5.4.2 for",
+        "org.owasp:dependency-check-maven:12.1.0 because that goal reads the",
+        "plugin's own descriptor and is blind to project-level plugin",
+        "<dependencies> overrides. The plugin's REAL class realm, read from a",
+        "Maven -X run on 9 August 2026, loads httpclient5:jar:5.5.2,",
+        "httpcore5:jar:5.4.3 and httpcore5-h2:jar:5.4.3, and 5.4.2 appears",
+        "nowhere in it. An earlier revision of this entry read httpcore5:jar:5.3.6",
+        "and is withdrawn: the pair was raised to 5.4.3 for two advisories of its",
+        "own, recorded in the two entries below. This entry exists so that the",
+        "scan measures what executes; the scanner verifies the claim against the",
+        "realm listing and FAILS if the override is ever removed from pom.xml."
+      ]
+    },
+    {
+      "group": "org.apache.httpcomponents.core5",
+      "artifact": "httpcore5",
+      "declaredVersion": "5.3.3",
+      "effectiveVersion": "5.4.3",
+      "declaredIn": "pom.xml (dependency-check-maven plugin <dependencies>)",
+      "advisoryClosed": "CVE-2026-54399, CVSS 7.5, unbounded header count and length in the HTTP/1.1 message parser, fixed in 5.4.3",
+      "evidence": [
+        "dependency:resolve-plugins reports httpcore5:5.3.3 for",
+        "org.owasp:dependency-check-maven:12.1.0, which is the version the",
+        "plugin's own descriptor carries; the goal cannot see a project-level",
+        "plugin <dependencies> override. The plugin's REAL class realm, read from",
+        "a Maven -X run on 9 August 2026, loads httpcore5:jar:5.4.3 and neither",
+        "5.3.3 nor 5.3.6 appears in it. Provenance of the advisory is split and",
+        "is stated rather than smoothed over: this repository's own scan report,",
+        "target/dependency-check/dependency-check-report.json of",
+        "2026-08-09T10:45:58Z, attributes the record to httpcore5 5.3.6, while OSV",
+        "queried the same day returns zero for 5.3.6 and for 5.4.3 alike. The",
+        "override therefore closes a record this scanner would begin reporting on",
+        "a feed update rather than on any change to this repository - which is why",
+        "it is a pin and not a disposition.",
+        "A SEPARATE occurrence of httpcore5 5.3.6 remains in the declared graph",
+        "through org.springframework.boot:spring-boot-maven-plugin:3.5.11, whose",
+        "realm is NOT overridden. It is left alone deliberately: that plugin runs",
+        "only repackage in this build and opens no connection, so its transport is",
+        "never exercised, and overriding a second pinned plugin's realm to close a",
+        "record no feed currently reports would be change without evidence. No",
+        "disposition is written for it either, because a disposition that matches",
+        "nothing fails this gate."
+      ]
+    },
+    {
+      "group": "org.apache.httpcomponents.core5",
+      "artifact": "httpcore5-h2",
+      "declaredVersion": "5.3.3",
+      "effectiveVersion": "5.4.3",
+      "declaredIn": "pom.xml (dependency-check-maven plugin <dependencies>)",
+      "advisoryClosed": "CVE-2026-54428, CVSS 7.5, unbounded growth in the HPACK decoder on the HTTP/2 path, fixed in 5.4.3",
+      "evidence": [
+        "The HTTP/2 half of the same transport, moved with httpcore5 by one",
+        "property so the pair can never split. dependency:resolve-plugins reports",
+        "httpcore5-h2:5.3.3 from the plugin descriptor; the Maven -X realm listing",
+        "of 9 August 2026 loads httpcore5-h2:jar:5.4.3 and no earlier version.",
+        "Same split provenance as its sibling above - carried by this",
+        "repository's own scan report against 5.3.6, absent from OSV at every",
+        "version queried - and same reason for a pin rather than a disposition."
+      ]
+    }
+  ],
+  "dispositions": [
+    {
+      "coordinate": "org.apache.maven:maven-core:3.6.3",
+      "advisory": "GHSA-2f88-5hg8-9x2x",
+      "aliases": [
+        "CVE-2021-26291"
+      ],
+      "severity": "CRITICAL",
+      "tier": "1 - the flagged artifact is not the code that executes",
+      "expires": "2027-02-01",
+      "evidence": "maven-core 3.6.3 is a compile-scope API dependency of dependency-check-maven 12.1.0; it is absent from that plugin's class realm. Measured from a Maven -X run: the realm lists 92 Included artifacts and maven-core, maven-plugin-api and maven-model are not among them, because Maven supplies its own core from the core realm to every plugin. The Maven that actually resolves dependencies here is 3.9.11, and the advisory is fixed in 3.8.1, so the behaviour that executes is already the fixed behaviour. Raising this is not possible without moving the AAP-pinned plugin root."
+    },
+    {
+      "coordinate": "commons-beanutils:commons-beanutils:1.9.4",
+      "advisory": "GHSA-wxr5-93ph-8wr9",
+      "aliases": [
+        "CVE-2025-48734"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable feature is not exercised on untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "The defect is PropertyUtilsBean allowing the declared-class property of an enum to reach the classloader, so exploitation requires attacker-controlled bean property NAMES. This artefact reaches the graph only through maven-javadoc-plugin 3.11.2, maven-site-plugin 3.22.0 and dependency-check-maven 12.1.0, all of which introspect this project's own Maven model and its own report data at build time. No build-time input path carries a third-party-chosen property name. Fixed in 1.11.0, which none of the three plugin roots yet resolves; all three roots are AAP-pinned."
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.18.2",
+      "advisory": "GHSA-j3rv-43j4-c7qm",
+      "aliases": [
+        "CVE-2026-54512"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable feature is not enabled",
+      "expires": "2027-02-01",
+      "evidence": "Both this advisory and GHSA-rmj7-2vxq-3g9f require POLYMORPHIC TYPING TO BE ENABLED, which owasp-suppressions.xml already establishes as the governing premise for the same two advisories on the application graph. Here the artefact arrives through dependency-check-maven 12.1.0, which deserializes the NVD advisory feed and its own report models with default typing; no polymorphic type validator is configured and no type identifier is honoured from the feed. Fixed in 2.20.1, which the AAP-pinned plugin root does not resolve."
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.18.2",
+      "advisory": "GHSA-rmj7-2vxq-3g9f",
+      "aliases": [
+        "CVE-2026-54513"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable feature is not enabled",
+      "expires": "2027-02-01",
+      "evidence": "BasicPolymorphicTypeValidator.Builder.allowIfSubTypeIsArray() allowlists an array type without validating its component type, so the defect is unreachable unless polymorphic typing is enabled and that builder is used. dependency-check-maven 12.1.0 configures neither. Same premise and same tier as the application-graph entry in owasp-suppressions.xml."
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.19.4",
+      "advisory": "GHSA-j3rv-43j4-c7qm",
+      "aliases": [
+        "CVE-2026-54512"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable feature is not enabled",
+      "expires": "2027-02-01",
+      "evidence": "The same advisory on the version spring-boot-maven-plugin 3.5.11 resolves. The plugin reads its own build metadata and this project's configuration when repackaging; polymorphic typing is not enabled on any of it. 2.19.4 is the version AAP section 0.6.1.2 records for jackson-bom, so the application graph carries the identical premise, already adjudicated in owasp-suppressions.xml."
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.19.4",
+      "advisory": "GHSA-rmj7-2vxq-3g9f",
+      "aliases": [
+        "CVE-2026-54513"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable feature is not enabled",
+      "expires": "2027-02-01",
+      "evidence": "As for CVE-2026-54512 on this coordinate: the array-component validation gap is reachable only through an enabled polymorphic type validator, and spring-boot-maven-plugin 3.5.11 configures none."
+    },
+    {
+      "coordinate": "commons-io:commons-io:2.11.0",
+      "advisory": "GHSA-78wr-2p64-hpwj",
+      "aliases": [
+        "CVE-2024-47554"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable class is not used",
+      "expires": "2027-02-01",
+      "evidence": "The defect is uncontrolled CPU consumption in org.apache.commons.io.input.XmlStreamReader on maliciously crafted input. This artefact arrives through maven-compiler-plugin 3.14.1, maven-resources-plugin 3.3.1 and jacoco-maven-plugin 0.8.12, which use commons-io for ordinary file and stream copying over this project's own sources, resources and class files. XmlStreamReader exists to sniff the encoding of an untrusted XML stream, and no build-time path feeds it one. Fixed in 2.14.0; all three plugin roots are AAP-pinned and none yet resolves it."
+    },
+    {
+      "coordinate": "org.springframework:spring-expression:6.2.16",
+      "advisory": "GHSA-r5w3-xv2f-j59q",
+      "aliases": [
+        "CVE-2026-41850"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable feature is not exercised on untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "Algorithmic denial of service when evaluating USER-SUPPLIED SpEL expressions. In the plugin graph this arrives through spring-boot-maven-plugin 3.5.11, which evaluates only expressions written in this repository's own pom.xml and configuration; a build has no untrusted expression author. Fixed in 6.2.19. NOTE, AND MEASURED RATHER THAN ASSUMED: this version is on the PLUGIN graph ONLY. The APPLICATION graph resolves spring-expression 6.2.19 - the fixed release - because pom.xml sets spring-framework.version to 6.2.19 as a deliberate forward override of the 6.2.16 that AAP section 0.6.1.2 records as the bill-of-materials value; that override is documented in docs/technical-specifications.md. Reproduce with: ./mvnw -B -ntp -o dependency:list -DincludeGroupIds=org.springframework. An earlier revision of this evidence field asserted the application graph also carried 6.2.16 and that the application-side exposure was a pinned-version residual risk; both halves are WITHDRAWN as unmeasured. The plugin graph cannot take the same override, because a plugin's own dependencies are not managed by the project's dependencyManagement, which is why this disposition exists at all."
+    },
+    {
+      "coordinate": "org.eclipse.jetty:jetty-http:9.4.58.v20250814",
+      "advisory": "GHSA-355h-qmc2-wpwf",
+      "aliases": [
+        "CVE-2026-2332"
+      ],
+      "severity": "HIGH",
+      "tier": "2 - the component is never started",
+      "expires": "2027-02-01",
+      "evidence": "HTTP request smuggling through quoted-string parsing of chunked transfer-encoding extension values. Exploitation requires a running Jetty listener in front of a second HTTP hop. Jetty reaches this graph only through maven-site-plugin 3.22.0, whose embedded server starts only for the site:run preview goal, and no site goal is invoked anywhere in .github/workflows/build.yml or the Dockerfile - the documentation site is built by MkDocs, not by the Maven site plugin. So no listener exists to smuggle into. The fixes are 12.0.33 and 12.1.7: the 9.4 line has no fix, which is why the remedy is not to run the component rather than to raise it."
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.core:jackson-core:2.18.2",
+      "advisory": "GHSA-r7wm-3cxj-wff9",
+      "aliases": [],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable parser mode is never constructed",
+      "expires": "2027-02-01",
+      "evidence": "A maxNumberLength constraint bypass in the ASYNC (non-blocking) parser, reachable only through JsonFactory.createNonBlockingByteArrayParser fed attacker-chunked input. This version arrives through org.owasp:dependency-check-maven 12.1.0. Verified: the string createNonBlocking appears nowhere in this repository, and neither plugin constructs a non-blocking parser - the scanner deserializes the NVD feed and the repackager reads its own build metadata, both with the blocking parser. Fixed in 2.18.8 and 2.21.4; the plugin root that resolves this version is AAP-pinned and does not reach either."
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.core:jackson-core:2.19.4",
+      "advisory": "GHSA-r7wm-3cxj-wff9",
+      "aliases": [],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable parser mode is never constructed",
+      "expires": "2027-02-01",
+      "evidence": "A maxNumberLength constraint bypass in the ASYNC (non-blocking) parser, reachable only through JsonFactory.createNonBlockingByteArrayParser fed attacker-chunked input. This version arrives through org.springframework.boot:spring-boot-maven-plugin 3.5.11. Verified: the string createNonBlocking appears nowhere in this repository, and neither plugin constructs a non-blocking parser - the scanner deserializes the NVD feed and the repackager reads its own build metadata, both with the blocking parser. Fixed in 2.18.8 and 2.21.4; the plugin root that resolves this version is AAP-pinned and does not reach either."
+    },
+    {
+      "coordinate": "io.airlift:aircompressor:0.27",
+      "advisory": "GHSA-vx9q-rhv9-3jvg",
+      "aliases": [
+        "CVE-2025-67721"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable code path is not fed untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "The Java Snappy and LZ4 decompressors can return previous output-buffer contents when handed malformed compressed input and the buffer is reused without clearing, so exploitation requires decompressing attacker-crafted Snappy or LZ4 data. This artefact arrives through maven-javadoc-plugin 3.11.2, which reads this project's own sources to generate API documentation and decompresses nothing supplied by a third party. Fixed in 2.0.3 and 3.4; the plugin root is AAP-pinned and resolves neither."
+    },
+    {
+      "coordinate": "org.bouncycastle:bcpg-jdk18on:1.78",
+      "advisory": "GHSA-cj8j-37rh-8475",
+      "aliases": [
+        "CVE-2026-3505"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable format is never processed",
+      "expires": "2027-02-01",
+      "evidence": "An unbounded OpenPGP AEAD chunk size permitting pre-authentication resource exhaustion, so exploitation requires parsing an attacker-supplied OpenPGP message. The bcpg module arrives through dependency-check-maven 12.1.0. Verified: this build signs and verifies nothing with OpenPGP - maven-gpg-plugin appears zero times in pom.xml - so no build step hands an OpenPGP message to this library. Fixed in 1.84, which the AAP-pinned plugin root does not resolve."
+    },
+    {
+      "coordinate": "org.bouncycastle:bcprov-jdk18on:1.78",
+      "advisory": "GHSA-574f-3g2m-x479",
+      "aliases": [
+        "CVE-2025-14813"
+      ],
+      "severity": "CRITICAL",
+      "tier": "3 - the vulnerable cipher is never selected",
+      "expires": "2027-02-01",
+      "evidence": "G3413CTRBlockCipher increments only the final counter byte, so the GOST 28147-2015 CTR keystream repeats after 255 blocks. Reachability requires selecting that specific Russian national cipher. Verified: neither GOST nor G3413 appears anywhere in this repository, and nothing in this build's cryptography selects it - the application's only cryptographic choices are BCrypt for password storage and the JWT signing algorithm. The artefact arrives through dependency-check-maven 12.1.0. Fixed in 1.80.2, 1.81.1 and 1.84, none resolved by the AAP-pinned plugin root."
+    },
+    {
+      "coordinate": "org.codehaus.plexus:plexus-utils:3.0.24",
+      "advisory": "GHSA-6fmv-xxpf-w3cw",
+      "aliases": [
+        "CVE-2025-67030"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable method is not called on untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "Directory traversal in org.codehaus.plexus.util.Expand.extractFile, so exploitation requires expanding an attacker-supplied archive. This version arrives through org.jacoco:jacoco-maven-plugin 0.8.12, all of which use plexus-utils for file scanning, XML reading and string handling over this project's own tree rather than for archive expansion. The only archive this build expands is the Maven distribution itself, and .mvn/wrapper/maven-wrapper.properties pins it to an immutable Maven Central coordinate with a distributionSha256Sum verified before Maven runs, so its contents are not attacker-chosen. Fixed in 3.6.1 and 4.0.3; every plugin root carrying it is AAP-pinned."
+    },
+    {
+      "coordinate": "org.codehaus.plexus:plexus-utils:3.5.1",
+      "advisory": "GHSA-6fmv-xxpf-w3cw",
+      "aliases": [
+        "CVE-2025-67030"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable method is not called on untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "Directory traversal in org.codehaus.plexus.util.Expand.extractFile, so exploitation requires expanding an attacker-supplied archive. This version arrives through maven-resources-plugin 3.3.1 and spring-boot-maven-plugin 3.5.11, all of which use plexus-utils for file scanning, XML reading and string handling over this project's own tree rather than for archive expansion. The only archive this build expands is the Maven distribution itself, and .mvn/wrapper/maven-wrapper.properties pins it to an immutable Maven Central coordinate with a distributionSha256Sum verified before Maven runs, so its contents are not attacker-chosen. Fixed in 3.6.1 and 4.0.3; every plugin root carrying it is AAP-pinned."
+    },
+    {
+      "coordinate": "org.codehaus.plexus:plexus-utils:4.0.1",
+      "advisory": "GHSA-6fmv-xxpf-w3cw",
+      "aliases": [
+        "CVE-2025-67030"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable method is not called on untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "Directory traversal in org.codehaus.plexus.util.Expand.extractFile, so exploitation requires expanding an attacker-supplied archive. This version arrives through maven-clean, maven-deploy, maven-enforcer, maven-install and maven-jar plugins, all of which use plexus-utils for file scanning, XML reading and string handling over this project's own tree rather than for archive expansion. The only archive this build expands is the Maven distribution itself, and .mvn/wrapper/maven-wrapper.properties pins it to an immutable Maven Central coordinate with a distributionSha256Sum verified before Maven runs, so its contents are not attacker-chosen. Fixed in 3.6.1 and 4.0.3; every plugin root carrying it is AAP-pinned."
+    },
+    {
+      "coordinate": "org.codehaus.plexus:plexus-utils:4.0.2",
+      "advisory": "GHSA-6fmv-xxpf-w3cw",
+      "aliases": [
+        "CVE-2025-67030"
+      ],
+      "severity": "HIGH",
+      "tier": "3 - the vulnerable method is not called on untrusted input",
+      "expires": "2027-02-01",
+      "evidence": "Directory traversal in org.codehaus.plexus.util.Expand.extractFile, so exploitation requires expanding an attacker-supplied archive. This version arrives through maven-compiler-plugin 3.14.1, maven-javadoc-plugin 3.11.2 and dependency-check-maven 12.1.0, all of which use plexus-utils for file scanning, XML reading and string handling over this project's own tree rather than for archive expansion. The only archive this build expands is the Maven distribution itself, and .mvn/wrapper/maven-wrapper.properties pins it to an immutable Maven Central coordinate with a distributionSha256Sum verified before Maven runs, so its contents are not attacker-chosen. Fixed in 3.6.1 and 4.0.3; every plugin root carrying it is AAP-pinned."
+    },
+    {
+      "coordinate": "org.eclipse.jetty:jetty-security:9.4.58.v20250814",
+      "advisory": "GHSA-2fvj-hgj9-j2gr",
+      "aliases": [
+        "CVE-2026-10050"
+      ],
+      "severity": "HIGH",
+      "tier": "2 - the component is never started",
+      "expires": "2027-02-01",
+      "evidence": "DigestAuthentication.apply() in Jetty's HTTP CLIENT hashes credentials through ISO-8859-1, which silently substitutes any character above U+00FF and so permits an authentication bypass by character substitution. Reachability requires Jetty's HTTP client performing Digest authentication. Jetty reaches this graph only through maven-site-plugin 3.22.0, and no site goal is invoked anywhere in .github/workflows/build.yml or the Dockerfile - the documentation site is built by MkDocs. No Jetty client is ever constructed and no Digest exchange occurs. Unlike CVE-2026-2332 on jetty-http, this one IS fixed on the 9.4 line, at 9.4.63, but the version is chosen by the AAP-pinned site plugin rather than declared here."
+    },
+    {
+      "coordinate": "org.apache.httpcomponents.core5:httpcore5:5.3.6",
+      "advisory": "GHSA-hf6x-8p5f-cgmf",
+      "aliases": [
+        "CVE-2026-54399"
+      ],
+      "severity": "HIGH",
+      "tier": "2 - the component is never started",
+      "expires": "2027-02-01",
+      "evidence": "Memory-exhaustion denial of service through unbounded header count and length in the HTTP/1.1 message parser; the CVSS vector is AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H, so availability only, and reachability requires this realm to actually parse an inbound HTTP/1.1 message. This artefact reaches the plugin graph only through org.springframework.boot:spring-boot-buildpack-platform 3.5.11, the Docker-registry and buildpack HTTP client used by the build-image and build-image-no-fork goals (dependency:resolve-plugins attributes it at lines 283-297, directly beneath the plugin itself). Neither goal is invoked anywhere in this build: pom.xml declares spring-boot-maven-plugin with no <executions> at all, so it inherits only the parent's repackage binding, and both entry points run the same lifecycle - .github/workflows/build.yml runs 'clean verify' and the Dockerfile builder stage runs 'clean verify'. A repository-wide search finds build-image only in prose. repackage reads and rewrites local jar files and opens no socket, and the one other documented developer goal, spring-boot:run, forks a local JVM rather than issuing HTTP. NOT OVERRIDDEN HERE, UNLIKE THE SCANNER'S OWN REALM, AND DELIBERATELY SO. pom.xml pins the same two coordinates to 5.4.3 inside dependency-check-maven's realm, so the mechanism is available and proven. It is not applied to this plugin because this is the plugin that produces the delivered artefact: repackage builds the executable jar, so altering its classpath risks the deliverable, whereas altering a reporting plugin's classpath does not. Trading a delivery risk for a DoS that cannot occur would be the worse exchange. AAP section 0.6.1 pins spring-boot-starter-parent to 3.5.11 and section 0.8.4 requires pinned versions be honoured as given, so raising the plugin root to obtain 5.4.3 transitively is not available either. Fixed in 5.4.3 on the 5.x line and 5.5-beta2 on the 5.5 line."
+    },
+    {
+      "coordinate": "org.apache.httpcomponents.core5:httpcore5-h2:5.3.6",
+      "advisory": "GHSA-v3jc-474w-2wm6",
+      "aliases": [
+        "CVE-2026-54428"
+      ],
+      "severity": "HIGH",
+      "tier": "2 - the component is never started",
+      "expires": "2027-02-01",
+      "evidence": "HPackDecoder accepts an unlimited header list before the HTTP/2 SETTINGS acknowledgement, the same class of unbounded-input exhaustion as CVE-2026-54399 one layer up the protocol stack; the vector is likewise AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H, and reachability requires this realm to negotiate an HTTP/2 connection. This artefact reaches the plugin graph only through org.springframework.boot:spring-boot-buildpack-platform 3.5.11, the Docker-registry and buildpack HTTP client used by the build-image and build-image-no-fork goals (dependency:resolve-plugins attributes it at lines 283-297, directly beneath the plugin itself). Neither goal is invoked anywhere in this build: pom.xml declares spring-boot-maven-plugin with no <executions> at all, so it inherits only the parent's repackage binding, and both entry points run the same lifecycle - .github/workflows/build.yml runs 'clean verify' and the Dockerfile builder stage runs 'clean verify'. A repository-wide search finds build-image only in prose. repackage reads and rewrites local jar files and opens no socket, and the one other documented developer goal, spring-boot:run, forks a local JVM rather than issuing HTTP. NOT OVERRIDDEN HERE, UNLIKE THE SCANNER'S OWN REALM, AND DELIBERATELY SO. pom.xml pins the same two coordinates to 5.4.3 inside dependency-check-maven's realm, so the mechanism is available and proven. It is not applied to this plugin because this is the plugin that produces the delivered artefact: repackage builds the executable jar, so altering its classpath risks the deliverable, whereas altering a reporting plugin's classpath does not. Trading a delivery risk for a DoS that cannot occur would be the worse exchange. AAP section 0.6.1 pins spring-boot-starter-parent to 3.5.11 and section 0.8.4 requires pinned versions be honoured as given, so raising the plugin root to obtain 5.4.3 transitively is not available either. Fixed in 5.4.3 on the 5.x line and 5.5-beta2 on the 5.5 line."
+    }
+  ]
+}

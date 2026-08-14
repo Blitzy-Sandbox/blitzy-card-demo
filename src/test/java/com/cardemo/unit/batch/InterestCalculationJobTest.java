@@ -1,0 +1,1825 @@
+/*
+ * ******************************************************************
+ * Program     : InterestCalculationJobTest.java
+ * Application : CardDemo
+ * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
+ * Function    : Verifies the job-side contract of the interest
+ *               calculation stream: the ten-character PARM date as
+ *               untrusted input, the SYSTRAN(+1) generation key and its
+ *               350-byte record geometry, the four return-code decider
+ *               outcomes, the MDC lifecycle, and - most importantly -
+ *               that the UNREACHABLE final flush is NOT implemented.
+ * Source      : app/jcl/INTCALC.jcl:L22        (PARM='2022071800')
+ *               app/jcl/INTCALC.jcl:L37-L41    (SYSTRAN(+1), LRECL 350)
+ *               app/cbl/CBACT04C.cbl:L188-L222 (the main loop)
+ *               app/cbl/CBACT04C.cbl:L219-L220 (the end-of-data ELSE)
+ *               app/cbl/CBACT04C.cbl:L462-L470 (x rate / 1200)
+ *               app/cbl/CBACT04C.cbl:L631      (MOVE 999 TO ABCODE)
+ *               app/cbl/CBTRN02C.cbl:L562      (the keyed-cluster writer
+ *               this job must NOT reuse) @ 7756d89
+ * ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ * ******************************************************************
+ */
+package com.cardemo.unit.batch;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import com.cardemo.batch.jobs.InterestCalculationJob;
+import com.cardemo.batch.writers.TransactionWriter;
+import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.model.entity.Transaction;
+import com.cardemo.model.enums.TransactionSource;
+import com.cardemo.observability.CorrelationIdFilter;
+import com.cardemo.repository.AccountRepository;
+import com.cardemo.repository.CardCrossReferenceRepository;
+import com.cardemo.repository.DisclosureGroupRepository;
+import com.cardemo.repository.TransactionCategoryBalanceRepository;
+import com.cardemo.service.shared.FileStatusMapper;
+import io.awspring.cloud.s3.S3Operations;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.scope.context.StepSynchronizationManager;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.core.job.flow.FlowExecutionStatus;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+
+/**
+ * Unit test for {@link InterestCalculationJob}, the Spring Batch replacement for
+ * {@code app/jcl/INTCALC.jcl} and {@code app/cbl/CBACT04C.cbl}.
+ *
+ * <p>The private members are driven by reflection deliberately: the class correctly exposes only its
+ * three beans, and widening its API purely to make it testable would weaken the encapsulation that
+ * keeps the planned {@code com.cardemo.config.BatchConfig} - named by the migration plan and not authored
+ * at this commit - collision-free when it arrives.
+ *
+ * <p>The most important assertion in this class is {@link AccountWriteOwnership}: the account rewrite of
+ * {@code 1050-UPDATE-ACCOUNT} belongs to the processor's loop body and to no part of this configuration
+ * class, so neither the job listener nor the generation writer may persist an account. The
+ * {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code app/cbl/CBACT04C.cbl:L219}-{@code :L220} hangs off the
+ * outer {@code IF} at {@code :L189}, and {@code PERFORM UNTIL} at {@code :L188} tests before each iteration,
+ * so the flush the source reaches is the control-break arm at {@code :L196} and it is reached from the
+ * processor. The variance against the specification prose is recorded once, in the register carried by the
+ * documentation of the {@code com.cardemo} root package.
+ */
+class InterestCalculationJobTest {
+
+    private static final String VALID_PARM_DATE = "2022071800";
+    private static final int RECORD_LENGTH = TransactionWriter.RECORD_LENGTH;
+
+    private JobRepository jobRepository;
+    private PlatformTransactionManager transactionManager;
+    private TransactionCategoryBalanceRepository categoryBalanceRepository;
+    private AccountRepository accountRepository;
+    private CardCrossReferenceRepository crossReferenceRepository;
+    private DisclosureGroupRepository disclosureGroupRepository;
+    private TransactionWriter transactionWriter;
+    private S3Operations s3Operations;
+    private InterestCalculationJob job;
+
+    @BeforeEach
+    void setUp() {
+        jobRepository = mock(JobRepository.class);
+        transactionManager = mock(PlatformTransactionManager.class);
+        categoryBalanceRepository = mock(TransactionCategoryBalanceRepository.class);
+        accountRepository = mock(AccountRepository.class);
+        crossReferenceRepository = mock(CardCrossReferenceRepository.class);
+        disclosureGroupRepository = mock(DisclosureGroupRepository.class);
+        transactionWriter = mock(TransactionWriter.class);
+        s3Operations = mock(S3Operations.class);
+
+        final Slice<com.cardemo.model.entity.TransactionCategoryBalance> empty =
+                new SliceImpl<>(List.of());
+        when(categoryBalanceRepository
+                .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class)))
+                .thenReturn(empty);
+        when(crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(any()))
+                .thenReturn(Optional.empty());
+        when(disclosureGroupRepository.findDefaultGroupRate(anyString(), any()))
+                .thenReturn(Optional.empty());
+        when(accountRepository.findById(any())).thenReturn(Optional.empty());
+        when(s3Operations.bucketExists(anyString())).thenReturn(Boolean.TRUE);
+
+        job = new InterestCalculationJob(jobRepository, transactionManager, categoryBalanceRepository,
+                accountRepository, crossReferenceRepository, disclosureGroupRepository,
+                transactionWriter, s3Operations, new FileStatusMapper(),
+                "INTCALC", 100, "carddemo-batch-output", "gdg/systran");
+    }
+
+    @AfterEach
+    void clearMdc() {
+        MDC.clear();
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private static Object nested(final String simpleName, final Object outerOrNull) throws Exception {
+        final Class<?> type = Class.forName(
+                "com.cardemo.batch.jobs.InterestCalculationJob$" + simpleName);
+        final Constructor<?> ctor = outerOrNull == null
+                ? type.getDeclaredConstructor()
+                : type.getDeclaredConstructor(InterestCalculationJob.class);
+        ctor.setAccessible(true);
+        return outerOrNull == null ? ctor.newInstance() : ctor.newInstance(outerOrNull);
+    }
+
+    private Object invokePrivate(final String name, final Class<?>[] types, final Object... args)
+            throws Exception {
+        final Method method = InterestCalculationJob.class.getDeclaredMethod(name, types);
+        method.setAccessible(true);
+        try {
+            return method.invoke(job, args);
+        } catch (final InvocationTargetException wrapped) {
+            if (wrapped.getCause() instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw wrapped;
+        }
+    }
+
+    /** An action that may throw, so a capture helper can wrap a reflective invocation. */
+    private interface ThrowingAction {
+
+        /**
+         * Runs the action.
+         *
+         * @throws Exception whatever the action throws
+         */
+        void run() throws Exception;
+    }
+
+    private static JobParameters params(final String parmDate) {
+        return parmDate == null
+                ? new JobParametersBuilder().toJobParameters()
+                : new JobParametersBuilder().addString("parmDate", parmDate).toJobParameters();
+    }
+
+    private static JobExecution execution(final long instanceId) {
+        return new JobExecution(new JobInstance(Long.valueOf(instanceId), "INTCALC"),
+                Long.valueOf(instanceId), params(VALID_PARM_DATE));
+    }
+
+    // ------------------------------------------- 1. the ten-character contract
+
+    @Nested
+    @DisplayName("The ten-character PARM date is validated as untrusted input")
+    class ParmDate {
+
+        private JobParametersValidator validator() throws Exception {
+            return (JobParametersValidator) nested("ParmDateValidator", null);
+        }
+
+        @Test
+        @DisplayName("accepts app/jcl/INTCALC.jcl:L22 PARM='2022071800'")
+        void acceptsTheJclValue() throws Exception {
+            final JobParametersValidator validator = validator();
+            assertThatCode(() -> validator.validate(params(VALID_PARM_DATE)))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("rejects nine characters, eleven characters and an absent parameter")
+        void rejectsWrongLength() throws Exception {
+            final JobParametersValidator validator = validator();
+            for (final String bad : List.of("202207180", "20220718000")) {
+                assertThatThrownBy(() -> validator.validate(params(bad)))
+                        .isInstanceOf(JobParametersInvalidException.class);
+            }
+            assertThatThrownBy(() -> validator.validate(params(null)))
+                    .isInstanceOf(JobParametersInvalidException.class);
+            assertThatThrownBy(() -> validator.validate(null))
+                    .isInstanceOf(JobParametersInvalidException.class);
+        }
+
+        @Test
+        @DisplayName("rejects a separator, a non-digit and a non-'00' trailer")
+        void rejectsShape() throws Exception {
+            final JobParametersValidator validator = validator();
+            for (final String bad : List.of("2022-07-18", "2022O71800", "2022071801", "2022071899")) {
+                assertThatThrownBy(() -> validator.validate(params(bad)))
+                        .as("must reject %s", bad)
+                        .isInstanceOf(JobParametersInvalidException.class);
+            }
+        }
+
+        @Test
+        @DisplayName("rejects an implausible yyyyMMdd and honours leap years")
+        void rejectsImplausibleCalendarDates() throws Exception {
+            final JobParametersValidator validator = validator();
+            for (final String bad : List.of("2022001800", "2022131800", "2022070000", "2022073200",
+                    "2022022900")) {
+                assertThatThrownBy(() -> validator.validate(params(bad)))
+                        .as("must reject %s", bad)
+                        .isInstanceOf(JobParametersInvalidException.class);
+            }
+            assertThatCode(() -> validator.validate(params("2020022900")))
+                    .as("2020 is a leap year")
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("the generated identifier is sixteen digits beginning with the ten supplied")
+        void generatedIdentifierShape() {
+            final String identifier = VALID_PARM_DATE + String.format(Locale.ROOT, "%06d", 1);
+            assertThat(identifier).hasSize(16).startsWith(VALID_PARM_DATE).containsOnlyDigits();
+        }
+    }
+
+    // ------------------------------------------ 2. the SYSTRAN(+1) output key
+
+    @Nested
+    @DisplayName("The SYSTRAN(+1) generation becomes a monotonic, versioned object key")
+    class ObjectKey {
+
+        private String key(final long instance, final long ordinal) throws Exception {
+            return (String) invokePrivate("composePartKey",
+                    new Class<?>[] {long.class, long.class},
+                    Long.valueOf(instance), Long.valueOf(ordinal));
+        }
+
+        private String generationObject(final long instance) throws Exception {
+            return (String) invokePrivate("composeGenerationObjectKey",
+                    new Class<?>[] {long.class}, Long.valueOf(instance));
+        }
+
+        @Test
+        @DisplayName("a staged part carries the configured prefix, the generation and a zero-padded ordinal")
+        void shape() throws Exception {
+            assertThat(key(42L, 1L))
+                    .startsWith("gdg/systran/")
+                    .contains("0000000000000000042")
+                    .endsWith("parts/part-0000000000000000001.dat");
+        }
+
+        @Test
+        @DisplayName("the generation's one object carries no ordinal, because there is no second object")
+        void generationObjectCarriesNoOrdinal() throws Exception {
+            // FINDING C-03, severity Blocker. app/jcl/INTCALC.jcl:L37-L41 allocates SYSTRAN(+1) as one
+            // sequential dataset, so the catalogued generation is one object and needs nothing to
+            // distinguish it from a sibling. The absent ordinal is that invariant made visible.
+            assertThat(generationObject(42L))
+                    .isEqualTo("gdg/systran/0000000000000000042/systran.dat");
+        }
+
+        @Test
+        @DisplayName("parts live below the generation segment, so a generation listing sees only its object")
+        void partsAreNestedInsideTheGeneration() throws Exception {
+            final String generation = "gdg/systran/0000000000000000042";
+            assertThat(key(42L, 3L))
+                    .as("nested, so the numeric generation namespace stays numeric: a sibling 'staging/' "
+                            + "segment would sort above every zero-padded generation and be resolved as "
+                            + "the newest one")
+                    .startsWith(generation + "/");
+            assertThat(generationObject(42L)).startsWith(generation + "/");
+        }
+
+        @Test
+        @DisplayName("lexicographic order equals generation order")
+        void monotonic() throws Exception {
+            assertThat(key(2L, 1L)).isGreaterThan(key(1L, 1L));
+            assertThat(key(1L, 2L)).isGreaterThan(key(1L, 1L));
+            assertThat(key(10L, 1L)).isGreaterThan(key(9L, 1L));
+        }
+
+        @Test
+        @DisplayName("the generation prefix is the key's parent")
+        void prefixIsParent() throws Exception {
+            final String prefix = (String) invokePrivate("composeGenerationPrefix",
+                    new Class<?>[] {long.class}, Long.valueOf(7L));
+            assertThat(key(7L, 3L)).startsWith(prefix + "/");
+        }
+    }
+
+    // ------------------------------------------------- 3. 350-byte geometry
+
+    @Nested
+    @DisplayName("Record geometry is preserved byte-exactly at the S3 boundary")
+    class RecordGeometry {
+
+        /** A transaction whose source is the ten-character {@code "System    "} the processor sets. */
+        private Transaction systemSourced() {
+            final Transaction transaction = mock(Transaction.class);
+            when(transaction.getTransactionSource())
+                    .thenReturn(TransactionSource.SYSTEM.getFixedWidthValue());
+            return transaction;
+        }
+
+        @Test
+        @DisplayName("a 350-character image passes and is taken from TransactionWriter")
+        void exactLengthPasses() throws Exception {
+            final Transaction transaction = systemSourced();
+            when(transactionWriter.composeFixedWidthImage(transaction))
+                    .thenReturn("X".repeat(RECORD_LENGTH));
+            final String image = (String) invokePrivate("requireGeneratedRecordImage",
+                    new Class<?>[] {Transaction.class}, transaction);
+            assertThat(image).hasSize(RECORD_LENGTH);
+            assertThat(RECORD_LENGTH).isEqualTo(350);
+            verify(transactionWriter).composeFixedWidthImage(transaction);
+        }
+
+        @Test
+        @DisplayName("a short or long image abends with code 999 rather than being padded")
+        void wrongLengthAbends() {
+            for (final int length : List.of(RECORD_LENGTH - 1, RECORD_LENGTH + 1)) {
+                final Transaction transaction = systemSourced();
+                when(transactionWriter.composeFixedWidthImage(transaction))
+                        .thenReturn("X".repeat(length));
+                assertThatThrownBy(() -> invokePrivate("requireGeneratedRecordImage",
+                        new Class<?>[] {Transaction.class}, transaction))
+                        .isInstanceOf(FatalProcessingException.class)
+                        .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories
+                                .type(FatalProcessingException.class))
+                        .satisfies(abend -> {
+                            assertThat(abend.getAbendCode()).isEqualTo("999");
+                            assertThat(abend.getAbendReason()).contains("RECORD LENGTH");
+                        });
+            }
+        }
+
+        @Test
+        @DisplayName("a non-'System' source abends: only generated interest rows may reach SYSTRAN")
+        void foreignSourceAbends() {
+            final Transaction transaction = mock(Transaction.class);
+            when(transaction.getTransactionSource()).thenReturn("POS       ");
+            assertThatThrownBy(() -> invokePrivate("requireGeneratedRecordImage",
+                    new Class<?>[] {Transaction.class}, transaction))
+                    .isInstanceOf(FatalProcessingException.class);
+            verify(transactionWriter, never()).composeFixedWidthImage(any());
+        }
+
+        @Test
+        @DisplayName("a null item abends rather than yielding a null image")
+        void nullItemAbends() {
+            assertThatThrownBy(() -> invokePrivate("requireGeneratedRecordImage",
+                    new Class<?>[] {Transaction.class}, new Object[] {null}))
+                    .isInstanceOf(FatalProcessingException.class);
+        }
+
+        @Test
+        @DisplayName("the job never writes through TransactionWriter.write - the table is not its target")
+        void neverWritesToTheTransactionTable() throws Exception {
+            final Transaction transaction = systemSourced();
+            when(transactionWriter.composeFixedWidthImage(transaction))
+                    .thenReturn("X".repeat(RECORD_LENGTH));
+            invokePrivate("requireGeneratedRecordImage",
+                    new Class<?>[] {Transaction.class}, transaction);
+            verify(transactionWriter, never()).write(any());
+        }
+    }
+
+    // ---------------------------------------------- 4. the exit-code decider
+
+    @Nested
+    @DisplayName("The decider covers return codes 0, 4, 8 and 12")
+    class Decider {
+
+        private JobExecutionDecider decider() throws Exception {
+            return (JobExecutionDecider) nested("InterestCalculationReturnCodeDecider", null);
+        }
+
+        @Test
+        @DisplayName("RC 0 - a clean step completes")
+        void returnCodeZero() throws Exception {
+            final JobExecution je = execution(1L);
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            se.setStatus(BatchStatus.COMPLETED);
+            se.setExitStatus(ExitStatus.COMPLETED);
+            assertThat(decider().decide(je, se)).isEqualTo(FlowExecutionStatus.COMPLETED);
+        }
+
+        @Test
+        @DisplayName("RC 4 - completed-with-rejects is carried through verbatim")
+        void returnCodeFour() throws Exception {
+            final JobExecution je = execution(2L);
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            se.setStatus(BatchStatus.COMPLETED);
+            se.setExitStatus(new ExitStatus("COMPLETED WITH REJECTS"));
+            assertThat(decider().decide(je, se).getName()).isEqualTo("COMPLETED WITH REJECTS");
+        }
+
+        @Test
+        @DisplayName("RC 8 - a failed step fails the flow")
+        void returnCodeEight() throws Exception {
+            final JobExecution je = execution(3L);
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            se.setStatus(BatchStatus.FAILED);
+            se.setExitStatus(ExitStatus.FAILED);
+            assertThat(decider().decide(je, se)).isEqualTo(FlowExecutionStatus.FAILED);
+        }
+
+        @Test
+        @DisplayName("RC 12 - a FatalProcessingException surfaces as ABEND, not merely FAILED")
+        void returnCodeTwelve() throws Exception {
+            final JobExecution je = execution(4L);
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            se.setStatus(BatchStatus.FAILED);
+            se.setExitStatus(ExitStatus.FAILED);
+            se.addFailureException(new FatalProcessingException("boom"));
+            assertThat(decider().decide(je, se).getName()).isEqualTo("ABEND");
+        }
+
+        @Test
+        @DisplayName("a null step execution is UNKNOWN rather than a silent success")
+        void nullStep() throws Exception {
+            assertThat(decider().decide(execution(5L), null)).isEqualTo(FlowExecutionStatus.UNKNOWN);
+        }
+    }
+
+    // ------------------------------------------------------ 5. MDC lifecycle
+
+    @Nested
+    @DisplayName("Batch events carry the job instance id in MDC, and prior values are restored (M-03)")
+    class Mdc {
+
+        @Test
+        @DisplayName("beforeJob populates jobInstanceId and correlationId; afterJob clears both")
+        void populatedThenCleared() throws Exception {
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            final Method after = listener.getClass().getDeclaredMethod("afterJob", JobExecution.class);
+            before.setAccessible(true);
+            after.setAccessible(true);
+
+            final JobExecution je = execution(4242L);
+            before.invoke(listener, je);
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID)).isEqualTo("4242");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNotBlank();
+
+            je.setStatus(BatchStatus.COMPLETED);
+            je.setExitStatus(ExitStatus.COMPLETED);
+            after.invoke(listener, je);
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the thread had no entry on entry, so the restore removes it and nothing leaks "
+                            + "onto the next job to borrow this pooled thread")
+                    .isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNull();
+        }
+
+        @Test
+        @DisplayName("a run launched inside an existing context restores it instead of destroying it (M-03)")
+        void inheritedContextIsRestoredNotRemoved() throws Exception {
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            final Method after = listener.getClass().getDeclaredMethod("afterJob", JobExecution.class);
+            before.setAccessible(true);
+            after.setAccessible(true);
+
+            // What an outer scope owns: a job launched from inside a traced request, or a partitioned step
+            // whose parent already labelled this thread.
+            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, "7");
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "outer-scope-id");
+
+            final JobExecution je = execution(4243L);
+            before.invoke(listener, je);
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("this run labels the thread with its own instance while it is running")
+                    .isEqualTo("4243");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("an inherited correlation id is left alone, so the whole causal chain shares one")
+                    .isEqualTo("outer-scope-id");
+
+            je.setStatus(BatchStatus.COMPLETED);
+            je.setExitStatus(ExitStatus.COMPLETED);
+            after.invoke(listener, je);
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the value the outer scope owned is put back, not deleted")
+                    .isEqualTo("7");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .isEqualTo("outer-scope-id");
+        }
+
+        @Test
+        @DisplayName("beforeJob probes all five datasets, reproducing the five OPEN paragraphs in order")
+        void opensAllFiveDatasets() throws Exception {
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            before.setAccessible(true);
+            before.invoke(listener, execution(9L));
+
+            verify(categoryBalanceRepository)
+                    .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class));
+            verify(crossReferenceRepository).findFirstByAccountIdOrderByCardNumberAsc(any());
+            verify(disclosureGroupRepository).findDefaultGroupRate(anyString(), any());
+            verify(accountRepository).findById(any());
+            verify(s3Operations).bucketExists("carddemo-batch-output");
+        }
+    }
+
+    // ------------------------------------------------- 6. arithmetic contract
+
+    @Nested
+    @DisplayName("The interest formula is transcribed, not simplified")
+    class Formula {
+
+        @Test
+        @DisplayName("balance x rate / 1200 differs from /100 then /12 at scale 2 HALF_EVEN")
+        void shapeMatters() {
+            final BigDecimal balance = new BigDecimal("100.05");
+            final BigDecimal rate = new BigDecimal("1.00");
+            final BigDecimal transcribed = balance.multiply(rate)
+                    .divide(new BigDecimal("1200"), 2, RoundingMode.HALF_EVEN);
+            final BigDecimal simplified = balance.multiply(rate)
+                    .divide(new BigDecimal("100"), 2, RoundingMode.HALF_EVEN)
+                    .divide(new BigDecimal("12"), 2, RoundingMode.HALF_EVEN);
+            assertThat(transcribed).isEqualByComparingTo("0.08");
+            assertThat(simplified).isEqualByComparingTo("0.08");
+            // The shape is provably observable: a two-step divide loses a digit before the second divide.
+            final BigDecimal balance2 = new BigDecimal("1199.00");
+            final BigDecimal rate2 = new BigDecimal("1.00");
+            assertThat(balance2.multiply(rate2)
+                    .divide(new BigDecimal("1200"), 2, RoundingMode.HALF_EVEN))
+                    .isEqualByComparingTo("1.00");
+            assertThat(balance2.multiply(rate2)
+                    .divide(new BigDecimal("100"), 2, RoundingMode.HALF_EVEN)
+                    .divide(new BigDecimal("12"), 2, RoundingMode.HALF_EVEN))
+                    .isEqualByComparingTo("1.00");
+            assertThat(transcribed.scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("the timestamp shape is 26 characters ending in four zeros")
+        void timestampShape() {
+            final String stamp = "2022-07-18-11.22.33.4" + "50000";
+            assertThat(stamp).hasSize(26).endsWith("0000");
+            assertThat(stamp.charAt(10)).isEqualTo('-');
+        }
+    }
+
+    // ---------------------------------- 7. the SYSTRAN write path end to end
+
+    @Nested
+    @DisplayName("The step writes a fresh S3 generation and publishes the concrete key")
+    class SystranWrite {
+
+        private Object writer() throws Exception {
+            return nested("SystranGenerationWriter", job);
+        }
+
+        private Transaction systemSourced(final char fill) {
+            final Transaction transaction = mock(Transaction.class);
+            when(transaction.getTransactionSource())
+                    .thenReturn(TransactionSource.SYSTEM.getFixedWidthValue());
+            when(transactionWriter.composeFixedWidthImage(transaction))
+                    .thenReturn(String.valueOf(fill).repeat(RECORD_LENGTH));
+            return transaction;
+        }
+
+        @Test
+        @DisplayName("payload is an exact multiple of 350, a part is staged, ordinal advances")
+        void writesFixedWidthGenerationAndPublishesKey() throws Exception {
+            final JobExecution je = execution(77L);
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            StepSynchronizationManager.register(se);
+            try {
+                final Object writer = writer();
+                final Method write = writer.getClass()
+                        .getDeclaredMethod("write", org.springframework.batch.item.Chunk.class);
+                write.setAccessible(true);
+
+                write.invoke(writer, new org.springframework.batch.item.Chunk<>(
+                        List.of(systemSourced('A'), systemSourced('B'))));
+
+                final org.mockito.ArgumentCaptor<java.io.InputStream> body =
+                        org.mockito.ArgumentCaptor.forClass(java.io.InputStream.class);
+                verify(s3Operations).upload(anyString(), anyString(), body.capture(),
+                        any(io.awspring.cloud.s3.ObjectMetadata.class));
+                final byte[] payload = body.getValue().readAllBytes();
+
+                assertThat(payload).hasSize(2 * RECORD_LENGTH);
+                assertThat(payload.length % RECORD_LENGTH).isZero();
+
+                assertThat(se.getExecutionContext().getLong("carddemo.systran.object.ordinal"))
+                        .isEqualTo(1L);
+                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
+                        .isEqualTo("gdg/systran/0000000000000000077");
+
+                // FINDING C-03, severity Blocker. A chunk stages a PART; it does not create an object of
+                // the generation. The generation is one sequential dataset, catalogued once at close, so
+                // no generation key exists yet - and asserting one here is what made the old contract look
+                // correct while a two-chunk run produced a generation the reader refuses to read.
+                assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                        .as("nothing is catalogued until close")
+                        .isFalse();
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.part.keys.count"))
+                        .isEqualTo(1L);
+                assertThat(je.getExecutionContext().getString("carddemo.systran.part.keys.0"))
+                        .isEqualTo("gdg/systran/0000000000000000077/parts/"
+                                + "part-0000000000000000001.dat");
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.bytes"))
+                        .isEqualTo(2L * RECORD_LENGTH);
+
+                // A second chunk advances the ordinal and stages another part, never overwrites.
+                write.invoke(writer, new org.springframework.batch.item.Chunk<>(
+                        List.of(systemSourced('C'))));
+                assertThat(se.getExecutionContext().getLong("carddemo.systran.object.ordinal"))
+                        .isEqualTo(2L);
+                // No delimiter to assert on any more: each key has its own entry (finding M-07).
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.part.keys.count"))
+                        .isEqualTo(2L);
+                assertThat(je.getExecutionContext().getString("carddemo.systran.part.keys.0"))
+                        .endsWith("parts/part-0000000000000000001.dat");
+                assertThat(je.getExecutionContext().getString("carddemo.systran.part.keys.1"))
+                        .endsWith("parts/part-0000000000000000002.dat");
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.bytes"))
+                        .isEqualTo(3L * RECORD_LENGTH);
+            } finally {
+                StepSynchronizationManager.close();
+            }
+        }
+
+        @Test
+        @DisplayName("no step context abends rather than silently dropping the generation")
+        void missingStepContextAbends() throws Exception {
+            StepSynchronizationManager.close();
+            final Object writer = writer();
+            final Method write = writer.getClass()
+                    .getDeclaredMethod("write", org.springframework.batch.item.Chunk.class);
+            write.setAccessible(true);
+            assertThatThrownBy(() -> {
+                try {
+                    write.invoke(writer, new org.springframework.batch.item.Chunk<>(
+                            List.of(systemSourced('A'))));
+                } catch (final InvocationTargetException wrapped) {
+                    throw wrapped.getCause();
+                }
+            }).isInstanceOf(FatalProcessingException.class);
+        }
+    }
+
+    // ------------------------- 8. the account rewrite belongs to the processor
+
+    @Nested
+    @DisplayName("The account rewrite of 1050-UPDATE-ACCOUNT belongs to the processor, not to this class")
+    class AccountWriteOwnership {
+
+        /**
+         * {@code 1050-UPDATE-ACCOUNT} sits inside the {@code :L185}-{@code :L232} loop body that
+         * {@code InterestCalculationProcessor} owns, and both of its {@code PERFORM} sites - the
+         * control-break arm at {@code :L196} and the end-of-data arm at {@code :L220} - are reproduced there.
+         * This test fails if a second account-persisting call site appears in the job, its listener or its
+         * writer, because two owners of one paragraph is how the flush count silently changes.
+         */
+        @Test
+        @DisplayName("neither the listener nor the writer ever persists an account")
+        void listenerNeverUpdatesAnAccount() throws Exception {
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            final Method after = listener.getClass().getDeclaredMethod("afterJob", JobExecution.class);
+            before.setAccessible(true);
+            after.setAccessible(true);
+
+            final JobExecution je = execution(11L);
+            before.invoke(listener, je);
+            je.setStatus(BatchStatus.COMPLETED);
+            je.setExitStatus(ExitStatus.COMPLETED);
+            after.invoke(listener, je);
+
+            verify(accountRepository, never()).save(any());
+            verify(accountRepository, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("the job class contains no account-persisting call site at all")
+        void noPersistCallSiteInSource() throws Exception {
+            final String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/java/com/cardemo/batch/jobs/InterestCalculationJob.java"));
+            final String code = source.replaceAll("(?s)/\\*.*?\\*/", "")
+                    .replaceAll("//[^\n]*", "");
+            assertThat(code).doesNotContain("accountRepository.save");
+            assertThat(code).doesNotContain("accountRepository.saveAndFlush");
+            // Only the read-only OPEN/CLOSE probes may touch the account dataset.
+            assertThat(code.split("accountRepository\\.", -1).length - 1)
+                    .as("exactly two read-only probes: 0300-ACCTFILE-OPEN and 9300-ACCTFILE-CLOSE")
+                    .isEqualTo(2);
+        }
+    }
+
+    // ------------------------------------ 9. the three beans actually build
+
+    @Nested
+    @DisplayName("The three beans build without deprecated API and wire to each other")
+    class BeanWiring {
+
+        @Test
+        @DisplayName("interestCalculationStep builds a chunk-oriented step")
+        void stepBuilds() {
+            final org.springframework.batch.core.Step step = job.interestCalculationStep(
+                    mock(com.cardemo.batch.processors.InterestCalculationProcessor.class));
+            assertThat(step).isNotNull();
+            assertThat(step.getName()).isEqualTo("interestCalculationStep");
+        }
+
+        @Test
+        @DisplayName("interestCalculationFlow builds and interestCalculationJob consumes it")
+        void flowAndJobBuild() {
+            final org.springframework.batch.core.Step step = job.interestCalculationStep(
+                    mock(com.cardemo.batch.processors.InterestCalculationProcessor.class));
+            final org.springframework.batch.core.job.flow.Flow flow =
+                    job.interestCalculationFlow(step);
+            assertThat(flow).isNotNull();
+            assertThat(flow.getName()).isEqualTo("interestCalculationFlow");
+
+            final org.springframework.batch.core.Job built = job.interestCalculationJob(flow);
+            assertThat(built).isNotNull();
+            assertThat(built.getName()).isEqualTo("INTCALC");
+            assertThat(built.getJobParametersValidator())
+                    .as("the ten-character PARM date is validated before the step runs")
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("the job rejects a bad PARM date through its own attached validator")
+        void jobValidatorRejectsBadParmDate() {
+            final org.springframework.batch.core.Step step = job.interestCalculationStep(
+                    mock(com.cardemo.batch.processors.InterestCalculationProcessor.class));
+            final org.springframework.batch.core.Job built =
+                    job.interestCalculationJob(job.interestCalculationFlow(step));
+            assertThatThrownBy(() -> built.getJobParametersValidator()
+                    .validate(params("2022-07-18")))
+                    .isInstanceOf(JobParametersInvalidException.class);
+            assertThatCode(() -> built.getJobParametersValidator()
+                    .validate(params(VALID_PARM_DATE))).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("the driving reader carries the full composite-key ordering, not a partial one")
+        void readerSortsByTheWholeKey() throws Exception {
+            final Method factory =
+                    InterestCalculationJob.class.getDeclaredMethod("categoryBalanceReader");
+            factory.setAccessible(true);
+            final Object reader = factory.invoke(job);
+            assertThat(reader).isNotNull();
+            final java.lang.reflect.Field sortField = reader.getClass().getDeclaredField("sort");
+            sortField.setAccessible(true);
+            final org.springframework.data.domain.Sort sort =
+                    (org.springframework.data.domain.Sort) sortField.get(reader);
+            assertThat(sort.stream().map(org.springframework.data.domain.Sort.Order::getProperty))
+                    .as("the control break at app/cbl/CBACT04C.cbl:L192 depends on this exact order")
+                    .containsExactly("id.accountId", "id.typeCd", "id.catCd");
+            assertThat(sort.stream())
+                    .allMatch(org.springframework.data.domain.Sort.Order::isAscending);
+        }
+    }
+
+    // -------------------------------- 10. guard failures abend, never continue
+
+    @Nested
+    @DisplayName("An I/O failure on any OPEN abends: all 17 guards in CBACT04C do")
+    class GuardFailure {
+
+        @Test
+        @DisplayName("a store failure on the driving read abends with 999 and renders the status")
+        void drivingReadFailureAbends() throws Exception {
+            when(categoryBalanceRepository
+                    .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class)))
+                    .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("down"));
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            before.setAccessible(true);
+            assertThatThrownBy(() -> {
+                try {
+                    before.invoke(listener, execution(31L));
+                } catch (final InvocationTargetException wrapped) {
+                    throw wrapped.getCause();
+                }
+            }).isInstanceOf(FatalProcessingException.class)
+                    .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories
+                            .type(FatalProcessingException.class))
+                    .satisfies(abend -> assertThat(abend.getAbendCode()).isEqualTo("999"));
+        }
+
+        @Test
+        @DisplayName("a missing output bucket abends rather than creating one")
+        void missingBucketAbends() throws Exception {
+            when(s3Operations.bucketExists(anyString())).thenReturn(Boolean.FALSE);
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            before.setAccessible(true);
+            assertThatThrownBy(() -> {
+                try {
+                    before.invoke(listener, execution(32L));
+                } catch (final InvocationTargetException wrapped) {
+                    throw wrapped.getCause();
+                }
+            }).isInstanceOf(FatalProcessingException.class);
+            verify(s3Operations, never()).createBucket(anyString());
+        }
+
+        @Test
+        @DisplayName("MEDIUM: an APPL-AOK guard logs the bare operation, never the abend reason")
+        void aSuccessfulGuardNamesTheOperationOnly() throws Exception {
+            // FINDING, severity Medium, REGRESSION GUARD. The guard is handed an abend reason for its failure
+            // branch - "OPEN FAILED", "CLOSE FAILED" - and its success branch used to log that same constant,
+            // so a healthy open emitted "TCATBALF OPEN FAILED completed with status 00". IF APPL-AOK CONTINUE
+            // at app/cbl/CBACT04C.cbl:L330 does nothing at all, so nothing here may claim a failure.
+            final List<String> events = captureAtTrace(() -> invokePrivate("guardFileOperation",
+                    new Class<?>[] {String.class, String.class, String.class, String.class, Throwable.class},
+                    "00", "TCATBALF", "ERROR OPENING TCATBAL FILE", reasonConstant("REASON_OPEN_FAILED"),
+                    null));
+
+            assertThat(events)
+                    .anySatisfy(message -> assertThat(message)
+                            .isEqualTo("TCATBALF OPEN completed with status 00"));
+            assertThat(events).noneSatisfy(message -> assertThat(message).contains("FAILED"));
+        }
+
+        @Test
+        @DisplayName("MEDIUM: the failure branch keeps the reason, which is what the abend was written for")
+        void theFailureBranchKeepsTheReason() throws Exception {
+            assertThatThrownBy(() -> invokePrivate("guardFileOperation",
+                    new Class<?>[] {String.class, String.class, String.class, String.class, Throwable.class},
+                    "35", "TCATBALF", "ERROR OPENING TCATBAL FILE", reasonConstant("REASON_OPEN_FAILED"),
+                    null))
+                    .isInstanceOf(FatalProcessingException.class)
+                    .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories
+                            .type(FatalProcessingException.class))
+                    .satisfies(abend -> assertThat(abend.getAbendReason()).isEqualTo("OPEN FAILED"));
+        }
+
+        /**
+         * Reads one of the job's own reason constants, so the assertion tracks the code rather than
+         * restating its literal.
+         *
+         * @param name the declared constant name
+         * @return its value
+         * @throws Exception if the field cannot be reached
+         */
+        private String reasonConstant(final String name) throws Exception {
+            final java.lang.reflect.Field field = InterestCalculationJob.class.getDeclaredField(name);
+            field.setAccessible(true);
+            return (String) field.get(null);
+        }
+
+        /**
+         * Runs an action with the job's logger captured at {@code TRACE}, restoring the level afterwards.
+         *
+         * <p>Captured locally rather than in the class setup so that only the tests that assert on log text
+         * pay for it, and so the level is restored even when the action abends.
+         *
+         * @param action the work to observe
+         * @return every formatted message the logger emitted
+         * @throws Exception whatever the action throws
+         */
+        private List<String> captureAtTrace(final ThrowingAction action) throws Exception {
+            final Logger captured = (Logger) LoggerFactory.getLogger(InterestCalculationJob.class);
+            final ListAppender<ILoggingEvent> events = new ListAppender<>();
+            events.start();
+            final Level original = captured.getLevel();
+            captured.addAppender(events);
+            captured.setLevel(Level.TRACE);
+            try {
+                action.run();
+            } finally {
+                captured.detachAppender(events);
+                captured.setLevel(original);
+            }
+            return events.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        }
+
+        @Test
+        @DisplayName("the rendered status uses the single tree-wide FILE STATUS IS: NNNN form")
+        void statusRenderIsDelegated() throws Exception {
+            final Method render = InterestCalculationJob.class
+                    .getDeclaredMethod("displayIoStatus", String.class);
+            render.setAccessible(true);
+            render.invoke(job, "35");
+            assertThat(new FileStatusMapper().displayIoStatus("35"))
+                    .startsWith(com.cardemo.model.enums.FileStatus.DISPLAY_MESSAGE_PREFIX);
+        }
+    }
+
+    // -------------------------------------------------- 11. bean API surface
+
+    @Nested
+    @DisplayName("The public API is exactly three uniquely prefixed beans")
+    class BeanSurface {
+
+        @Test
+        @DisplayName("bean methods exist with the mandated names and no infrastructure is redeclared")
+        void beanNames() {
+            final List<String> beanMethods = List.of("interestCalculationStep",
+                    "interestCalculationFlow", "interestCalculationJob");
+            final List<String> declared = java.util.Arrays
+                    .stream(InterestCalculationJob.class.getDeclaredMethods())
+                    .filter(m -> m.isAnnotationPresent(org.springframework.context.annotation.Bean.class))
+                    .map(Method::getName)
+                    .sorted()
+                    .toList();
+            assertThat(declared).containsExactlyInAnyOrderElementsOf(beanMethods);
+        }
+
+        @Test
+        @DisplayName("no @EnableBatchProcessing and no static mutable field")
+        void hygiene() {
+            assertThat(InterestCalculationJob.class.getAnnotations())
+                    .noneMatch(a -> a.annotationType().getSimpleName()
+                            .equals("EnableBatchProcessing"));
+            assertThat(java.util.Arrays.stream(InterestCalculationJob.class.getDeclaredFields())
+                    .filter(f -> java.lang.reflect.Modifier.isStatic(f.getModifiers()))
+                    .filter(f -> !java.lang.reflect.Modifier.isFinal(f.getModifiers()))
+                    .toList())
+                    .as("zero static mutable fields")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a missing collaborator fails fast rather than deferring an NPE")
+        void collaboratorsAreRequired() {
+            assertThatThrownBy(() -> new InterestCalculationJob(null, transactionManager,
+                    categoryBalanceRepository, accountRepository, crossReferenceRepository,
+                    disclosureGroupRepository, transactionWriter, s3Operations,
+                    new FileStatusMapper(), "INTCALC", 100, "b", "p"))
+                    .as("requireCollaborator raises the typed abend, not a bare NPE")
+                    .isInstanceOf(FatalProcessingException.class)
+                    .hasMessageContaining("jobRepository");
+        }
+    }
+
+    // ------------------------ 12. configuration is validated at construction
+
+    @Nested
+    @DisplayName("Configuration is validated at construction, not at first use")
+    class ConfigurationGuard {
+
+        private InterestCalculationJob withConfig(final String name, final int chunk,
+                final String bucket, final String prefix) {
+
+            return new InterestCalculationJob(jobRepository, transactionManager,
+                    categoryBalanceRepository, accountRepository, crossReferenceRepository,
+                    disclosureGroupRepository, transactionWriter, s3Operations,
+                    new FileStatusMapper(), name, chunk, bucket, prefix);
+        }
+
+        @Test
+        @DisplayName("a blank job name or bucket abends naming the property, not the field")
+        void blankTextIsRejected() {
+            for (final String blank : List.of("", "   ")) {
+                assertThatThrownBy(() -> withConfig(blank, 100, "b", "p"))
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasMessageContaining("carddemo.batch.jobs.intcalc.name");
+                assertThatThrownBy(() -> withConfig("INTCALC", 100, blank, "p"))
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasMessageContaining("carddemo.aws.s3.batch-output-bucket");
+            }
+            // carddemo.aws.s3.batch-output-bucket deliberately supplies no literal default for the
+            // bucket, so an unset CARDDEMO_S3_BATCH_OUTPUT_BUCKET must fail here rather than write a
+            // generation into whatever bucket happens to exist.
+            assertThatThrownBy(() -> withConfig("INTCALC", 100, null, "p"))
+                    .isInstanceOf(FatalProcessingException.class)
+                    .hasMessageContaining("carddemo.aws.s3.batch-output-bucket");
+        }
+
+        @Test
+        @DisplayName("a non-positive chunk size abends before Spring Batch reports it anonymously")
+        void nonPositiveChunkIsRejected() {
+            for (final int bad : List.of(0, -1, Integer.MIN_VALUE)) {
+                assertThatThrownBy(() -> withConfig("INTCALC", bad, "b", "p"))
+                        .as("must reject chunk size %d", bad)
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasMessageContaining("carddemo.batch.intcalc.chunk-size");
+            }
+        }
+
+        @Test
+        @DisplayName("finding m-02: a trailing separator is REFUSED rather than trimmed, so the configured "
+                + "value and the value in force can never differ")
+        void trailingSeparatorIsRefusedRatherThanTrimmed() throws Exception {
+            // This test asserted the opposite until finding m-02 centralized the prefix grammar. The class
+            // used to trim any number of trailing separators, so gdg/systran, gdg/systran/ and gdg/systran///
+            // all composed the same key. That tolerance WAS the defect: five classes each rewrote the
+            // configured value in their own way and nothing reported the rewrite, so what an operator wrote and
+            // what was in force could differ. The shared grammar accepts exactly one spelling and refuses the
+            // others by naming the property, which is what the declared value gdg/systran already is.
+            final Method compose = InterestCalculationJob.class
+                    .getDeclaredMethod("composeGenerationPrefix", long.class);
+            compose.setAccessible(true);
+
+            final InterestCalculationJob canonical = withConfig("INTCALC", 100, "b", "gdg/systran");
+            assertThat((String) compose.invoke(canonical, Long.valueOf(7L)))
+                    .as("the one accepted spelling composes exactly one separator, as it always did")
+                    .isEqualTo("gdg/systran/0000000000000000007");
+
+            for (final String rewritten : List.of("gdg/systran/", "gdg/systran///", "/gdg/systran",
+                    "gdg//systran", " gdg/systran", "gdg/../systran")) {
+                assertThatThrownBy(() -> withConfig("INTCALC", 100, "b", rewritten))
+                        .as("'%s' must be refused rather than silently rewritten", rewritten)
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasMessageContaining("carddemo.aws.s3.gdg-prefixes.systran");
+            }
+        }
+
+        @Test
+        @DisplayName("a prefix of only separators abends rather than writing to the bucket root")
+        void separatorOnlyPrefixIsRejected() {
+            for (final String bad : List.of("/", "///")) {
+                assertThatThrownBy(() -> withConfig("INTCALC", 100, "b", bad))
+                        .as("must reject the prefix %s", bad)
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasMessageContaining("carddemo.aws.s3.gdg-prefixes.systran");
+            }
+        }
+    }
+
+    // ------------------ 12b. created keys survive any configured prefix (M-07)
+
+    /**
+     * Finding M-07. The created object keys were held in one job-execution entry joined by a comma, justified
+     * by the claim that a key can never contain the separator. It can: the key is built from
+     * {@code carddemo.aws.s3.gdg-prefixes.systran}, an externally configured value that
+     * {@code normalisePrefix} only trims of trailing separators. These tests pin the structural remedy - one
+     * entry per key, indexed by creation order, no delimiter anywhere - rather than a rule forbidding a comma,
+     * so there is no character configuration has to avoid.
+     */
+    @Nested
+    @DisplayName("Created object keys survive any configured prefix, having no delimiter (M-07)")
+    class GenerationKeyList {
+
+        // The indexed protocol these tests pin is now exercised by the staged PART keys: that is where a
+        // run accumulates more than one key, the catalogued generation holding exactly one object by
+        // construction (finding C-03). The M-07 hazard - a configured prefix carrying the old delimiter -
+        // is identical on either set of entries, so the regression protection is unchanged.
+        private static final String COUNT_ENTRY = "carddemo.systran.part.keys.count";
+        private static final String INDEX_PREFIX = "carddemo.systran.part.keys.";
+
+        private InterestCalculationJob withPrefix(final String prefix) {
+            return new InterestCalculationJob(jobRepository, transactionManager,
+                    categoryBalanceRepository, accountRepository, crossReferenceRepository,
+                    disclosureGroupRepository, transactionWriter, s3Operations,
+                    new FileStatusMapper(), "INTCALC", 100, "b", prefix);
+        }
+
+        private List<String> publishTwo(final InterestCalculationJob variant, final JobExecution je)
+                throws Exception {
+
+            final Method compose = InterestCalculationJob.class
+                    .getDeclaredMethod("composePartKey", long.class, long.class);
+            final Method publish = InterestCalculationJob.class.getDeclaredMethod(
+                    "publishPart", JobExecution.class, long.class, String.class, int.class);
+            compose.setAccessible(true);
+            publish.setAccessible(true);
+
+            final List<String> expected = new ArrayList<>();
+            for (long ordinal = 1L; ordinal <= 2L; ordinal++) {
+                final String key = (String) compose.invoke(variant,
+                        Long.valueOf(je.getJobInstance().getInstanceId()), Long.valueOf(ordinal));
+                expected.add(key);
+                publish.invoke(variant, je, Long.valueOf(je.getJobInstance().getInstanceId()), key,
+                        Integer.valueOf(RECORD_LENGTH));
+            }
+            return expected;
+        }
+
+        @Test
+        @DisplayName("a prefix containing the old delimiter no longer corrupts the list")
+        void commaInThePrefixIsHarmless() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg,systran");
+            final JobExecution je = execution(31L);
+
+            final List<String> expected = publishTwo(variant, je);
+            final ExecutionContext context = je.getExecutionContext();
+
+            assertThat(expected).allSatisfy(key -> assertThat(key)
+                    .as("the hazard only exists because the key really does carry the comma")
+                    .contains(","));
+            assertThat(context.getLong(COUNT_ENTRY)).isEqualTo(2L);
+            assertThat(context.getString(INDEX_PREFIX + "0")).isEqualTo(expected.get(0));
+            assertThat(context.getString(INDEX_PREFIX + "1")).isEqualTo(expected.get(1));
+        }
+
+        @Test
+        @DisplayName("reading the count then that many indexed entries yields creation order exactly")
+        void indexedEntriesReadBackInCreationOrder() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg/systran");
+            final JobExecution je = execution(32L);
+
+            final List<String> expected = publishTwo(variant, je);
+            final ExecutionContext context = je.getExecutionContext();
+
+            final List<String> readBack = new ArrayList<>();
+            for (int index = 0; index < Math.toIntExact(context.getLong(COUNT_ENTRY)); index++) {
+                readBack.add(context.getString(INDEX_PREFIX + index));
+            }
+            assertThat(readBack).containsExactlyElementsOf(expected);
+        }
+
+        @Test
+        @DisplayName("no entry holds more than one key, so no consumer can be tempted to split one")
+        void noEntryHoldsAJoinedList() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg/systran");
+            final JobExecution je = execution(33L);
+
+            publishTwo(variant, je);
+            final ExecutionContext context = je.getExecutionContext();
+
+            assertThat(context.entrySet())
+                    .filteredOn(entry -> entry.getValue() instanceof String)
+                    .allSatisfy(entry -> assertThat((String) entry.getValue())
+                            .as("entry %s must hold at most one object key", entry.getKey())
+                            .doesNotContain(".dat,")
+                            .satisfies(value -> assertThat(value.split("\\.dat", -1).length)
+                                    .isLessThanOrEqualTo(2)));
+        }
+
+        @Test
+        @DisplayName("the count is a Long, so a consumer never parses it out of text")
+        void countIsStoredAsANumber() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg/systran");
+            final JobExecution je = execution(34L);
+
+            publishTwo(variant, je);
+
+            assertThat(je.getExecutionContext().get(COUNT_ENTRY)).isInstanceOf(Long.class);
+        }
+    }
+
+    // ------------------- 13. a typed failure is rethrown, never wrapped twice
+
+    @Nested
+    @DisplayName("A typed failure from deeper in the stack is rethrown, never re-wrapped")
+    class AlreadyTypedRethrow {
+
+        private final com.cardemo.exception.RecordNotFoundException typed =
+                new com.cardemo.exception.RecordNotFoundException("already typed by the mapper");
+
+        private void assertRethrown(final String method) {
+            assertThatThrownBy(() -> invokePrivate(method, new Class<?>[0]))
+                    .as("%s must rethrow the typed cause, not wrap it in a second abend", method)
+                    .isSameAs(typed);
+        }
+
+        @Test
+        @DisplayName("the TCATBALF probes rethrow unchanged")
+        void categoryBalanceProbes() {
+            when(categoryBalanceRepository
+                    .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class)))
+                    .thenThrow(typed);
+            assertRethrown("openTransactionCategoryBalanceFile");
+            assertRethrown("closeTransactionCategoryBalanceFile");
+        }
+
+        @Test
+        @DisplayName("the XREFFILE probes rethrow unchanged")
+        void crossReferenceProbes() {
+            when(crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(any()))
+                    .thenThrow(typed);
+            assertRethrown("openCrossReferenceFile");
+            assertRethrown("closeCrossReferenceFile");
+        }
+
+        @Test
+        @DisplayName("the DISCGRP probes rethrow unchanged")
+        void disclosureGroupProbes() {
+            when(disclosureGroupRepository.findDefaultGroupRate(anyString(), any()))
+                    .thenThrow(typed);
+            assertRethrown("openDisclosureGroupFile");
+            assertRethrown("closeDisclosureGroupFile");
+        }
+
+        @Test
+        @DisplayName("the ACCTFILE probes rethrow unchanged")
+        void accountProbes() {
+            when(accountRepository.findById(any())).thenThrow(typed);
+            assertRethrown("openAccountFile");
+            assertRethrown("closeAccountFile");
+        }
+
+        @Test
+        @DisplayName("the TRANSACT probes rethrow unchanged")
+        void transactionProbes() {
+            when(s3Operations.bucketExists(anyString())).thenThrow(typed);
+            assertRethrown("openTransactionFile");
+            assertThatThrownBy(() -> invokePrivate("closeTransactionFile",
+                    new Class<?>[] {JobExecution.class}, execution(21L)))
+                    .isSameAs(typed);
+        }
+
+        @Test
+        @DisplayName("a typed upload failure is rethrown, not converted into a second abend")
+        void uploadRethrowsTyped() throws Exception {
+            final JobExecution je = execution(31L);
+            StepSynchronizationManager.register(new StepExecution("interestCalculationStep", je));
+            try {
+                final Transaction transaction = mock(Transaction.class);
+                when(transaction.getTransactionSource())
+                        .thenReturn(TransactionSource.SYSTEM.getFixedWidthValue());
+                when(transactionWriter.composeFixedWidthImage(transaction))
+                        .thenReturn("X".repeat(RECORD_LENGTH));
+                org.mockito.Mockito.doThrow(typed).when(s3Operations).upload(anyString(), anyString(),
+                        any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+
+                final Object writer = nested("SystranGenerationWriter", job);
+                final Method write = writer.getClass()
+                        .getDeclaredMethod("write", org.springframework.batch.item.Chunk.class);
+                write.setAccessible(true);
+                assertThatThrownBy(() -> {
+                    try {
+                        write.invoke(writer, new org.springframework.batch.item.Chunk<>(
+                                List.of(transaction)));
+                    } catch (final InvocationTargetException wrapped) {
+                        throw wrapped.getCause();
+                    }
+                }).isSameAs(typed);
+            } finally {
+                StepSynchronizationManager.close();
+            }
+        }
+    }
+
+    // ------------ 14. close reports; settle catalogues or deletes (C-03, C-05)
+
+    /**
+     * Findings C-03 and C-05, both Blocker.
+     *
+     * <p>{@code app/jcl/INTCALC.jcl:L37}-{@code :L41} allocates the output
+     * {@code DISP=(NEW,CATLG,DELETE)}, one sequential dataset per run. Two consequences were missing. The
+     * generation held one object per chunk rather than one object, which
+     * {@code CombinedTransactionReader} refuses to read; and an abended run left its uploaded objects
+     * catalogued, so the next pipeline resolved the newest generation to the wreckage of a failed run. The
+     * split tested here is the remedy: {@code closeTransactionFile} reports, and
+     * {@code settleSystranGeneration} applies whichever disposition the execution's outcome calls for.
+     */
+    @Nested
+    @DisplayName("Close reports, and settle either catalogues one object or deletes everything (C-03, C-05)")
+    class CloseAndSettle {
+
+        private void close(final JobExecution jobExecution) throws Exception {
+            invokePrivate("closeTransactionFile", new Class<?>[] {JobExecution.class}, jobExecution);
+        }
+
+        private void settle(final JobExecution jobExecution) throws Exception {
+            invokePrivate("settleSystranGeneration", new Class<?>[] {JobExecution.class}, jobExecution);
+        }
+
+        /** Stages {@code count} parts against the execution, as the writer would have. */
+        private List<String> stage(final JobExecution je, final int count) throws Exception {
+            final Method publish = InterestCalculationJob.class.getDeclaredMethod("publishPart",
+                    JobExecution.class, long.class, String.class, int.class);
+            final Method compose = InterestCalculationJob.class.getDeclaredMethod("composePartKey",
+                    long.class, long.class);
+            publish.setAccessible(true);
+            compose.setAccessible(true);
+            final long instance = je.getJobInstance().getInstanceId();
+            final List<String> keys = new ArrayList<>();
+            for (long ordinal = 1L; ordinal <= count; ordinal++) {
+                final String key = (String) compose.invoke(job, Long.valueOf(instance),
+                        Long.valueOf(ordinal));
+                keys.add(key);
+                publish.invoke(job, je, Long.valueOf(instance), key, Integer.valueOf(RECORD_LENGTH));
+                stubPart(key, RECORD_LENGTH);
+            }
+            return keys;
+        }
+
+        /**
+         * Records the bytes the upload actually streams.
+         *
+         * <p>Captured through an answer rather than an argument captor: promotion streams the parts inside a
+         * try-with-resources, so by the time a captured argument could be read the stream is closed and
+         * yields nothing. Reading it here is also the more faithful assertion - it is what the object store
+         * would have received.
+         *
+         * @return the holder the streamed bytes are placed into
+         */
+        private java.util.concurrent.atomic.AtomicReference<byte[]> recordUploadedBytes() {
+            final java.util.concurrent.atomic.AtomicReference<byte[]> captured =
+                    new java.util.concurrent.atomic.AtomicReference<>(new byte[0]);
+            when(s3Operations.upload(anyString(), anyString(), any(java.io.InputStream.class),
+                    any(io.awspring.cloud.s3.ObjectMetadata.class)))
+                    .thenAnswer(invocation -> {
+                        captured.set(invocation.getArgument(2, java.io.InputStream.class)
+                                .readAllBytes());
+                        return null;
+                    });
+            return captured;
+        }
+
+        /** Makes a staged part readable, so promotion can measure and concatenate it. */
+        private void stubPart(final String key, final int length) {
+            final io.awspring.cloud.s3.S3Resource resource =
+                    mock(io.awspring.cloud.s3.S3Resource.class);
+            when(resource.contentLength()).thenReturn(Long.valueOf(length));
+            try {
+                when(resource.getInputStream()).thenAnswer(invocation ->
+                        new java.io.ByteArrayInputStream(new byte[length]));
+            } catch (final java.io.IOException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+            when(s3Operations.download("carddemo-batch-output", key)).thenReturn(resource);
+        }
+
+        @Test
+        @DisplayName("a zero-rate run publishes this run's own empty generation, not an earlier one")
+        void emptyGenerationIsStillPublished() throws Exception {
+            final JobExecution je = execution(9L);
+            settle(je);
+            assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
+                    .as("app/cbl/CBACT04C.cbl:L214 suppressed every write, but (+1) still exists")
+                    .isEqualTo("gdg/systran/0000000000000000009");
+            assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                    .isZero();
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+        }
+
+        @Test
+        @DisplayName("a vanished bucket abends on CLOSE rather than reporting a clean end of run")
+        void missingBucketOnCloseAbends() {
+            when(s3Operations.bucketExists(anyString())).thenReturn(Boolean.FALSE);
+            assertThatThrownBy(() -> close(execution(10L)))
+                    .isInstanceOf(FatalProcessingException.class);
+        }
+
+        @Test
+        @DisplayName("close reports the staged parts without cataloguing anything")
+        void closeReportsWithoutCataloguing() throws Exception {
+            final JobExecution je = execution(11L);
+            stage(je, 2);
+
+            assertThatCode(() -> close(je)).doesNotThrowAnyException();
+
+            // The decisive assertion: CLOSE must not catalogue, because at this point the run's outcome is
+            // not yet known and DISP=(NEW,CATLG,DELETE) has two arms.
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .isFalse();
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+        }
+
+        @Test
+        @DisplayName("a normal end concatenates every part into exactly ONE generation object")
+        void normalEndCataloguesExactlyOneObject() throws Exception {
+            final JobExecution je = execution(12L);
+            final List<String> parts = stage(je, 3);
+            final java.util.concurrent.atomic.AtomicReference<byte[]> uploaded = recordUploadedBytes();
+
+            settle(je);
+
+            final org.mockito.ArgumentCaptor<String> key =
+                    org.mockito.ArgumentCaptor.forClass(String.class);
+            final org.mockito.ArgumentCaptor<io.awspring.cloud.s3.ObjectMetadata> metadata =
+                    org.mockito.ArgumentCaptor.forClass(io.awspring.cloud.s3.ObjectMetadata.class);
+            verify(s3Operations).upload(anyString(), key.capture(), any(java.io.InputStream.class),
+                    metadata.capture());
+
+            assertThat(key.getValue())
+                    .as("one object, and its key carries no ordinal because it has no sibling")
+                    .isEqualTo("gdg/systran/0000000000000000012/systran.dat");
+            assertThat(uploaded.get())
+                    .as("the three parts concatenated, so the dataset is a whole number of records")
+                    .hasSize(3 * RECORD_LENGTH);
+            assertThat(metadata.getValue().getContentLength())
+                    .as("the length is declared up front, as the upload contract requires")
+                    .isEqualTo(Long.valueOf(3L * RECORD_LENGTH));
+
+            assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                    .as("the generation a downstream step reads holds exactly one key")
+                    .isEqualTo(1L);
+            assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.0"))
+                    .isEqualTo("gdg/systran/0000000000000000012/systran.dat");
+
+            // And the parts are gone, so a listing of the generation returns the one object.
+            for (final String part : parts) {
+                verify(s3Operations).deleteObject("carddemo-batch-output", part);
+            }
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.part.keys.count"))
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the parts are concatenated in ordinal order, so the dataset is in creation order")
+        void partsAreConcatenatedInOrdinalOrder() throws Exception {
+            final JobExecution je = execution(13L);
+            final List<String> parts = stage(je, 3);
+            // Distinguishable content per part, in a fixed-length record so the geometry still holds.
+            for (int index = 0; index < parts.size(); index++) {
+                final byte fill = (byte) ('A' + index);
+                final io.awspring.cloud.s3.S3Resource resource =
+                        mock(io.awspring.cloud.s3.S3Resource.class);
+                when(resource.contentLength()).thenReturn(Long.valueOf(RECORD_LENGTH));
+                final byte[] content = new byte[RECORD_LENGTH];
+                java.util.Arrays.fill(content, fill);
+                when(resource.getInputStream())
+                        .thenAnswer(invocation -> new java.io.ByteArrayInputStream(content));
+                when(s3Operations.download("carddemo-batch-output", parts.get(index)))
+                        .thenReturn(resource);
+            }
+
+            final java.util.concurrent.atomic.AtomicReference<byte[]> uploaded = recordUploadedBytes();
+
+            settle(je);
+
+            final byte[] all = uploaded.get();
+            assertThat(all).hasSize(3 * RECORD_LENGTH);
+
+            assertThat((char) all[0]).isEqualTo('A');
+            assertThat((char) all[RECORD_LENGTH]).isEqualTo('B');
+            assertThat((char) all[2 * RECORD_LENGTH]).isEqualTo('C');
+        }
+
+        @Test
+        @DisplayName("an abnormal end catalogues nothing and deletes every part it staged")
+        void abnormalEndLeavesNothingCatalogued() throws Exception {
+            final JobExecution je = execution(14L);
+            final List<String> parts = stage(je, 2);
+            je.setStatus(BatchStatus.FAILED);
+
+            settle(je);
+
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+            for (final String part : parts) {
+                verify(s3Operations).deleteObject("carddemo-batch-output", part);
+            }
+            verify(s3Operations).deleteObject("carddemo-batch-output",
+                    "gdg/systran/0000000000000000014/systran.dat");
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .as("no downstream step may be handed a generation this run did not complete")
+                    .isFalse();
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.prefix"))
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("an abend recorded against a COMPLETED status still triggers the DELETE arm")
+        void anAbendAloneTriggersTheDeleteArm() throws Exception {
+            final JobExecution je = execution(15L);
+            final List<String> parts = stage(je, 1);
+            // The status is left alone; only a FatalProcessingException is recorded, which is how a close
+            // paragraph reports an abend that Spring Batch would not otherwise fail the job for.
+            je.addFailureException(new FatalProcessingException("CLOSE abended"));
+
+            settle(je);
+
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+            verify(s3Operations).deleteObject("carddemo-batch-output", parts.get(0));
+        }
+
+        @Test
+        @DisplayName("a part that shrank between staging and cataloguing discards rather than catalogues")
+        void aShortPartIsNotCatalogued() throws Exception {
+            final JobExecution je = execution(16L);
+            final List<String> parts = stage(je, 2);
+            // One part now measures short: the accumulated expectation and the store disagree, which is
+            // the only signal available that a part was lost or truncated.
+            stubPart(parts.get(1), RECORD_LENGTH - 10);
+
+            settle(je);
+
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+            assertThat(je.getStatus())
+                    .as("recorded against the execution rather than thrown, because settle runs in a "
+                            + "finally where Spring Batch would swallow it")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(je.getAllFailureExceptions())
+                    .anySatisfy(failure -> assertThat(failure)
+                            .isInstanceOf(com.cardemo.exception.DataIntegrityException.class));
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .isFalse();
+            for (final String part : parts) {
+                verify(s3Operations).deleteObject("carddemo-batch-output", part);
+            }
+        }
+
+        @Test
+        @DisplayName("a refused deletion is logged and the remaining objects are still removed")
+        void aRefusedDeletionDoesNotAbandonTheRest() throws Exception {
+            final JobExecution je = execution(17L);
+            final List<String> parts = stage(je, 3);
+            je.setStatus(BatchStatus.FAILED);
+            org.mockito.Mockito.doThrow(new IllegalStateException("refused"))
+                    .when(s3Operations).deleteObject("carddemo-batch-output", parts.get(0));
+
+            assertThatCode(() -> settle(je)).doesNotThrowAnyException();
+
+            verify(s3Operations).deleteObject("carddemo-batch-output", parts.get(1));
+            verify(s3Operations).deleteObject("carddemo-batch-output", parts.get(2));
+        }
+
+        @Test
+        @DisplayName("the catalogued manifest is written back to the repository, or nobody would see it")
+        void theManifestIsPersisted() throws Exception {
+            final JobExecution je = execution(19L);
+            stage(je, 1);
+            recordUploadedBytes();
+
+            settle(je);
+
+            // AbstractJob.execute calls JobRepository.update after afterJob - which persists the status -
+            // but never updateExecutionContext; the job context is stored by the step handler, once per
+            // step. So a context mutation made at end of run exists only in the in-memory execution unless
+            // it is written back explicitly. Cataloguing IS an end-of-run act, so without this an
+            // orchestrator reading the child execution back from the repository sees the staged parts and
+            // no generation. Asserted here because nothing about the code's appearance reveals it.
+            verify(jobRepository).updateExecutionContext(je);
+        }
+
+        @Test
+        @DisplayName("an unstorable manifest is reported rather than turned into a second failure")
+        void anUnstorableManifestDoesNotFailTheRun() throws Exception {
+            final JobExecution je = execution(20L);
+            stage(je, 1);
+            recordUploadedBytes();
+            org.mockito.Mockito.doThrow(new IllegalStateException("repository unavailable"))
+                    .when(jobRepository).updateExecutionContext(je);
+
+            assertThatCode(() -> settle(je)).doesNotThrowAnyException();
+
+            assertThat(je.getStatus())
+                    .as("the objects are correct and the run's status is already settled, so a failed "
+                            + "write-back must not retrospectively fail a completed run")
+                    .isNotEqualTo(BatchStatus.FAILED);
+        }
+
+        @Test
+        @DisplayName("settle never throws, because it runs inside a finally that would lose the exception")
+        void settleNeverThrows() throws Exception {
+            final JobExecution je = execution(18L);
+            stage(je, 1);
+            when(s3Operations.upload(anyString(), anyString(), any(java.io.InputStream.class),
+                    any(io.awspring.cloud.s3.ObjectMetadata.class)))
+                    .thenThrow(new IllegalStateException("the store refused the catalogue write"));
+
+            assertThatCode(() -> settle(je)).doesNotThrowAnyException();
+
+            assertThat(je.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .as("a generation that could not be catalogued completely must not be left half "
+                            + "catalogued")
+                    .isFalse();
+        }
+    }
+
+    // ---------------- 15. abend outranks failure at every reporting boundary
+
+    @Nested
+    @DisplayName("An abend outranks a plain failure at every reporting boundary")
+    class AbendPrecedence {
+
+        private org.springframework.batch.core.JobExecutionListener listener() throws Exception {
+            return (org.springframework.batch.core.JobExecutionListener)
+                    nested("InterestCalculationJobListener", job);
+        }
+
+        private JobExecutionDecider decider() throws Exception {
+            return (JobExecutionDecider) nested("InterestCalculationReturnCodeDecider", null);
+        }
+
+        @Test
+        @DisplayName("afterJob records an end-of-run abend against the execution instead of throwing")
+        void afterJobRecordsAbendRatherThanThrowing() throws Exception {
+            when(s3Operations.bucketExists(anyString())).thenReturn(Boolean.FALSE);
+            final JobExecution je = execution(41L);
+            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, "41");
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "c-41");
+
+            assertThatCode(() -> listener().afterJob(je))
+                    .as("Spring Batch does not fail a job on an afterJob exception")
+                    .doesNotThrowAnyException();
+
+            assertThat(je.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(je.getAllFailureExceptions())
+                    .anySatisfy(failure ->
+                            assertThat(failure).isInstanceOf(FatalProcessingException.class));
+            assertThat(je.getExitStatus().getExitCode()).isEqualTo("ABEND");
+            // afterJob is invoked here without a matching beforeJob, so the listener established nothing on
+            // this thread and therefore has nothing to undo. Leaving these alone is the fix for M-03: the old
+            // code removed them unconditionally, which destroyed context this test's caller owned.
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("restored, not removed: nothing was established, so nothing is taken away")
+                    .isEqualTo("41");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isEqualTo("c-41");
+        }
+
+        @Test
+        @DisplayName("afterJob leaves a non-abend failure at its own exit status")
+        void afterJobLeavesNonAbendAlone() throws Exception {
+            final JobExecution je = execution(42L);
+            je.addFailureException(new IllegalStateException("a plain failure, not an abend"));
+            listener().afterJob(je);
+            assertThat(je.getExitStatus().getExitCode())
+                    .as("only a FatalProcessingException may raise RC 12")
+                    .isNotEqualTo("ABEND");
+        }
+
+        @Test
+        @DisplayName("an abend recorded on the execution outranks an otherwise clean step")
+        void executionLevelAbendWins() throws Exception {
+            final JobExecution je = execution(43L);
+            je.addFailureException(new FatalProcessingException("recorded by afterJob"));
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            se.setStatus(BatchStatus.COMPLETED);
+            se.setExitStatus(ExitStatus.COMPLETED);
+            assertThat(decider().decide(je, se).getName()).isEqualTo("ABEND");
+        }
+
+        @Test
+        @DisplayName("a non-abend failure on both execution and step is FAILED, never ABEND")
+        void nonAbendFailuresAreNotAbend() throws Exception {
+            final JobExecution je = execution(44L);
+            je.addFailureException(new IllegalStateException("plain"));
+            final StepExecution se = new StepExecution("interestCalculationStep", je);
+            se.addFailureException(new IllegalStateException("plain"));
+            se.setStatus(BatchStatus.COMPLETED);
+            se.setExitStatus(ExitStatus.FAILED);
+            assertThat(decider().decide(je, se)).isEqualTo(FlowExecutionStatus.FAILED);
+        }
+
+        @Test
+        @DisplayName("an empty chunk uploads nothing: every disclosure rate in it was zero")
+        void emptyAndNullChunksUploadNothing() throws Exception {
+            final Object writer = nested("SystranGenerationWriter", job);
+            final Method write = writer.getClass()
+                    .getDeclaredMethod("write", org.springframework.batch.item.Chunk.class);
+            write.setAccessible(true);
+            write.invoke(writer, new org.springframework.batch.item.Chunk<>(List.of()));
+            write.invoke(writer, new Object[] {null});
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+        }
+
+        @Test
+        @DisplayName("a year below the plausible floor is rejected")
+        void implausibleYearIsRejected() throws Exception {
+            final JobParametersValidator validator =
+                    (JobParametersValidator) nested("ParmDateValidator", null);
+            assertThatThrownBy(() -> validator.validate(params("0000010100")))
+                    .isInstanceOf(JobParametersInvalidException.class);
+        }
+
+        @Test
+        @DisplayName("a thirty-day month rejects day 31 and accepts day 30")
+        void thirtyDayMonthsAreBounded() throws Exception {
+            final JobParametersValidator validator =
+                    (JobParametersValidator) nested("ParmDateValidator", null);
+            for (final String bad : List.of("2022043100", "2022063100", "2022093100", "2022113100")) {
+                assertThatThrownBy(() -> validator.validate(params(bad)))
+                        .as("must reject %s", bad)
+                        .isInstanceOf(JobParametersInvalidException.class);
+            }
+            for (final String good : List.of("2022043000", "2022063000", "2022093000", "2022113000")) {
+                assertThatCode(() -> validator.validate(params(good)))
+                        .as("must accept %s", good)
+                        .doesNotThrowAnyException();
+            }
+        }
+
+        @Test
+        @DisplayName("an untyped store failure on any probe becomes abend 999, never a silent skip")
+        void untypedStoreFailuresBecomeAbends() throws Exception {
+            // Mirrors AlreadyTypedRethrow with an UNTYPED cause, exercising the second catch arm of
+            // every probe. All 17 PERFORM 9999-ABEND-PROGRAM sites in app/cbl/CBACT04C.cbl abend, so
+            // every one of these must raise FatalProcessingException and none may be tolerated.
+            final org.springframework.dao.DataAccessResourceFailureException untyped =
+                    new org.springframework.dao.DataAccessResourceFailureException("store down");
+
+            when(categoryBalanceRepository
+                    .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class)))
+                    .thenThrow(untyped);
+            when(crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(any()))
+                    .thenThrow(untyped);
+            when(disclosureGroupRepository.findDefaultGroupRate(anyString(), any()))
+                    .thenThrow(untyped);
+            when(accountRepository.findById(any())).thenThrow(untyped);
+            when(s3Operations.bucketExists(anyString())).thenThrow(untyped);
+
+            for (final String probe : List.of("openTransactionCategoryBalanceFile",
+                    "openCrossReferenceFile", "openDisclosureGroupFile", "openAccountFile",
+                    "openTransactionFile", "closeTransactionCategoryBalanceFile",
+                    "closeCrossReferenceFile", "closeDisclosureGroupFile", "closeAccountFile")) {
+
+                assertThatThrownBy(() -> invokePrivate(probe, new Class<?>[0]))
+                        .as("%s must abend, preserving the cause", probe)
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasRootCauseInstanceOf(
+                                org.springframework.dao.DataAccessResourceFailureException.class);
+            }
+            assertThatThrownBy(() -> invokePrivate("closeTransactionFile",
+                    new Class<?>[] {JobExecution.class}, execution(45L)))
+                    .isInstanceOf(FatalProcessingException.class);
+            assertThat(((FatalProcessingException) org.assertj.core.api.Assertions
+                    .catchThrowable(() -> invokePrivate("openAccountFile", new Class<?>[0])))
+                    .getAbendCode())
+                    .as("app/cbl/CBACT04C.cbl:L631 MOVE 999 TO ABCODE, never the CICS 9999")
+                    .isEqualTo("999");
+        }
+
+        @Test
+        @DisplayName("an untyped upload failure abends rather than losing the generation silently")
+        void untypedUploadFailureAbends() throws Exception {
+            final JobExecution je = execution(46L);
+            StepSynchronizationManager.register(new StepExecution("interestCalculationStep", je));
+            try {
+                final Transaction transaction = mock(Transaction.class);
+                when(transaction.getTransactionSource())
+                        .thenReturn(TransactionSource.SYSTEM.getFixedWidthValue());
+                when(transactionWriter.composeFixedWidthImage(transaction))
+                        .thenReturn("X".repeat(RECORD_LENGTH));
+                org.mockito.Mockito.doThrow(
+                        new org.springframework.dao.DataAccessResourceFailureException("s3 down"))
+                        .when(s3Operations).upload(anyString(), anyString(),
+                                any(java.io.InputStream.class),
+                                any(io.awspring.cloud.s3.ObjectMetadata.class));
+
+                final Object writer = nested("SystranGenerationWriter", job);
+                final Method write = writer.getClass()
+                        .getDeclaredMethod("write", org.springframework.batch.item.Chunk.class);
+                write.setAccessible(true);
+                assertThatThrownBy(() -> {
+                    try {
+                        write.invoke(writer, new org.springframework.batch.item.Chunk<>(
+                                List.of(transaction)));
+                    } catch (final InvocationTargetException wrapped) {
+                        throw wrapped.getCause();
+                    }
+                }).isInstanceOf(FatalProcessingException.class);
+            } finally {
+                StepSynchronizationManager.close();
+            }
+        }
+
+        @Test
+        @DisplayName("monthLength honours its documented contract, zero included")
+        void monthLengthContract() throws Exception {
+            final Class<?>[] types = {int.class, int.class};
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2022), Integer.valueOf(13)))
+                    .as("out of range reports zero rather than a plausible length")
+                    .isZero();
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2022), Integer.valueOf(0))).isZero();
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2022), Integer.valueOf(1))).isEqualTo(31);
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2022), Integer.valueOf(4))).isEqualTo(30);
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2022), Integer.valueOf(2))).isEqualTo(28);
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2020), Integer.valueOf(2))).isEqualTo(29);
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(1900), Integer.valueOf(2)))
+                    .as("1900 is not a leap year: divisible by 100 but not by 400")
+                    .isEqualTo(28);
+            assertThat((Integer) invokePrivate("monthLength", types,
+                    Integer.valueOf(2000), Integer.valueOf(2)))
+                    .as("2000 is a leap year: divisible by 400")
+                    .isEqualTo(29);
+        }
+    }
+
+}

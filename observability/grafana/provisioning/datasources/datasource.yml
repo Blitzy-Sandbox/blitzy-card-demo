@@ -1,0 +1,230 @@
+# ******************************************************************
+# * Program     : datasource.yml
+# * Application : CardDemo
+# * Type        : Grafana Datasource Provisioning
+# * Function    : Provisions the single Prometheus datasource so the CardDemo
+# *               dashboard resolves with no manual configuration, which is
+# *               what makes the integration sign-off gate demonstrable.
+# *               Mounted read-only into the `grafana` service of the
+# *               repository-root docker-compose.yml, where Grafana reads it
+# *               from /etc/grafana/provisioning/datasources/datasource.yml
+# *               at start-up. This is the only datasource definition in the
+# *               project.
+# * Serves      : src/main/java/com/cardemo/observability/MetricsConfig.java,
+# *               which declares the four named application instruments -
+# *               four counters (records processed, records rejected tagged
+# *               by reject code, authentication attempts tagged by outcome,
+# *               and the running transaction-amount total tagged by sign,
+# *               whose credit-minus-debit difference is the signed net). This
+# *               file names none of them - see the ownership boundary below.
+# * Replaces    : The DISPLAY-only batch instrumentation of the frozen COBOL
+# *               corpus, at commit 7756d89. app/cbl/CBTRN02C.cbl:L227 emits
+# *               DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
+# *               app/cbl/CBTRN02C.cbl:L228 emits
+# *               DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - two
+# *               spaces before the colon on the rejected line and one on the
+# *               processed line, which is part of the emitted text. The two
+# *               counters are incremented at :L206 and :L214 and written to
+# *               SYSOUT exactly once, after every file has closed;
+# *               app/cbl/CBACT04C.cbl reports the same way. There is no
+# *               history and no way to observe a run in flight.
+# * Note        : No COBOL analogue exists. Grafana provisioning is new
+# *               capability, mandated by the observability requirement of
+# *               Rule 1 Clause A rather than by any legacy behaviour.
+# * Source      : app/cbl/CBTRN02C.cbl:L184-L186, :L206, :L214 and :L227-L228
+# *               @ 7756d89 - the counter declarations, their increments and
+# *               the single end-of-run DISPLAY pair that are the whole of the
+# *               reporting this dashboard datasource supersedes
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+#
+# ============================================================================
+# WHAT THIS FILE DOES
+# ============================================================================
+# One datasource. Grafana has to be told where Prometheus is, and nothing else
+# in the stack tells it. At start-up Grafana reads every file under
+# /etc/grafana/provisioning/datasources and creates or updates the datasources
+# it finds there. This file declares exactly one, of type prometheus, and
+# publishes it under the fixed identifier carddemo-prometheus.
+#
+# That identifier is a contract, not a convenience.
+# observability/grafana/dashboards/carddemo-dashboard.json references
+# "uid": "carddemo-prometheus" on every panel and inside every targets[]
+# entry. This file PUBLISHES the uid; the dashboard CONSUMES it. Were the two
+# to diverge, the dashboard would still load and every single panel would fail
+# to resolve its datasource - which is precisely why the value is written out
+# explicitly here instead of being left for Grafana to generate.
+#
+# Ownership boundary - five artefacts, five responsibilities, no overlap:
+#   * src/main/java/com/cardemo/observability/MetricsConfig.java DEFINES the
+#     four application instruments. Their names are its own constants.
+#   * src/main/java/com/cardemo/config/ObservabilityConfig.java CONFIGURES the
+#     tracing and common-tag surface those instruments are published on.
+#   * src/main/resources/application.yml EXPOSES the actuator endpoints, whose
+#     exposure list that file alone owns. Spring Boot's Micrometer and Actuator
+#     auto-configuration performs the meter registration itself.
+#   * observability/prometheus.yml SCRAPES that surface.
+#   * observability/grafana/dashboards/carddemo-dashboard.json DISPLAYS the
+#     resulting series.
+# THIS FILE only locates Prometheus. It therefore names no measurement, sets no
+# management.* property, carries no scrape configuration and embeds no
+# dashboard. Each of those belongs to exactly one artefact above, and restating
+# any of them here would duplicate an owner and go stale the moment that owner
+# changed.
+#
+# ============================================================================
+# HOW TO RUN AND VALIDATE
+# ============================================================================
+# Bring the service up from the repository root, which is what mounts this
+# directory read-only into the container:
+#
+#   docker compose up -d grafana
+#
+# Grafana reads datasource provisioning at start-up, so restart the service
+# after editing this file:
+#
+#   docker compose restart grafana
+#
+# Then assert the outcome through the Grafana HTTP API rather than by eye. The
+# two variables below are supplied from the environment by docker-compose.yml
+# and .env; no credential value is ever written into this file.
+#
+#   curl -s -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" \
+#        http://localhost:3000/api/datasources
+#
+# The response must contain exactly one entry, carrying
+# "uid": "carddemo-prometheus", "type": "prometheus", "isDefault": true and
+# "readOnly": true - readOnly is how editable: false surfaces over the API.
+# Then confirm Grafana can actually reach Prometheus through the proxy:
+#
+#   curl -s -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" \
+#        http://localhost:3000/api/datasources/uid/carddemo-prometheus/health
+#
+# A healthy result there is the evidence the integration sign-off gate records.
+#
+# ============================================================================
+# KEY CONFIGS AND DEFAULTS
+# ============================================================================
+#   apiVersion: 1        The datasource provisioning schema version. Verified
+#                        against the exact pinned image grafana/grafana:12.4.6
+#                        declared by the repository-root docker-compose.yml,
+#                        not assumed from documentation alone. The pin moved
+#                        from 11.3.1, which carried CVE-2026-21720,
+#                        CVE-2026-33382 and CVE-2026-42127; apiVersion 1 is
+#                        still the current provisioning schema on 12.x, so this
+#                        file needed no structural change - only re-verifying
+#                        that the provisioned datasource still resolves, which
+#                        the integration sign-off check below does.
+#   name: Prometheus     Display name only. Panels bind by uid, never by name.
+#   uid                  carddemo-prometheus - the published contract above.
+#                        Deterministic, and consistent with the carddemo-*
+#                        family already fixed elsewhere in this migration: the
+#                        carddemo-app scrape job, the carddemo-report-jobs
+#                        FIFO queue and carddemo-dashboard.json.
+#   type: prometheus     The only datasource type this project provisions.
+#   access: proxy        The Grafana backend queries Prometheus, so the
+#                        browser never connects to it directly and no
+#                        Prometheus port needs to be reachable from the
+#                        operator's machine.
+#   url                  http://prometheus:9090 - internal Compose DNS. The
+#                        service name and port are taken from
+#                        docker-compose.yml. Never localhost, never
+#                        127.0.0.1, never host.docker.internal, never a host
+#                        address and never a hosted endpoint: Grafana resolves
+#                        this name inside the Compose network, and every one
+#                        of those alternatives would make the file
+#                        environment-specific.
+#   isDefault: true      The only datasource, so it is also the default.
+#   editable: false      Provisioning is the single source of truth. Grafana
+#                        refuses edits through the UI, so the running
+#                        configuration cannot drift away from this file.
+#   jsonData
+#     timeInterval: 15s  Matches global.scrape_interval in
+#                        observability/prometheus.yml exactly, so Grafana's
+#                        $__rate_interval never computes a window shorter than
+#                        the interval at which the data actually arrives.
+#
+# Nothing else is set, and the omissions are deliberate. No authentication of
+# any kind is configured, because the Prometheus service in this stack
+# requires none; the least-privilege outcome is the absence of an auth stanza
+# rather than an empty or environment-interpolated one. TLS verification is
+# never bypassed. Grafana's own admin credentials stay in the environment.
+#
+# ============================================================================
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+# ============================================================================
+# Every panel reports that its datasource cannot be found.
+#   The uid published here and the uid referenced by carddemo-dashboard.json
+#   have diverged. Compare the two and align the dashboard - this file is the
+#   publisher, so the dashboard is what changes.
+#
+# The datasource exists but every query is refused or times out.
+#   The url is not resolvable from inside the container. Confirm it names the
+#   Compose service, prometheus, and not localhost, 127.0.0.1 or
+#   host.docker.internal: those resolve to the Grafana container itself or to
+#   the host, and neither serves Prometheus. Check from inside the container
+#   with
+#   docker compose exec grafana wget -qO- http://prometheus:9090/-/ready
+#
+# Grafana starts, logs a provisioning error and creates no datasource.
+#   Either this YAML is malformed or apiVersion is a value the pinned Grafana
+#   version does not accept. Run docker compose logs grafana; the offending
+#   file and line are named in the message.
+#
+# The datasource can be edited in the UI and drifts from this file.
+#   editable: false was omitted. Restore it and restart the service. The
+#   symptom over the API is a provisioned datasource reported with
+#   "readOnly": false.
+#
+# A panel is empty even though the datasource reports healthy.
+#   This is not a datasource fault, and no change here will fix it. For a
+#   carddemo_* panel there is exactly one class of cause: the metric name, the
+#   tag value or the PromQL expression in the panel query has drifted from the
+#   corresponding constant in MetricsConfig.java - remedy that in
+#   carddemo-dashboard.json, not here.
+#
+#   What it is NOT is a series that has yet to come into existence.
+#   MetricsConfig registers all ten of its series EAGERLY at construction, so
+#   each one is exposed at 0.0 from the moment the context starts and before
+#   any batch run or any sign-on. An empty carddemo_* panel is therefore always
+#   a naming or query defect, never expected startup behaviour. An earlier
+#   revision of this note said the opposite - that a never-incremented counter
+#   is ABSENT from the /actuator/prometheus exposition rather than present with
+#   the value zero, making an empty panel correct before the first batch run -
+#   and it is withdrawn. That general Micrometer rule is real, but it applies
+#   only to LAZILY registered meters, which is what a framework or
+#   third-party instrument resolved on first use will be, and none of the
+#   CardDemo series is one.
+#
+# No datasource appears at all and the logs say nothing.
+#   The provisioning directory was not mounted. Confirm that the grafana
+#   service in docker-compose.yml still mounts
+#   ./observability/grafana/provisioning at /etc/grafana/provisioning and that
+#   GF_PATHS_PROVISIONING agrees with it.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: carddemo-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

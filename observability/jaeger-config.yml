@@ -1,0 +1,244 @@
+# ****************************************************************************
+# Program     : jaeger-config.yml
+# Application : CardDemo
+# Type        : Jaeger v2 (OpenTelemetry Collector) configuration
+# Function    : Preserves the three settings the retired v1 all-in-one image
+#               carried as environment variables - OTLP ingestion enabled,
+#               in-memory span storage, and a 50,000-trace ceiling - and
+#               narrows the ingest surface to OTLP alone.
+# Capability  : NEW - additive. The frozen COBOL corpus exports no traces at
+#               all; its entire instrumentation is DISPLAY to SYSOUT plus the
+#               four-character status renderer at
+#               app/cbl/CBTRN02C.cbl:L714-L727. There is therefore no COBOL
+#               artefact this file translates. It exists because
+#               jaegertracing/all-in-one:1.62.0 reached end of life
+#               (CWE-1104, use of an unmaintained component) and the
+#               supported successor, jaegertracing/jaeger v2, is an
+#               OpenTelemetry Collector distribution that is configured by
+#               file rather than by environment variable.
+# Derived from : the default all-in-one configuration compiled into
+#               jaegertracing/jaeger:2.20.0, read out of the binary at
+#               remediation time rather than copied from documentation, then
+#               reduced. Validated by `jaeger validate --config=file:...`.
+# ****************************************************************************
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ****************************************************************************
+#
+# ============================================================================
+# WHY THIS FILE HAS TO EXIST
+# ============================================================================
+# The v1 image took MEMORY_MAX_TRACES=50000 from the environment. v2 takes no
+# such variable: the ceiling lives at extensions.jaeger_storage.backends.*.
+# memory.max_traces and its built-in default is 100000. Migrating without
+# this file would therefore have DOUBLED the span buffer of a stack that is
+# routinely left running, silently - the opposite of the bounded-growth
+# property the v1 setting existed to provide. COLLECTOR_OTLP_ENABLED and
+# SPAN_STORAGE_TYPE are likewise gone; both are expressed structurally below.
+#
+# ============================================================================
+# WHAT WAS DELIBERATELY REMOVED FROM THE DEFAULT
+# ============================================================================
+# The shipped default enables three trace receivers - otlp, jaeger and zipkin
+# - and three auxiliary extensions. CardDemo speaks exactly one protocol:
+# src/main/resources/application.yml sets management.otlp.tracing.endpoint,
+# and pom.xml resolves io.opentelemetry:opentelemetry-exporter-otlp. So:
+#
+#   - the `jaeger` receiver (ports 14250 gRPC and 14268 HTTP) is REMOVED;
+#   - the `zipkin` receiver (port 9411) is REMOVED;
+#   - `remote_sampling` (5778/5779) is REMOVED - the application samples at a
+#     fixed probability set in application.yml and asks no collector;
+#   - `expvar` (27777) and `zpages` (27778) are REMOVED - debug surfaces
+#     nothing in this project reads.
+#
+# Each removal closes a listening port that would otherwise accept spans or
+# expose internals with no authentication. Rule 1 Clause D, least privilege.
+# What remains is the minimum that carries a trace from the application to
+# the query UI: an OTLP receiver, a batch processor, memory storage, the query
+# extension and the health extension the container probe needs.
+#
+# ============================================================================
+# LISTEN ADDRESS
+# ============================================================================
+# Every endpoint interpolates ${env:JAEGER_LISTEN_HOST:-localhost}, exactly as
+# the shipped default does. docker-compose.yml sets it to 0.0.0.0 so the
+# receivers and the UI are reachable from sibling containers - a process bound
+# to localhost inside its own network namespace is reachable by nothing else.
+# CONTAINER-INTERNAL REACHABILITY IS NOT HOST EXPOSURE: docker-compose.yml
+# binds the published ports to the loopback interface, so the UI and the OTLP
+# receivers are not offered to the network the host sits on.
+#
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+#   - Container never reports healthy: the probe targets 13133, the v2
+#     healthcheckv2 port. v1 used 14269. A probe left on 14269 fails forever
+#     against a perfectly healthy container.
+#   - Spans do not appear in the UI: confirm the application posts to
+#     http://jaeger:4318/v1/traces. The v2 OTLP HTTP receiver keeps v1's port
+#     numbers, so only the path and the host name are usual suspects.
+#   - "unknown type: jaeger" or "unknown type: zipkin" on start: something is
+#     still sending over a protocol whose receiver this file removes. Restore
+#     the receiver only with a reason recorded; the default position is OTLP
+#     only.
+#   - Editing this file: run
+#     `docker run --rm -v "$PWD/observability:/cfg:ro" jaegertracing/jaeger:2.20.0
+#      validate --config=file:/cfg/jaeger-config.yml`
+#     before bringing the stack up. An invalid config fails at start, and the
+#     validator says which key is wrong.
+
+service:
+  # Five extensions, down from six. jaeger_storage and jaeger_query are the
+  # storage backend and the UI; healthcheckv2 is what the container probe
+  # reads. remote_sampling, expvar and zpages are not enabled - see above.
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      # OTLP only. This single line is what replaces v1's
+      # COLLECTOR_OTLP_ENABLED=true and simultaneously closes the jaeger and
+      # zipkin ingest ports.
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      # ARRAY-OF-MAPS, NOT THE INLINE MAP THE SHIPPED EXAMPLE USES.
+      #
+      # `resource: {service.name: jaeger}` is the legacy spelling and 2.20.0
+      # accepts it while logging `Using legacy service.telemetry.resource inline
+      # map format; prefer service.telemetry.resource.attributes`. That
+      # deprecation notice had been in this container's log all along and nobody
+      # could see it, because the 4317 self-export failure below it was
+      # generating 77% of the output - which is precisely the cost of tolerating
+      # log noise, and the reason it is fixed in the same change rather than
+      # left for the release that turns the notice into an error.
+      attributes:
+        - name: service.name
+          value: jaeger
+    metrics:
+      # `basic` rather than the default `detailed`. Nothing scrapes this
+      # endpoint - observability/prometheus.yml declares exactly one job, the
+      # application, and deliberately no self-scrape or collector job - so
+      # detailed collector cardinality would be paid for and never read.
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "${env:JAEGER_LISTEN_HOST:-localhost}"
+                port: 8888
+    logs:
+      level: info
+    traces:
+      # OFF, AND THE ABSENCE OF THIS KEY WAS A DEFECT RATHER THAN A DEFAULT.
+      #
+      # This block configures the collector's own INTERNAL telemetry - the
+      # spans, metrics and logs the collector emits ABOUT ITSELF. It is not the
+      # trace pipeline above, which carries the application's spans and is
+      # unaffected by anything here.
+      #
+      # With no `traces` key the collector falls back to its built-in internal
+      # trace exporter, which is OTLP over gRPC to localhost:4317. The
+      # `receivers` section below removes the OTLP/gRPC receiver on purpose and
+      # with reasons stated, so nothing in this container listens on 4317 - and
+      # the collector therefore spent its whole life failing to export its own
+      # spans to itself. MEASURED: 71 of the 92 lines this container had logged
+      # were `dial tcp 127.0.0.1:4317: connect: connection refused` and its IPv6
+      # twin, one pair every few seconds, forever. That is 77% of the log
+      # channel filled with a self-inflicted failure, which is worse than merely
+      # untidy: it is where a real fault goes unnoticed, and it makes the log
+      # useless as the first place an operator looks.
+      #
+      # `level: none` rather than opening 4317. Enabling the receiver would
+      # silence the warning by giving the collector somewhere to send spans
+      # about itself, and would do it by opening an unauthenticated span-ingest
+      # port on the compose network that no client uses - trading a log-noise
+      # defect for a least-privilege one, against Rule 1 Clause D and against
+      # the reasoning the `receivers` section sets out at length. Nothing in
+      # this project reads collector self-traces: prometheus.yml declares one
+      # job and it is the application, and the internal METRICS above are
+      # already `basic` on the same ground.
+      #
+      # `level: none` rather than `processors: []`. Both are accepted by
+      # `jaeger validate` against 2.20.0 - both spellings were checked before
+      # this one was chosen - but the empty-processor form reads as an
+      # oversight, while `none` states the intent and is the key the collector's
+      # own internal-telemetry documentation defines for it.
+      level: none
+
+extensions:
+  jaeger_query:
+    storage:
+      traces: carddemo_span_storage
+    ai:
+      # OFF, against the shipped default of true. It publishes a tool-calling
+      # surface under /api/ai/mcp/ that lets a caller query trace content.
+      # Spans carry request metadata for a system that handles account,
+      # card, customer and transaction records, so an unauthenticated
+      # machine-callable query interface is a disclosure surface this project
+      # has no use for. Rule 1 Clause D.
+      enable_mcp: false
+
+  jaeger_storage:
+    backends:
+      carddemo_span_storage:
+        memory:
+          # THE SETTING THIS FILE EXISTS FOR. Carried over verbatim from the
+          # retired image's MEMORY_MAX_TRACES=50000. The v2 default is
+          # 100000; leaving it implicit would have doubled the buffer of a
+          # stack that is routinely left up for days.
+          max_traces: 50000
+
+  healthcheckv2:
+    use_v2: true
+    http:
+      # Port 13133. v1's admin port was 14269; docker-compose.yml's probe
+      # targets this one, and the port is not published to the host because
+      # nothing outside the container needs it.
+      endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:13133"
+    grpc:
+
+receivers:
+  otlp:
+    protocols:
+      # ONE PROTOCOL, HTTP ONLY. The OTLP/gRPC receiver on 4317 was removed and
+      # must not be restored without a named consumer, because nothing in this
+      # project speaks gRPC: management.otlp.tracing.endpoint in application.yml
+      # and OTEL_EXPORTER_OTLP_ENDPOINT in docker-compose.yml both name the
+      # /v1/traces HTTP path on 4318, and application-local.yml records the same
+      # choice twice.
+      #
+      # Why removing the receiver matters even though 4317 was never published to
+      # the host: an unpublished port is still reachable from every other
+      # container on the compose bridge network. Declining to forward a listener
+      # narrows the HOST surface; declining to open it narrows the NETWORK
+      # surface too, and an unauthenticated span ingest that no client uses is
+      # exactly the kind of listener least privilege exists to close.
+      #
+      # Should a gRPC exporter ever be configured, three edits go together: this
+      # receiver, the compose port mapping, and the assertion in
+      # EnvironmentTemplateContractTest that records the omission.
+      http:
+        endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:4318"
+
+processors:
+  # Default batching, exactly as the shipped configuration leaves it. Stated
+  # explicitly because the pipeline above names it, and a named processor with
+  # no entry here is a start-up error.
+  batch:
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: carddemo_span_storage

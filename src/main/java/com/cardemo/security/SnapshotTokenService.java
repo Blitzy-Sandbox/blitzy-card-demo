@@ -1,0 +1,824 @@
+/*
+ * ******************************************************************
+ * Program     : SnapshotTokenService.java
+ * Application : CardDemo
+ * Type        : Java 25 / Spring Boot 3.5.11 security component
+ * Function    : Seals the browse cursors, the card row reference and
+ *               the as-displayed record snapshot into an authenticated
+ *               opaque token, so that the stateless target reproduces
+ *               the legacy COMMAREA state without trusting the caller
+ *               and without disclosing a card number or a customer's
+ *               personal data. The snapshot travels in the request
+ *               body as one opaque string rather than as a readable
+ *               group.
+ * Source      : app/cbl/COACTUPC.cbl:L669 (ACUP-OLD-DETAILS held in
+ *               WS-THIS-PROGCOMMAREA at :L652 between the two turns
+ *               of the pseudo-conversation) @ 7756d89
+ * Source      : app/cbl/COCRDLIC.cbl:L237 (WS-CA-SCREEN-NUM),
+ *               :L1197-L1205 (the one-record lookahead whose saved
+ *               first and last keys are card numbers) @ 7756d89
+ * Source      : app/cpy/COCOM01Y.cpy:L29 (CDEMO-PGM-CONTEXT, the
+ *               pseudo-conversational carrier with no stateless
+ *               counterpart) @ 7756d89
+ * ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ * ******************************************************************
+ */
+package com.cardemo.security;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.Objects;
+
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import com.cardemo.exception.ConcurrentUpdateException;
+import com.cardemo.exception.FatalProcessingException;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+/**
+ * Turns a server-owned browse position or row identity into an authenticated, encrypted, expiring opaque
+ * string, and turns that string back into the original value on the next request.
+ *
+ * <h2>What it does and why it has to exist</h2>
+ *
+ * <p>The legacy conversation kept its browse state in the COMMAREA between the two turns of a
+ * pseudo-conversation: {@code WS-CA-SCREEN-NUM} at {@code app/cbl/COCRDLIC.cbl:L237} held the page number,
+ * and the one-record lookahead at {@code :L1197-L1205} saved the first and last keys of the page on
+ * display so that the next page-up or page-down could reopen the browse on them. The REST target is
+ * stateless by transformation Rule 7, so there is no COMMAREA to hold them - yet they cannot simply be
+ * handed over as plain values either, for two reasons that are properties of the data rather than
+ * preferences.</p>
+ *
+ * <p>First, those keys are <strong>card numbers</strong>. Returning them in the clear would disclose a
+ * primary account number that {@code maskedCardNumber} exists precisely to withhold, and it would do so on
+ * every page of a list the operator is merely browsing. Second, a browse position is an
+ * <strong>authorisation-relevant instruction</strong>: a caller able to edit it can reopen the browse on a
+ * key the list never offered, reaching rows outside the filter the operation applied.</p>
+ *
+ * <p>This component removes both problems. The value is serialised, bound to an operation kind, a record
+ * key, optionally an authenticated subject, and an expiry, sealed with AES-256-GCM, and handed to the caller
+ * as one base64url string. The caller cannot read it, cannot alter it without detection, cannot present it
+ * for a different record, a different operation or - where a subject is bound - a different principal, and
+ * cannot present it indefinitely. The server unseals it and recovers exactly the bytes it wrote.</p>
+ *
+ * <p><strong>The three values this component seals.</strong></p>
+ *
+ * <ul>
+ *   <li><b>Page cursors</b> - the sealed first and last keys of the page on display, reopened on the next
+ *       page-up or page-down. Sealed without a subject: a cursor says where a list stood, not whose record
+ *       it was, and every route that accepts one authorises the request in its own right.</li>
+ *   <li><b>The card row reference</b> - a sealed account-number and card-number pair that identifies which
+ *       row a detail read or an update applies to, standing in for the two plain filters. Also
+ *       subject-free, for the same reason.</li>
+ *   <li><b>The as-displayed record snapshot</b> - {@code ACUP-OLD-DETAILS} at
+ *       {@code app/cbl/COACTUPC.cbl:L669} and {@code CCUP-OLD-DETAILS} at
+ *       {@code app/cbl/COCRDUPC.cbl:L291-L301}, the groups that {@code 9700-CHECK-CHANGE-IN-REC}
+ *       ({@code :L4109-L4193}) and {@code :L1503-L1508} compare the live row against. Sealed
+ *       <strong>with</strong> the subject, because this token is evidence that a specific operator was
+ *       shown specific values, and evidence that opens for anybody is not evidence.</li>
+ * </ul>
+ *
+ * <p><strong>Why the snapshot may not travel as a readable group.</strong> Transformation Rule 16 requires
+ * the field-by-field comparison to run against the values the operator was shown, and transformation Rule 7
+ * leaves the server with nowhere to keep them, so they must come back on the request. But a group the caller
+ * can read and rewrite is not a snapshot: rewriting it to the current row makes the comparison
+ * unconditionally true and the lost-update guard becomes no guard at all, and returning it in the clear
+ * publishes the customer's names, both telephone numbers, the social security number, the date of birth, the
+ * government-issued identifier and the electronic funds account identifier on an ordinary read. Sealing
+ * answers both: the group still travels in the request body, exactly as the Agent Action Plan requires, but
+ * as one opaque string the caller echoes without being able to read or edit it. The representation
+ * sensitivity of the comparison is preserved rather than lost, because what is sealed and recovered is the
+ * very group the read projected - byte for byte, including the separator-free date of birth that a
+ * client-side rebuild would get wrong on every request. <strong>No endpoint emits an {@code ETag} and no
+ * endpoint reads {@code If-Match}</strong>: the snapshot is a body member and the two browse references are
+ * a body member and a request parameter respectively.</p>
+ *
+ * <h2>Inputs, outputs and side effects</h2>
+ *
+ * <p><b>Inputs.</b> A caller-chosen operation {@code kind}, a {@code recordKey} identifying the row, for the
+ * snapshot forms an authenticated {@code subject}, and either an object to seal or a token to open.
+ * <b>Outputs.</b> A base64url token, or the payload recovered from one. <b>Side effects.</b> None
+ * whatsoever: no row is read or written, no message is published, no field of this class is mutated after
+ * construction, and nothing is cached. Each call draws a fresh random nonce and is otherwise a pure function
+ * of its arguments, the derived key and the clock.</p>
+ *
+ * <h2>Configuration and defaults</h2>
+ *
+ * <table border="1">
+ * <caption>Bound configuration</caption>
+ * <tr><th>Property</th><th>Environment variable</th><th>Default</th></tr>
+ * <tr><td>{@code carddemo.security.jwt.signing-key}</td><td>{@code JWT_SIGNING_KEY}</td>
+ *     <td><b>None.</b> An absent variable leaves the placeholder unresolvable and startup fails</td></tr>
+ * <tr><td>{@code carddemo.security.snapshot.lifetime-seconds}</td><td>-</td>
+ *     <td>{@value #DEFAULT_LIFETIME_SECONDS} - non-secret metadata, so a documented default is
+ *     acceptable</td></tr>
+ * </table>
+ *
+ * <p>The signing key is the <strong>one</strong> committed secret indirection this application has, and it
+ * is deliberately reused here rather than joined by a second one: a second variable would double the
+ * secret surface an operator has to manage and would be exactly the duplication Rule 1 Clause C forbids.
+ * Reuse is nevertheless not sharing. The sealing key is derived from the configured value by
+ * {@code HMAC-SHA-256(configured-key, "carddemo-snapshot-token-v1")}, so the AES key used here and the
+ * HS256 key {@link JwtTokenProvider} signs with are computationally unrelated: recovering one from the
+ * other requires inverting HMAC. The derived key is the full 32 bytes HMAC-SHA-256 produces, which is
+ * exactly an AES-256 key, so no truncation or padding step exists to get wrong.</p>
+ *
+ * <h2>Failure modes and troubleshooting</h2>
+ *
+ * <dl>
+ *   <dt>Startup aborts naming {@code JWT_SIGNING_KEY}</dt>
+ *   <dd>The variable is absent. That is intended fail-fast behaviour and no default may be added to
+ *       silence it. Export at least {@value #MINIMUM_KEY_BYTES} bytes of entropy.</dd>
+ *   <dt>Absent token</dt>
+ *   <dd>{@link ConcurrentUpdateException.Outcome#CHANGES_NOT_CONFIRMED}. Read the record first and present
+ *       the value that read returned. No endpoint emits an entity tag and none reads {@code If-Match} - see
+ *       the class note above.</dd>
+ *   <dt>Token that fails to open</dt>
+ *   <dd>{@link ConcurrentUpdateException.Outcome#DATA_CHANGED_BEFORE_UPDATE}. All six causes report
+ *       identically and deliberately so - a truncated or edited token, a token sealed for another operation,
+ *       a token sealed for another record, a token issued to another principal, an expired token, and a token
+ *       sealed under a different key are indistinguishable to the caller, because telling them apart is an
+ *       oracle. The server-side log line names which one it was.</dd>
+ *   </dl>
+ *
+ * <p><strong>The HTTP status is the consumer's decision, not this class's, and the two consumers differ.
+ * </strong> This class raises {@link ConcurrentUpdateException} in both cases above and nothing else; what a
+ * client sees depends on which surface opened the token.</p>
+ *
+ * <table border="1">
+ * <caption>Observable status by consumer</caption>
+ * <tr><th>Consumer</th><th>Absent</th><th>Fails to open</th></tr>
+ * <tr><td>As-displayed snapshot on {@code PUT /api/accounts} and {@code PUT /api/cards}</td>
+ *     <td>{@code 428 Precondition Required}</td><td>{@code 412 Precondition Failed}</td></tr>
+ * <tr><td>Card row reference {@code cardKey} and the card-list page cursors</td>
+ *     <td>Not an error - the request is treated as carrying plain filters, or as the first page</td>
+ *     <td>{@code 400 Bad Request}: the controller converts the outcome to a {@code ValidationException}
+ *     naming the offending parameter, because an unopenable <em>reference</em> is malformed input rather
+ *     than a failed precondition on a write</td></tr>
+ * </table>
+ *
+ * <p>No failure message ever quotes the offending token, the recovered payload or the configured key.</p>
+ *
+ * <h2>Thread safety</h2>
+ *
+ * <p>Immutable after construction and safe to share across request threads. {@link SecureRandom} and
+ * {@link ObjectMapper} are both documented thread safe; {@link Cipher} is not, so a fresh instance is
+ * obtained inside every call rather than held as a field.</p>
+ */
+@Component
+public class SnapshotTokenService {
+
+    /**
+     * Property key for the signing key, the same one {@link JwtTokenProvider} binds. It resolves
+     * {@code JWT_SIGNING_KEY} with no default anywhere in any profile.
+     */
+    private static final String SIGNING_KEY_PROPERTY = "carddemo.security.jwt.signing-key";
+
+    /** Property key for the token lifetime. Non-secret, so a default is supplied inline. */
+    private static final String LIFETIME_PROPERTY = "carddemo.security.snapshot.lifetime-seconds";
+
+    /**
+     * Default token lifetime in seconds. Fifteen minutes is long enough for an operator to review a
+     * populated screen and confirm, and short enough that a captured token stops being useful quickly.
+     */
+    private static final String DEFAULT_LIFETIME_SECONDS = "900";
+
+    /**
+     * Minimum accepted length of the configured key, in bytes. Matched to the floor HS256 imposes on
+     * {@link JwtTokenProvider} so that one exported value satisfies both components.
+     */
+    private static final int MINIMUM_KEY_BYTES = 32;
+
+    /** Domain-separation label. Changing it invalidates every token in flight, which is its purpose. */
+    private static final String DERIVATION_LABEL = "carddemo-snapshot-token-v1";
+
+    /** Key-derivation primitive. */
+    private static final String DERIVATION_ALGORITHM = "HmacSHA256";
+
+    /** Symmetric algorithm for the derived key. */
+    private static final String KEY_ALGORITHM = "AES";
+
+    /** Authenticated-encryption transformation. GCM supplies confidentiality and integrity together. */
+    private static final String CIPHER_TRANSFORMATION = "AES/GCM/NoPadding";
+
+    /** Nonce length in bytes. Twelve is the size GCM is specified and optimised for. */
+    private static final int NONCE_BYTES = 12;
+
+    /** Authentication-tag length in bits, the maximum GCM defines. */
+    private static final int TAG_BITS = 128;
+
+    /** Envelope member holding the operation kind. */
+    private static final String MEMBER_KIND = "k";
+
+    /** Envelope member holding the record key. */
+    private static final String MEMBER_RECORD = "r";
+
+    /** Envelope member holding the authenticated subject the token was issued to. */
+    private static final String MEMBER_SUBJECT = "u";
+
+    /** Envelope member holding the expiry as epoch seconds. */
+    private static final String MEMBER_EXPIRY = "x";
+
+    /** Envelope member holding the sealed payload. */
+    private static final String MEMBER_PAYLOAD = "p";
+
+    /**
+     * The message a caller receives when no sealed value was presented where one is required.
+     *
+     * <p>Relayed to the client by the two update surfaces, which report it with
+     * {@code 428 Precondition Required}. The card row reference and the page cursors never surface it,
+     * because for them an absent value is a legitimate request shape rather than an omission. It is expressed
+     * as an instruction rather than as the blank screen {@code app/cbl/COCRDLIC.cbl:L1197-L1205} would have
+     * redisplayed.</p>
+     */
+    public static final String MISSING_TOKEN_MESSAGE =
+            "A sealed snapshot is required for this request. Read the record first and send back the"
+                    + " snapshot value that read returned.";
+
+    /**
+     * The message a caller receives when a sealed value failed to open, whatever the reason. One message for
+     * six causes, on purpose: distinguishing them would let a caller probe the sealing key.
+     *
+     * <p>Relayed to the client by the two update surfaces, which report it with
+     * {@code 412 Precondition Failed}. The reference consumers substitute their own parameter-specific
+     * wording and a {@code 400}, as tabulated on this class.</p>
+     */
+    public static final String INVALID_TOKEN_MESSAGE =
+            "The sealed snapshot could not be verified for this request. Read the record again and send back"
+                    + " the snapshot value that read returns.";
+
+    /** The derived AES-256 key. Never logged, never returned and never quoted in a message. */
+    private final SecretKeySpec sealingKey;
+
+    /** Token lifetime, validated positive at construction. */
+    private final Duration lifetime;
+
+    /** Clock the expiry is measured against; injected so tests need no sleeping. */
+    private final Clock clock;
+
+    /** Nonce source. Documented thread safe, so one instance serves every request. */
+    private final SecureRandom nonceSource;
+
+    /** Serialiser for the envelope and its payload. Documented thread safe once configured. */
+    private final ObjectMapper objectMapper;
+
+    /**
+     * Derives the sealing key and validates every bound value at construction rather than at first use, so
+     * a misconfigured deployment fails while it is starting instead of on a caller's write.
+     *
+     * @param signingKey the configured value of {@value #SIGNING_KEY_PROPERTY}; must be non-blank and at
+     *     least {@value #MINIMUM_KEY_BYTES} bytes once encoded as UTF-8
+     * @param lifetimeSeconds the configured value of {@value #LIFETIME_PROPERTY}; must be positive
+     * @param clock the clock expiry is measured against; must not be null
+     * @param objectMapper the application's configured serialiser; must not be null
+     * @throws IllegalStateException if the key is blank or shorter than {@value #MINIMUM_KEY_BYTES} bytes,
+     *     or if the lifetime is not positive. The message names the variable to set and the remedy, and
+     *     never the value
+     * @throws NullPointerException if {@code clock} or {@code objectMapper} is null
+     */
+    public SnapshotTokenService(
+            @Value("${" + SIGNING_KEY_PROPERTY + "}") final String signingKey,
+            @Value("${" + LIFETIME_PROPERTY + ":" + DEFAULT_LIFETIME_SECONDS + "}")
+            final long lifetimeSeconds,
+            final Clock clock,
+            final ObjectMapper objectMapper) {
+
+        if (signingKey == null || signingKey.isBlank()) {
+            throw new IllegalStateException("Environment variable JWT_SIGNING_KEY is absent or blank, so "
+                    + SIGNING_KEY_PROPERTY + " could not be resolved. Export at least " + MINIMUM_KEY_BYTES
+                    + " bytes of entropy; no default exists and none may be added.");
+        }
+        final byte[] configured = signingKey.getBytes(StandardCharsets.UTF_8);
+        if (configured.length < MINIMUM_KEY_BYTES) {
+            Arrays.fill(configured, (byte) 0);
+            throw new IllegalStateException("Environment variable JWT_SIGNING_KEY is shorter than the "
+                    + MINIMUM_KEY_BYTES + " bytes this application requires. Export a longer key; the"
+                    + " configured value is deliberately not reproduced here.");
+        }
+        if (lifetimeSeconds <= 0L) {
+            Arrays.fill(configured, (byte) 0);
+            throw new IllegalStateException("Property " + LIFETIME_PROPERTY + " must be positive but was "
+                    + lifetimeSeconds + ". A non-positive lifetime would expire every token at the instant"
+                    + " it was issued.");
+        }
+        this.sealingKey = deriveSealingKey(configured);
+        Arrays.fill(configured, (byte) 0);
+        this.lifetime = Duration.ofSeconds(lifetimeSeconds);
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        this.nonceSource = new SecureRandom();
+    }
+
+    /**
+     * Seals a payload into an opaque token bound to an operation kind, a record key and an expiry, with no
+     * principal binding.
+     *
+     * <p>This is the form the two browse references use, and it is deliberately subject-free: a page cursor
+     * and a card row reference say <em>where</em> a list stood, not <em>whose</em> record was displayed, and
+     * every route that accepts one applies its own authorisation before the reference is opened. The
+     * as-displayed snapshot is different in kind - it is the evidence a specific principal was shown
+     * specific values - so it uses {@link #seal(String, String, String, Object)} instead and is refused when
+     * presented by anyone else.</p>
+     *
+     * <p><b>Side effects.</b> None.</p>
+     *
+     * @param kind the operation this token is valid for, for example a card list cursor; must not be blank
+     * @param recordKey the identifier of the row the payload was taken from; must not be blank
+     * @param payload the value to seal; must not be null
+     * @return the base64url token, safe to place in a JSON body; never null
+     * @throws IllegalArgumentException if {@code kind} or {@code recordKey} is null or blank
+     * @throws NullPointerException if {@code payload} is null
+     * @throws FatalProcessingException if serialisation or encryption fails, which is a broken deployment
+     *     rather than a request outcome; the original throwable is preserved as the cause and no payload
+     *     content reaches the message
+     */
+    public String seal(final String kind, final String recordKey, final Object payload) {
+        return seal(kind, recordKey, UNBOUND_SUBJECT, payload);
+    }
+
+    /**
+     * Seals a payload into an opaque token bound to an operation kind, a record key, an authenticated
+     * subject and an expiry.
+     *
+     * <p><b>Side effects.</b> None. <b>Inputs.</b> The kind, the record key and the subject are
+     * authenticated additional data as well as envelope members, so none of the three can be swapped
+     * without the open failing. The payload is serialised with the application's configured mapper, which
+     * means a type whose serialisation is lossy - a component annotated write-only, for instance - must
+     * have that component carried explicitly by its caller rather than relied upon here.</p>
+     *
+     * <p>The subject is what makes a sealed as-displayed snapshot non-transferable. Without it a token
+     * issued to one operator would open for another, so a caller who obtained one from a shared client, a
+     * proxy cache or a log would be able to present it as their own evidence of what they had been shown.
+     * With it, the four bindings a lost-update guard needs - which operation, which record, which
+     * principal, and for how long - are all covered by the same authentication tag.</p>
+     *
+     * @param kind the operation this token is valid for, for example an account update; must not be blank
+     * @param recordKey the identifier of the row the snapshot was taken from; must not be blank
+     * @param subject the authenticated principal the token is issued to; must not be blank. Pass
+     *     {@value #UNBOUND_SUBJECT} only through {@link #seal(String, String, Object)}, which exists for the
+     *     references that are legitimately principal-independent
+     * @param payload the snapshot to seal; must not be null
+     * @return the base64url token, safe to place in a JSON body; never null
+     * @throws IllegalArgumentException if {@code kind}, {@code recordKey} or {@code subject} is null or
+     *     blank
+     * @throws NullPointerException if {@code payload} is null
+     * @throws FatalProcessingException if serialisation or encryption fails, which is a broken deployment
+     *     rather than a request outcome; the original throwable is preserved as the cause and no payload
+     *     content reaches the message
+     */
+    public String seal(final String kind, final String recordKey, final String subject,
+                       final Object payload) {
+        requireText(kind, "kind");
+        requireText(recordKey, "recordKey");
+        requireText(subject, "subject");
+        Objects.requireNonNull(payload, "payload must not be null");
+
+        final ObjectNode envelope = this.objectMapper.createObjectNode();
+        envelope.put(MEMBER_KIND, kind);
+        envelope.put(MEMBER_RECORD, recordKey);
+        envelope.put(MEMBER_SUBJECT, subject);
+        envelope.put(MEMBER_EXPIRY, this.clock.instant().plus(this.lifetime).getEpochSecond());
+        envelope.putPOJO(MEMBER_PAYLOAD, payload);
+
+        final byte[] plaintext;
+        try {
+            plaintext = this.objectMapper.writeValueAsBytes(envelope);
+        } catch (final JsonProcessingException serialisationFailure) {
+            throw new FatalProcessingException(ABEND_CODE, CULPRIT, SEAL_ABEND_REASON,
+                    SEAL_ABEND_MESSAGE, serialisationFailure);
+        }
+        try {
+            return encrypt(plaintext, additionalData(kind, recordKey, subject));
+        } finally {
+            Arrays.fill(plaintext, (byte) 0);
+        }
+    }
+
+    /**
+     * Opens a token and returns the payload it was sealed with, refusing anything that is not the exact
+     * token this server issued for this operation and this record, within its lifetime.
+     *
+     * <p><b>Side effects.</b> None. <b>Inputs.</b> {@code kind} and {@code recordKey} are the values the
+     * caller expects, not values taken from the token: the token's own members are compared against them,
+     * which is what makes a token issued for one record useless against another.</p>
+     *
+     * @param <T> the payload type
+     * @param token the opaque value the caller returned; null and blank are both reported as absent
+     * @param kind the operation the token must have been sealed for; must not be blank
+     * @param recordKey the record the token must have been sealed for; must not be blank
+     * @param payloadType the type to deserialise the payload into; must not be null
+     * @return the recovered payload, never null
+     * @throws IllegalArgumentException if {@code kind} or {@code recordKey} is null or blank
+     * @throws NullPointerException if {@code payloadType} is null
+     * @throws ConcurrentUpdateException with {@link ConcurrentUpdateException.Outcome#CHANGES_NOT_CONFIRMED}
+     *     when no token was presented, and with
+     *     {@link ConcurrentUpdateException.Outcome#DATA_CHANGED_BEFORE_UPDATE} when a token was presented
+     *     and could not be verified. The two are distinguished because the remedies differ - obtain a
+     *     token, versus read again - while the five reasons a verification can fail are deliberately not
+     * @throws FatalProcessingException if a recovered token deserialises to a payload of the wrong shape,
+     *     which cannot happen through this class's own {@code seal} and therefore indicates tampering that
+     *     survived authentication, that is, a compromised key
+     */
+    public <T> T open(final String token, final String kind, final String recordKey,
+                      final Class<T> payloadType) {
+        return open(token, kind, recordKey, UNBOUND_SUBJECT, payloadType);
+    }
+
+    /**
+     * Opens a subject-bound token and returns the payload it was sealed with, refusing anything that is not
+     * the exact token this server issued for this operation, this record and this principal, within its
+     * lifetime.
+     *
+     * <p><b>Side effects.</b> None. <b>Inputs.</b> {@code kind}, {@code recordKey} and {@code subject} are
+     * the values the caller expects, not values taken from the token: the token's own members are compared
+     * against them, which is what makes a token issued for one record - or to one operator - useless against
+     * another.</p>
+     *
+     * @param <T> the payload type
+     * @param token the opaque value the caller returned; null and blank are both reported as absent
+     * @param kind the operation the token must have been sealed for; must not be blank
+     * @param recordKey the record the token must have been sealed for; must not be blank
+     * @param subject the authenticated principal the token must have been issued to; must not be blank
+     * @param payloadType the type to deserialise the payload into; must not be null
+     * @return the recovered payload, never null
+     * @throws IllegalArgumentException if {@code kind}, {@code recordKey} or {@code subject} is null or
+     *     blank
+     * @throws NullPointerException if {@code payloadType} is null
+     * @throws ConcurrentUpdateException with {@link ConcurrentUpdateException.Outcome#CHANGES_NOT_CONFIRMED}
+     *     when no token was presented, and with
+     *     {@link ConcurrentUpdateException.Outcome#DATA_CHANGED_BEFORE_UPDATE} when a token was presented
+     *     and could not be verified
+     * @throws FatalProcessingException if a recovered token deserialises to a payload of the wrong shape
+     */
+    public <T> T open(final String token, final String kind, final String recordKey, final String subject,
+                      final Class<T> payloadType) {
+        requireText(kind, "kind");
+        requireText(recordKey, "recordKey");
+        requireText(subject, "subject");
+        Objects.requireNonNull(payloadType, "payloadType must not be null");
+
+        if (token == null || token.isBlank()) {
+            throw new ConcurrentUpdateException(
+                    ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED, MISSING_TOKEN_MESSAGE);
+        }
+
+        final byte[] plaintext = decrypt(token, additionalData(kind, recordKey, subject));
+        try {
+            final ObjectNode envelope = readEnvelope(plaintext);
+            requireMatches(envelope, MEMBER_KIND, kind);
+            requireMatches(envelope, MEMBER_RECORD, recordKey);
+            requireMatches(envelope, MEMBER_SUBJECT, subject);
+            requireUnexpired(envelope);
+            return readPayload(envelope, payloadType);
+        } finally {
+            Arrays.fill(plaintext, (byte) 0);
+        }
+    }
+
+    /**
+     * Seals a browse cursor. A convenience over {@link #seal} for the one case whose payload is a bare
+     * string rather than a structured snapshot.
+     *
+     * <p>It exists because the card browse's saved keys <em>are</em> card numbers -
+     * {@code app/cbl/COCRDLIC.cbl:L1197-L1205} saves the first and last card number of the page so the
+     * next turn can position from them - and a card number may not appear on a JSON contract. Sealing
+     * keeps the browse working exactly as the source's saved keys did while making the wire value
+     * meaningless to anyone but this server.</p>
+     *
+     * <p><b>Side effects.</b> None.</p>
+     *
+     * @param kind the browse this cursor belongs to; must not be blank
+     * @param cursor the key to seal, or null when the source saved no key - null is returned unchanged so
+     *     that "no cursor" stays distinct from "a cursor whose value is empty"
+     * @return the sealed cursor, or null when {@code cursor} was null
+     * @throws IllegalArgumentException if {@code kind} is null or blank
+     */
+    public String sealCursor(final String kind, final String cursor) {
+        requireText(kind, "kind");
+        if (cursor == null) {
+            return null;
+        }
+        return seal(kind, CURSOR_RECORD_KEY, cursor);
+    }
+
+    /**
+     * Opens a browse cursor sealed by {@link #sealCursor}.
+     *
+     * <p><b>Side effects.</b> None.</p>
+     *
+     * @param kind the browse the cursor must have been sealed for; must not be blank
+     * @param sealedCursor the value the caller returned, or null when it sent none
+     * @return the recovered key, or null when {@code sealedCursor} was null or blank - an absent cursor is
+     *     a legitimate first request and is not a failure
+     * @throws IllegalArgumentException if {@code kind} is null or blank
+     * @throws ConcurrentUpdateException with
+     *     {@link ConcurrentUpdateException.Outcome#DATA_CHANGED_BEFORE_UPDATE} when a cursor was presented
+     *     and could not be verified
+     */
+    public String openCursor(final String kind, final String sealedCursor) {
+        requireText(kind, "kind");
+        if (sealedCursor == null || sealedCursor.isBlank()) {
+            return null;
+        }
+        return open(sealedCursor, kind, CURSOR_RECORD_KEY, String.class);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Abend payload for the two conditions that are deployment faults rather than request outcomes.
+    // The four members transcribe app/cpy/CSMSG02Y.cpy, which app/cbl/CBTRN02C.cbl:L707-L711 populates
+    // before CALL 'CEE3ABD'.
+    // ------------------------------------------------------------------------------------------------
+
+    /** {@code ABEND-CODE}, the terminal code {@code app/cbl/CBTRN02C.cbl:L709} moves before abending. */
+    private static final String ABEND_CODE = "0999";
+
+    /** {@code ABEND-CULPRIT}, this component's own name. */
+    private static final String CULPRIT = "SNAPTOKN";
+
+    /** {@code ABEND-REASON} for a sealing failure. */
+    private static final String SEAL_ABEND_REASON = "SNAPSHOT TOKEN SEAL FAILED";
+
+    /** {@code ABEND-MSG} for a sealing failure. Names no payload content. */
+    private static final String SEAL_ABEND_MESSAGE =
+            "The as-displayed snapshot could not be sealed. The payload is withheld from this message.";
+
+    /** {@code ABEND-REASON} for a payload that authenticated yet deserialises to the wrong shape. */
+    private static final String SHAPE_ABEND_REASON = "SNAPSHOT TOKEN SHAPE INVALID";
+
+    /** {@code ABEND-MSG} for that condition. */
+    private static final String SHAPE_ABEND_MESSAGE =
+            "An authenticated snapshot token carried a payload of an unexpected shape, which this"
+                    + " application never seals. Treat the sealing key as compromised and rotate JWT_SIGNING_KEY.";
+
+    /**
+     * The record key a cursor is sealed under. A cursor belongs to a browse rather than to a row, so it
+     * has no row identifier of its own; a fixed non-empty literal keeps the authenticated additional data
+     * well formed without pretending a row is involved.
+     */
+    private static final String CURSOR_RECORD_KEY = "-";
+
+    /**
+     * The subject a principal-independent reference is sealed under.
+     *
+     * <p>A page cursor and a card row reference belong to a browse rather than to an operator, so they have
+     * no principal of their own; a fixed non-empty literal keeps the authenticated additional data well
+     * formed without pretending one is involved. It is deliberately a value no principal can present -
+     * {@code app/cpy/CSUSR01Y.cpy} declares {@code SEC-USR-ID PIC X(08)} and the sign-on edit refuses a
+     * blank or single-character identifier - so a subject-bound token can never open as an unbound one, nor
+     * the reverse.</p>
+     */
+    public static final String UNBOUND_SUBJECT = "-";
+
+    /**
+     * Derives the AES-256 sealing key from the configured signing key by one HMAC-SHA-256 over a fixed
+     * label.
+     *
+     * @param configured the configured key bytes; not retained and not modified
+     * @return the derived 32-byte AES key
+     * @throws IllegalStateException if the platform lacks HMAC-SHA-256, which no supported JDK does
+     */
+    private static SecretKeySpec deriveSealingKey(final byte[] configured) {
+        final byte[] derived;
+        try {
+            final Mac mac = Mac.getInstance(DERIVATION_ALGORITHM);
+            mac.init(new SecretKeySpec(configured, DERIVATION_ALGORITHM));
+            derived = mac.doFinal(DERIVATION_LABEL.getBytes(StandardCharsets.UTF_8));
+        } catch (final GeneralSecurityException unavailable) {
+            throw new IllegalStateException("The platform does not provide " + DERIVATION_ALGORITHM
+                    + ", which every supported JDK 25 distribution does. The runtime is unusable.",
+                    unavailable);
+        }
+        try {
+            return new SecretKeySpec(derived, KEY_ALGORITHM);
+        } finally {
+            Arrays.fill(derived, (byte) 0);
+        }
+    }
+
+    /**
+     * Encrypts and frames one envelope as {@code nonce || ciphertext-and-tag}, base64url encoded without
+     * padding.
+     *
+     * @param plaintext the serialised envelope
+     * @param additionalData the authenticated additional data binding kind and record key
+     * @return the token
+     * @throws FatalProcessingException if the platform refuses the transformation or the operation fails
+     */
+    private String encrypt(final byte[] plaintext, final byte[] additionalData) {
+        final byte[] nonce = new byte[NONCE_BYTES];
+        this.nonceSource.nextBytes(nonce);
+        try {
+            final Cipher cipher = Cipher.getInstance(CIPHER_TRANSFORMATION);
+            cipher.init(Cipher.ENCRYPT_MODE, this.sealingKey, new GCMParameterSpec(TAG_BITS, nonce));
+            cipher.updateAAD(additionalData);
+            final byte[] sealed = cipher.doFinal(plaintext);
+            final byte[] framed = new byte[nonce.length + sealed.length];
+            System.arraycopy(nonce, 0, framed, 0, nonce.length);
+            System.arraycopy(sealed, 0, framed, nonce.length, sealed.length);
+            Arrays.fill(sealed, (byte) 0);
+            final String token = Base64.getUrlEncoder().withoutPadding().encodeToString(framed);
+            Arrays.fill(framed, (byte) 0);
+            return token;
+        } catch (final GeneralSecurityException sealingFailure) {
+            throw new FatalProcessingException(ABEND_CODE, CULPRIT, SEAL_ABEND_REASON, SEAL_ABEND_MESSAGE,
+                    sealingFailure);
+        }
+    }
+
+    /**
+     * Decodes, authenticates and decrypts one token.
+     *
+     * <p>Every failure - a value that is not base64url, a value too short to hold a nonce, a failed
+     * authentication tag, a mismatched additional-data binding - is reported as the same single outcome,
+     * because reporting them apart would let a caller distinguish "wrong key" from "wrong record" and
+     * probe the sealing key one guess at a time. The underlying throwable is preserved as the cause so a
+     * server-side log retains the detail the caller is denied.</p>
+     *
+     * @param token the caller-supplied value, already known to be non-blank
+     * @param additionalData the expected authenticated additional data
+     * @return the recovered plaintext envelope
+     * @throws ConcurrentUpdateException with
+     *     {@link ConcurrentUpdateException.Outcome#DATA_CHANGED_BEFORE_UPDATE} on any failure
+     */
+    private byte[] decrypt(final String token, final byte[] additionalData) {
+        final byte[] framed;
+        try {
+            framed = Base64.getUrlDecoder().decode(token);
+        } catch (final IllegalArgumentException notBase64) {
+            throw invalidToken(notBase64);
+        }
+        if (framed.length <= NONCE_BYTES) {
+            Arrays.fill(framed, (byte) 0);
+            throw invalidToken(null);
+        }
+        try {
+            final Cipher cipher = Cipher.getInstance(CIPHER_TRANSFORMATION);
+            cipher.init(Cipher.DECRYPT_MODE, this.sealingKey,
+                    new GCMParameterSpec(TAG_BITS, framed, 0, NONCE_BYTES));
+            cipher.updateAAD(additionalData);
+            return cipher.doFinal(framed, NONCE_BYTES, framed.length - NONCE_BYTES);
+        } catch (final GeneralSecurityException authenticationFailure) {
+            throw invalidToken(authenticationFailure);
+        } finally {
+            Arrays.fill(framed, (byte) 0);
+        }
+    }
+
+    /**
+     * Parses a recovered envelope.
+     *
+     * @param plaintext the recovered bytes
+     * @return the envelope
+     * @throws FatalProcessingException if the bytes authenticated yet are not a JSON object, which this
+     *     class never seals
+     */
+    private ObjectNode readEnvelope(final byte[] plaintext) {
+        try {
+            final JsonNode parsed = this.objectMapper.readTree(plaintext);
+            if (parsed instanceof ObjectNode envelope) {
+                return envelope;
+            }
+        } catch (final IOException malformed) {
+            throw new FatalProcessingException(ABEND_CODE, CULPRIT, SHAPE_ABEND_REASON,
+                    SHAPE_ABEND_MESSAGE, malformed);
+        }
+        throw new FatalProcessingException(ABEND_CODE, CULPRIT, SHAPE_ABEND_REASON, SHAPE_ABEND_MESSAGE);
+    }
+
+    /**
+     * Deserialises the payload member.
+     *
+     * @param <T> the payload type
+     * @param envelope the opened envelope
+     * @param payloadType the expected type
+     * @return the payload, never null
+     * @throws FatalProcessingException if the member is absent or cannot be bound to {@code payloadType}
+     */
+    private <T> T readPayload(final ObjectNode envelope, final Class<T> payloadType) {
+        if (!envelope.has(MEMBER_PAYLOAD)) {
+            throw new FatalProcessingException(ABEND_CODE, CULPRIT, SHAPE_ABEND_REASON,
+                    SHAPE_ABEND_MESSAGE);
+        }
+        try {
+            final T payload = this.objectMapper.treeToValue(envelope.get(MEMBER_PAYLOAD), payloadType);
+            if (payload == null) {
+                throw new FatalProcessingException(ABEND_CODE, CULPRIT, SHAPE_ABEND_REASON,
+                        SHAPE_ABEND_MESSAGE);
+            }
+            return payload;
+        } catch (final JsonProcessingException wrongShape) {
+            throw new FatalProcessingException(ABEND_CODE, CULPRIT, SHAPE_ABEND_REASON, SHAPE_ABEND_MESSAGE,
+                    wrongShape);
+        }
+    }
+
+    /**
+     * Requires an envelope member to equal an expected value, by exact comparison.
+     *
+     * @param envelope the opened envelope
+     * @param member the member name
+     * @param expected the expected value
+     * @throws ConcurrentUpdateException when the member is absent or differs
+     */
+    private static void requireMatches(final ObjectNode envelope, final String member,
+                                       final String expected) {
+        if (!envelope.hasNonNull(member) || !expected.equals(envelope.get(member).asText())) {
+            throw invalidToken(null);
+        }
+    }
+
+    /**
+     * Requires the envelope not to have expired.
+     *
+     * <p>Comparison is inclusive at the boundary in the caller's favour: a token is refused once the
+     * clock has passed its expiry, not when it reaches it.</p>
+     *
+     * @param envelope the opened envelope
+     * @throws ConcurrentUpdateException when the expiry member is absent or in the past
+     */
+    private void requireUnexpired(final ObjectNode envelope) {
+        if (!envelope.hasNonNull(MEMBER_EXPIRY)) {
+            throw invalidToken(null);
+        }
+        final Instant expiry = Instant.ofEpochSecond(envelope.get(MEMBER_EXPIRY).asLong());
+        if (this.clock.instant().isAfter(expiry)) {
+            throw invalidToken(null);
+        }
+    }
+
+    /**
+     * Builds the authenticated additional data that binds a token to one operation, one record and one
+     * principal.
+     *
+     * <p>The three values are joined by a byte that cannot occur in any of them - a newline - so that no
+     * triple of distinct kind, record and subject values can produce the same additional data.</p>
+     *
+     * @param kind the operation kind
+     * @param recordKey the record key
+     * @param subject the authenticated principal, or {@value #UNBOUND_SUBJECT} for a reference that is
+     *     legitimately principal-independent
+     * @return the additional data
+     */
+    private static byte[] additionalData(final String kind, final String recordKey, final String subject) {
+        return (kind + '\n' + recordKey + '\n' + subject).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Builds the single refusal every verification failure reports.
+     *
+     * @param cause the underlying throwable, or null where there was none; preserved so the server-side
+     *     log keeps the detail the caller is denied
+     * @return the refusal to throw
+     */
+    private static ConcurrentUpdateException invalidToken(final Throwable cause) {
+        if (cause == null) {
+            return new ConcurrentUpdateException(
+                    ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE, INVALID_TOKEN_MESSAGE);
+        }
+        return new ConcurrentUpdateException(
+                ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE, INVALID_TOKEN_MESSAGE, cause);
+    }
+
+    /**
+     * Requires a non-blank argument.
+     *
+     * @param value the value to check
+     * @param name the parameter name to report
+     * @throws IllegalArgumentException when {@code value} is null or blank
+     */
+    private static void requireText(final String value, final String name) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be null or blank");
+        }
+    }
+}

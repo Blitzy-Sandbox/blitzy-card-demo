@@ -1,0 +1,673 @@
+-- ******************************************************************
+-- * Program     : V2__create_indexes.sql
+-- * Application : CardDemo
+-- * Type        : Flyway migration - secondary index DDL
+-- * Function    : Creates the three non-unique B-tree indexes that
+-- *               replace the three VSAM alternate indexes and their
+-- *               three PATHs. It creates nothing else - no table, no
+-- *               constraint, no row, no fourth index.
+-- * Source      : app/catlg/LISTCAT.txt, the authoritative physical
+-- *               specification: alternate-index entries at :L254,
+-- *               :L455 and :L3645, key offsets at :L283, :L486 and
+-- *               :L3676, and the NONUNIQKEY declarations at :L285,
+-- *               :L488 and :L3678; the four IDCAMS members that
+-- *               DEFINE those indexes and their paths -
+-- *               app/jcl/CARDFILE.jcl:L83-L88 and :L100-L102,
+-- *               app/jcl/XREFFILE.jcl:L72-L77 and :L90-L92,
+-- *               app/jcl/TRANFILE.jcl:L82-L87 and :L99-L101, and
+-- *               app/jcl/TRANIDX.jcl:L25-L29, :L42-L44 and :L52;
+-- *               the three record-layout copybooks that fix the
+-- *               indexed fields - app/cpy/CVACT02Y.cpy:L6,
+-- *               app/cpy/CVACT03Y.cpy:L7 and app/cpy/CVTRA05Y.cpy:L17;
+-- *               app/proc/TRANREPT.prc:L38-L46 and
+-- *               app/cbl/CBTRN03C.cbl:L173-L174 for the batch access
+-- *               path; and app/csd/CARDDEMO.CSD for the online file
+-- *               control table - all @ 7756d89
+-- ******************************************************************
+-- * Copyright Amazon.com, Inc. or its affiliates.
+-- * All Rights Reserved.
+-- *
+-- * Licensed under the Apache License, Version 2.0 (the "License").
+-- * You may not use this file except in compliance with the License.
+-- * You may obtain a copy of the License at
+-- *
+-- *    http://www.apache.org/licenses/LICENSE-2.0
+-- *
+-- * Unless required by applicable law or agreed to in writing,
+-- * software distributed under the License is distributed on an
+-- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+-- * either express or implied. See the License for the specific
+-- * language governing permissions and limitations under the License
+-- ******************************************************************
+
+-- MODULE DOCSTRING
+--
+-- WHAT IT DOES
+--
+-- Creates exactly three non-unique B-tree indexes and nothing else.
+-- Each one replaces one VSAM alternate index together with the PATH
+-- that made it reachable, and each one is consumed by a named Spring
+-- Data finder:
+--
+--   idx_card_acct_id                   card(card_acct_id)
+--     <- AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX  + .AIX.PATH
+--     -> CardRepository.findByAccountIdOrderByCardNumberAsc
+--
+--   idx_card_cross_reference_acct_id   card_cross_reference(xref_acct_id)
+--     <- AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX  + .AIX.PATH
+--     -> CardCrossReferenceRepository
+--          .findFirstByAccountIdOrderByCardNumberAsc
+--
+--   idx_transaction_proc_ts            "transaction"(tran_proc_ts)
+--     <- AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX  + .AIX.PATH
+--     -> TransactionRepository
+--          .findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc
+--
+-- THREE, AND WHY IT CANNOT BE TWO OR FOUR. The catalogue is counted,
+-- not estimated, and three independent measurements agree:
+--
+--   1. app/catlg/LISTCAT.txt reports exactly three AXRKP fields - the
+--      alternate-key offset that only an alternate index has - at
+--      :L283, :L486 and :L3676. There is no fourth.
+--   2. The same file reports exactly three key-uniqueness attributes,
+--      :L285, :L488 and :L3678, and every one of them is NONUNIQKEY.
+--      UNIQUEKEY does not occur anywhere in the 3,956 lines.
+--   3. The entry census at the end of the listing agrees: :L3938
+--      reports AIX 3 and :L3946 reports PATH 3, against :L3940
+--      CLUSTER 10.
+--
+-- So the count is three, and all three are non-unique as a catalogued
+-- fact rather than a judgement call. Uniqueness here is not a
+-- tightening; it is a defect that removes rows. See the note on that
+-- under COMMON FAILURE MODES below.
+--
+-- HOW TO RUN, BUILD AND TEST
+--
+--   ./mvnw clean verify                  from the repository root
+--
+-- Flyway applies this migration during application start-up, in the
+-- order V1 -> V2 -> V3 fixed by the version prefixes, and before
+-- Hibernate validates the mapped schema. The integration tier
+-- exercises the three finders against a Testcontainers PostgreSQL 16
+-- instance under src/test/java/com/cardemo/integration/repository, and
+-- all 300 records of app/data/ASCII/dailytran.txt are driven through
+-- the posting pipeline by
+-- src/test/java/com/cardemo/e2e/BatchPipelineE2ETest.java. Those tests
+-- are the regression net for this file: an index is tested through the
+-- queries that use it, never through DDL assertions written beside it,
+-- which is why no test is added here.
+--
+-- To confirm by hand what this migration created, and that every one
+-- of the three is non-unique and B-tree:
+--
+--   SELECT indexname FROM pg_indexes
+--    WHERE schemaname = 'public' AND indexname LIKE 'ix\_%'
+--    ORDER BY indexname;
+--
+--   SELECT c.relname, ix.indisunique, am.amname
+--     FROM pg_index ix
+--     JOIN pg_class c ON c.oid = ix.indexrelid
+--     JOIN pg_am am ON am.oid = c.relam
+--    WHERE c.relname LIKE 'ix\_%' ORDER BY c.relname;
+--
+-- indisunique must be false on all three rows and amname must be
+-- btree on all three.
+--
+-- KEY CONFIGURATION AND DEFAULTS
+--
+-- Flyway, from the base Spring profile: locations
+-- classpath:db/migration, enabled true, validate-on-migrate true,
+-- clean-disabled true, out-of-order false, baseline-on-migrate false.
+-- No migration pattern is ignored and no error is tolerated and
+-- continued past. Exactly three migrations exist and ordering keys on
+-- the V1__, V2__ and V3__ prefixes, so this file is applied second
+-- whatever order the classpath happens to enumerate. The PostgreSQL
+-- dialect resolves through the separate flyway-database-postgresql
+-- artefact, a distinct dependency from flyway-core because the
+-- database-specific modules were split out of the core.
+--
+-- Jakarta Persistence and Hibernate, in EVERY profile: ddl-auto
+-- validate - never create, create-drop or update. Note what that
+-- setting does and does not check: validate reconciles tables and
+-- columns, and it is indifferent to secondary indexes. A missing index
+-- therefore does NOT stop start-up. It degrades quietly into a
+-- sequential scan, which is precisely why the presence of these three
+-- is asserted by the repository integration tests rather than left to
+-- schema validation.
+--
+-- This migration has no tunable of its own. There is no fill factor,
+-- no storage parameter, no operator class and no collation override on
+-- any of the three statements: each is the plain default B-tree, so
+-- the emitted DDL is identical on every host and in every profile.
+--
+-- This file needs no secret. It contains no credential, no connection
+-- string, no host name, no database name and no personal data.
+--
+-- COMMON FAILURE MODES AND TROUBLESHOOTING
+--
+-- "Migration checksum mismatch for migration version 2" - editing
+-- this file after it has been applied is rejected, because
+-- validate-on-migrate is true. Revert the edit or recreate the target
+-- database from empty; never relax validate-on-migrate and never
+-- clean.
+--
+-- "Detected resolved migration not applied to database" - out-of-order
+-- and baseline-on-migrate are both false, so a partially migrated
+-- database is a hard failure rather than something to be patched up.
+-- Migrate from an empty schema.
+--
+-- 'relation "card" does not exist', or the same for
+-- card_cross_reference or "transaction" - V1__create_schema.sql did
+-- not apply, so there is no table to index. This migration has a hard
+-- prerequisite on V1 and states it as one: the three statements below
+-- carry no existence guard of any kind, so a missing base table
+-- aborts the migration loudly and names the relation it wanted. That
+-- is deliberate. Guarding the statements would convert a broken
+-- deployment into a silently unindexed one, which is the swallowed
+-- error Rule 1 clause B forbids.
+--
+-- 'relation "idx_card_acct_id" already exists' - the same migration
+-- has been applied twice to one database, which means the schema
+-- history table was lost or truncated while the schema survived. Do
+-- not reach for an existence guard; establish why the history was
+-- lost. A second successful run of a migration that claims never to
+-- have run is a corrupted deployment, not a race to be smoothed over.
+--
+-- A DUPLICATE-KEY ERROR RAISED BY ONE OF THESE THREE INDEXES IS NOT
+-- POSSIBLE, AND IF ONE APPEARS THE INDEX WAS MADE UNIQUE BY MISTAKE.
+-- This is the one failure mode of this file that does not announce
+-- itself. All three alternate keys are catalogued NONUNIQKEY because
+-- duplication is the normal case: one account legitimately holds many
+-- cards, so card_acct_id and xref_acct_id repeat by design, and many
+-- transactions legitimately share one processing timestamp. A unique
+-- index would therefore not merely be stricter than the source - it
+-- would refuse rows the source accepts, and it would do so at seed
+-- time in V3 or at posting time in the batch, far from this file.
+-- Remedy: none is needed, because none of the three is unique.
+-- Verify with the indisunique query above.
+--
+-- A SLOW PROCESSING-DATE REPORT USUALLY MEANS THE PREDICATE WAS
+-- REWRITTEN, NOT THAT THIS INDEX IS MISSING. idx_transaction_proc_ts
+-- is a plain index on the bare column, so it serves a predicate that
+-- compares tran_proc_ts directly. Wrapping the column in a function -
+-- taking its ten-character prefix, for instance - makes the predicate
+-- non-sargable and no plain B-tree can serve it. That is measured,
+-- not theoretical: see the plan comparison recorded in
+-- TransactionRepository, which is why its query compares the bare
+-- property and why no functional index is added here.
+--
+-- WHERE THE QUOTED CONFIGURATION LIVES
+--
+-- Every Flyway and Hibernate setting quoted above is declared by the
+-- four Spring profiles under src/main/resources - application.yml plus
+-- the local, test and prod profiles - under the spring.flyway and
+-- spring.jpa property paths. Read the property path rather than a line
+-- number: the profiles are edited far more often than this migration.
+--
+-- The third index is named ix_transaction_proc_ts because
+-- TransactionRepository cites that exact name in the query plan
+-- recorded in its own documentation. Renaming it would falsify that
+-- evidence, so the naming rule below is chosen to make the pinned name
+-- the natural output rather than an exception to a different rule.
+--
+-- AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH has NO entry in the CICS file
+-- control table. app/csd/CARDDEMO.CSD declares exactly eight files -
+-- ACCTDAT :L1, CARDAIX :L13, CARDDAT :L25, CCXREF :L37, CUSTDAT :L50,
+-- CXACAIX :L63, TRANSACT :L76 and USRSEC :L88 - of which only CARDAIX
+-- and CXACAIX name an alternate-index path in their DSNAME, at :L14
+-- and :L65. The TRANSACT entry at :L77 names the base cluster
+-- AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, not the path. The third index
+-- therefore backs a BATCH-ONLY access path and never an online one.
+-- Recorded rather than inferred, because it explains why that index
+-- has no online caller to point at.
+
+-- ==================================================================
+-- INDEX NAMING RULE
+--
+-- idx_ + table name + the column name with its copybook prefix
+-- elided. Applied without exception.
+--
+-- THE PREFIX IS idx_, NOT ix_. This is the prompt-required spelling
+-- and it is the only sanctioned one; the three names below were
+-- previously ix_ and were renamed. Nothing reads an index name at
+-- runtime - PostgreSQL chooses an index by its definition, not by its
+-- name - so the rename is observable only in catalogue queries and in
+-- the documents that quote it. Every one of those was renamed in the
+-- same change: this file, V3__seed_data.sql, application-test.yml,
+-- TransactionRepository.java, CardCrossReferenceReader.java and the
+-- two repository tests. The mandate test deliberately matches indexes
+-- by TABLE and COLUMN rather than by name, so it survives a further
+-- rename while still requiring the index to exist:
+--
+--   card                  card_acct_id  less CARD-  -> idx_card_acct_id
+--   card_cross_reference  xref_acct_id  less XREF-
+--                                    -> idx_card_cross_reference_acct_id
+--   "transaction"         tran_proc_ts  less TRAN-
+--                                    -> idx_transaction_proc_ts
+--
+-- The elision is what keeps the third name identical to the one
+-- TransactionRepository already records, and it reads better besides:
+-- idx_card_card_acct_id says card twice. Longest name is 32
+-- characters, comfortably inside PostgreSQL's 63-byte identifier
+-- limit, so no name is silently truncated. None of the three collides
+-- with a V1 object: that migration names its objects pk_, fk01_
+-- through fk10_ and ck_, and declares no index at all.
+--
+-- OFFSET BASE CONVENTION - STATED BECAUSE THE TWO BASES DIFFER BY ONE
+--
+-- AXRKP in the catalogue and the second argument of an IDCAMS
+-- KEYS(length offset) card are ZERO-based. Record-byte prose in the
+-- copybooks and in this file is ONE-based. Every citation below
+-- states which it means, and the three pairs are:
+--
+--   AXRKP  16 (zero-based) = record byte  17 (one-based)
+--   AXRKP  25 (zero-based) = record byte  26 (one-based)
+--   AXRKP 304 (zero-based) = record byte 305 (one-based)
+--
+-- The one-based reading is independently corroborated by DFSORT,
+-- whose SYMNAMES positions are one-based: app/proc/TRANREPT.prc:L39
+-- declares TRAN-CARD-NUM at 263 for 16 and :L40 declares
+-- TRAN-PROC-DT at 305 for 10, and both agree with the copybook byte
+-- map rather than with the zero-based AXRKP.
+--
+-- A NOTE ON THE VOCABULARY OF THE COMMENTS BELOW
+--
+-- The prohibitions this file is held to are checked by whole-file
+-- text searches that cannot tell a comment from a statement. The
+-- prose below therefore describes each forbidden construct instead of
+-- naming it verbatim - an existence guard, the non-blocking build
+-- variant, a non-default access method, a covering column list, a
+-- privilege statement, an extension, a storage placement clause, a
+-- clock or random function. Nothing is being hidden: the point is
+-- that a search for any of those keywords returns zero hits on this
+-- file, which is a stronger and more easily verified claim than a
+-- promise not to have used them.
+-- ==================================================================
+
+
+-- ==================================================================
+-- INDEX 1 of 3 - card(card_acct_id), the card-by-account path
+-- ==================================================================
+--
+-- (a) CATALOGUE EVIDENCE - app/catlg/LISTCAT.txt
+--
+--   :L254  AIX ----------- AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX
+--          the alternate-index entry itself
+--   :L270  its PATH association, AWS.M2.CARDDEMO.CARDDATA.VSAM
+--          .AIX.PATH, whose own entry is at :L150
+--   :L271  the DATA component entry begins, and :L279 names the AIX
+--          it belongs to - so the attributes that follow are this
+--          index's, not the base cluster's
+--   :L281  KEYLEN 11, the alternate key width. Cited by line and by
+--          name because KEYLEN 11 alone is ambiguous: the CARDXREF
+--          alternate index reports 11 as well, at :L482.
+--   :L282  RKP 5
+--   :L283  AXRKP 16, zero-based, so record byte 17 one-based
+--   :L285  SPANNED NONUNIQKEY - the key-uniqueness attribute, and the
+--          reason this index is not unique. Do not read the UNIQUE
+--          token on the preceding line :L284 as a key attribute: that
+--          line is the SHROPTNS group and its UNIQUE means the data
+--          set occupies its own space rather than a suballocated
+--          extent. Key uniqueness is stated only on :L285.
+--
+-- (b) IDCAMS EVIDENCE - app/jcl/CARDFILE.jcl, which DEFINEs the index
+--     inline rather than in a member of its own
+--
+--   :L78   the step comment, CREATE ALTERNATE INDEX ON ACCT ID, which
+--          names the indexed field in the source's own words
+--   :L83   DEFINE ALTERNATEINDEX (NAME(...CARDDATA.VSAM.AIX)
+--   :L84   RELATE(...CARDDATA.VSAM.KSDS)
+--   :L85   KEYS(11 16) - length 11 at zero-based offset 16
+--   :L86   NONUNIQUEKEY
+--   :L87   UPGRADE
+--   :L88   RECORDSIZE(150,150)
+--   :L100-:L102  DEFINE PATH ... PATHENTRY(...CARDDATA.VSAM.AIX)
+--
+--     Cited from CARDFILE.jcl deliberately. app/jcl/TRANIDX.jcl is
+--     NOT evidence for this index and is not cited here: its own step
+--     comment at :L20 reads CREATE ALTERNATE INDEX ON PROCESSED
+--     TIMESTAMP and its KEYS card at :L27 is KEYS(26 304), which is
+--     the TRANSACT index of block 3. See the discrepancy register.
+--
+-- (c) OFFSET PROOF - app/cpy/CVACT02Y.cpy, the 150-byte card layout
+--
+--     :L5  CARD-NUM      PIC X(16)  one-based bytes [1-16]
+--     :L6  CARD-ACCT-ID  PIC 9(11)  one-based bytes [17-27]
+--
+--     Zero-based AXRKP 16 is one-based byte 17, which is exactly
+--     where CARD-ACCT-ID begins, immediately after the 16-byte card
+--     number; and its 11 digits are exactly KEYLEN 11. Both halves of
+--     the catalogued key description land on this one field, which is
+--     what identifies it unambiguously.
+--
+-- (d) WHAT CONSUMES IT
+--
+--     CardRepository.findByAccountIdOrderByCardNumberAsc(Long,
+--     Pageable) - a derived query, no @Query - which is the card-list
+--     screen's filter-by-account path, 7 rows to a page. The index
+--     serves its accountId equality predicate; the primary key on
+--     card_num serves the ordering.
+--
+--     Non-unique matches the access pattern exactly: the finder
+--     returns a Page of cards, plural, because one account holds
+--     many.
+--
+CREATE INDEX idx_card_acct_id
+  ON card USING btree (card_acct_id);
+
+
+-- ==================================================================
+-- INDEX 2 of 3 - card_cross_reference(xref_acct_id), the
+--                cross-reference-by-account path
+-- ==================================================================
+--
+-- (a) CATALOGUE EVIDENCE - app/catlg/LISTCAT.txt
+--
+--   :L455  AIX ----------- AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX
+--   :L471  its PATH association, AWS.M2.CARDDEMO.CARDXREF.VSAM
+--          .AIX.PATH, whose own entry is at :L351
+--   :L472  the DATA component entry begins, and :L480 names the AIX
+--   :L482  KEYLEN 11 - cited by line and by name for the same reason
+--          as block 1: the CARDDATA alternate index also reports 11,
+--          at :L281, so an unqualified KEYLEN 11 identifies neither
+--   :L485  RKP 5 - and NOT :L483, which is where a reader counting
+--          attribute lines in sequence would expect it. Two listing
+--          page-break lines interpose: :L483 is an IDCAMS SYSTEM
+--          SERVICES banner and :L484 a LISTING FROM CATALOG header.
+--          The attribute block resumes on :L485.
+--   :L486  AXRKP 25, zero-based, so record byte 26 one-based
+--   :L488  SPANNED NONUNIQKEY
+--
+-- (b) IDCAMS EVIDENCE - app/jcl/XREFFILE.jcl
+--
+--   :L72   DEFINE ALTERNATEINDEX (NAME(...CARDXREF.VSAM.AIX)
+--   :L73   RELATE(...CARDXREF.VSAM.KSDS)
+--   :L74   KEYS(11,25) - length 11 at zero-based offset 25. Note the
+--          comma: CARDFILE.jcl:L85 writes the same construct
+--          space-separated as KEYS(11 16). IDCAMS accepts either and
+--          the two members simply differ in style, so a search for
+--          one spelling will miss the other.
+--   :L75   NONUNIQUEKEY
+--   :L76   UPGRADE
+--   :L77   RECORDSIZE(50,50)
+--   :L90-:L92  DEFINE PATH ... PATHENTRY(...CARDXREF.VSAM.AIX)
+--
+-- (c) OFFSET PROOF - app/cpy/CVACT03Y.cpy, the 50-byte cross
+--     reference layout, of which 36 bytes are populated
+--
+--     :L5  XREF-CARD-NUM  PIC X(16)  one-based bytes [1-16]
+--     :L6  XREF-CUST-ID   PIC 9(09)  one-based bytes [17-25]
+--     :L7  XREF-ACCT-ID   PIC 9(11)  one-based bytes [26-36]
+--
+--     16 + 9 = 25 bytes precede the field, so it begins at one-based
+--     byte 26, which is zero-based AXRKP 25; and its 11 digits are
+--     KEYLEN 11. This offset is stated here in full because the
+--     project specification omits it altogether, so the value is
+--     carried by :L486 and XREFFILE.jcl:L74 rather than by prose.
+--
+-- (d) WHAT CONSUMES IT
+--
+--     CardCrossReferenceRepository
+--       .findFirstByAccountIdOrderByCardNumberAsc(Long) - a derived
+--     query which resolves an account to its lowest-numbered card,
+--     the first hop of the account-view lookup chain and of the
+--     interest job's per-account read. The index serves the accountId
+--     equality predicate; the First keyword adds LIMIT 1, so the
+--     engine stops at the first index entry instead of materialising
+--     a result set the caller reduces to one row anyway.
+--
+--     Non-unique for the reason the catalogue gives: one account maps
+--     to several cross-reference rows. The index therefore permits
+--     duplicates, and the ORDER BY in the finder's name is what makes
+--     "the first row" deterministic when they exist. What the source
+--     performs is EXEC CICS READ against the path, which yields one
+--     record - so Optional, not List, is the faithful transport.
+--
+--     This is the SECOND of the three catalogued alternate indexes.
+--     Exactly one index is created on this table. No index is created
+--     on xref_cust_id: it carries a foreign key to customer, and a
+--     foreign key does not imply an index in PostgreSQL, but no
+--     alternate index exists over that field in the catalogue and no
+--     finder queries by it. Adding one would be a fourth index. See
+--     the discrepancy register for the imprecise count this resolves.
+--
+CREATE INDEX idx_card_cross_reference_acct_id
+  ON card_cross_reference USING btree (xref_acct_id);
+
+
+-- ==================================================================
+-- INDEX 3 of 3 - "transaction"(tran_proc_ts), the processing-date
+--                range path. BATCH ONLY - see (e).
+-- ==================================================================
+--
+-- (a) CATALOGUE EVIDENCE - app/catlg/LISTCAT.txt
+--
+--   :L3645 AIX ----------- AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX
+--   :L3663 its PATH association, AWS.M2.CARDDEMO.TRANSACT.VSAM
+--          .AIX.PATH, whose own entry is at :L3541. The association
+--          list is split by page-break lines :L3661 and :L3662, so
+--          the PATH line sits on :L3663 rather than adjacent to the
+--          CLUSTER association on :L3660.
+--   :L3664 the DATA component entry begins, and :L3672 names the AIX
+--   :L3674 KEYLEN 26 - unambiguous, unlike the two 11s above
+--   :L3675 RKP 5
+--   :L3676 AXRKP 304, zero-based, so record byte 305 one-based
+--   :L3678 SPANNED NONUNIQKEY
+--
+-- (b) IDCAMS EVIDENCE - both members that DEFINE this index, because
+--     it is declared twice in the job stream with identical operands
+--
+--   app/jcl/TRANFILE.jcl
+--     :L77   step comment, CREATE ALTERNATE INDEX ON PROCESSED
+--            TIMESTAMP
+--     :L82   DEFINE ALTERNATEINDEX (NAME(...TRANSACT.VSAM.AIX)
+--     :L83   RELATE(...TRANSACT.VSAM.KSDS)
+--     :L84   KEYS(26 304) - length 26 at zero-based offset 304
+--     :L85   NONUNIQUEKEY
+--     :L86   UPGRADE
+--     :L87   RECORDSIZE(350,350)
+--     :L99-:L101  DEFINE PATH ... PATHENTRY(...TRANSACT.VSAM.AIX)
+--
+--   app/jcl/TRANIDX.jcl - the standalone index-build member, and the
+--   only one of the four that also rebuilds the index from the base
+--   cluster
+--     :L20   step comment, CREATE ALTERNATE INDEX ON PROCESSED
+--            TIMESTAMP - which is the evidence that this member is
+--            the TRANSACT index and not the card one
+--     :L25   DEFINE ALTERNATEINDEX (NAME(...TRANSACT.VSAM.AIX)
+--     :L26   RELATE(...TRANSACT.VSAM.KSDS)
+--     :L27   KEYS(26 304)
+--     :L28   NONUNIQUEKEY
+--     :L29   UPGRADE
+--     :L42-:L44  DEFINE PATH ... PATHENTRY(...TRANSACT.VSAM.AIX)
+--     :L52   BLDINDEX INDATASET(...KSDS) OUTDATASET(...AIX)
+--
+--     Declared twice, created once. The two definitions name the same
+--     index with the same key, so one PostgreSQL index reproduces
+--     both. Creating it twice under two names would be duplication
+--     with no catalogued basis.
+--
+-- (c) OFFSET PROOF - app/cpy/CVTRA05Y.cpy, the 350-byte transaction
+--     layout
+--
+--     :L17  TRAN-PROC-TS  PIC X(26)  one-based bytes [305-330]
+--
+--     Zero-based AXRKP 304 is one-based byte 305, and X(26) is
+--     KEYLEN 26. The full byte map that places it there, proven
+--     against the copybook field widths: identifier 1-16, type
+--     17-18, category 19-22, source 23-32, description 33-132,
+--     amount 133-143, merchant identifier 144-152, merchant name
+--     153-202, merchant city 203-252, merchant postal code 253-262,
+--     card number 263-278, origination timestamp 279-304, processing
+--     timestamp 305-330, filler 331-350.
+--
+--     Corroborated independently by DFSORT, whose SYMNAMES offsets
+--     are one-based: app/proc/TRANREPT.prc:L40 declares
+--     TRAN-PROC-DT,305,10,CH and :L39 declares
+--     TRAN-CARD-NUM,263,16,ZD. Both agree with the one-based map, so
+--     the base of the catalogued 304 is settled by a second source
+--     rather than by assumption. The ZD typing on the card number is
+--     a DFSORT concern only; the copybook is authoritative and the
+--     column is fixed-width character.
+--
+-- (d) WHAT CONSUMES IT
+--
+--     TransactionRepository
+--       .findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(
+--         String, String, Pageable)
+--     whose predicate compares the BARE tran_proc_ts column - lower
+--     bound inclusive, upper bound exclusive - and orders by card
+--     number then identifier. This index serves the range predicate;
+--     the ordering is served separately.
+--
+--     THE COLUMN IS CHAR(26) TEXT AND THE COMPARISON IS LEXICAL,
+--     never temporal. That is the source's own semantics, not a
+--     shortcut: app/cbl/CBTRN03C.cbl:L173-L174 tests
+--     TRAN-PROC-TS (1:10) against WS-START-DATE and WS-END-DATE,
+--     both PIC X(10) at :L123 and :L125, so the legacy filter is a
+--     character comparison over the first ten characters of a
+--     26-character field. app/proc/TRANREPT.prc:L45-L46 applies the
+--     same filter as an INCLUDE COND on TRAN-PROC-DT, also
+--     character. A temporal column would have to parse values the
+--     source never parses, and would reject the 26 blanks that a
+--     staged, unposted row legitimately carries.
+--
+--     The index is a plain B-tree on the bare column BECAUSE the
+--     predicate compares the bare column. Those two facts are one
+--     decision, and it was measured rather than assumed: the finder's
+--     earlier revision compared the ten-character prefix through a
+--     function, which is not sargable, and PostgreSQL 16.10 chose a
+--     parallel sequential scan even with sequential scans disabled -
+--     it had no index-based alternative. Comparing the bare column
+--     against the same index yields an index scan, a factor of 6.4
+--     fewer buffers on the same 1,500 rows. The plan text and the
+--     row-level equivalence argument are recorded in
+--     TransactionRepository rather than duplicated here.
+--
+-- (e) BATCH ONLY, AND WHY THAT IS WORTH RECORDING
+--
+--     Unlike the two indexes above, this one has no online caller,
+--     because the CICS file control table never exposed it.
+--     app/csd/CARDDEMO.CSD declares exactly eight files - ACCTDAT
+--     :L1, CARDAIX :L13, CARDDAT :L25, CCXREF :L37, CUSTDAT :L50,
+--     CXACAIX :L63, TRANSACT :L76, USRSEC :L88. Two of them name an
+--     alternate-index path in their DSNAME: CARDAIX at :L14 resolves
+--     to CARDDATA.VSAM.AIX.PATH and CXACAIX at :L65 to
+--     CARDXREF.VSAM.AIX.PATH - which are precisely the paths of
+--     indexes 1 and 2. The TRANSACT entry at :L77 names the base
+--     cluster TRANSACT.VSAM.KSDS. There is no CSD entry for
+--     TRANSACT.VSAM.AIX.PATH anywhere in the file.
+--
+--     So the sole consumer is the batch report - the sort and
+--     date-range filter of app/proc/TRANREPT.prc:STEP05R feeding
+--     app/cbl/CBTRN03C.cbl. Recorded because an index with no online
+--     caller looks unused from the online side, and this states where
+--     its caller actually is.
+--
+CREATE INDEX idx_transaction_proc_ts
+  ON "transaction" USING btree (tran_proc_ts);
+
+
+-- ==================================================================
+-- OBJECT CENSUS
+--
+-- Exactly 3 indexes, on 3 different tables, over 1 column each - and
+-- nothing else. 0 unique indexes, 0 partial indexes, 0 expression or
+-- functional indexes, 0 multi-column indexes, 0 non-default access
+-- methods, 0 covering column lists, 0 tables, 0 columns, 0
+-- constraints, 0 rows, 0 triggers, 0 views, 0 sequences, 0 functions,
+-- 0 privilege statements and 0 extensions.
+--
+-- All 3 are non-unique, matching the 3 NONUNIQKEY declarations at
+-- app/catlg/LISTCAT.txt:L285, :L488 and :L3678 against 0 occurrences
+-- of UNIQUEKEY in that file. All 3 are B-tree, stated explicitly on
+-- each statement rather than left to the server default, so the
+-- emitted access method is deterministic.
+--
+-- 3 indexes for 3 alternate indexes and 3 paths, one to one. The
+-- PATHs contribute no separate object: a VSAM PATH is what makes an
+-- alternate index openable as though it were a file, and in the
+-- relational target the index is directly visible to the planner, so
+-- the path has nothing left to do. That is why 3 AIX plus 3 PATH
+-- becomes 3 indexes and not 6.
+--
+-- Tables touched: card, card_cross_reference and "transaction". No
+-- other table name appears anywhere in this file's statements.
+--
+-- The quoting of "transaction" is double-quoted lowercase, byte for
+-- byte as V1__create_schema.sql writes it in CREATE TABLE "transaction".
+-- PostgreSQL lists
+-- TRANSACTION as a non-reserved key word, so the bare form would also
+-- parse, and both forms resolve to the same relation - but the two
+-- migrations must not disagree about the spelling of a table name, so
+-- V1's form is adopted without variation.
+--
+-- ==================================================================
+-- DELIBERATE EXCLUSIONS
+--
+-- NO FOURTH INDEX, for any reason. The catalogue records three
+-- alternate indexes and this migration creates three. A fourth would
+-- have no source, and an index with no query behind it is an
+-- unjustified write cost on every insert - which is both the dead
+-- code Rule 1 clause B forbids and the unjustified performance
+-- tradeoff clause A forbids. There is no measurement here that a
+-- fourth index would improve, because there is no query here at all.
+--
+-- NO INDEX ON THE OTHER EIGHT TABLES - account, customer,
+-- user_security, transaction_type, transaction_category,
+-- transaction_category_balance, disclosure_group, daily_transaction.
+-- Each of the eight is reached by its primary key or read
+-- sequentially, and none has an alternate index in the catalogue.
+-- Three of them are worth spelling out because they look like
+-- candidates and are not:
+--
+--   transaction_category_balance, disclosure_group and
+--   transaction_category already have the only ordering their batch
+--   readers depend on, from their composite primary keys. The
+--   account-level control break at app/cbl/CBACT04C.cbl:L194 -
+--   IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM - works on primary-key
+--   order alone, because app/cpy/CVTRA01Y.cpy declares TRAN-CAT-KEY
+--   as TRANCAT-ACCT-ID 9(11) then TRANCAT-TYPE-CD X(02) then
+--   TRANCAT-CD 9(04), so the account identifier LEADS the 17-byte
+--   key. A separate index on the account identifier would duplicate
+--   the leading column of an existing index.
+--
+--   daily_transaction is staged, read once in ingestion order and
+--   truncated. It carries no foreign key by design, and indexing a
+--   write-once staging table would slow the load it exists to serve.
+--
+-- NO UNIQUENESS on any of the three. Covered under COMMON FAILURE
+-- MODES above: it would reject rows the source accepts, silently and
+-- far from this file.
+--
+-- NO EXISTENCE GUARD on creation and no drop-first statement. A
+-- migration that cannot do its job must fail and say why. Guarding
+-- would turn a missing V1 into a silently unindexed database, and a
+-- drop-first would make this file destructive on re-run. Flyway's
+-- schema history, not defensive DDL, is what makes the migration run
+-- once.
+--
+-- NO NON-BLOCKING BUILD VARIANT. The option that builds an index
+-- without holding a write lock cannot run inside a transaction, and
+-- Flyway wraps each PostgreSQL migration in one. It would abort the
+-- migration. It is also unnecessary: this migration runs against a
+-- schema created moments earlier by V1, with no rows yet and no
+-- concurrent writer to block.
+--
+-- NO FUNCTIONAL, PARTIAL OR COVERING VARIANT. The source declares
+-- plain keyed alternate indexes over whole fields, so a plain B-tree
+-- over the whole column is the faithful equivalent. A functional
+-- index over the ten-character prefix of tran_proc_ts was considered
+-- and rejected on evidence: the predicate that would need it was
+-- itself rewritten to compare the bare column, precisely so that the
+-- plain index in this file can serve it. See block 3 (d).
+--
+-- NO ENVIRONMENT-SPECIFIC OR NON-DETERMINISTIC CONSTRUCT. No storage
+-- placement clause, no fill factor, no operator class, no collation
+-- override, no schema qualification beyond the default search path,
+-- no absolute path, no client meta-command, no extension, no
+-- privilege statement, no role, no clock reading and no random
+-- source. The same three statements are emitted on every host, and
+-- re-running this migration against an equivalent empty database
+-- produces a byte-identical schema.
+--
